@@ -1,0 +1,106 @@
+<div class="home">
+
+	<!-- first column -->
+
+	<div class="home-column-one">
+
+		<h2>Frequent Tasks</h2>
+		
+		<div class="tasks">	
+		
+			<a href="%%[base_url]%%/case_list.php?mode=open">My Open Cases</a>
+			<a href="%%[base_url]%%/case_list.php?mode=all">All Open | Closed Cases</a>
+			<a href="%%[base_url]%%/intake2.php">New Client Intake</a>
+			<a href="%%[base_url]%%/activity.php?screen=compose&act_type=T">New Timeslip</a>
+			<a href="%%[base_url]%%/activity.php?screen=compose&act_type=K">New Case Tickler</a>
+			<a href="%%[base_url]%%/cal_day.php">My Day Calendar</a>
+			<a href="%%[base_url]%%/cal_week.php">My Week Calendar</a>
+			<a href="%%[base_url]%%/reports/">All Reports</a>
+
+		</div> <!-- /.tasks -->
+				
+		<p>
+			Not sure where to find it?<br>
+			Try the <a href="%%[base_url]%%/site_map.php">Site Map</a>.
+		</p>
+
+	</div> <!-- /.home-column-one -->
+
+	<!-- second column -->
+
+	<div class="home-column-two">
+
+		<h2>Message Board</h2>
+		
+		%%[begin:motd]%%
+		
+		<div id="motd">
+			<strong>%%[title]%%</strong> <small> ~ by %%[full_name]%%</small>
+			
+			<div id="motd-content-%%[motd_id]%%" style="display:none">
+				%%[content]%% ... (<i><a href="#" onclick="toggleMotd(%%[motd_id]%%); return false;">Hide Full Text</a></i>)
+			</div>
+			
+			<div id="motd-summary-%%[motd_id]%%">
+				%%[summary_content]%%
+			</div>
+
+		</div>
+		
+		<br/>
+		
+		%%[end:motd]%%
+
+	</div> <!-- /.home-column-two -->
+
+	<!-- third column -->
+
+	<div class="home-column-three">
+		
+		%%[begin:rss_feeds]%%
+		
+		<div id="feed">
+			<strong><a href=%%[link]%%>%%[title]%%</a></strong>
+			<br/>
+			<div id="feed-content-%%[feed_id]%%">		
+				%%[content]%% ... (<i><a href="#" onclick="toggleFeed(%%[feed_id]%%); return false;">Hide Full Text</a></i>)
+			</div>
+			
+			<div id="feed-summary-%%[feed_id]%%">
+				%%[summary_content]%%
+			</div>
+		
+		</div>
+		
+		<br/>
+		
+		%%[end:rss_feeds]%%
+
+	</div> <!-- /.home-column-three -->
+
+</div>
+
+
+
+<script type="text/javascript" language="Javascript">
+<!--
+
+function toggleMotd(id) {
+	toggleDiv("motd-summary-"+id);
+	toggleDiv("motd-content-"+id);
+}
+function toggleFeed(id) {
+	toggleDiv("feed-summary-"+id);
+	toggleDiv("feed-content-"+id);
+}
+
+function toggleDiv(id) {
+	var div = document.getElementById(id);
+	if(div.style.display == "none") {
+		div.style.display = "block";
+	} else {
+		div.style.display = "none";
+	}
+}
+-->
+</script>
