@@ -399,7 +399,7 @@ switch ($search_mode)
 
 $main_html['content'] = pl_template('subtemplates/search_screen.html', $content_t);
 $main_html['page_title'] = "Search Results for \"{$clean_search_value}\"";
-$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; Search Results";
+$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span> Search Results";
 
 
 $buffer = pl_template('templates/default.html', $main_html);

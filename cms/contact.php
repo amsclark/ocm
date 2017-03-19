@@ -173,12 +173,12 @@ if (strlen($case_id) > 0)
 		$num = 'This Case';
 	}
 	
-	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php\">Cases</a> &gt; <a href=\"{$base_url}/case.php?case_id={$case_id}\">{$num}</a> &gt; {$main_html['page_title']}";
+	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &#10140; <a href=\"{$base_url}/case_list.php\">Cases</a> <span class=\"nav-arrow\">&#10140;</span> <a href=\"{$base_url}/case.php?case_id={$case_id}\">{$num}</a> &#10140; {$main_html['page_title']}";
 }
 
 else 
 {
-	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/addressbook.php\">Address Book</a> &gt; {$main_html['page_title']}";
+	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span> <a href=\"{$base_url}/addressbook.php\">Address Book</a> &#10140; {$main_html['page_title']}";
 }
 
 $default_template = new pikaTempLib('templates/default.html', $main_html);

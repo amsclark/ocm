@@ -99,8 +99,8 @@ if(!is_numeric($act_id)) {
 	$act_row = $activity->getValues();
 	$act_row['act_time'] = pl_time_unmogrify($act_row['act_time']);
 	$act_type = $activity->act_type;
-	$act_row['deleteActivity'] = "<img src=\"{$base_url}/images/point.gif\"> " .
-		"<a href=\"{$base_url}/activity.php?act_id={$act_id}&action=confirm_delete\">Delete this record</a>";
+	$act_row['deleteActivity'] = "" .
+		"<ul><li class=\"remove\"><i class=\"material-icons undo\">undo</i><a href=\"{$base_url}/activity.php?act_id={$act_id}&action=confirm_delete\">Delete this record</a></li></ul>";
 }
 
 // Dynamically determine Activity type based on act_type
@@ -108,12 +108,12 @@ $type_desc = pl_array_lookup($act_type,$menu_act_type);
 
 // If attempting to delete record make user confirm action
 if($action == 'confirm_delete') {
-	$a['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; ";
+	$a['nav'] = "<a href=\"{$base_url}\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span> ";
 	if(isset($act_row['case_id']) && is_numeric($act_row['case_id'])) {
 		$case = new pikaCase($act_row['case_id']);
 		$act_row['number'] = $case->number;
 		if(!isset($act_row['number']) || !$act_row['number']) {$act_row['number'] = '(No Case #)';}
-		$a['nav'] .= "<a href=\"{$base_url}/case.php?case_id={$act_row['case_id']}\">{$act_row['number']}</a> &gt; ";
+		$a['nav'] .= "<a href=\"{$base_url}/case.php?case_id={$act_row['case_id']}\">{$act_row['number']}</a> <span class=\"nav-arrow\">&#10140;</span> ";
 	}
 	$a['nav'] .= "Delete {$type_desc}";
 	$sub_directive = 'access_denied';
@@ -141,7 +141,7 @@ if(isset($act_row['pba_id']) && is_numeric($act_row['pba_id'])) {
 } elseif(isset($act_row['user_id']) && is_numeric($act_row['user_id'])) {
 	$owner = $act_row['user_id'];
 	$filter['user_id'] = $owner;
-	$act_row['owner_menu'] = "Staff:<br>\n";
+	$act_row['owner_menu'] = "<label for=\"owner_menu\">Staff</label>\n";
 	$act_row['owner_menu'] .= pikaTempLib::plugin('menu','user_id',$owner,$menu_staff);
 	//$act_row['staff_menu'] = pikaTempLib::plugin('menu','user_id',$owner,$menu_staff);
 } elseif(isset($auth_row['pba_id']) && is_numeric($auth_row['pba_id'])) {
@@ -153,7 +153,7 @@ if(isset($act_row['pba_id']) && is_numeric($act_row['pba_id'])) {
 } else {
 	$owner = $auth_row['user_id'];
 	$filter['user_id'] = $owner;
-	$act_row['owner_menu'] = "Staff:<br>\n";
+	$act_row['owner_menu'] = "<label for=\"owner_menu\">Staff</label>\n";
 	$act_row['owner_menu'] .= pikaTempLib::plugin('menu','user_id',$owner,$menu_staff);
 	//$act_row['staff_menu'] = pikaTempLib::plugin('menu','user_id',$owner,$menu_staff);
 }
@@ -187,7 +187,7 @@ $act_row['act_url'] = $act_url;
 if (!pika_authorize('read_act', $act_row)) {
 	// set up template, then display page
 	$a['content'] = 'Access Denied';
-	$a['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; 
+	$a['nav'] = "<a href=\"{$base_url}\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span>
 	Edit Activity";
 	$a['page_title'] = "Edit Activity";
 	$default_template = new pikaTempLib('templates/default.html',$a);
@@ -206,7 +206,7 @@ while($row = mysql_fetch_assoc($result)) {
         $menu_interviews[$row['interview_id']] = $row['name'];
 }
 
-$a['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; ";
+$a['nav'] = "<a href=\"{$base_url}\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span> ";
 if(isset($act_row['case_id']) && is_numeric($act_row['case_id'])) {
 	$case = new pikaCase($act_row['case_id']);
 	
@@ -219,7 +219,7 @@ if(isset($act_row['case_id']) && is_numeric($act_row['case_id'])) {
 	
 	$act_row['number'] = $case->number;
 	if(!isset($act_row['number']) || !$act_row['number']) {$act_row['number'] = '(No Case #)';}
-	$a['nav'] .= "<a href=\"{$base_url}/case.php?case_id={$act_row['case_id']}\">{$act_row['number']}</a> &gt; ";
+	$a['nav'] .= "<a href=\"{$base_url}/case.php?case_id={$act_row['case_id']}\">{$act_row['number']}</a> <span class=\"nav-arrow\">&#10140;</span> ";
 }
 $a['nav'] .= "Edit {$type_desc}";
 // Act lookup - check for legacy templates

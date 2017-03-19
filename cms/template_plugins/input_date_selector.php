@@ -32,8 +32,8 @@ function input_date_selector($field_name = null, $field_value = null, $menu_arra
 	
 	if(!isset($temp_args['disabled']) || !$temp_args['disabled']) 
 	{
-		$date_selector_output .= "<button class=\"btn\" type=\"button\" onclick=\"openCalendar('{$field_name}','{$container_name}');\">";
-		$date_selector_output .= "<i class=\"icon-calendar\"></i></button>";
+		$date_selector_output .= "<button class=\"date-range-icon\" type=\"button\" onclick=\"openCalendar('{$field_name}','{$container_name}');\">";		
+		$date_selector_output .= "<i class=\"material-icons\">date_range</i></button>";
 	}
 	
 	else

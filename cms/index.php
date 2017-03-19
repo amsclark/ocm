@@ -61,8 +61,8 @@ else
 		if(strlen($row['content']) > 140) 
 		{
 			$row['summary_content'] = pl_html_text(substr($row['content'],0,140));
-			$row['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleMotd({$motd_id});" .
-										 " return false;\">View Full Text</a></i>)";
+			$row['summary_content'] .= " ... [<a href=\"#\" onclick=\"toggleMotd({$motd_id});" .
+										 " return false;\">View Full Text</a>]";
 		}
 		
 		$row['content'] = pl_html_text($row['content']);
@@ -86,8 +86,8 @@ if(count($feeds_array) >= 1)
 			if(strlen($entry['content']) > 140) 
 			{
 				$entry['summary_content'] = substr($entry['content'],0,140);
-				$entry['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleFeed({$entry['feed_id']});" .
-											 " return false;\">View Full Text</a></i>)";
+				$entry['summary_content'] .= " ... [<a href=\"#\" onclick=\"toggleFeed({$entry['feed_id']});" .
+											 " return false;\">View Full Text</a>]";
 			}
 			$feeds_text .= pl_template('subtemplates/home.html',$entry,'rss_feeds');
 		}

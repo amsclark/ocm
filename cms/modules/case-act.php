@@ -130,7 +130,7 @@ $notes_form['notes_footer'] = $notes_footer->draw();
 $text_format = new pikaTempLib('subtemplates/textFormat.html',array());
 $notes_form['textFormat'] = $text_format->draw();
 
-$notes_form['owner_menu'] = "Staff:<br>\n";
+$notes_form['owner_menu'] = "<label for=\"staff\">Staff</label>\n";
 $notes_form['owner_menu'] .= pikaTempLib::plugin('menu','user_id',$notes_form['user_id'],$plMenus['user_id']);
 $notes_form['owner_menu'] .= "<br/>";
 

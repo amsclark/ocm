@@ -65,7 +65,7 @@ foreach ($cons as $val)
 	}
 }
 
-$z .= "<h2 class=\"hdt\">Primary Conflict Check</h2>\n";
+$z .= "<h2 class=\"conflict\">Primary Conflict Check</h2>\n";
 if ($pri_count == 0)
 {
 	$z .= "<p><em>No conflicts found.</em>\n";
@@ -80,7 +80,7 @@ else
 	}
 }
 
-$z .= "<br><h2 class=\"hdt\">Name-based Conflict Check</h2>\n";
+$z .= "<br><h2 class=\"conflict\">Name-based Conflict Check</h2>\n";
 if ($names_count == 0)
 {
 	$z .= "<p><em>No conflicts found.</em>\n";
@@ -95,7 +95,7 @@ else
 	}
 }
 
-$z .= "<br><h2 class=\"hdt\">SSN-based Conflict Check</h2>\n";
+$z .= "<br><h2 class=\"conflict\">SSN-based Conflict Check</h2>\n";
 if ($ssn_count == 0)
 {
 	$z .= "<p><em>No conflicts found.</em>\n";
@@ -110,7 +110,7 @@ else
 	}
 }
 
-$z .= "<p><img src=\"images/point.gif\"> <a href=\"{$base_url}/reports/conflict/conflict.php?case_id={$case_row['case_id']}\" target=\"_new\">View full conflict list</a>";
+$z .= "<p><i class=\"material-icons forward\">forward</i> <a href=\"{$base_url}/reports/conflict/conflict.php?case_id={$case_row['case_id']}\" target=\"_new\">View full conflict list</a>";
 
 $a['conflicts'] = $case_row["conflicts"];
 $a['case_id'] = $case_id;

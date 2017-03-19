@@ -13,8 +13,8 @@ function red_flag($field_name = null, $field_value = null, $menu_array = null, $
 		$flag_output .= "{$field_value}</span> ";
 		*/
 		
-		$flag_output .=	"<span class=\"label label-important flag\"><i class=\"icon-flag icon-white\"></i></span>&nbsp;";
-		$flag_output .=	"<span class=\"flag_label\">{$field_value}</span>";
+		$flag_output .=	"<div class=\"warnings\"><i class=\"material-icons\">check_circle</i>";
+		$flag_output .=	"<span class=\"flag_label\">{$field_value}</span></div>";
 		
 		
 	}

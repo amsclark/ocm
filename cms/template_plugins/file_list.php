@@ -28,8 +28,8 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 		'folder_id_hidden' => false, // Hidden current_folder field (for folder selection)
 		'doc_id_hidden' => false, // Hidden current doc_id field (for document selection)
 		'div' => true,
-		'width' => '305',
-		'height' => '170',
+		'width' => '350',
+		'height' => '200',
 		'class' => '',
 		// Mode (edit/select/edit_select)
 		'mode' => 'edit'
@@ -74,8 +74,8 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 		
 	
 	
-	$file_list_output .= "<table width=\"100%\" class=\"nopad\" cellspacing=\"0\" cellpadding=\"0\">";
-	$file_list_output .= "<tr><th><a href=\"\" onClick=\"fileList('{$field_name}','0','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');return false;\">{$doc_type_description}</a></th></tr><tr><td style='padding-left: 20px;padding-top: 3px;'>";
+	$file_list_output .= "<table class=\"file-list\">";
+	$file_list_output .= "<tr><th><a href=\"\" onClick=\"fileList('{$field_name}','0','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');return false;\">{$doc_type_description}</a></th></tr><tr><td>";
 	
 	require_once('pikaDocument.php');
 	require_once('pikaUser.php');

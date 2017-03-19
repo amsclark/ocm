@@ -9,7 +9,7 @@ function lsc_close_code($field_name = null, $field_value = null, $menu_array = n
 	}
 	
 	// MDF - Assume 2008 defaults
-	$menu_output = "LSC Closing Code (2008 codes):<br />\n";
+	$menu_output = "<label for=\"special-problem-code\">LSC Problem Code (2008 codes)</label>\n";
 	$menu_name = 'close_code_2008';
 	
 	// AMW - Begin of LSC 2008 CSR section.

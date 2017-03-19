@@ -10,7 +10,7 @@ function lsc_problem($field_name = null, $field_value = null, $menu_array = null
 	}
 	
 	// MDF - Assume 2008 defaults
-	$menu_output = "LSC Problem Code (2008 codes):<br />\n";
+	$menu_output = "<label for=\"problem-code\">LSC Problem Code (2008 codes)</label>\n";
 	$menu_name = 'problem_2008';
 	
 	// AMW - Begin of LSC 2008 CSR section.
@@ -46,7 +46,7 @@ function lsc_problem($field_name = null, $field_value = null, $menu_array = null
 			(is_numeric($current_year) &&  $current_year < 2008)
 		) 
 	{
-		$menu_output = "LSC Problem Code (2007 codes):<br />\n";
+		$menu_output = "<label for=\"special-problem-code\">LSC Problem Code (2007 codes)</label>\n";
 		$menu_name = 'problem_2007';
 	}
 	
