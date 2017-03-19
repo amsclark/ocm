@@ -1,126 +1,174 @@
 %%[begin:contact]%%
-<form action="%%[form_action]%%" name=fc method="post">
 
-<table cellspacing=0 summary="" cellpadding="0">
-	<tr valign="top">
-		<td colspan="5">%%[preamble]%%</td>
-		<td>&nbsp;</td>
-		<td rowspan="2">%%[aliases]%%</td>
-	</tr>
-	<tr valign="top">
-		<td nowrap class="de">
-			<p>
-				First Name:<br/>
-				<input type=text name=first_name value="%%[first_name]%%" size=22 tabindex=1/>
-				<br/>
-				Middle Name:<br/>
-				<input type=text name=middle_name value="%%[middle_name]%%" size=22 tabindex=1/>
-				<br/>
-				Last (or Org.) Name:<br/>
-				<input type=text name=last_name value="%%[last_name]%%" size=22 tabindex=1/>
-				<br/>
-				Jr., Sr., etc:<br/>
-				<input type=text name=extra_name value="%%[extra_name]%%" size=22 tabindex=1/>
-				<br/>
-				DoB (MM/DD/YYYY):<br/>
-				<input type=text name="birth_date" value="%%[birth_date]%%" size=22 tabindex=1/>
-				<br/>  
-				Phone:<br/>
-				<span class="maskt">
-				(<input type=text name="area_code" value="%%[area_code]%%" onkeyup="pika_area_code(this, 3, 'phone');" style="width: 2em;" maxlength="3" tabindex=1 class=maskf>) 
-				<input type=text name="phone" value="%%[phone]%%" onkeyup="pika_phone(this);" style="width: 10.5em;" maxlength="8" tabindex="1" class="maskf">
-				</span>
-				<br/>
-				<input type=text name="phone_notes" value="%%[phone_notes]%%" size=22 tabindex=1/>
-				<br/>
-				Alternate Phone:<br/>
-				<span class="maskt" nowrap>
-				(<input type=text name="area_code_alt" value="%%[area_code_alt]%%" onkeyup="pika_area_code(this, 3, 'phone_alt');" style="width: 2em;" maxlength="3" tabindex=1 class=maskf>) 
-				<input type=text name="phone_alt" value="%%[phone_alt]%%" onkeyup="pika_phone(this);" style="width: 10.5em;" maxlength="8" tabindex="1" class="maskf">
-				</span>
-				<br/>
-				<input type=text name="phone_notes_alt" value="%%[phone_notes_alt]%%" size=22 tabindex=1/>
-				<br/>
-			</p>
-		</td>
-		<td>&nbsp;&nbsp;</td>
-		<td nowrap class="de">
-			<p>
-			Address:<br/>
-			<input type=text name="address" value="%%[address]%%" size=26 tabindex=1/>
-			<br/>
-			Address 2:<br/>
-			<input type=text name="address2" value="%%[address2]%%" size=26 tabindex=1/>
-			<br/>
-			City, State:<br/>
-			%%[city,input_text,class=input-medium]%%%%[state,input_text,size=3,class=input-mini]%%
-			<br/>
-			ZIP Code, County:<br/>
-			%%[zip,input_text,onblur=zipcode_lookup(this.value),class=input-mini]%%%%[county,input_text,class=input-medium]%%
-			<br/>
-			Email Address: <br/>
-			<input type=text name="email" value="%%[email]%%" size=26 tabindex=1/>
-			<br/>
-			%%[ssn,input_ssn]%%
-			Gender:<br/>
-			%%[gender,gender]%%<br/>
-			Ethnicity:<br/>
-			%%[ethnicity,ethnicity]%% <br/>
-			</p>
-	  	</td>
-	  	<td>&nbsp;&nbsp;</td>
-	  	<td nowrap align="left">
-			Language:<br/>
-			%%[language,language]%%<br/>
-			Residence:<br/>
-			%%[residence,residence]%%<br/>
-			Marital Status:<br/>
-			%%[marital,marital]%% <br/>
-			%%[disabled,yes_no,checkbox,label=Handicapped]%%<br/>
-			%%[frail,yes_no,checkbox,label=Frail/Needy]%%<br/>
-			Notes:<br/>
-			<textarea name="notes" rows="7" tabindex=1>%%[notes]%%</textarea>
-	  	</td>
-		<td>&nbsp;&nbsp;</td>
-		<td width="300">
-			<h2>Aliases</h2>
-			%%[alias_list]%%
-			<p>
-				<img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-				<a href="%%[base_url]%%/alias.php?contact_id=%%[contact_id]%%">
-				Edit Aliases
-				</a>
-			</p>
-			<h2>Actions</h2>
-			<p>
-			<img src="%%[base_url]%%/images/point.gif">
-			<a href="%%[base_url]%%/merge_contacts.php?contact_id=%%[contact_id]%%">
-			Merge Duplicates Records for this Contact</a><br/>
-			<img src="%%[base_url]%%/images/point.gif">
-			<a href="%%[base_url]%%/ops/new_case.php?thiscon=%%[contact_id]%%">
-			Create a New Case for this Contact</a>
-			</p>
-		</td>
-	</tr>
-</table>
+<h2>Contact Information</h2>
 
-%%[contact_id,input_hidden]%%
-%%[case_id,input_hidden]%%
-%%[screen_id,input_hidden]%%
-%%[intake_id,input_hidden]%%
-%%[relation_code,input_hidden]%%
-%%[con_url,input_hidden]%%
-%%[screen,input_hidden]%%
-<input type=hidden name=action value="%%[action_name]%%"/>
-  	
-<p>
-	<input type=submit value="%%[submit_label]%%" tabindex=1 name="submit2" accesskey="s" class="save"/>
-</p>
+<form class="contact-info" action="%%[form_action]%%" name="fc" method="post">
 
-</form>
+	<div class="prospective">
 
-<h2>Caselist for %%[full_name]%%</h2>
+		<div class="column-one">
+
+			<div>
+				<label for="first_name">First Name</label>
+				<input type="text" name="first_name" value="%%[first_name]%%" tabindex="1"/>			
+			</div>
+
+			<div>
+				<label for="middle_name">Middle Name</label>
+				<input type="text" name="middle_name" value="%%[middle_name]%%" tabindex="1"/>			
+			</div>
+
+			<div>
+				<label for="last_name">Last Name / Org.</label>
+				<input type="text" name="last_name" value="%%[last_name]%%" tabindex="1"/>
+			</div>
+
+			<div class="suffix">
+				<label for="extra_name">Suffix (e.g., Jr.)</label>
+				<input class="w-100" type="text" name="extra_name" value="%%[extra_name]%%" tabindex="1"/>			
+			</div>
+
+			<div class="dob">
+				<label for="birth_date">Date of Birth</label>		
+				<input class="w-100" type="text" name="birth_date" value="%%[birth_date]%%" maxlength="25" tabindex="1"/>			
+			</div>
+
+			<div class="ssn">
+				%%[ssn,input_ssn]%%
+			</div>
+
+			<div>
+				<label for="gender">Gender</label>
+				%%[gender,gender]%%
+			</div>
+		
+		</div>	<!-- /.column-one -->
+
+		<div class="column-two">
+
+			<div>
+				<label for="telephone">Telephone</label>
+				<input class="w-50" type="text" class="area-code" name="area_code" value="%%[area_code]%%" onkeyup="pika_area_code(this, 3, 'phone');" maxlength="3" tabindex="1"> 
+				<input class="w-100" type="text" class="phone-number" name="phone" value="%%[phone]%%" onkeyup="pika_phone(this);" maxlength="8" tabindex="1">
+			</div>
+
+			<div>
+				<label for="">Telephone Note</label>
+				<input class="phone-note" type="text" name="phone_notes" value="%%[phone_notes]%%" tabindex="1"/>
+			</div>
+
+			<div>
+				<label for="telephone">Alternate Telephone</label>
+				<input class="w-50" type="text" class="area-code" name="area_code_alt" value="%%[area_code_alt]%%" onkeyup="pika_area_code(this, 3, 'phone');" maxlength="3" tabindex="1"> 
+				<input class="w-100" type="text" class="phone-number" name="phone_alt" value="%%[phone_alt]%%" onkeyup="pika_phone(this);" maxlength="8" tabindex="1">
+			</div>
+
+			<div>
+				<label for="email">Email</label>
+				<input type="text" name="email" value="%%[email]%%" tabindex=1/>
+			</div>
+
+			<div>
+				<label for="marital-status">Marital Status</label>
+				%%[marital,marital]%%
+			</div>
+
+			<div>
+				<label for="ethnicity">Ethnicity</label>
+				%%[ethnicity,ethnicity]%% 
+			</div>			
+
+			<div>
+				<label for="language">Language</label>
+				%%[language,language]%%
+			</div>
+
+			<div>
+				%%[disabled,yes_no,checkbox,label=Handicapped]%%
+				%%[frail,yes_no,checkbox,label=Frail/Needy]%%
+			</div>
+
+		</div>	<!-- /.column-two -->
+
+		<div class="column-three">
+
+			<div>
+				<label for="address">Address</label>
+				<input class="w-250" type="text" class="address" name="address" value="%%[address]%%" tabindex=1/>
+			</div>
+
+			<div>
+				<label for="address2">Address 2</label>
+				<input class="w-250" type="text" class="address" name="address2" value="%%[address2]%%" tabindex=1/>
+			</div>
+
+			<div>
+				<label for="city-state">City | State</label>
+				%%[city,input_text,class=w-190]%%
+				%%[state,input_text,size=3,class=w-50]%%
+			</div>
+
+			<div>
+				<label for="zip-code">Zip Code | County</label>
+				%%[zip,input_text,onblur=zipcode_lookup(this.value),class=w-80]%%
+				%%[county,input_text,class=w-160]%%
+			</div>
+
+			<div>
+				<label for="residence">Residence</label>
+				%%[residence,residence]%%
+			</div>
+
+			<div>
+				<label for="notes">Contact Notes</label>
+				<textarea class="contact-notes" name="notes" rows="4" tabindex=1>%%[notes]%%</textarea>
+			</div>
+		
+		</div> 	<!-- /.column-three -->
+
+	</div> <!-- /.prospective -->
+
+	<aside>
+	
+		<h2>Aliases</h2>
+		
+		%%[alias_list]%%
+
+		<ul>
+			<li><a href="%%[base_url]%%/alias.php?contact_id=%%[contact_id]%%">Edit Aliases</a></li>
+		</ul>
+		
+
+		<h2>Actions</h2>
+
+		<ul>
+			<li><a href="%%[base_url]%%/merge_contacts.php?contact_id=%%[contact_id]%%">Merge Duplicates Records for this Contact</a></li>
+			<li><a href="%%[base_url]%%/ops/new_case.php?thiscon=%%[contact_id]%%">Create a New Case for this Contact</a></li>
+		</ul>
+
+	</aside>
+
+	<div class="submit">
+
+		%%[contact_id,input_hidden]%%
+		%%[case_id,input_hidden]%%
+		%%[screen_id,input_hidden]%%
+		%%[intake_id,input_hidden]%%
+		%%[relation_code,input_hidden]%%
+		%%[con_url,input_hidden]%%
+		%%[screen,input_hidden]%%
+		
+		<input type=hidden name=action value="%%[action_name]%%"/>
+		<input type=submit value="%%[submit_label]%%" tabindex=1 name="submit2" accesskey="s" />
+
+	</div> <!-- /.submit -->
+
+</form> <!-- /.contact-info -->
+
+<h2 class="case-list">Caselist for ... %%[full_name]%%</h2>
+
 %%[case_list]%%
+
 <!--
 <h2>Intake List for %%[full_name]%%</h2>
 %%[intake_list]%%
@@ -133,28 +181,38 @@
 %%[end:contact]%%
 
 %%[begin:alias]%%
-Name:  <strong>%%[full_name]%%</strong><br/>
-SSN:  <strong>%%[ssn]%%</strong><br/>
-ID:  <strong>%%[state_d]%%</strong>
+
+Name:  %%[full_name]%%
+
+SSN:  %%[ssn]%%
+
+ID:  %%[state_d]%%
+
 %%[end:alias]%%
 
-
 %%[begin:flex_header]%%
-<table width="95%" cellspacing="0" summary="">
+
+<table>
+	
 	<tr>
-		<th nowrap>Role</th>
-		<th nowrap>Case Number</th>
-		<th nowrap>Atty.</th>
-		<th nowrap>Office</th>
-		<th nowrap>Open Date</th>
-		<th nowrap>Close Date</th>
-		<th nowrap>Closing Code</th>
-		<th nowrap>Status</th>
-		<th nowrap>Code</th>
+	
+		<th>Role</th>
+		<th>Case Number</th>
+		<th>Advocate</th>
+		<th>Office</th>
+		<th>Open Date</th>
+		<th>Close Date</th>
+		<th>Closing Code</th>
+		<th>Status</th>
+		<th>Code</th>
+	
 	</tr>
+	
 	%%[end:flex_header]%%
 	%%[begin:flex_row]%%
-	<tr valign="top" class="%%[css_class]%%">
+
+	<tr class="%%[css_class]%%">
+		
 		<td>%%[role]%%</td>
 		<td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%">%%[number]%%</a></td>
 		<td>%%[atty_name]%%</td>
@@ -164,36 +222,46 @@ ID:  <strong>%%[state_d]%%</strong>
 		<td>%%[close_code text]%%</td>
 		<td>%%[status text source=case_status]%%</td>
 		<td>%%[problem]%%</td>
+	
 	</tr>
+	
 	%%[end:flex_row]%%
 	%%[begin:flex_footer]%%
+
 </table>
-<br/>
+
 %%[end:flex_footer]%%
 
 %%[begin:intake_header]%%
-<table width="95%" cellspacing="0" summary="">
+
+<table>
+	
 	<tr>
-		<th nowrap>Intake ID</th>
-		<th nowrap>Income</th>
-		<th nowrap>Assets</th>
-		<th nowrap>% of Poverty</th>
-		<th nowrap>Citizenship</th>
+		
+		<thIntake ID</th>
+		<thIncome</th>
+		<thAssets</th>
+		<th% of Poverty</th>
+		<thCitizenship</th>
+
 	</tr>
+
 %%[end:intake_header]%%
 %%[begin:intake_row]%%
-	<tr valign="top" class="%%[css_class]%%">
+
+	<tr class="%%[css_class]%%">
+		
 		<td><a href="%%[base_url]%%/intakes.php/%%[intake_id]%%/">%%[intake_id]%%</a></td>
 		<td>$%%[income]%%</td>
 		<td>$%%[assets]%%</td>
 		<td>%%[poverty]%% %</td>
 		<td>%%[citizen text]%%</td>
+	
 	</tr>
+
 %%[end:intake_row]%%
 %%[begin:intake_footer]%%
+
 </table>
-<br/>
+
 %%[end:intake_footer]%%
-
-
-

@@ -234,7 +234,7 @@ if ("advanced" == $mode)
 
 $main_html['page_title'] = 'Case List';
 $main_html['content'] = pl_template('subtemplates/case_list.html', $t_array);
-$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php?mode=open\">Cases</a> &gt; Current Case List";
+$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span>  <a href=\"{$base_url}/case_list.php?mode=open\">Cases</a> <span class=\"nav-arrow\">&#10140;</span>  Current Case List";
 
 
 if(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == TRUE) {

@@ -1,92 +1,130 @@
-<table id="middle-content" width="100%" summary="Case List Screen">
-	<tr valign="top">
-		<td>
-		    <form name="form2" method="get" action="%%[base_url]%%/search.php">
-			<p align=center>
-		      You searched for<br/><br/>
-		      <input type="text" name="s" size="48" value="%%[search_value]%%" accesskey="f" class="search_text"/>
-		      <input type="hidden" name="m" value="%%[search_mode]%%"/>
-		      <input type="submit" value="Search Pika"/>
-		      <br/><br/>
-		      &nbsp;%%[x_mode_link]%%&nbsp;&nbsp;%%[c_mode_link]%%&nbsp;&nbsp;%%[p_mode_link]%%&nbsp;&nbsp;%%[s_mode_link]%%&nbsp;&nbsp;%%[n_mode_link]%%&nbsp;&nbsp;%%[a_mode_link]%%&nbsp;&nbsp;%%[d_mode_link]%%<br/>
-			</p>
-		    </form>
-		</td>
-		<td class="side-column">
-					<p>
-				<img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-				Try this search on the 
-				<a href="%%[base_url]%%/addressbook.php?last_name=%%[last_name]%%&first_name=%%[first_name]%%">
-				Address Book</a>.
-			</p>
-			<p>
-				<img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-				Try this search on the 
-				<a href="%%[base_url]%%/search.php?s=%%[search_value]%%&m=D">
-				Document Search</a>.
-			</p>
-			<p>
-		    	<img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-				Try this search on 
-				<a href="http://www.google.com/search?q=%%[search_value]%%">Google</a>.
-			</p>
-		</td>
-	</tr>
-</table>
-			<h2>%%[mode_name]%% Search Results</h2>
-			%%[case_header]%%
-			%%[name_header]%%
-%%[begin:act_header]%%
-			<table class="table table-striped" summary="">
-				<tbody>
-				<tr>
-					<th nowrap="nowrap"><a href="%%[act_date_url]%%">Date</a>%%[act_date_img]%%</th>
-					<th nowrap="nowrap">Time</th>
-					<th nowrap="nowrap">Type</th>
-					<th nowrap="nowrap">Summary</th>
-					<th nowrap="nowrap">Case</th>
-					<th nowrap="nowrap">Staff Name</th>
-					<th nowrap="nowrap">Hours</th>
-					<th nowrap="nowrap">Complt.</th>
-			    </tr>
-%%[end:act_header]%%
-%%[begin:act_row]%%
-			    <tr valign="top" class="row%%[row_class]%%">
-			    	<td>%%[act_date]%%</td>
-			        <td>%%[act_time]%%</td>
-			        <td><a href="%%[base_url]%%/activity.php?act_id=%%[act_id]%%">%%[act_type text]%%</a></td>
-			        <td>%%[summary]%%</td>
-			        <td>%%[number]%%</td>
-			        <td>%%[user_id text]%%</td>
-			        <td>%%[hours]%%</td>
-			        <td>%%[completed text source=yes_no]%%</td>
-			    </tr>
-%%[end:act_row]%%
-%%[begin:act_footer]%%
-			    </tbody>
-			</table>
-%%[end:act_footer]%%
-%%[begin:doc_header]%%
-			<table class="table table-striped" summary="">
-				<tbody>
-				<tr>
-			        <th nowrap="nowrap">File</th>
-			        <th nowrap="nowrap">Summary</th>
-			        <th nowrap="nowrap">Date</th>
-			        <th nowrap="nowrap">Case</th>
-			        <th nowrap="nowrap">Staff Name</th>
-			    </tr>
-%%[end:doc_header]%%
-%%[begin:doc_row]%%
-			    <tr valign="top" class="row%%[row_class]%%">
-			        <td><a href="%%[base_url]%%/documents.php?doc_id=%%[doc_id]%%&action=download">%%[doc_name]%%</a></td>
-			        <td>%%[description]%%</td>
-			        <td>%%[created]%%</td>
-			        <td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%">%%[number]%%</a></td>
-			        <td>%%[user_id text]%%</td>
-			    </tr>
-%%[end:doc_row]%%
-%%[begin:doc_footer]%%
-			    </tbody>
-			</table>
-%%[end:doc_footer]%%
+<h2>Search Options</h2>
+
+<form class="search-options" name="form2" method="get" action="%%[base_url]%%/search.php">
+
+	<span>You searched for...</span>
+
+	<input type="text" name="s" size="24" value="%%[search_value]%%" accesskey="f" class="search_text"/>
+	<input type="hidden" name="m" value="%%[search_mode]%%"/>
+	<input type="submit" value="Search Pika"/>
+
+	<ul class="search-mode">
+		<!-- <li>%%[x_mode_link]%%</li> -->
+		<li>%%[c_mode_link]%%</li>
+		<li>%%[p_mode_link]%%</li>
+		<li>%%[s_mode_link]%%</li>
+		<li>%%[n_mode_link]%%</li>
+		<li>%%[a_mode_link]%%</li>
+		<li>%%[d_mode_link]%%</li>
+	</ul>
+
+</form> <!-- /.search-options -->
+
+<aside class="try-this">
+	
+	<ul>
+		
+		<li> &nbsp;Try this same search in the <a href="%%[base_url]%%/addressbook.php?last_name=%%[last_name]%%&first_name=%%[first_name]%%">Address Book</a></li>
+		
+		<li> &nbsp;Try this same search in <a href="%%[base_url]%%/search.php?s=%%[search_value]%%&m=D">
+Document Search</a></li>
+
+		<li> &nbsp;Feeling lucky? OK, try this same search on <a href="http://www.google.com/search?q=%%[search_value]%%">Google</a></li>
+	
+	</ul>
+
+</aside>
+
+<div class="search-results">
+
+	<h2>%%[mode_name]%% Search Results</h2>
+
+	%%[case_header]%%
+	%%[name_header]%%
+	%%[begin:act_header]%%
+
+	<table class="table table-striped">
+		
+		<tbody>
+
+		<tr>
+
+			<th><a href="%%[act_date_url]%%">Date</a>%%[act_date_img]%%</th>
+			<th>Time</th>
+			<th>Type</th>
+			<th>Summary</th>
+			<th>Case</th>
+			<th>Staff Name</th>
+			<th>Hours</th>
+			<th>Complt.</th>
+
+		</tr>
+
+	%%[end:act_header]%%
+	%%[begin:act_row]%%
+
+		<tr class="row%%[row_class]%%">
+
+			<td>%%[act_date]%%</td>
+			<td>%%[act_time]%%</td>
+			<td><a href="%%[base_url]%%/activity.php?act_id=%%[act_id]%%">%%[act_type text]%%</a></td>
+			<td>%%[summary]%%</td>
+			<td>%%[number]%%</td>
+			<td>%%[user_id text]%%</td>
+			<td>%%[hours]%%</td>
+			<td>%%[completed text source=yes_no]%%</td>
+		</tr>
+
+	%%[end:act_row]%%
+	%%[begin:act_footer]%%
+
+		</tbody>
+
+	</table>
+
+	%%[end:act_footer]%%
+	%%[begin:doc_header]%%
+
+	<table class="table table-striped">
+
+		<tbody>
+
+		<tr>
+
+			<th>File</th>
+			<th>Summary</th>
+			<th>Date</th>
+			<th>Case</th>
+			<th>Staff Name</th>
+
+		</tr>
+
+	%%[end:doc_header]%%
+	%%[begin:doc_row]%%
+
+		<tr class="row%%[row_class]%%">
+
+			<td><a href="%%[base_url]%%/documents.php?doc_id=%%[doc_id]%%&action=download">%%[doc_name]%%</a></td>
+			<td>%%[description]%%</td>
+			<td>%%[created]%%</td>
+			<td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%">%%[number]%%</a></td>
+			<td>%%[user_id text]%%</td>
+		
+		</tr>
+
+	%%[end:doc_row]%%
+	%%[begin:doc_footer]%%
+
+		</tbody>
+
+	</table>
+
+	%%[end:doc_footer]%%
+
+</div>
+
+			
+			
+
+
+			

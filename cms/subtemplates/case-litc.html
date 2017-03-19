@@ -1,133 +1,218 @@
-<div>
+<div class="litc">
+		
 	<div id='header'>
-	<h2>LITC Reporting</h2>
-	<form action="%%[base_url]%%/ops/update_case.php" method="POST">
-	</div>
-	<Table><tr valign="top"><td>
-	<strong>Controversy Issues</strong> Check all that apply<br/>
-	<p><strong>Income Issues</strong><br/>
-	%%[litc_ci_1,yes_no,checkbox]%%&nbsp;Wages<br>
-	%%[litc_ci_2,yes_no,checkbox]%%&nbsp;Interest / Dividends (Schedule B)<br>
-	%%[litc_ci_3,yes_no,checkbox]%%&nbsp;Business Income (Schedule C)<br>
-	%%[litc_ci_4,yes_no,checkbox]%%&nbsp;Capital Gain or Loss (Schedule D)<br>
-	%%[litc_ci_5,yes_no,checkbox]%%&nbsp;IRA / Pension<br>
-	%%[litc_ci_6,yes_no,checkbox]%%&nbsp;Social Security Benefits<br>
-	%%[litc_ci_7,yes_no,checkbox]%%&nbsp;Alimony<br>
-	%%[litc_ci_8,yes_no,checkbox]%%&nbsp;Rental, Royalty, Partnership, S Corp (Schedule E)<br>
-	%%[litc_ci_9,yes_no,checkbox]%%&nbsp;Farming Income (Schedule F)<br>
-	%%[litc_ci_10,yes_no,checkbox]%%&nbsp;Unemployment<br>
-	%%[litc_ci_11,yes_no,checkbox]%%&nbsp;Gambling Winnings<br>
-	%%[litc_ci_12,yes_no,checkbox]%%&nbsp;Cancellation of Debt<br>
-	%%[litc_ci_13,yes_no,checkbox]%%&nbsp;Settlement Proceeds<br>
-	%%[litc_ci_14,yes_no,checkbox]%%&nbsp;Other<br>
-	</p>
-	<p><strong>Deduction Issues</strong><br>
-	%%[litc_ci_15,yes_no,checkbox]%%&nbsp;Alimony<br>
-	%%[litc_ci_16,yes_no,checkbox]%%&nbsp;Education Expenses (Including student loan interest)<br>
-	%%[litc_ci_17,yes_no,checkbox]%%&nbsp;Moving Expenses<br>
-	%%[litc_ci_18,yes_no,checkbox]%%&nbsp;IRA Deduction<br>
-	%%[litc_ci_19,yes_no,checkbox]%%&nbsp;Medical and Dental Expenses<br>
-	%%[litc_ci_20,yes_no,checkbox]%%&nbsp;State and Local Taxes<br>
-	%%[litc_ci_21,yes_no,checkbox]%%&nbsp;Home Mortgage Interest<br>
-	%%[litc_ci_22,yes_no,checkbox]%%&nbsp;Other Interest Expenses<br>
-	%%[litc_ci_23,yes_no,checkbox]%%&nbsp;Charitable Contributions<br>
-	%%[litc_ci_24,yes_no,checkbox]%%&nbsp;Casualty and Theft Losses<br>
-	%%[litc_ci_25,yes_no,checkbox]%%&nbsp;Unreimbursed Employee Business Expenses<br>
-	%%[litc_ci_26,yes_no,checkbox]%%&nbsp;Other Itemized Deductions<br>
-	%%[litc_ci_27,yes_no,checkbox]%%&nbsp;Business Expenses (Schedule C)<br>
-	</p>
-	<p><strong>Credit Issues</strong><br>
-	%%[litc_ci_28,yes_no,checkbox]%%&nbsp;Child and Dependent Care Credit<br>
-	%%[litc_ci_29,yes_no,checkbox]%%&nbsp;Education Credits<br>
-	%%[litc_ci_30,yes_no,checkbox]%%&nbsp;Child Tax Credit / Additional Child Tax Credit<br>
-	%%[litc_ci_31,yes_no,checkbox]%%&nbsp;Earned Income Tax Credit<br>
-	%%[litc_ci_32,yes_no,checkbox]%%&nbsp;First-Time Homebuyer Credit<br>
-	%%[litc_ci_33,yes_no,checkbox]%%&nbsp;Other<br>
-	</p>
+	
+		<h2>LITC Reporting</h2>
 
-	<p><strong>Status Issues</strong><br>
-	%%[litc_ci_34,yes_no,checkbox]%%&nbsp;SSN / TIN<br>
-	%%[litc_ci_35,yes_no,checkbox]%%&nbsp;ITIN<br>
-	%%[litc_ci_36,yes_no,checkbox]%%&nbsp;Filing Status<br>
-	%%[litc_ci_37,yes_no,checkbox]%%&nbsp;Exemptions<br>
-	%%[litc_ci_38,yes_no,checkbox]%%&nbsp;Injured Spouse<br>
-	%%[litc_ci_39,yes_no,checkbox]%%&nbsp;Innocent Spouse<br>
-	%%[litc_ci_40,yes_no,checkbox]%%&nbsp;Employment-Related Identity Theft<br>
-	%%[litc_ci_41,yes_no,checkbox]%%&nbsp;Refund-Related Identity Theft<br>
-	%%[litc_ci_42,yes_no,checkbox]%%&nbsp;Nonfiler<br>
-	%%[litc_ci_43,yes_no,checkbox]%%&nbsp;Worker Classification<br>
-	</p>
+		<h3><i class="material-icons">check_box</i> Check all that apply</h3>
+
+		<form action="%%[base_url]%%/ops/update_case.php" method="post">
 	
-	<p><strong>Tax / Refund / Return / Statute of Limitations Issues</strong><br>
-	%%[litc_ci_44,yes_no,checkbox]%%&nbsp;Self-Employment Tax<br>
-	%%[litc_ci_45,yes_no,checkbox]%%&nbsp;Return Preparer Fraud<br>
-	%%[litc_ci_46,yes_no,checkbox]%%&nbsp;Estimated Tax Payments<br>
-	%%[litc_ci_47,yes_no,checkbox]%%&nbsp;Withholdings<br>
-	%%[litc_ci_48,yes_no,checkbox]%%&nbsp;Refund<br>
-	%%[litc_ci_49,yes_no,checkbox]%%&nbsp;Assessment Statute of Limitations<br>
-	%%[litc_ci_50,yes_no,checkbox]%%&nbsp;Collection Statute of Limitations<br>
-	%%[litc_ci_51,yes_no,checkbox]%%&nbsp;Refund Statute of Limitations<br>
-	</p>
+	</div>
+
+	<table>
+
+		<tr>
+
+			<td>
+				
+				<h4>Income Issues</h4>
+
+				<ul>
+					
+					<li>%%[litc_ci_1,yes_no,checkbox]%%&nbsp;Wages</li>
+					<li>%%[litc_ci_2,yes_no,checkbox]%%&nbsp;Interest / Dividends (Schedule B)</li>
+					<li>%%[litc_ci_3,yes_no,checkbox]%%&nbsp;Business Income (Schedule C)</li>
+					<li>%%[litc_ci_4,yes_no,checkbox]%%&nbsp;Capital Gain or Loss (Schedule D)</li>
+					<li>%%[litc_ci_5,yes_no,checkbox]%%&nbsp;IRA / Pension</li>
+					<li>%%[litc_ci_6,yes_no,checkbox]%%&nbsp;Social Security Benefits</li>
+					<li>%%[litc_ci_7,yes_no,checkbox]%%&nbsp;Alimony</li>
+					<li>%%[litc_ci_8,yes_no,checkbox]%%&nbsp;Rental, Royalty, Partnership, S Corp (Schedule E)</li>
+					<li>%%[litc_ci_9,yes_no,checkbox]%%&nbsp;Farming Income (Schedule F)</li>
+					<li>%%[litc_ci_10,yes_no,checkbox]%%&nbsp;Unemployment</li>
+					<li>%%[litc_ci_11,yes_no,checkbox]%%&nbsp;Gambling Winnings</li>
+					<li>%%[litc_ci_12,yes_no,checkbox]%%&nbsp;Cancellation of Debt</li>
+					<li>%%[litc_ci_13,yes_no,checkbox]%%&nbsp;Settlement Proceeds</li>
+					<li>%%[litc_ci_14,yes_no,checkbox]%%&nbsp;Other</li>
+				
+				</ul>
+
+				<h4>Deduction Issues</h4>
+
+				<ul>
+					
+					<li>%%[litc_ci_15,yes_no,checkbox]%%&nbsp;Alimony</li>
+					<li>%%[litc_ci_16,yes_no,checkbox]%%&nbsp;Education Expenses (Including student loan interest)</li>
+					<li>%%[litc_ci_17,yes_no,checkbox]%%&nbsp;Moving Expenses</li>
+					<li>%%[litc_ci_18,yes_no,checkbox]%%&nbsp;IRA Deduction</li>
+					<li>%%[litc_ci_19,yes_no,checkbox]%%&nbsp;Medical and Dental Expenses</li>
+					<li>%%[litc_ci_20,yes_no,checkbox]%%&nbsp;State and Local Taxes</li>
+					<li>%%[litc_ci_21,yes_no,checkbox]%%&nbsp;Home Mortgage Interest</li>
+					<li>%%[litc_ci_22,yes_no,checkbox]%%&nbsp;Other Interest Expenses</li>
+					<li>%%[litc_ci_23,yes_no,checkbox]%%&nbsp;Charitable Contributions</li>
+					<li>%%[litc_ci_24,yes_no,checkbox]%%&nbsp;Casualty and Theft Losses</li>
+					<li>%%[litc_ci_25,yes_no,checkbox]%%&nbsp;Unreimbursed Employee Business Expenses</li>
+					<li>%%[litc_ci_26,yes_no,checkbox]%%&nbsp;Other Itemized Deductions</li>
+					<li>%%[litc_ci_27,yes_no,checkbox]%%&nbsp;Business Expenses (Schedule C)</li>
+
+				</ul>
+				
+				<h4>Credit Issues</h4>
+
+				<ul>
+					
+					<li>%%[litc_ci_28,yes_no,checkbox]%%&nbsp;Child and Dependent Care Credit</li>
+					<li>%%[litc_ci_29,yes_no,checkbox]%%&nbsp;Education Credits</li>
+					<li>%%[litc_ci_30,yes_no,checkbox]%%&nbsp;Child Tax Credit / Additional Child Tax Credit</li>
+					<li>%%[litc_ci_31,yes_no,checkbox]%%&nbsp;Earned Income Tax Credit</li>
+					<li>%%[litc_ci_32,yes_no,checkbox]%%&nbsp;First-Time Homebuyer Credit</li>
+					<li>%%[litc_ci_33,yes_no,checkbox]%%&nbsp;Other</li>
+
+				</ul>
+
+				<h4>Status Issues</h4>
+
+				<ul>
+					
+					<li>%%[litc_ci_34,yes_no,checkbox]%%&nbsp;SSN / TIN</li>
+					<li>%%[litc_ci_35,yes_no,checkbox]%%&nbsp;ITIN</li>
+					<li>%%[litc_ci_36,yes_no,checkbox]%%&nbsp;Filing Status</li>
+					<li>%%[litc_ci_37,yes_no,checkbox]%%&nbsp;Exemptions</li>
+					<li>%%[litc_ci_38,yes_no,checkbox]%%&nbsp;Injured Spouse</li>
+					<li>%%[litc_ci_39,yes_no,checkbox]%%&nbsp;Innocent Spouse</li>
+					<li>%%[litc_ci_40,yes_no,checkbox]%%&nbsp;Employment-Related Identity Theft</li>
+					<li>%%[litc_ci_41,yes_no,checkbox]%%&nbsp;Refund-Related Identity Theft</li>
+					<li>%%[litc_ci_42,yes_no,checkbox]%%&nbsp;Nonfiler</li>
+					<li>%%[litc_ci_43,yes_no,checkbox]%%&nbsp;Worker Classification</li>
+
+				</ul>
+
+				<h4>Tax / Refund / Return / Statute of Limitations Issues</h4>
+
+				<ul>
+					
+					<li>%%[litc_ci_44,yes_no,checkbox]%%&nbsp;Self-Employment Tax</li>
+					<li>%%[litc_ci_45,yes_no,checkbox]%%&nbsp;Return Preparer Fraud</li>
+					<li>%%[litc_ci_46,yes_no,checkbox]%%&nbsp;Estimated Tax Payments</li>
+					<li>%%[litc_ci_47,yes_no,checkbox]%%&nbsp;Withholdings</li>
+					<li>%%[litc_ci_48,yes_no,checkbox]%%&nbsp;Refund</li>
+					<li>%%[litc_ci_49,yes_no,checkbox]%%&nbsp;Assessment Statute of Limitations</li>
+					<li>%%[litc_ci_50,yes_no,checkbox]%%&nbsp;Collection Statute of Limitations</li>
+					<li>%%[litc_ci_51,yes_no,checkbox]%%&nbsp;Refund Statute of Limitations</li>
+
+				</ul>
+
+				<h4>Penalty Issues</h4>
 	
-	<p><strong>Penalty Issues</strong><br>
-	%%[litc_ci_52,yes_no,checkbox]%%&nbsp;Trust Fund Recovery Penalty<br>
-	%%[litc_ci_53,yes_no,checkbox]%%&nbsp;Other Civil Penalties<br>
-	%%[litc_ci_54,yes_no,checkbox]%%&nbsp;Additional Tax on Distributions from Qualified Retirement Plans<br>
-	</p>
+				<ul>
+					
+					<li>%%[litc_ci_52,yes_no,checkbox]%%&nbsp;Trust Fund Recovery Penalty</li>
+					<li>%%[litc_ci_53,yes_no,checkbox]%%&nbsp;Other Civil Penalties</li>
+					<li>%%[litc_ci_54,yes_no,checkbox]%%&nbsp;Additional Tax on Distributions from Qualified Retirement Plans</li>
+
+				</ul>
+				
+				<h4>Collection Issues</h4>
+
+				<ul>
+					
+					<li>%%[litc_ci_55,yes_no,checkbox]%%&nbsp;Payments</li>
+					<li>%%[litc_ci_56,yes_no,checkbox]%%&nbsp;Installment Payment Agreement (IPA)</li>
+					<li>%%[litc_ci_57,yes_no,checkbox]%%&nbsp;Offer-In-Compromise (OIC)</li>
+					<li>%%[litc_ci_58,yes_no,checkbox]%%&nbsp;Currently Not Collectible (CNC)</li>
+					<li>%%[litc_ci_59,yes_no,checkbox]%%&nbsp;Liens</li>
+					<li>%%[litc_ci_60,yes_no,checkbox]%%&nbsp;Levies (Including Federal Payment Levy Program)</li>
+					<li>%%[litc_ci_61,yes_no,checkbox]%%&nbsp;Bankruptcy</li>
+
+				</ul>
 	
-	<p><strong>Collection Issues</strong><br>
-	%%[litc_ci_55,yes_no,checkbox]%%&nbsp;Payments<br>
-	%%[litc_ci_56,yes_no,checkbox]%%&nbsp;Installment Payment Agreement (IPA)<br>
-	%%[litc_ci_57,yes_no,checkbox]%%&nbsp;Offer-In-Compromise (OIC)<br>
-	%%[litc_ci_58,yes_no,checkbox]%%&nbsp;Currently Not Collectible (CNC)<br>
-	%%[litc_ci_59,yes_no,checkbox]%%&nbsp;Liens<br>
-	%%[litc_ci_60,yes_no,checkbox]%%&nbsp;Levies (Including Federal Payment Levy Program)<br>
-	%%[litc_ci_61,yes_no,checkbox]%%&nbsp;Bankruptcy<br>
-	</p>
-	<!-- To DOR:<br/>
-	%%[litc_poa_dor,input_date_selector]%%<br/>
-	<br/>
-	# of Federal Returns:<br/>
-	%%[litc_fed_returns,input_text]%%<br/>
-	# of ITIN Returns:<br/>
-	%%[litc_itin_returns,input_text]%%<br/>
-	Referred to TAS:<br/>
-	%%[litc_ref_tas,yes_no]%%<br/> -->
-	</td><td>
-	<strong>Signed POA submitted to IRS:</strong><br/>
-	%%[litc_poa_irs,input_date_selector]%%<br/>
-	IRS Function or U.S. Court Where the Controversy is Being Addressed:<br/>
-	%%[litc_irs_funct,litc_irs_funct]%%<br/>
-	Controversy Exceeds $50,000?<br/>
-	%%[litc_controversy_gt50k,yes_no]%%<br/>
-	<br/>
-	# of IRS Function Matters (13424-K line 5):<br/>
-	%%[litc_irs_matter,input_text]%%<br/>
-	<br/>
-	English as a Second Language (ESL) Taxpayer?<br/>
-	%%[litc_taxpayer_esl,yes_no]%%<br/>
-	<br/>
-	Joint Representation:<br>
-	%%[litc_joint_rep,yes_no]%%<br>
-	Representation by Volunteers:<br>
-	%%[litc_rep_vol,yes_no]%%<br>
-	State Tax Matter:<br/>
-	%%[litc_stm_handled,yes_no]%%<br/>
-	Taxpayer in Filing Compliance:<br/>
-	%%[litc_taxpayer_compliance_filing,yes_no]%%<br/>
-	Taxpayer in Collection Compliance:<br/>
-	%%[litc_taxpayer_compliance_collection,yes_no]%%<br/>
-	Dollars Refunded in Cash to Client:<br>
-	$%%[litc_refund_amount,input_text]%%<br>
-	Decrease in Corrected Tax Liabilities:<br>
-	-$%%[litc_corrected_liabilities,input_text]%%<br>	</div>
-	<div id="form_footer" style="clear:both;float:left;">
-	<input type="submit" name="save" value="Save" class="save" />
-	%%[case_id,input_hidden]%%
-	%%[screen,input_hidden,default=litc]%%
-	</form>
-	</td></tr></table>
-</div>
+			</td>
+
+			<td>
+	
+				<ul>
+					
+					<li>
+						<label for="poa">Signed POA submitted to IRS</label>
+						%%[litc_poa_irs,input_date_selector]%%
+					</li>
+
+					<li>
+						<label for="irs-function">IRS Function or U.S. Court Where the Controversy is Being Addressed</label>
+						%%[litc_irs_funct,litc_irs_funct]%%
+					</li>
+
+						<br>
+										
+					<li>
+						<label for="controversy">Controversy Exceeds $50,000?</label>
+						%%[litc_controversy_gt50k,yes_no]%%
+					</li>
+					
+					<li>
+						<label for="matters"># of IRS Function Matters (13424-K line 5)</label>
+						%%[litc_irs_matter,input_text]%%
+					</li>
+					
+					<li>
+						<label for="esl">English as a Second Language (ESL) Taxpayer?</label>
+						%%[litc_taxpayer_esl,yes_no]%%
+					</li>
+				
+					<li>
+						<label for="joint">Joint Representation</label>
+						%%[litc_joint_rep,yes_no]%%
+					</li>
+					
+					<li>
+						<label for="rep">Representation by Volunteers</label>
+						%%[litc_rep_vol,yes_no]%%
+					</li>
+					
+					<li>
+						<label for="state-tax">State Tax Matter</label>
+						%%[litc_stm_handled,yes_no]%%
+					</li>
+					
+					<li>
+						<label for="filing-compliance">Taxpayer in Filing Compliance</label>
+						%%[litc_taxpayer_compliance_filing,yes_no]%%
+					</li>
+					
+					<li>
+						<label for="collection-compliance">Taxpayer in Collection Compliance</label>
+						%%[litc_taxpayer_compliance_collection,yes_no]%%
+					</li>
+					
+					<li>
+						<label for="refunded">Dollars Refunded in Cash to Client</label>
+						<i class="material-icons">attach_money</i> %%[litc_refund_amount,input_text]%%
+					</li>
+					
+					<li>
+						<label for="decrease">Decrease in Corrected Tax Liabilities</label>
+						<i class="material-icons">remove</i><i class="material-icons">attach_money</i> %%[litc_corrected_liabilities,input_text]%%
+					</li>
+
+				</ul>
+
+				<div class="submit">
+					
+					<input type="submit" name="save" value="Save" class="save" />
+					%%[case_id,input_hidden]%%
+					%%[screen,input_hidden,default=litc]%%
+			
+				</div>
+				
+		</form>
+
+			</td>
+
+		</tr>
+
+	</table>
+
+</div> <!-- /.litc -->
 
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%

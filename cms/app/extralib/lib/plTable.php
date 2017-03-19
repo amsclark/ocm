@@ -132,12 +132,12 @@ class plTable
 					// Draw sort arrow
 					if ($this->order == 'ASC')
 					{
-						$C .= '<img src="images/asc.gif" alt="a to z">';
+						// $C .= '<img src="images/asc.gif" alt="a to z">';
 					}
 					
 					else
 					{
-						$C .= '<img src="images/desc.gif" alt="z to a">';
+						// $C .= '<img src="images/desc.gif" alt="z to a">';
 					}
 				}
 				

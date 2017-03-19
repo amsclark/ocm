@@ -1,45 +1,62 @@
-
 %%[begin:flex_header]%%
-		  <table cellpadding="3" cellspacing="0" border="0" summary="" width="100%">
-		    <tbody>
-		      <tr>
-		        <th nowrap="nowrap">Issue</th>
-		        <th nowrap="nowrap">Case Number</th>
-		        <th nowrap="nowrap">Problem</th>
-		        <th nowrap="nowrap">Status</th>
-		      </tr>
+
+<table>
+
+	<tbody>
+
+	<tr>
+
+		<th>Issue</th>
+		<th>Case Number</th>
+		<th>Problem</th>
+		<th>Status</th>
+
+	</tr>
+
 %%[end:flex_header]%%
+
 %%[begin:flex_row]%%
-		      <tr valign="top" class="%%[css_class]%%">
-		        <td>
-		        	<strong><a href="%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%">%%[conflict_name]%%</a></strong> 
-		        	was a(n) %%[role]%%<br/>
-					DoB: <strong>%%[birth_date]%%</strong><br/>
-					SSN: <strong>%%[ssn']%%</strong><br/>
-					Address:  <strong>%%[address]%%</strong>
-				</td>
-		        <td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%">%%[number]%%</a></td>
-		        <td>%%[problem]%%</td>
-		        <td>%%[status text source=case_status]%%</td>
-		      </tr>
+
+	<tr class="%%[css_class]%%">
+
+		<td>
+
+			<ul>
+				<li><strong><a href="%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%">%%[conflict_name]%%</a></strong> was a(n) %%[role]%%</li>
+				<li>DOB: <strong>%%[birth_date]%%</strong></li>
+				<li>SSN: <strong>%%[ssn']%%</strong><br/></li>
+				<li>Address:  <strong>%%[address]%%</strong></li>
+			</ul>
+
+		</td>
+
+		<td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%">%%[number]%%</a></td>
+
+		<td>%%[problem]%%</td>
+
+		<td>%%[status text source=case_status]%%</td>
+
+	</tr>
+
 %%[end:flex_row]%%
+
 %%[begin:flex_footer]%%
-		    </tbody>
-		  </table>
+
+	</tbody>
+	
+</table>
+
 %%[end:flex_footer]%%
 
+<form action="%%[base_url]%%/ops/update_case.php" method="post" name="ws">
 
-<form action="%%[base_url]%%/ops/update_case.php" method=POST name=ws>
-<p class="de">Does this case have conflicts?<br/> %%[conflicts,yes_no]%% <br/>
-
-<input type="hidden" name="case_id" value="%%[case_id]%%">
-<input type="hidden" name="screen" value="conflict">
-</p>
-<p>
-	<input type="submit" value="Save" tabindex="1" class="save" accesskey="s">
-</p>
-<!--
-<input type=submit name="update_case" value="Save, Next Tab" tabindex="1" class="save" onclick="document.forms.ws.screen.value='elig';">
--->
+	<label for="has-conflict">Does this case have conflicts?</label>
+	 %%[conflicts,yes_no]%%
+	<input type="hidden" name="case_id" value="%%[case_id]%%">
+	<input type="hidden" name="screen" value="conflict">
+	
+	<div class="submit">
+		<input type="submit" value="Save" tabindex="1" class="save" accesskey="s">
+	</div>
 
 </form>

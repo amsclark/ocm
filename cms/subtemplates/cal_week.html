@@ -1,65 +1,66 @@
-<table width="98%" summary="">
-<tr>
+<div class="calendar-tabs">
 
-<td>
-	<a href='cal_week.php?cal_date=%%[prev_week]%%&screen=%%[screen]%%&user_id=%%[user_id]%%'>&lt; Previous Week</a>
-</td>
+	<a href='cal_week.php?cal_date=%%[prev_week]%%&screen=%%[screen]%%&user_id=%%[user_id]%%'><span>&#8619;</span> Previous Week</a>
 
-<td align=center>
 	%%[cal_tabs]%%
-</td>
-<td>
-	<form action="cal_week.php" method="get">
+
+	<a href='cal_week.php?cal_date=%%[next_week]%%&screen=%%[screen]%%&user_id=%%[user_id]%%'>Next Week <span>&#8620;</span></a>
+
+	<form class="go-to-date" action="cal_week.php" method="get">
 		Go to date:
 		<input type="text" name="cal_date" size="10" maxlength="10" tabindex="2"/>
 		<input type="hidden" name="user_id" value="%%[user_id]%%">
-		<input type="submit" value="Go"/>
+		<input class="go-to" type="submit" value="Go"/>
 	</form>
-</td>
 
-<td align=right><a href='cal_week.php?cal_date=%%[next_week]%%&screen=%%[screen]%%&user_id=%%[user_id]%%'>Next Week &gt;</a></td>
+</div>
 
-</tr>
-</table>
+<div class="week-calendar">
+	
+	<h2>Weekly Calendar</h2>
 
-%%[calendar_table]%%
+	%%[calendar_table]%%
 
-<p>
+</div> <!-- /.week-calendar -->
 
-<table summary="">
-<tr valign="top">
+<aside class="actions-list">
 
-<td nowrap class="de">
+	<h2>Actions</h2>
 
-<h2 class="hdt">Actions</h2>
-<img src="images/point.gif">
-Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=K">New Tickle</a><br/>
-<img src="images/point.gif">
-Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=T">New Time Slip</a>
-(<a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a>)<br/>
-<img src="images/point.gif">
-Add <a href="%%[base_url]%%/activity.php?screen=compose&completed=0&act_date=%%[cal_date]%%">New Calendar Entry</a><br/>
-<img src="images/point.gif">
-Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=L">New LSC Other Services Record</a><br/>
-<img src="images/point.gif" alt="Arrow"/>
-<a href="%%[base_url]%%/ical-subscribe.php">Subscribe to Calendar (iCal)</a>
+	<ul>
+		
+		<li>Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=K">New Tickle</a></li>
 
-<form>
-<img src="images/point.gif" alt="Arrow"/>
-View Another Person's Calendar:<br/>
-<input type="hidden" name="cal_date" value="%%[cal_date]%%"/>
-<input type="hidden" name="screen" value="%%[screen]%%"/>
-%%[user_id menu]%%<br/><br/>
-<input type="submit" value="View" class="save" tabindex="1"/>
-</form>
+		<li>Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=T">New Time Slip</a></li>
 
-</td>
+		<li><a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a></li>
 
-<td>&nbsp;&nbsp;</td>
+		<li>Add <a href="%%[base_url]%%/activity.php?screen=compose&completed=0&act_date=%%[cal_date]%%">New Calendar Entry</a></li>
 
-<td><h2 class="hdt">Time/Funding Breakdown</h2><p>%%[funding_table]%%</td>
+		<li>Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=L">New LSC Other Services Record</a></li>
 
-</tr>
-</table>
+		<li><a href="%%[base_url]%%/ical-subscribe.php">Subscribe to Calendar (iCal)</a></li>
+
+	</ul>	
+		
+	<form>
+		<h4>View Another Person's Calendar</h4>
+		<input type="hidden" name="cal_date" value="%%[cal_date]%%"/>
+		<input type="hidden" name="screen" value="%%[screen]%%"/>
+		%%[user_id menu]%%
+		<input class="view-another" type="submit" value="View" tabindex="1"/>
+	</form>
+
+</aside> <!-- /.actions-list -->
+
+<div class="time-activity">
+
+	<h2>Time/Funding Breakdown</h2>
+
+	<div class="funding-table">
+		%%[funding_table]%%
+	</div>
+
+</div>  <!-- /.time-activity -->
 
 <script type="text/javascript" language="JavaScript" src="%%[base_url]%%/js/popUp.js"></script>

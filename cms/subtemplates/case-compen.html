@@ -1,110 +1,197 @@
 %%[begin:edit]%%
+
+
 <h2>New Compensation Record</h2>
+
 <form action="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=update">
-Billing Date:<br/>
-%%[billing_date,input_date]%%<br/>
-Bill Amount:<br/>
-<span class="maskt">$
-%%[billing_amount,input_text,class=maskf]%%</span><br/>
-Payment Date:<br/>
-%%[payment_date,input_date]%%<br/>
-Payment Amount:<br/>
-<span class="maskt">$
-%%[payment_amount,input_text,class=maskf]%%</span><br/>
-Hours:<br/>
-%%[billing_hours,input_text]%%<br/>
-Comments:<br/>
-%%[notes,input_textarea]%%<br/>
-%%[case_id,input_hidden]%%
-%%[compen_id,input_hidden]%%
-%%[action,input_hidden,default=update]%%
-%%[screen,input_hidden,default=compen]%%
-<br/>
-<input type="submit" value="Save" class="save" accesskey="s">
+
+	<ul class="comp-block">
+		
+		<li><label for="bill-date">Billing Date</label>
+		%%[billing_date,input_date,class=w-80]%%</li>
+		
+		<li><label class="label-indent" for="bill-amount">Bill Amount</label>
+		<i class="material-icons">attach_money</i> 
+		%%[billing_amount,input_text,class=amount]%%</li>
+
+	</ul>
+
+	<ul class="comp-block">
+
+		<li><label for="pay-date">Payment Date</label>
+		%%[payment_date,input_date,class=w-80]%%</li>
+		
+		<li><label class="label-indent" for="pay-amount">Payment Amount</label>
+		<i class="material-icons">attach_money</i> 
+		%%[payment_amount,input_text,class=amount]%%</li>
+			
+	</ul>
+
+	<ul class="comp-block">
+
+		<li><label for="hours">Hours</label>
+		%%[billing_hours,input_text,class=w-80]%%</li>
+
+	</ul>
+
+	<ul class="comp-block">
+
+		<li><label for="comments">Comments</label>
+		%%[notes,input_textarea]%%</li>
+
+	</ul>
+	
+	%%[case_id,input_hidden]%%
+	%%[compen_id,input_hidden]%%
+	%%[action,input_hidden,default=update]%%
+	%%[screen,input_hidden,default=compen]%%
+	
+	<div class="submit">
+		<input type="submit" value="Save" accesskey="s">
+	</div>
+	
 </form>
+
 %%[end:edit]%%
-
+	
 %%[begin:view]%%
-<h2>Compensation Records</h2>
-%%[compen_list]%%
-<div align="center">
-<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=edit">Add a New Billing Slip</a>
-&nbsp; 
-<a href="%%[base_url]%%/reports/compen_bill/compen_bill-form.php?case_id=%%[case_id]%%" target="_blank">Generate a Bill</a>
-</div>
-<br/>
-<h2>Compensation Budget</h2>
-<form action="%%[base_url]%%/ops/update_case.php" method="POST" name="ws">
-<table cellpadding="3" cellspacing="3">
-<tr>
-	<td align="right">
-	Total Dollars OK'd:
-	</td><td nowrap>
-	<span class="maskt">$
-	%%[dollars_okd,input_text,class=maskf,size=8]%%</span>
-	</td><td align="right">
-	Total Hours OK'd:
-	</td><td>
-	%%[hours_okd,input_text,size=8]%%
-	</td>
-</tr><tr>
-	<td align="right">
-	Total Dollars Billed:
-	</td><td>
-	<strong>$ %%[total_billed]%%</strong>
-	</td><td align="right">
-	Total Hours:
-	</td><td>
-	<strong>%%[total_hours]%%</strong>
-	</td>
-</tr><tr>
-	<td align="right">
-	Dollars Remaining:
-	</td><td>
-	<strong>$ %%[dollars_remaining]%%</strong>
-	</td><td align="right">
-	Hours Remaining:
-	</td><td>
-	<strong>%%[hours_remaining]%%</strong>
-	</td>
-</tr>
-</table>
 
-%%[action,input_hidden,default=update_case]%%
-%%[case_id,input_hidden]%%
-%%[screen,input_hidden,default=compen]%%
-<br/>
-<input type="submit" value="Save" accesskey="s" tabindex="1" class="save">
-</form>
-%%[end:view]%%
+
+<div class="view-comp">
+	
+	<h2>Compensation Records</h2>
+
+	%%[compen_list]%%
+
+	<ul>
+		
+		<li><i class="material-icons">forward</i> <a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=edit">Add a New Billing Slip</a></li>
+		<li><i class="material-icons">forward</i> <a href="%%[base_url]%%/reports/compen_bill/compen_bill-form.php?case_id=%%[case_id]%%" target="_blank">Generate a Bill</a></li>
+	
+	</ul>
+
+		<h2>Compensation Budget</h2>
+		
+		<form action="%%[base_url]%%/ops/update_case.php" method="post" name="ws">
+		
+			<table class="comp-budget">
+		
+				<tr>
+		
+					<td>
+						Total Dollars OK'd:
+					</td>
+
+					<td>
+						<i class="material-icons">attach_money</i> 
+						%%[dollars_okd,input_text,class=amount]%%</span>
+					</td>
+
+					<td>
+						Total Hours OK'd:
+					</td>
+
+					<td>
+						%%[hours_okd,input_text,class=amount]%%
+					</td>
+		
+				</tr>
+
+				<tr>
+		
+					<td>
+						Total Dollars Billed:
+					</td>
+
+					<td>
+						<strong>$ %%[total_billed]%%</strong>
+					</td>
+
+					<td>
+						Total Hours:
+					</td>
+
+					<td>
+						<strong>%%[total_hours]%%</strong>
+					</td>
+
+				</tr>
+
+				<tr>
+		
+					<td>
+						Dollars Remaining:
+					</td>
+
+					<td>
+						<strong>$ %%[dollars_remaining]%%</strong>
+					</td>
+
+					<td>
+						Hours Remaining:
+					</td>
+
+					<td>
+						<strong>%%[hours_remaining]%%</strong>
+					</td>
+				
+				</tr>
+		
+		</table>
+
+		%%[action,input_hidden,default=update_case]%%
+		%%[case_id,input_hidden]%%
+		%%[screen,input_hidden,default=compen]%%
+
+		<div class="submit">
+			<input type="submit" value="Save" accesskey="s" tabindex="1" class="save">	
+		</div>
+		
+	</form>
+
+	%%[end:view]%%
+
+</div>
+
+<!-- /.view-comp -->
 
 %%[begin:flex_header]%%
-<table cellpadding="4" cellspacing="0">
-<tr>
-	<th>Billing Date</th>
-	<th>Payment Date</th>
-	<th>Bill</th>
-	<th>Payment</th>
-	<th>Hours</th>
-	<th>Notes</th>
-	<th></th>
-</tr>
+
+<table>
+
+	<tr>
+
+		<th>Billing Date</th>
+		<th>Payment Date</th>
+		<th>Bill</th>
+		<th>Payment</th>
+		<th>Hours</th>
+		<th>Notes</th>
+		<th></th>
+
+	</tr>
+
 %%[end:flex_header]%%
+
 %%[begin:flex_row]%%
-<tr class="row%%[row_class]%%">
-	<td>%%[billing_date]%%</td>
-	<td>%%[payment_date]%%</td>
-	<td>%%[billing_amount]%%</td>
-	<td>%%[payment_amount]%%</td>
-	<td>%%[billing_hours]%%</td>
-	<td>%%[notes]%%</td>
-	<td nowrap>
-	<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=edit&compen_id=%%[compen_id]%%">Edit</a>
-	&nbsp;|&nbsp;
-	<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=delete&compen_id=%%[compen_id]%%" onclick="confirm('Are you sure you wish to delete this entry?');">Delete</a>
-	</td>
-</tr>
+
+	<tr class="row%%[row_class]%%">
+
+		<td>%%[billing_date]%%</td>
+		<td>%%[payment_date]%%</td>
+		<td>%%[billing_amount]%%</td>
+		<td>%%[payment_amount]%%</td>
+		<td>%%[billing_hours]%%</td>
+		<td>%%[notes]%%</td>
+		<td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=edit&compen_id=%%[compen_id]%%">Edit</a>
+		&nbsp;|&nbsp;<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=delete&compen_id=%%[compen_id]%%" onclick="confirm('Are you sure you wish to delete this entry?');">Delete</a></td>
+
+	</tr>
+
 %%[end:flex_row]%%
+
 %%[begin:flex_footer]%%
+
 </table>
+
 %%[end:flex_footer]%%

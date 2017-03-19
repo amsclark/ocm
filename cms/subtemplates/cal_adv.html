@@ -1,69 +1,77 @@
+%%[cal_tabs]%%
 
-<div style="padding:5px;" id="form_container">
-	<div style="" id="form_header">
-		<div id="case_tabs">%%[cal_tabs]%%</div>
-		<form>
-	</div>
-	<div style="float:left;padding:2px" id="form_col1">
-		Staff:<br/>
-		%%[user_list,user_list,width=185]%%
-		<br/>
-		<br/>
-		<input type="submit" value="View" class="save">
-	</div>
-	<div style="float:left;padding:2px" id="form_col2" class="de">	
-		Pro Bono Attorneys:<br/>
-		%%[pba_list,pba_list,width=185]%%
-	</div>
-	<div style="float:left;padding:2px" id="column_container" class="de">
-		<div style="float:left;padding:2px" id="form_col3" class="de">
-		Starting Date:<br/>
-		%%[start_date,input_date_selector]%%<br/>
-		End Date:<br/>
-		%%[end_date,input_date_selector]%%<br/>
-		Category:<sup>[<a href="system-menus.php?action=edit_menu&menu_name=category">?</a>]</sup><br/> 
-		%%[category,input_text]%%<br/>
-		Completed:<br/>
-		%%[completed,yes_no]%%<br/>
-		Case Number:<br/>
-		%%[number,input_text]%%<br/>
+<form class="adv-calendar">
+
+	<div>
+	
+		<label for="staff">Staff</label>
+		<div class="checkbox-list">
+			%%[user_list,user_list,width=300]%%		
 		</div>
-		<div style="float:left;padding:2px" id="form_col4" class="de">
-		Office:<br/>
-		%%[office,office]%%<br/>
-		Act. Type:<br/>
-		%%[act_type,act_type]%%<br/>
-		Funding:<br/> 
-		%%[funding,funding]%%<br/>
-		Limit # of Rows:<br/>
-		%%[row_limit,limit]%%<br/>
-		Sorting Order:<br/>
+
+		<div class="submit">
+			<input type="submit" value="View" class="save">
+			<input type="hidden" name="action" value="run_report">	
+		</div>
+	
+	</div>
+	
+	<div>
+		
+		<label for="pro-bono">Pro Bono Attorney</label>
+		<div class="checkbox-list">
+			%%[pba_list,pba_list,width=300]%%		
+		</div>
+		
+	</div>
+	
+	<div>
+		
+		<label for="start-date">Start Date</label>
+		%%[start_date,input_date_selector,class=w-80]%%
+	
+		<label for="end-date">End Date</label>
+		%%[end_date,input_date_selector,class=w-80]%%
+		
+		<label for="category">Category [<a href="system-menus.php?action=edit_menu&menu_name=category">?</a>]</label>
+		%%[category,input_text]%%
+
+		<label for="completed">Completed</label>
+		%%[completed,yes_no]%%
+
+		<label for="case-number">Case Number</label>
+		%%[number,input_text]%%
+
+	</div>
+	
+	<div>
+		
+		<label for="office">Office</label>
+		%%[office,office]%%
+
+		<label for="act-type">Activity Type</label>
+		%%[act_type,act_type]%%
+
+		<label for="funding">Funding</label> 
+		%%[funding,funding]%%
+		
+		<label for="limit-rows">Limit # of Rows</label>
+		%%[row_limit,limit]%%
+
+		<label for="sort-order">Sorting Order</label>
 		%%[sort_order,sort_order,radio,vertical]%%
-		</div>
-		<div style="clear:both;float:right;">
-		<h2>Actions</h2>
-		<img src="images/point.gif">
-		Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=K">New Tickle</a><br/>
-		<img src="images/point.gif">
-		Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=T">New Time Slip</a>
-		(<a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a>)<br/>
-		<img src="images/point.gif">
-		Add <a href="%%[base_url]%%/activity.php?screen=compose&completed=0&act_date=%%[cal_date]%%">New Calendar Entry</a><br/>
-		<img src="images/point.gif">
-		Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=L">New LSC Other Services Record</a><br/>
-		<img src="images/point.gif" alt="Arrow"/>
-		<a href="%%[base_url]%%/ical-subscribe.php">Subscribe to Calendar (iCal)</a>
-		</div>
+
 	</div>
-	<div style="clear:both;" id="form_footer">
-		<br/>
-		<input type="hidden" name="action" value="run_report">
-		</form>
-	</div>
-</div>
-<hr>
+
+</form> <!-- /.adv-calendar -->
+
+<hr />
+
 <h2>Activity Listing</h2>
-%%[time_list]%%
+
+	<div class="time-list">
+		%%[time_list]%%	
+	</div>
 
 
 %%[popUp.js,javascript]%%
@@ -71,37 +79,46 @@
 %%[date_selector.js,javascript,parse]%%
 %%[checkbox_list.js,javascript]%%
 
-
 %%[begin:flex_header]%%
-<table cellspacing="0" cellpadding="4">
-<tr>
-	<th></th>
-	<th>Type</th>
-	<th>Time</th>
-	<th>Summary</th>
-	<th>Case</th>
-	<th>Funding</th>
-	<th>Category</th>
-	<th>Office</th>
-	<th>Hours</th>
-	<th>Cmplt.</th>
-</tr>
-%%[end:flex_header]%%
+
+<table class="time-list">
+
+	<tr>
+		
+		<th></th>
+		<th>Type</th>
+		<th>Time</th>
+		<th>Summary</th>
+		<th>Case</th>
+		<th>Funding</th>
+		<th>Category</th>
+		<th>Office</th>
+		<th>Hours</th>
+		<th>Cmplt.</th>
+
+	</tr>
+	
+%%[end:flex_header]%%	
 %%[begin:flex_row]%%
-<tr>
-	<td>%%[count]%%</td>
-	<td>%%[act_type]%%</td>
-	<td><a href="%%[base_url]%%/activity.php?act_id=%%[act_id]%%">%%[time]%%</a></td>
-	<td>%%[summary]%%</td>
-	<td>%%[number]%%</td>
-	<td>%%[funding]%%</td>
-	<td>%%[category]%%</td>
-	<td>%%[office]%%</td>
-	<td>%%[hours]%%</td>
-	<td>%%[completed]%%</td>
-</tr>
+	
+	<tr>
+	
+		<td>%%[count]%%</td>
+		<td>%%[act_type]%%</td>
+		<td><a href="%%[base_url]%%/activity.php?act_id=%%[act_id]%%">%%[time]%%</a></td>
+		<td>%%[summary]%%</td>
+		<td>%%[number]%%</td>
+		<td>%%[funding]%%</td>
+		<td>%%[category]%%</td>
+		<td>%%[office]%%</td>
+		<td>%%[hours]%%</td>
+		<td>%%[completed]%%</td>
+
+	</tr>
+
 %%[end:flex_row]%%
 %%[begin:flex_footer]%%
-</table>
+
+</table> <!-- /.time-list -->
 
 %%[end:flex_footer]%%

@@ -1,103 +1,132 @@
-<table>
-	<tbody>
-		<tr valign="top">
-			<td>
-			<h2>Calendar</h2>
-			<ul style="list-style: none;">
-				<li><a href="%%[base_url]%%/cal_day.php">Day View</a></li>
-				<li><a href="%%[base_url]%%/cal_week.php?screen=one">Week View</a></li>
-				<li><a href="%%[base_url]%%/cal_week.php?screen=four">Four Week View</a></li>
-				<li><a href="%%[base_url]%%/cal_adv.php">Advanced View</a></li>
-				<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=C">New Calendar Entry</a></li>
-				<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=K">New Tickle</a></li>
-				</ul>
-			</td>
-			<td>
-			<h2>Cases &amp; Matters</h2>
-			<ul style="list-style: none;">
-				<li><a href="%%[base_url]%%/case_list.php?mode=open">My Open Cases</a></li>
-				<li><a href="%%[base_url]%%/case_list.php?mode=closed">My Closed Cases</a></li>
-				<li><a href="%%[base_url]%%/case_list.php?mode=all">All Cases</a></li>
-				<li><a href="%%[base_url]%%/intake2.php/">New Client Intake</a></li>
-				<li><a href="%%[base_url]%%/ops/new_case_no_client.php?screen=elig">New Eligibility Intake</a></li>
-		    </ul>			
+<div class="sitemap">
 
-			</td>
-			<td>
-				<h2>Search</h2>
-				<ul style="list-style: none; line-height:150%;text-indent:0;">
-					<li style="text-indent:0;"><a href="%%[base_url]%%/search.php?s=&m=C">Case Number Search</a></li>
-					<li><a href="%%[base_url]%%/search.php?m=P">Phone Search</a></li>
-					<li><a href="%%[base_url]%%/search.php?m=S">SSN Search</a></li>
-					<li><a href="%%[base_url]%%/search.php?m=N">Names Search</a></li>
-					<li><a href="%%[base_url]%%/search.php?m=A">Notes Search</a></li>
-					<li><a href="%%[base_url]%%/search.php?m=D">Documents Search</a></li>
-				</ul>
+	<div class="sitemap-top">
+
+		<h2>Calendar</h2>
 				
-			</td>
-			<td>
-			<h2>Time Keeping</h2>
-			<ul>
-				<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=T">New Time Slip</a></li>
-				<li><a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">New Timer</a></li>
-				<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=L">New LSC Other Services Record</a></li>
-			</ul>
-			</td>
-		</tr>
-		<tr valign="top">
-			<td>
-			<h2>Reports</h2>
-			%%[reportlist]%%
-			</td>
-			<td>
-			<h2>Main</h2>
-			<ul>
+		<ul>
+			<li><a href="%%[base_url]%%/cal_day.php">Day View</a></li>
+			<li><a href="%%[base_url]%%/cal_week.php?screen=one">Week View</a></li>
+			<li><a href="%%[base_url]%%/cal_week.php?screen=four">Four Week View</a></li>
+			<li><a href="%%[base_url]%%/cal_adv.php">Advanced View</a></li>
+			<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=C">New Calendar Entry</a></li>
+			<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=K">New Tickler</a></li>
+		</ul>
+
+	</div> <!-- /.sitemap-top -->
+
+	<div class="sitemap-top">
+
+		<h2>Cases and Matters</h2>
+				
+		<ul>
+			<li><a href="%%[base_url]%%/case_list.php?mode=open">My Open Cases</a></li>
+			<li><a href="%%[base_url]%%/case_list.php?mode=closed">My Closed Cases</a></li>
+			<li><a href="%%[base_url]%%/case_list.php?mode=all">All Cases</a></li>
+			<li><a href="%%[base_url]%%/intake2.php/">New Client Intake</a></li>
+			<li><a href="%%[base_url]%%/ops/new_case_no_client.php?screen=elig">New Eligibility Intake</a></li>
+	    </ul>
+
+	</div> <!-- /.sitemap-top -->
+
+	<div class="sitemap-top">
+
+		<h2>Search</h2>
+						
+		<ul>
+			<li><a href="%%[base_url]%%/search.php?s=&m=C">Case Number Search</a></li>
+			<li><a href="%%[base_url]%%/search.php?m=P">Phone Search</a></li>
+			<li><a href="%%[base_url]%%/search.php?m=S">SSN Search</a></li>
+			<li><a href="%%[base_url]%%/search.php?m=N">Names Search</a></li>
+			<li><a href="%%[base_url]%%/search.php?m=A">Notes Search</a></li>
+			<li><a href="%%[base_url]%%/search.php?m=D">Documents Search</a></li>
+		</ul>	
+
+	</div> <!-- /.sitemap-top -->
+
+	<div class="sitemap-top">
+
+		<h2>Time Keeping</h2>
+				
+		<ul>
+			<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=T">New Time Slip</a></li>
+			<li><a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">New Timer</a></li>
+			<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=L">New LSC Other Services Record</a></li>
+		</ul>
+		
+	</div> <!-- /.sitemap-top -->
+
+	<div class="sitemap-bottom">
+
+		<h2>Reports</h2>
+				
+		%%[reportlist]%%
+
+	</div> <!-- /.sitemap-bottom -->
+
+	<div class="sitemap-bottom">
+
+		<h2>Main</h2>
+					
+		<ul>
 			<li><a href="%%[base_url]%%/index.php">Home Screen</a></li>
-			<li>Site Map (this screen)</li>
-		    <li><a href="%%[base_url]%%/addressbook.php">Contact Address Book</a></li>
-		  </ul>
-		    %%[extensions_list]%%
-			</td>
-			<td>
-			<h2>System Screens</h2>
-			<ul>
-				<li><a href="%%[base_url]%%/system-case_numbers.php">Case Numbering</a></li>
-				<li><a href="%%[base_url]%%/system-case_tabs.php">Case Tab Manager</a></li>
-				<li><a href="%%[base_url]%%/transfer_options.php">Case Transfer Manager</a></li>
-				<li><a href="%%[base_url]%%/system-mac_download.php">Data Download (Mac OS)</a></li>
-				<li><a href="%%[base_url]%%/system-extensions.php">Extensions</a></li>
-				<li><a href="%%[base_url]%%/system-forms.php">Form Letter Manager</a></li>
-				<li><a href="%%[base_url]%%/system-menus.php">Menus and Special Tables</a></li>
-				<li><a href="%%[base_url]%%/motd.php">Message Board</a></li>
-				<li><a href="%%[base_url]%%/system-outcomes.php">Outcome Goals Editor</a></li>
-				<li><a href="%%[base_url]%%/pb_attorneys.php">Pro Bono Attorneys</a></li>
-				<li><a href="%%[base_url]%%/system-red_flags.php">Red Flag Manager</a></li>
-				<li><a href="%%[base_url]%%/system-reset_counters.php">Reset Counters</a></li>
-				<li><a href="%%[base_url]%%/system-feeds.php">RSS Feeds</a></li>
-				<li><a href="%%[base_url]%%/system-groups.php">Security Levels</a></li>
-				<li><a href="%%[base_url]%%/system-maint.php">System Maintenance</a></li>
-				<li><a href="%%[base_url]%%/system-settings.php">System Settings</a></li>
-				<li><a href="%%[base_url]%%/system-default_prefs.php">User Default Preferences</a></li>
-				<li><a href="%%[base_url]%%/system-users.php">User Accounts</a></li>
-				<li><a href="%%[base_url]%%/zipcode.php">ZIP Codes</a></li>
-			</ul>
-			</td>
-			<td>
-			<h2>User Account</h2>
-			<ul>
-				<li><a href="%%[base_url]%%/prefs.php">Account Preferences</a></li>
-				<li><a href="%%[base_url]%%/password.php">Change Account Password</a></li>
-			</ul>
-			<h2>Misc.</h2>
-			<ul>
-				<li><a href="%%[base_url]%%/about.php">About Pika</a></li>
-				<li><a href="%%[base_url]%%/info.php">PHP Configuration</a></li>
-				<li><a href="%%[base_url]%%/license.php">Pika Software License</a></li>
-				<li><a href="%%[base_url]%%/error.php">Trigger the Pika Error Screen</a></li>
-			</ul>
-			</td>
-		</tr>
-	</tbody>
-</table>
+			<li><a href="%%[base_url]%%/addressbook.php">Contact Address Book</a></li>
+	  	</ul>
+
+		%%[extensions_list]%%		
+
+	</div> <!-- /.sitemap-bottom -->
+
+	<div class="sitemap-bottom">
+
+		<h2>System Screens</h2>
+					
+		<ul>
+			<li><a href="%%[base_url]%%/system-case_numbers.php">Case Numbering</a></li>
+			<li><a href="%%[base_url]%%/system-case_tabs.php">Case Tab Manager</a></li>
+			<li><a href="%%[base_url]%%/transfer_options.php">Case Transfer Manager</a></li>
+			<li><a href="%%[base_url]%%/system-mac_download.php">Data Download (Mac OS)</a></li>
+			<li><a href="%%[base_url]%%/system-extensions.php">Extensions</a></li>
+			<li><a href="%%[base_url]%%/system-forms.php">Form Letter Manager</a></li>
+			<li><a href="%%[base_url]%%/system-menus.php">Menus and Special Tables</a></li>
+			<li><a href="%%[base_url]%%/motd.php">Message Board</a></li>
+			<li><a href="%%[base_url]%%/system-outcomes.php">Outcome Goals Editor</a></li>
+			<li><a href="%%[base_url]%%/pb_attorneys.php">Pro Bono Attorneys</a></li>
+			<li><a href="%%[base_url]%%/system-red_flags.php">Red Flag Manager</a></li>
+			<li><a href="%%[base_url]%%/system-reset_counters.php">Reset Counters</a></li>
+			<li><a href="%%[base_url]%%/system-feeds.php">RSS Feeds</a></li>
+			<li><a href="%%[base_url]%%/system-groups.php">Security Levels</a></li>
+			<li><a href="%%[base_url]%%/system-maint.php">System Maintenance</a></li>
+			<li><a href="%%[base_url]%%/system-settings.php">System Settings</a></li>
+			<li><a href="%%[base_url]%%/system-default_prefs.php">User Default Preferences</a></li>
+			<li><a href="%%[base_url]%%/system-users.php">User Accounts</a></li>
+			<li><a href="%%[base_url]%%/zipcode.php">ZIP Codes</a></li>
+		</ul>
+
+	</div> <!-- /.sitemap-bottom -->
+
+	<div class="sitemap-bottom">
+
+		<h2>User Account</h2>
+				
+		<ul>
+			<li><a href="%%[base_url]%%/prefs.php">Account Preferences</a></li>
+			<li><a href="%%[base_url]%%/password.php">Change Account Password</a></li>
+		</ul>
+
+		<h2>Miscellaneous</h2>
+
+		<ul>
+			<li><a href="https://github.com/aworley/ocm/wiki/OCM-User-Manual">User Manual</a></li>
+			<li><a href="https://github.com/aworley/ocm/wiki/OCM-Admin-Manual">Administrative Manual</a></li>
+			<li><a href="%%[base_url]%%/about.php">About Pika</a></li>
+			<li><a href="%%[base_url]%%/info.php">PHP Configuration</a></li>
+			<li><a href="%%[base_url]%%/license.php">Pika Software License</a></li>
+			<li><a href="%%[base_url]%%/error.php">Trigger the Pika Error Screen</a></li>
+		</ul>
+
+	</div> <!-- /.sitemap-bottom -->
+
+</div> <!-- /.sitemap -->
 
 <script type="text/javascript" language="JavaScript" src="%%[base_url]%%/js/popUp.js"></script>

@@ -1,78 +1,97 @@
-<h2>Pro Bono Information</h2>
-<form action="%%[base_url]%%/ops/update_case.php" method="POST" name="ws">
-<table cellpadding="3" cellspacing="0">
-<tr>
-	<td class="de">
-	Referral Date: <a href="%%[base_url]%%" onClick="set_ref_date();return false;">[today]</a><br/>
-    %%[referral_date,input_date_selector]%%<br/>
-    Date Closed: <a href="%%[base_url]%%" onClick="set_close();return false;">[today]</a><br/>
-    %%[close_date,input_date_selector]%%<br/>
-    %%[lsc_close_code_menu]%%
-    <br/>
-    %%[thank_you_sent,yes_no,checkbox,label=Was a thank you sent?]%%<br/>
-    Date thank you was sent:<br/>
-    %%[date_sent,input_date_selector]%%<br/>
-    %%[payment_received,yes_no,checkbox,label=Was payment received?]%%<br/>
-    <!--%%[reduced_fee,yes_no,checkbox,label=Reduced fee?]%%<br/>
-    %%[retainer_on_file,yes_no,checkbox,label=Retainer on file?]%%<br/>
-    %%[case_is_pro_bono,yes_no,checkbox,label=Pro Bono?]%%<br/>
-    Total Attorney Hours:<br/>
-    %%[pb_attorney_hrs,input_text]%%<br/>
-    Normal Attorney Fee:<br/>
-    <span class="maskt">$
-    %%[atty_fee_normal,input_text,onblur=calcDifference();,class=maskf]%%
-    </span><br/>
-    Fee Charged to Client:<br/>
-    <span class="maskt">$
-    %%[atty_fee_to_client,input_text,onblur=calcDifference();,class=maskf]%%
-    </span><br/>
-    Amount Saved for Client:<br/>
-    <span class="maskt">$
-    %%[client_savings,input_text,class=maskf]%% 
-    </span><br/> -->
-	</td>
-	<td valign="top">
-	<table cellspacing="0" cellpadding="1">
-	<tr>
-		<th>Assigned Pro Bono Atty</th>
-		<th>Time</th>
-	</tr><tr>
-		<td>
-		#1: %%[pba_id1,pb_attorneys,text_menu]%% [<a href="%%[base_url]%%/assign_pba.php?screen=pb&case_id=%%[case_id]%%&field=pba_id1">%%[pba_id1_link]%%</a>] 	
-		%%[pba_id1_remove_link]%%
-		</td>
-		<td nowrap>
-		%%[pba_id1_time]%%
-		</td>
-	</tr><tr>
-		<td>
-		#2: %%[pba_id2,pb_attorneys,text_menu]%% [<a href="%%[base_url]%%/assign_pba.php?screen=pb&case_id=%%[case_id]%%&field=pba_id2">%%[pba_id2_link]%%</a>]
-		%%[pba_id2_remove_link]%%
-		</td>
-		<td nowrap>
-		%%[pba_id2_time]%%
-		</td>
-	</tr><tr>
-		<td>
-		#3: %%[pba_id3,pb_attorneys,text_menu]%% [<a href="%%[base_url]%%/assign_pba.php?screen=pb&case_id=%%[case_id]%%&field=pba_id3">%%[pba_id3_link]%%</a>]
-		%%[pba_id3_remove_link]%%
-		</td>
-		<td nowrap>
-		%%[pba_id3_time]%%
-		</td>
-	</tr>
-	</table>
-	</td>
-</tr>
-</table>
-<br/>
-<input type="hidden" name="screen" value="pb">
-%%[case_id,input_hidden]%%
-<input type="submit" value="Save" tabindex="1" accesskey="s" class="save">
+<form class="assign-pro-bono" action="%%[base_url]%%/ops/update_case.php" method="post" name="ws">
+
+	<h2>Pro Bono Information</h2>
+
+	<div class="case-container pro-bono">
+		
+		<div class="column-one">
+
+			<ul>
+				
+				<li><label for="Referral Date">Referral Date<a href="%%[base_url]%%" onClick="set_ref_date();return false;">[today]</a></label>
+				%%[referral_date,input_date_selector,class=w-80]%%</li>
+				
+				<li><label for="close-date">Date Closed <a href="%%[base_url]%%" onClick="set_close();return false;">[today]</a></label>
+				%%[close_date,input_date_selector,class=w-80]%%</li>
+				
+				<li>%%[lsc_close_code_menu]%%</li>
+				
+				<li class="was-sent">%%[thank_you_sent,yes_no,checkbox,label=Was a thank you sent?]%%</li>
+				
+				<li><label for="date-sent">Date thank you was sent</label>
+					%%[date_sent,input_date_selector,class=w-80]%%</li>
+				
+				<li>%%[payment_received,yes_no,checkbox,label=Was payment received?]%%</li>
+
+			</ul>
+
+		</div> <!-- /.column-one -->
+
+		<div class="column-two">
+				
+			<table class="assigned">
+
+				<th>Assigned Attorney</th>
+				<th></th>
+				<th>Total Time</th>
+				<th>Add Time</th>
+
+				<tr>
+
+					<td>#1: %%[pba_id1,pb_attorneys,text_menu]%% [<a href="%%[base_url]%%/assign_pba.php?screen=pb&case_id=%%[case_id]%%&field=pba_id1">%%[pba_id1_link]%%</a>]</td>
+					
+					<td>%%[pba_id1_remove_link]%%</td>
+
+					<td>%%[pba_id1_time]%%</td>
+
+					<td class="timer-cell"><a class="timer-icon" href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&act_type=T&act_url=case_list.php">
+					<i class="material-icons">schedule</i>
+					</a></td>
+					
+				</tr>
+
+				<tr>
+					
+					<td>#2: %%[pba_id2,pb_attorneys,text_menu]%% [<a href="%%[base_url]%%/assign_pba.php?screen=pb&case_id=%%[case_id]%%&field=pba_id2">%%[pba_id2_link]%%</a>]</td>
+
+					<td>%%[pba_id2_remove_link]%%</td>
+					
+					<td>%%[pba_id2_time]%%</td>
+
+					<td class="timer-cell"><a class="timer-icon" href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&act_type=T&act_url=case_list.php">
+					<i class="material-icons">schedule</i>
+					</a></td>
+
+				</tr>
+				
+				<tr>
+
+					<td>#3: %%[pba_id3,pb_attorneys,text_menu]%% [<a href="%%[base_url]%%/assign_pba.php?screen=pb&case_id=%%[case_id]%%&field=pba_id3">%%[pba_id3_link]%%</a>]</td>
+					
+					<td>%%[pba_id3_remove_link]%%</td>
+					
+					<td>%%[pba_id3_time]%%</td>
+
+					<td class="timer-cell"><a class="timer-icon" href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&act_type=T&act_url=case_list.php">
+					<i class="material-icons">schedule</i>
+					</a></td>
+					
+				</tr>
+			
+			</table>  <!-- /.table-assigned -->
+
+		</div> <!-- /.column-two -->
+
+	</div> <!-- /case-container.pro-bono -->
+		
+	<div class="submit">
+		<input type="hidden" name="screen" value="pb">
+		%%[case_id,input_hidden]%%		
+		<input type="submit" value="Save" tabindex="1" accesskey="s">
+	</div>
+
 </form>
 
 %%[case-pb.js,javascript,parse]%%
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%
-
-

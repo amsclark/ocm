@@ -28,8 +28,8 @@ function input_ssn($field_name = null, $field_value = null, $menu_array = null, 
 	
 	else
 	{
-		$C .= "SSN:<br/>\n";
-		$C .= '<input type="text" name="ssn" onkeyup="pika_ssn(this);" value="' . htmlentities($field_value) . '" maxlength="11" size="22" tabindex="1">';
+		$C .= "<label for=\"ssn\">SSN</label> \n";
+		$C .= '<input type="text" name="ssn" onkeyup="pika_ssn(this);" value="' . htmlentities($field_value) . '" maxlength="11" tabindex="1">';
 	}
 
 	$C .= "<br/>\n";

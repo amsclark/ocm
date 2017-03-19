@@ -1,102 +1,140 @@
-<h2 class="hdt">Administrative Information</h2>
+<h2>Case Information</h2>
+
 <form action="%%[base_url]%%/ops/update_case.php" method="post" name="ws">
-<table cellpadding="0" summary="">
-<tr valign="top"> 
-  <td nowrap class="de">
-  	Case Number<!-- [<a onClick="set_auto()" tabindex=1>New</a>] -->:<br/>
-  	%%[number,input_text]%%<br/>
-	Case Status:<br/>
-	%%[status,case_status]%%<br/>
-	Date Opened:<br/>
-	%%[open_date,input_date_selector]%%<br/>
-    Office:<br/>
-	%%[office,office]%%
-  </td>
-  <td>&nbsp;&nbsp;</td>
-  <td nowrap class="de">
-	Primary Counsel (<a href="%%[base_url]%%/assign_atty.php?case_id=%%[case_id]%%&field=user_id">assign</a>):<br/>
-	%%[user_id,case_handlers]%%<br/>
-	Co-counsel #1 (<a href="%%[base_url]%%/assign_atty.php?case_id=%%[case_id]%%&field=cocounsel1">assign</a>):<br/>
-	%%[cocounsel1,case_handlers]%%<br/>
-	Co-counsel #2 (<a href="%%[base_url]%%/assign_atty.php?case_id=%%[case_id]%%&field=cocounsel2">assign</a>):<br/>
-	%%[cocounsel2,case_handlers]%%<br/>
-	Undup. Service:<br/>
-    %%[undup,undup]%%
-  </td>
-  <td>&nbsp;&nbsp;</td>
-  <td nowrap class="de">
-    %%[lsc_problem_menu]%%<br/>
-    Special Problem Code:<br/>
-    %%[sp_problem,sp_problem]%%<br/>
-    Funding:<br/>
-    %%[funding,funding]%%<br/>
-    Primary Client:<br/>
-    %%[client_id,case_contacts_menu,relation_code=1]%%
-    </td>
-</tr>
-</table>
-
-<h2 class="hdt">Closing Information</h2>
-%%[lsc_rules_notice]%%
-  <table cellpadding="0" summary="">
-    <tr valign="top"> 
-      <td class="de">
-      	Date Closed: <a onClick="set_close()" href="#dc" tabindex=1>[today]</a><br/>
-        %%[close_date,input_date_selector]%%<br/>
+  	
+    <div class="case-container">
         
-        %%[lsc_close_code_menu]%%
-      </td>
-      <td>&nbsp;&nbsp;</td>
-      <td nowrap class="de">
-      	Reason Rejected:<br/>
-        %%[reject_code,reject_code]%% <br/>
-        Good Story:<br/>
-        %%[good_story,yes_no,checkbox]%%
-      </td>
-      <td>&nbsp;&nbsp;</td>
-      <td class="de">
-      	Destroy Date:<br/>
-      	%%[destroy_date,input_date_selector]%%<br/>
-      	Outcome:<br/>
-        %%[outcome,outcome]%%
-      </td>
-    </tr>
-  </table>
-  
-<h2 class="hdt">Extra Information</h2>
-  <table cellpadding="0" cellspacing="0" border="0" summary="">
-    <tr valign="top">
-      <td class="de">
-		County:<br/>
-        %%[case_county,input_text]%%<br/>
-		ZIP Code:<br/>
-        %%[case_zip,input_text]%%<br/>
-      </td>
-      <td>&nbsp;&nbsp;</td>
-      <td class="de">
-      	Intake Screener:<br/>
-      	<input type=text name="dummy1" disabled value="%%[screener_name]%%"/><br/>
-      	Record Creation Date:<br/>
-      	<input type=text name="dummy1" disabled value="%%[created]%%"/><br/>
-      </td>
-      <td>&nbsp;&nbsp;</td>
-      <td class="de">
-      	Record Last Edited Date:<br/>
-      	<input type=text name="dummy1" disabled value="%%[last_changed]%%"/><br/>
-      </td>
-    </tr>
-</table>
-  
-<input type="hidden" name="screen" value="info"/>
-%%[case_id,input_hidden]%%
+        <div class="column-one">
 
-<p>
-	<br/>
-	<input type=submit name="update_case" value="Save" tabindex=1 class="save" accesskey="s" />
-</p>
+            <label for="case-number">Case Number</label> <!-- [<a onClick="set_auto()" tabindex=1>New</a>] -->
+            %%[number,input_text]%%
+
+            <label for="case-status">Case Status</label>
+            %%[status,case_status]%%
+
+            <label for="date-opened">Date Opened</label>
+            %%[open_date,input_date_selector,class=w-80]%%
+
+            <label for="office">Office</label>
+            %%[office,office]%%
+
+        </div>  <!-- /.column-one -->
+
+        <div class="column-two">
+
+            <label for="primary-counsel">Primary Counsel [<a href="%%[base_url]%%/assign_atty.php?case_id=%%[case_id]%%&field=user_id">assign</a>]</label>                
+            %%[user_id,case_handlers]%% 
+
+            <label for="co-counsel-01">Co-counsel #1 [<a href="%%[base_url]%%/assign_atty.php?case_id=%%[case_id]%%&field=cocounsel1">assign</a>]</label>        
+            %%[cocounsel1,case_handlers]%%
+
+            <label for="co-counsel-02">Co-counsel #2 [<a href="%%[base_url]%%/assign_atty.php?case_id=%%[case_id]%%&field=cocounsel2">assign</a>]</label>        
+            %%[cocounsel2,case_handlers]%%
+
+            <label for="unduplicated">Unduplicated Service?</label>        
+            %%[undup,undup]%%
+
+        </div>  <!-- /.column-two -->
+
+        <div class="column-three">
+
+            %%[lsc_problem_menu]%%
+
+            <label for="special-code">Special Problem Code</label>        
+            %%[sp_problem,sp_problem]%%
+
+            <label for="funding">Funding</label>
+            %%[funding,funding]%%
+
+            <label for="primary-client">Primary Client</label>
+            %%[client_id,case_contacts_menu,relation_code=1]%%
+
+        </div>  <!-- /.column-three -->
+        
+    </div> <!-- /.case-container -->   
+
+    <h2>Closing Information</h2>
+
+    <div class="case-container">
+
+        <div class="column-one">
+            
+            %%[lsc_rules_notice]%%
+
+            <label for="date-closed">Date Closed <a onClick="set_close()" href="#dc" tabindex=1>[today]</a></label>        
+            %%[close_date,input_date_selector,class=w-80]%%
+            
+            %%[lsc_close_code_menu]%%
+      
+        </div>  <!-- /.column-one -->
+
+        <div class="column-two">
+
+            <label for="reason-rejected">Reason Rejected</label>
+            %%[reject_code,reject_code]%% 
+      
+            <div>
+                <strong>Good Story</strong>
+                %%[good_story,yes_no,checkbox]%%
+            </div>
+            
+        </div>  <!-- /.column-two -->
+
+        <div class="column-three">
+            
+            <label for="destroy-date">Destroy Date</label>
+            %%[destroy_date,input_date_selector,class=w-80]%%
+      
+            <label for="outcome">Outcome</label>
+            %%[outcome,outcome]%%
+
+        </div>  <!-- /.column-three -->
+
+    </div> <!-- /.case-container -->   
+
+    <h2>Extra Information</h2>
+
+    <div class="case-container">
+
+        <div class="column-one">
+            
+            <label for="county">County</label>
+            %%[case_county,input_text]%%
+            
+            <label for="zip">ZIP Code</label>
+            %%[case_zip,input_text,class=w-80]%%
+
+        </div>  <!-- /.column-one -->
+
+        <div class="column-two">
+
+            <label for="screener">Intake Screener</label>
+            <input type="text" name="dummy1" disabled value="%%[screener_name]%%"/>        
+
+        </div>  <!-- /.column-two -->
+
+        <div class="column-three">  
+        
+            <label for="creation-date">Record Created</label>
+            <input class="w-80" type="text" name="dummy1" disabled value="%%[created]%%"/>
+
+            <label for="last-edit-date">Record Last Edited</label>
+            <input class="w-80" type="text" name="dummy1" disabled value="%%[last_changed]%%"/>
+            
+        </div>  <!-- /.column-three -->
+
+    </div> <!-- /.case-container -->
+
+    <div class="submit">
+        <input type="hidden" name="screen" value="info"/>
+        %%[case_id,input_hidden]%%	
+    	<input type="submit" name="update_case" value="Save" tabindex=1 accesskey="s" />
+    </div>
+
 <!--
-<input type=submit name="update_case" value="Save, Next Tab" tabindex="1" class="save" onclick="document.forms.ws.screen.value='pb';"><br/><br/>
+<input type="submit" name="update_case" value="Save, Next Tab" tabindex="1" class="save" onclick="document.forms.ws.screen.value='pb';">
 -->
+
 </form>
 
 %%[case-info.js,javascript,parse]%%

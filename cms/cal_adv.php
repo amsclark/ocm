@@ -189,8 +189,8 @@ switch ($action) {
 
 
 $main_html['page_title'] = "Calendar - Advanced View";
-$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
-					<a href=\"{$base_url}/cal_day.php\">Calendar</a> &gt; 
+$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span>
+					<a href=\"{$base_url}/cal_day.php\">Calendar</a> <span class=\"nav-arrow\">&#10140;</span>
 					Advanced View";
 
 $default_template = new pikaTempLib('templates/default.html',$main_html);

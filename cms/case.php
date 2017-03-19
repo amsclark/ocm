@@ -96,7 +96,7 @@ if (!$allow_edits)
 }
 
 $main_html['page_title'] = "Case # {$num}";
-$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php/\">Cases</a> &gt; {$num} {$readonly}";
+$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a>  <span class=\"nav-arrow\">&#10140;</span> <a href=\"{$base_url}/case_list.php/\">Cases</a> <span class=\"nav-arrow\">&#10140;</span> {$num} {$readonly}";
 
 
 // ENFORCE PERMISSIONS
@@ -257,7 +257,7 @@ if (isset($case_row['in_holding_pen']) && true == $case_row['in_holding_pen'])
 	// set up template, then display page
 	$plTemplate["page_title"] = "Case: {$num}";
 	$plTemplate['nav'] = "<a href=\"{$base_url}/site_map.php\">Pika Home</a>
- 	  &gt; <a href='case_list.php'>Case List</a> &gt;  $num ";
+ 	  <span class=\"nav-arrow\">&#10140;</span> <a href='case_list.php'>Case List</a> <span class=\"nav-arrow\">&#10140;</span>  $num ";
 
 	$holding_tags = $case_row;
 	

@@ -1,288 +1,142 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
+  
+	<head>
+	  
+		<meta charset="utf-8">
 		<title>Pika: %%[page_title]%%</title>
-	    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-	    <!-- Le styles -->
-	    <link href="%%[base_url]%%/css/bootstrap.min.css" rel="stylesheet">
-	    <style>
-	      body {
-	        padding-top: 54px; /* 60px to make the container go all the way to the bottom of the topbar */
-	        background-color: #f0eeee;
-	      }
-	      
-	      h2 {
-	      	font-size: 18px;
-	      	margin-top: 0px;
-		  }
-	      
-	      #page_title {
-	      	  color: #fff;
-		  }
-		  
-		  #page_content, #footer {
-		  	margin-left: 0.6em;
-		  }
-		  
-		  .breadcrumb {
-		  	  margin-top: 5em;
-		  	  margin-bottom: 4px;
-		  	  margin-left: 7px;
-		  }
-		  
-		  input, textarea, .uneditable-input {
-		  	  width: 14em;
-		  }
-		  
-		  select {
-		  	  width: 15em;
-		  }	
-		  
-		  /* Date selectors need a special rule.*/
-		  input[type="text"].date_selector {
-		  	  width: 11.2em;
-		  }
-		  
-		  a {
-		  	color: #00d;
-		  }
-		   
-		  footer {
-		  	  margin-top: 1em;
-		  	  border-top: #d0d0d0 4px solid;
-		  	  background: #ddd;
-		  	  padding-top: 1em;
-		  	  padding-bottom: 5em;
-		  }
-		  
-		  footer a{
-		  	  color: black;
-		  }
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-		  
-		  .notes{
-		  	  width: 32em;
-		  }
-		  
-		  .flag{
-		  	  margin-left: 1em;
-		  }
-		  
-		  .flag_text{
-		  	  margin-right: 1em;
-		  }
-		  
-		  .navbar{
-		  	  box-shadow: 3px 3px 7px #ccc;
-		  }
-		  
-		  #beep{
-		  	  background-color: rgb(27, 27, 27);
-			  background-image: linear-gradient(rgb(94, 94, 94), rgb(44, 44, 44));
-			  background-repeat: repeat-x;
-			  border-bottom: solid 3px #33BB33;
-		  }
+		<script type="text/javascript" src="%%[base_url]%%/js/jquery.min.js"></script>		
 		
-		.table-striped {
-			background-color: white;
-		}		
-
-		  /* For the extensions page */
-		.extension {
-			padding-top: 3em;
-		}
-
-		.file_path {
-			color: gray;
-		}
-
-		.x {
-			padding: 3em;
-		}
-		p.ext {
-			padding-left: 3em;
-			padding-top: 0em;
-			padding-bottom: 0em;
-			margin-top: 0.25em;
-			margin-bottom: 0.25em;
-		}
-
-		label.ext {
-			padding-left: 2.5em;
-			font-size: 14px;
-			font-weight: bold;
-		}
-		
-		/* End extensions. */
-		/* calendar rows (w/ gray border) */
-		.calrow { 
-			border: #888888 1px solid; 
-			background-color: #ffffff;
-		}
-		
-		li.file { 
-			font-style: normal;
-			list-style-image: url(%%[base_url]%%/images/file.png); 
-		}
-		
-		.pika_files LI.description {
-			list-style-image: none; 
-			font-family: Georgia;
-			font-size: 9px;
-			color: #666666;
-			list-style-type: none;
-		}
-		
-		li.directory {
-			font-style: normal;
-			list-style-image: url(%%[base_url]%%/images/folder-shut.gif);
-		}
-		
-		li.directory_open {
-			font-style: italic;
-			list-style-image: url(%%[base_url]%%/images/folder-open.gif);
-		}
-		
-    .search_rank_likely {
-      background-color: green;
-    }
-    
-    .search_rank_extra {
-        background-color: lightgreen;
-    }
-    
-		.yh {
-			background-color: #eafa04;
-		}
-		
-		.ph {
-			background-color: #ff91ff;
-		}
-		
-		.ul {
-			text-decoration: underline;
-		}
-		
-		.lt {
-			text-decoration: line-through;
-		}
-.upload_div {
-    position: relative;
-    overflow: hidden;
-    margin: 10px;
-}
-.upload_div input.upload_control {
-    position: absolute;
-    top: 0;
-    right: 0;
-    margin: 0;
-    padding: 0;
-    font-size: 20px;
-    cursor: pointer;
-    opacity: 0;
-    filter: alpha(opacity=0);
-}
-#upload_gif { display:none; }
-#upload_gif img {
-	display: block;
-	margin-left: auto;
-	margin-right: auto
-}
-
-		/* 2014-03-12 AMW - Remove URLs from printouts. */
-		@media print {
-		  a[href]:after {
-		    content: none;
-		  }
-		}
-	    </style>
-
-	    <!-- HTML5 shim, for IE6-8 support of HTML5 elements -->
-	    <!--[if lt IE 9]>
-	      <script src="%%[base_url]%%/js/html5shiv.js"></script>
-	    <![endif]-->
-
-		<script type="text/javascript" src="%%[base_url]%%/js/jquery.min.js"></script><style type="text/css"></style>
-		<script type="text/javascript" src="%%[base_url]%%/js/bootstrap.min.js"></script>
-
-		<!-- header --><!-- %%[header]%% -->
-		%%[rss]%%
 		<link rel="icon" href="%%[base_url]%%/favicon.ico" />
 		<link rel="shortcut icon" href="%%[base_url]%%/favicon.ico" />
 		<link rel="apple-touch-icon" href="%%[base_url]%%/m/images/pika-icon-ios.png" />
 		<link rel="apple-touch-icon" sizes="57x57" href="%%[base_url]%%/m/images/pika-icon-ios-57.png" />
 		<link rel="apple-touch-icon" sizes="72x72" href="%%[base_url]%%/m/images/pika-icon-ios-72.png" />
-		<link rel="apple-touch-icon" sizes="114x114" href="%%[base_url]%%/m/images/pika-icon-ios-114.png" />
-	</head>
-	<body>
-	<div class="navbar navbar-inverse navbar-fixed-top">
-		<div class="navbar-inner" id="beep">
-			<div class="container" style="width: auto; padding: 0px 20px 0px 50px; background-image: url('%%[base_url]%%/images/icon-39.png'); background-repeat: no-repeat;">
-				<a class="brand" href="%%[base_url]%%" id="page_title"><!-- <img src="%%[base_url]%%/images/icon.png" height="16" width="16" /> -->
-					%%[org_name]%%<!-- org_name --></a>
-				
-				<form class="navbar-form pull-right" name="sform" method="get" action="%%[base_url]%%/search.php" id="sform">
-				<input name="s" value="" accesskey="f" type="text" id="searchinput" autocomplete="off" data-provide="typeahead" data-items="4">
-				<!-- input name="s" value="" accesskey="f" type="text" autocomplete="off" data-provide="typeahead" class='ajax-typeahead' / -->
-				<input name="search_submit" value="Search" type="submit">
-				</form>
+		<link rel="apple-touch-icon" sizes="114x114" href="%%[base_url]%%/m/images/pika-icon-ios-114.png" />		
 
-				<div class="btn-group pull-right">
+		<!-- Google fonts, Material Design font icons -->
 
-					<a class="btn btn-inverse" href="%%[base_url]%%/password.php"><i class="icon-lock icon-white"></i>&nbsp;%%[user_handle]%%<!-- username --></a>
-					<a class="btn btn-inverse" href="%%[base_url]%%/services/logout.php">Log Off</a>
-					<a class="btn btn-inverse dropdown-toggle" data-toggle="dropdown" href="#">
-					Shortcuts <span class="caret"></span>
-					</a>
-					<ul class="dropdown-menu">
-						<li><a href="%%[base_url]%%/site_map.php" accesskey="m">Site <strong>M</strong>ap</a></li>
-						<li><a href="%%[base_url]%%/case_list.php?mode=open" accesskey="l">Case <strong>L</strong>ist</a></li>
-						<li><a href="%%[base_url]%%/addressbook.php" accesskey="d">A<strong>d</strong>dress Book</a></li>
-						<li><a href="%%[base_url]%%/cal_day.php" accesskey="c"><strong>C</strong>alendar</a></li>
-						<li><a href="%%[base_url]%%/intake2.php" accesskey="i"><strong>I</strong>ntake</a></li>
-						<li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=T" accesskey="t"><strong>T</strong>ime Slip</a></li>
-						<li><a href="%%[base_url]%%/reports/" accesskey="r"><strong>R</strong>eports</a></li>
-						<li><a href="mailto:%%[admin_email]%%" accesskey="p">Su<strong>p</strong>port</a></li>
-  					</ul>
-                 </div>
-			</div>
-		</div>
-	</div>
-
-	<div id="page_content" class="container">
-		<!-- begin page content -->
-		%%[content]%%
-		<!-- end page content -->
-	</div>
-	<div class="container">
-		<ul class="breadcrumb">
-			<li id="software_label">%%[nav]%%</li>	
-		</ul>
-	</div>
-	
-	<footer>
-	<div id="footer" class="container">
-		<p id="ql">
-			<a href="%%[base_url]%%/site_map.php" accesskey="m">Site <strong>M</strong>ap</a> |
-			<a href="%%[base_url]%%/case_list.php?mode=open" accesskey="l">Case <strong>L</strong>ist</a>&nbsp;|
-			<a href="%%[base_url]%%/addressbook.php" accesskey="d">A<strong>d</strong>dress Book</a>&nbsp;|
-			<a href="%%[base_url]%%/cal_day.php" accesskey="c"><strong>C</strong>alendar</a>&nbsp;|
-			<a href="%%[base_url]%%/intake2.php" accesskey="i"><strong>I</strong>ntake</a>&nbsp;|
-			<a href="%%[base_url]%%/activity.php?screen=compose&act_type=T" accesskey="t"><strong>T</strong>ime Slip</a>&nbsp;|
-			<a href="%%[base_url]%%/reports/" accesskey="r"><strong>R</strong>eports</a>&nbsp;|
-			<a href="mailto:%%[admin_email]%%" accesskey="p">Su<strong>p</strong>port</a>
-		</p>
-
-		<p id="copyright">
-			&copy; 2015 Pika Software, LLC
-			<a href="http://pikasoftware.com/">www.pikasoftware.com</a>
-		</p>
+		<link href="//fonts.googleapis.com/css?family=Roboto|Source+Sans+Pro" rel="stylesheet">
+		<link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
 		
-		<p id="warnings">
-			%%[php_warnings]%%
-		</p>	
-	</div>
-	</footer>
-	</body>
+
+		<!-- custom style sheet -->
+
+		<link href="%%[base_url]%%/css/custom.css" type="text/css" rel="stylesheet" />
+
+	</head>
+
+	<body class="site">
+
+		<header>
+
+			<div class="header-container">
+
+				<div class="material-logo">
+					<a href="%%[base_url]%%"><i class="material-icons">account_balance</i></a>
+					<a class="brand" href="%%[base_url]%%" id="page_title">%%[org_name]%%<!-- org_name --></a>
+				</div>
+
+				<div class="horizontal-menu">
+
+					<ul>
+						
+						<li><a class="go-to" href="#">Go to&#133;</a>
+
+							<ul>
+
+						         <li><a href="%%[base_url]%%/case_list.php?mode=open">My Open Cases</a></li>
+						         <li><a href="%%[base_url]%%/case_list.php?mode=all">All Open | Closed Cases</a></li>
+						         <li><a href="%%[base_url]%%/intake2.php">New Client Intake</a></li>					         
+						         <li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=T">New Timeslip</a></li>         
+						         <li><a href="%%[base_url]%%/activity.php?screen=compose&act_type=K">New Case Tickler</a></li>
+						         <li><a href="%%[base_url]%%/cal_day.php">My Day Calendar</a></li>
+						         <li><a href="%%[base_url]%%/cal_week.php">My Week Calendar</a></li>
+						         <li><a href="%%[base_url]%%/reports/">All Reports</a></a></li>
+						         <li><a href="%%[base_url]%%/site_map.php">Site Map</a></li>					         
+
+					       </ul></li>
+
+						<li><a class="" href="%%[base_url]%%/password.php"><i class="material-icons">lock_outline</i>&nbsp;%%[user_handle]%%<!-- username --></a></li>						
+						
+						<li><a class="" href="%%[base_url]%%/services/logout.php">Log Off</a></li>
+						
+					</ul>
+
+					<div class="search-form">
+						
+						<form name="sform" method="get" action="%%[base_url]%%/search.php" id="sform">
+							<input name="s" value="" placeholder="Search Pika" accesskey="f" type="text" id="searchinput" autocomplete="off" data-provide="typeahead" data-items="4">
+							<button class="search-icon" type="submit"><i class="material-icons">search</i></button>
+						</form>
+
+					</div>
+
+				</div> <!-- /horizontal-menu -->
+
+			</div> <!-- /header-container --> 
+
+		</header>
+
+		<!-- breadcrump -->
+
+		<div class="breadcrumb">
+		
+			<ul>
+				<li id="software_label">%%[nav]%%</li>	
+			</ul>
+		
+		</div> 
+
+		<main>
+			
+			<div id="page_content" class="container">
+				<!-- begin page content -->
+				%%[content]%%
+				<!-- end page content -->
+			</div>
+
+		</main>
+		
+		<div class="footer-container">
+
+			<footer class="footer-one">
+			
+				<div id="ql">
+					
+					<a href="%%[base_url]%%/case_list.php?mode=open">Case List</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="%%[base_url]%%/addressbook.php">Contacts</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="%%[base_url]%%/intake2.php">Intake</a>&nbsp;&nbsp;&#183;&nbsp;&nbsp;
+					<a href="%%[base_url]%%/activity.php?screen=compose&act_type=T">Time Slip</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="%%[base_url]%%/cal_day.php">Calendar</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="%%[base_url]%%/reports/">Reports</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="%%[base_url]%%/site_map.php">Site Map</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="http://pikasoftware.com/docs/index.php/Pika_User_Manual">User Manual</a>&nbsp;&nbsp;&#183;&nbsp;
+					<a href="mailto:%%[admin_email]%%">Tech Support</a>
+				</div>
+
+				<div id="warnings">	
+					%%[php_warnings]%%
+				</div>
+			
+			</footer>
+
+			<footer class="footer-two">
+				
+				<div>
+				<a href="http://www.npr.org/templates/story/story.php?storyId=129609461">&#8220;The arc of the moral universe is long, but it bends toward justice&#8221;</a>	
+				</div>
+				
+				<div class="ocm">					
+					Coded with open source <i class="material-icons">favorite</i> at the Pika <a href="https://github.com/brianlawlor/ocm">Open Case Management Project</a>
+				</div>
+
+			</footer>
+
+		</div> <!-- /.footer-container -->
+
+	</body> <!-- /.site -->
+
 </html>

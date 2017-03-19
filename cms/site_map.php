@@ -25,7 +25,7 @@ array_pop($ext_titles);
 
 if (sizeof($ext_titles) > 0 || true)
 {
-	$main_html['extensions_list'] = "<br><h2>Extensions</h2><ul>";
+	$main_html['extensions_list'] = "<h2>Extensions</h2><ul>"; // Brian removed BR
 	
 	for ($i =0; $i < sizeof($ext_urls); $i++)
 	{
@@ -37,7 +37,7 @@ if (sizeof($ext_titles) > 0 || true)
 // End AMW
 
 $main_html['content'] =  pl_template('subtemplates/site_map.html', $main_html);
-$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; Site Map";
+$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> <span class=\"nav-arrow\">&#10140;</span> Site Map";
 
 $buffer = pl_template('templates/default.html', $main_html);
 pika_exit($buffer);

@@ -1,122 +1,151 @@
 %%[begin:N]%%
-<!-- 2013-07-11 AMW - Changed form name to "ws" so unsaved form warning can be used. -->
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
-<table>
-	<tr valign="top">
-		<td>
-		Summary (public):<br/>
-		%%[summary,input_textarea,rows=1,cols=44,class=notes]%%<br/>
-		Notes (private):<br/>
-		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
-		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
-		%%[textFormat]%%
-		&nbsp;&nbsp;
-		%%[deleteActivity]%%
-		</td>
-	    <td class="de">
 
-	    Hours:<br/>
-		%%[hours,input_text]%%<br/>
-		Date:<br/>
-      	%%[act_date,input_date_selector]%%<br/>
-		Start Time:<br/>
-		%%[act_time,input_text]%%<br/>
-		Type of Activity:<br/>
-		%%[category,category]%%<br/>
-		%%[owner_menu]%%
-		Funding Source:<br/>
-		%%[funding,funding]%%<br/>
-		</td>
-	</tr>
+<h2>Case Notes</h2>
 
-</table>
-<input type="hidden" name="screen" value="act"/>
-<input type="hidden" name="act_url" value="%%[act_url]%%"/>
-<input type="hidden" name="close_act" value="1"/>
-<input type="hidden" name="act_type" value="N"/>
-<input type="hidden" name="completed" value="1"/>
-%%[act_id,input_hidden]%%
-%%[case_id,input_hidden]%%
-<p>
-	<input type="submit" value="Save" tabindex="1" class="save" accesskey="s"/>
-</p>
-</form>
+<form class="activity" action="%%[base_url]%%/ops/update_activity.php" name="ws" method="post">
+
+	<div class="case-container case-notes">
+		
+		<div class="column-one">
+			
+			<label for="summary">Summary (public)</label>
+			%%[summary,input_textarea,rows=1,cols=44,class=notes]%%
+			
+			<label for="notes">Notes (private)</label>
+			%%[notes,input_textarea,rows=15,cols=44,class=notes]%%			
+
+			%%[deleteActivity]%%
+			
+	  	</div> <!-- /.column-one -->
+
+		<div class="column-two">
+
+			<label for="hours">Hours</label>
+			%%[hours,input_text,class=w-80]%%
+
+			<label for="date">Date</label>
+			%%[act_date,input_date_selector,class=w-80]%%
+
+			<label for="start">Start Time</label>
+			%%[act_time,input_text,class=w-80]%%
+
+			<label for="activity-type">Type of Activity</label>		
+			%%[category,category]%%
+
+			%%[owner_menu]%%
+			
+			<label for="funding">Funding Source</label>
+			%%[funding,funding]%%
+		
+		</div> <!-- /.column-two -->
+
+	</div> <!-- /.case-container.case-notes -->
+
+	<input type="hidden" name="screen" value="act"/>
+	<input type="hidden" name="act_url" value="%%[act_url]%%"/>
+	<input type="hidden" name="close_act" value="1"/>
+	<input type="hidden" name="act_type" value="N"/>
+	<input type="hidden" name="completed" value="1"/>	
+	%%[act_id,input_hidden]%%
+	%%[case_id,input_hidden]%%
+	
+	<div class="submit">		
+		<input type="submit" value="Save" tabindex="1" accesskey="s"/>
+	</div>
+
+</form> <!-- /.activity -->
 
 %%[notes_header]%%
 %%[notes_order]%%
 %%[notes_list]%%
 %%[notes_footer]%%
 
+
 <script language="JavaScript" type="text/javascript">
 <!--
-document.ws.summary.focus();
-//-->
+document.ea.summary.focus();
+//--> 
 </script>
+
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%
 
-
 %%[end:N]%%
 
-
 %%[begin:C]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method=POST>
-<table>
-	<tr valign="top">
-		<td>
-		Summary (public):<br/>
-		%%[summary,input_textarea,rows=1,cols=44,class=notes]%%<br/>
-		Notes (private):<br/>
-		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
-		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
-		%%[textFormat]%%
-		&nbsp;&nbsp;
-		%%[deleteActivity]%%
 
-		</td>
-		<td class="de">
+<h2>Calendar Event</h2>
 
-		Date: <br/>
-		%%[act_date,input_date_selector]%%<br/>
-		Start Time:<br/>
-		%%[act_time,input_text]%%<br/>
-		End Time:<br/>
-		%%[act_end_time,input_text]%%<br/>
-		Type of Activity:<br/>
-		%%[category,category]%%<br/>
-		%%[owner_menu]%%
-		Case: %%[number]%%<br/>
-		%%[new_case_menu]%%<br/>
-		Funding Source:<br/>
-		%%[funding,funding]%%<br/>
+<form class="activity" action="%%[base_url]%%/ops/update_activity.php" name="ea" method="post">
 
-		</td>
-	</tr>
-	<tr>
-		<td colspan="2">
-		%%[act_url,input_hidden]%%
-		%%[act_id,input_hidden]%%
-		%%[act_type,input_hidden]%%
-		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="cancel" value="Cancel" tabindex="1" class="save" />
-		</td>
-	</tr>
-</table>
+	<div class="case-container calendar-event">
 
-</form>
+		<div class="column-one">
+			
+			<label for="type-activity">Type of Activity</label>
+			%%[category,category]%%
+
+			<label for="case#">Case<!--  ~ %%[number]%% --></label>			
+			%%[new_case_menu]%%
+
+			<label for="summary">Summary (public)</label>
+			%%[summary,input_textarea,rows=1,cols=44,class=notes]%%
+			
+			<label for="notes">Notes (private)</label>
+			%%[notes,input_textarea,rows=11,cols=44,class=notes]%%
+			
+			<!-- text highlight feature -->
+
+			<!-- <img src="%%[base_url]%%/images/point.gif">
+			<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+			%%[textFormat]%%
+			&nbsp;&nbsp; -->
+			
+			%%[deleteActivity]%%
+			
+		</div>
+
+		<div class="column-two">	
+			
+			%%[owner_menu]%%
+
+			<label for="date">Date</label>
+			%%[act_date,input_date_selector]%%
+			
+			<label for="start-time">Start Time</label>
+			%%[act_time,input_text,class=start-time]%%
+			
+			<label for="end-time">End Time</label>
+			%%[act_end_time,input_text,class=end-time]%%
+			
+			<label for="funding">Funding Source</label>
+			%%[funding,funding]%%
+	 	
+			%%[act_url,input_hidden]%%
+			%%[act_id,input_hidden]%%
+			%%[act_type,input_hidden]%%
+			
+		</div>
+
+	</div> <!-- /.case-container.calendar-event -->
+
+	<div class="submit">
+		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="" />		
+		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="" />		
+		<input type="submit" name="cancel" value="Cancel" tabindex="1" />		
+	</div>
+
+</form> <!-- /.activity -->
+
 
 <script language="JavaScript" type="text/javascript">
 <!--
-document.ws.summary.focus();
-//-->
+document.ea.summary.focus();
+//--> 
 </script>
+
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
@@ -125,61 +154,110 @@ document.ws.summary.focus();
 
 %%[end:C]%%
 
+<!-- Tickler -->
+
 %%[begin:K]%%
 
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
-<table>
-	<tr valign="top">
-		<td>
-		Summary (public):<br/>
-		%%[summary,input_textarea,rows=1,cols=44,class=notes]%%<br/>
-		Notes (private):<br/>
-		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
-		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
-		%%[textFormat]%%
-		&nbsp;&nbsp;
-		%%[deleteActivity]%%
+<h2>Case Tickler</h2>
 
-		</td>
-		<td class="de">
+<form class="activity" action="%%[base_url]%%/ops/update_activity.php" name="ea" method="POST">
 
-		Date: <br/>
-		%%[act_date,input_date_selector]%%<br/>
-		Start Time:<br/>
-		%%[act_time,input_text]%%<br/>
-		End Time:<br/>
-		%%[act_end_time,input_text]%%<br/>
-		Type of Activity:<br/>
-		%%[category,category]%%<br/>
-		%%[owner_menu]%%
-		Case: %%[number]%%<br/>
-		%%[new_case_menu]%%<br/>
-		Funding Source:<br/>
-		%%[funding,funding]%%<br/>
-    	Completed:<br/>
-    	%%[completed,yes_no,checkbox]%%<br/>
-		</td>
-	</tr>
-	<tr>
-		<td colspan="2">
+	<div class="case-container tickler">
+
+		<div class="column-one">
+
+			<div>
+				<label for="category">Type of Activity</label>
+				%%[category,category]%%
+			</div>
+
+
+			<div>
+				<label for="new_case_menu">Case</label> %%[number]%%
+				%%[new_case_menu]%%
+			</div>
+
+
+			<div>
+				<label for="summary">Summary (public)</label>
+				%%[summary,input_textarea,rows=1,cols=44,class=notes]%%
+			</div>
+
+			<div>
+				<label for="notes">Notes (private)</label>
+				%%[notes,input_textarea,rows=11,cols=44,class=notes]%%
+				
+				<!-- text highlight feature -->
+				<!-- <img src="%%[base_url]%%/images/point.gif">
+				<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+				%%[textFormat]%%
+				&nbsp;&nbsp; -->
+
+			</div>
+
+			<div>
+				%%[deleteActivity]%%
+			</div>
+			
+		</div> 	<!-- /.column-one -->
+
+		<div class="column-two">
+			
+			<div>
+				%%[owner_menu]%%	
+			</div>
+
+			<div>
+				<label for="act_date">Date</label>
+				%%[act_date,input_date_selector]%%			
+			</div>
+
+
+			<div>
+				<label for="act_time">Start Time</label>
+				%%[act_time,input_text,class=start-time]%%			
+			</div>
+
+
+			<div>
+				<label for="end_time">End Time</label>
+				%%[act_end_time,input_text,class=end-time]%%
+			
+			</div>
+
+			<div>
+				<label for="funding">Funding Source</label>
+				%%[funding,funding]%% 
+			</div>
+
+		
+			<div class="completed">
+				<strong>Completed:</strong>
+	 			%%[completed,yes_no,checkbox]%%
+			</div>
+
+	 	</div> <!-- /.column-two -->
+
+ 	</div> <!-- /.case-container.tickler -->
+
+	<div class="submit">
+		
 		%%[act_url,input_hidden]%%
 		%%[act_id,input_hidden]%%
 		%%[act_type,input_hidden]%%
-		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="cancel" value="Cancel" tabindex="1" class="save" />
-	</td>
-  </tr>
-</table>
-</form>
+		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="" />		
+		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="" />
+		<input type="submit" name="cancel" value="Cancel" tabindex="1" />
+	
+	</div>
+
+</form> <!-- /.activity -->
+
 
 <script language="JavaScript" type="text/javascript">
 <!--
-document.ws.summary.focus();
-//-->
+document.ea.summary.focus();
+//--> 
 </script>
 
 
@@ -191,69 +269,124 @@ document.ws.summary.focus();
 %%[end:K]%%
 
 
-
+<!-- LSC Other Matters -->
 
 %%[begin:L]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
-<table>
-	<tr valign="top">
-    	<td class="de" nowrap>
-		<strong>Persons Helped</strong><br/>
-		Measured:<br/>
-		%%[ph_measured,input_text]%%<br/>
-		Estimated:<br/>
-		%%[ph_estimated,input_text]%%<br/>
-		Service Provided:<br/>
-        %%[om_code,lsc_other_services]%%<br/>
-		</td>
-		<td>
-		Summary (public):<br/>
-		%%[summary,input_textarea,cols=35,rows=1,class=notes]%%<br/>
-      	Estimate Narrative:<br/>
-      	%%[estimate_notes,input_textarea,cols=35,rows=12,class=notes]%%<br/>
-      	%%[deleteActivity]%%
-		</td>
-		<td class="de">
-		Date:<br/>
-      	%%[act_date,input_date_selector]%%<br/>
-		Start Time:<br/>
-		%%[act_time,input_text]%%<br/>
-		End Time:<br/>
-		%%[act_end_time,input_text]%%<br/>
-		Hours:<br/>
-		%%[hours,input_text]%%<br/>
-		Case: %%[number]%%<br/>
-		%%[new_case_menu]%%<br/>
-		Type of Activity:<br/>
-		%%[category,category]%%<br/>
-		%%[owner_menu]%%
-		Funding Source:<br/>
-		%%[funding,funding]%%<br/>
-		Completed:<br/>
-		%%[completed,yes_no,checkbox]%%<br/>
-		</td>
-	</tr>
-	<tr class="de">
-		<td colspan="3">
+
+<h2>LSC Other Services Record</h2>
+
+<form class="activity" action="%%[base_url]%%/ops/update_activity.php" name="ea" method="POST">
+
+	<div class="case-container other-matters">	 
+
+		 <div class="column-one">
+	 	
+			<h4 class="number-served">Number of Persons Helped</h4>
+
+			<div class="osr-number">
+				<label for="measured">Measured</label>
+				%%[ph_measured,input_text,measured,class=w-50]%%
+			</div>
+
+
+			<div class="osr-number">
+				<label for="estimated">Estimated</label>
+				%%[ph_estimated,input_text,estimated,class=w-50]%%
+			</div>
+
+			<div>
+				<label for="om_code">Service Provided</label>
+	  		%%[om_code,lsc_other_services]%%	
+			</div>
+
+			<div>
+				<label for="summary">Summary (public)</label>
+				%%[summary,input_textarea,rows=1,cols=44,class=notes]%%	
+			</div>
+
+			<div>
+				<label for="estimate_notes">Estimate Narrative</label>
+	   			%%[estimate_notes,input_textarea,cols=44,rows=8,class=notes]%%
+			</div>
+
+			<div>
+				<label for="category">Type of Activity</label>
+				%%[category,category]%%
+			</div>
+			
+			<div>
+				<label for="new_case_menu">Case</label> %%[number]%%
+				%%[new_case_menu]%%
+			</div>
+
+			<div>			
+				%%[deleteActivity]%%
+			</div>
+			 
+		</div>  <!-- /.column-one -->
+
+		<div class="column-two">
+
+			<div>
+				%%[owner_menu]%%
+			</div>
+			
+			<div>
+				<label for="act_date">Date</label>
+	   			%%[act_date,input_date_selector,class=w-80]%%
+			</div>
+			
+
+			<div>
+				<label for="hours">Hours</label>
+				%%[hours,input_text,class=w-80]%%
+			</div>
+
+			<div>
+				<label for="act_time">Start Time</label>
+				%%[act_time,input_text,class=w-80]%%
+			</div>
+
+			<div>
+				<label for="act_end_time">End Time</label>
+				%%[act_end_time,input_text,class=w-80]%%
+			</div>
+			
+			<div>
+				<label for="funding">Funding</label>
+				%%[funding,funding]%% 
+			</div>
+
+			<div>
+				<strong>Completed:</strong>
+	 			%%[completed,yes_no,checkbox]%%			
+			</div>
+
+		</div>  <!-- /.column-two -->
+
+	</div> <!-- /.case-container.other-matters -->
+		
+	<div class="submit">
+		
 		%%[act_url,input_hidden]%%
 		%%[act_id,input_hidden]%%
 		%%[act_type,input_hidden]%%
-		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="cancel" value="Cancel" tabindex="1" class="save" />
-		</td>
-	</tr>
-</table>
+		
+		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" />		
+		<input type="submit" name="close_act" value="Save and Close" tabindex="1" />		
+		<input type="submit" name="cancel" value="Cancel" tabindex="1" />
+		
+	</div>
+	
+</form> <!-- /.activity -->
 
-</form>
 
 <script language="JavaScript" type="text/javascript">
 <!--
-document.ws.summary.focus();
-//-->
+document.ea.summary.focus();
+//--> 
 </script>
+
 
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%
@@ -261,59 +394,101 @@ document.ws.summary.focus();
 
 %%[end:L]%%
 
-%%[begin:T]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
-<table>
-	<tr valign="top">
-		<td>
-		Summary (public):<br/>
-		%%[summary,input_textarea,rows=1,cols=44,class=notes]%%<br/>
-		Notes (private):<br/>
-		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
-		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
-		%%[textFormat]%%
-		&nbsp;&nbsp;
-		%%[deleteActivity]%%
-		</td>
-	    <td class="de">
+<!-- Timeslips -->
 
-	    Hours:<br/>
-		%%[hours,input_text]%%<br/>
-		Date:<br/>
-		%%[act_date,input_date_selector]%%<br/>
-		Start Time:<br/>
-		%%[act_time,input_text]%%<br/>
-		Type of Activity:<br/>
-		%%[category,category]%%<br/>
-		%%[owner_menu]%%
-		Case: %%[number]%%<br/>
-		%%[new_case_menu]%%<br/>
-		Funding Source:<br/>
-		%%[funding,funding]%%<br/>
-		</td>
-	</tr>
-	<tr>
-		<td colspan="2">
+%%[begin:T]%%
+
+<form class="activity" action="%%[base_url]%%/ops/update_activity.php" name="ea" method="POST">
+
+	<h2>Time Slip</h2>
+
+	<div class="case-container time-slip">
+
+		<div class="column-one">
+
+			<div>
+				<label for="category">Type of Activity</label>
+				%%[category,category]%%
+			</div>
+
+			<div>
+				<label for="new_case_menu">Case</label> %%[number]%%
+				%%[new_case_menu]%% 
+			</div>
+			
+			<div>
+				<label for="summary">Summary (public)</label>
+				%%[summary,input_textarea,rows=1,cols=44,class=notes]%%
+			</div>
+
+			<div>			
+				<label for="notes">Notes (private)</label>
+				%%[notes,input_textarea,rows=11,cols=44,class=notes]%%			
+				<!-- text highlight feature -->
+				<!-- <img src="%%[base_url]%%/images/point.gif">
+				<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+				%%[textFormat]%%
+				&nbsp;&nbsp; -->
+			</div>
+
+			<div>
+				%%[deleteActivity]%%
+			</div>
+			
+		</div> <!-- /.column-one -->
+
+		<div class="column-two">
+		 
+		 	<div>
+				%%[owner_menu]%%
+			</div>
+		 	
+			<div>
+				<label for="act_date">Date</label>
+				%%[act_date,input_date_selector]%%
+			</div>
+
+		 	<div>
+				 <label for="hours">Hours</label>
+				 %%[hours,input_text,class=w-80]%%
+			</div>
+
+			<div>
+				<label for="act_time">Start Time</label>
+				%%[act_time,input_text,class=w-80]%%
+			</div>
+
+			<div>
+				<label for="funding">Funding Source</label>
+				%%[funding,funding]%% 
+			</div>
+
+		</div> <!-- /.column-two -->
+
+	</div> <!-- /.case-container.time-slip -->
+
+	<div class="submit">
+			
 		<input type="hidden" name="completed" value="1">
 		%%[act_url,input_hidden]%%
 		%%[act_id,input_hidden]%%
 		%%[act_type,input_hidden]%%
-		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="save" />
-		&nbsp;
-		<input type="submit" name="cancel" value="Cancel" tabindex="1" class="save" />
-		</td>
-	</tr>
-</table>
+		
+		<input type="submit" name="next_act" value="Save, Add Another" tabindex="1" class="" />		
+		<input type="submit" name="close_act" value="Save and Close" tabindex="1" class="" />		
+		<input type="submit" name="cancel" value="Cancel" tabindex="1" />
+		
+	</div>	
+
 </form>
+
 
 <script language="JavaScript" type="text/javascript">
 <!--
-document.ws.summary.focus();
-//-->
+document.ea.summary.focus();
+//--> 
 </script>
+
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
@@ -322,37 +497,43 @@ document.ws.summary.focus();
 
 %%[end:T]%%
 
-
-
 %%[begin:confirm_delete]%%
-<table>
-	<tr>
-		<td>
+
+	<p class="deletion-warning">
 		Once an Activity record is deleted, you cannot undelete it.
-		Are you sure you want to delete this Activity Record?
-		</td>
-	</tr>
-</table>
-<form action="%%[base_url]%%/ops/delete_activity.php" method="POST">
+		Are you sure you want to delete this Activity record?
+	</p>
+
+<form class="activity" action="%%[base_url]%%/ops/delete_activity.php" method="POST">
+
+	<div class="submit">
+
 	<input type=hidden name=act_id value=%%[act_id]%%>
-	<input type="submit" name="delete" value="Delete" class="save">
-	<input type="submit" name="cancel" value="Cancel" class="save">
+	<input type="submit" name="delete" value="Delete" >
+	<input type="submit" name="cancel" value="Cancel" >
+
+	</div>
+
 </form>
+
 %%[end:confirm_delete]%%
 
 
 %%[begin:access_denied]%%
-<table>
-	<tr>
-		<td>
+
 		Access Denied:  You do not have permission to delete this record.
-		</td>
-	</tr>
-</table>
-<form action="%%[base_url]%%/activity.php">
+		
+<form class="activity" action="%%[base_url]%%/activity.php">
+	
+	<div class="submit">	
+
 	%%[act_url,input_hidden]%%
 	%%[act_id,input_hidden]%%
 	%%[act_type,input_hidden]%%
-	<input type="submit" name="cancel" value="Cancel" tabindex="1" class="save" />
+	<input type="submit" name="cancel" value="Cancel" tabindex="1" />
+
+	</div>
+
 </form>
+
 %%[end:access_denied]%%

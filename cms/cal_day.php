@@ -570,9 +570,9 @@ $content['user_id'] = $user_id;
 
 $plTemplate["content"] = pl_template($content, 'subtemplates/cal_day.html');
 $plTemplate["page_title"] = "Calendar";
-$plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> &gt;
-	<a href='cal_day.php'>Calendar</a> &gt; 
-	<a href='cal_day.php?cal_date=$cal_date'>$tmp</a> &gt;
+$plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> <span class=\"nav-arrow\">&#10140;</span>
+	<a href='cal_day.php'>Calendar</a> <span class=\"nav-arrow\">&#10140;</span>
+	<a href='cal_day.php?cal_date=$cal_date'>$tmp</a> <span class=\"nav-arrow\">&#10140;</span>
 	Day View &nbsp; ";
 
 $base_url = pl_settings_get('base_url');

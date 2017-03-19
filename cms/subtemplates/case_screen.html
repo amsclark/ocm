@@ -1,95 +1,147 @@
-%%[flags]%%
-<div class="span3">
-			<h2>Case Summary</h2>
-			<p class="well btn-info">
-				<strong>%%[number]%%</strong><br>
-				%%[status text source=case_status]%%<br/>
-				%%[lsc_problem_text]%%<br/>
-			</p>
+<div class="flags">
+	%%[flags]%%
+</div>
+
+<div id="case_tabs">%%[case_tabs]%%</div>
+
+<div class="case-screen">	
+
+	<aside>
+		
+		<h2>Case Summary</h2>
+	
+		<ul>
+			<li>Case No. <strong>%%[number]%%</strong></li>
+			<li>Status: %%[status text source=case_status]%%</li>
+			<li>LSC Code: %%[lsc_problem_text]%%</li>
+		</ul>
+
+		<ul>
 			
 			%%[begin:client]%%
-			<p class="well">
-			<!--<img src="images/vcard.png">&nbsp;--><strong><a href="%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%&case_id=%%[case_id]%%&number=%%[number]%%">%%[client_name]%%</a></strong><br/>
-			<em>Primary Client</em><br/>
-			<span class="small">
-			Address:<br/>
-			<strong>%%[client_address]%%</strong><br/>
-			Phone: <strong>%%[client_phone]%% %%[phone_notes]%%</strong><br/>
-			Notes: <strong>%%[notes]%%</strong><br/>
-			Language: <strong>%%[language,language,text]%%</strong><br/>
-			Birth Date: <strong>%%[birth_date]%%</strong><br/>
-        <script LANGUAGE="JavaScript" type="text/javascript">
-    		var client_name = "%%[client_name]%%";
-		</script>
-        
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-        <a onClick="return confirm('Are you sure you want to remove ' + client_name + 'from this case?');" href="%%[base_url]%%/ops/delete_conflict.php?conflict_id=%%[conflict_id]%%&case_id=%%[case_id]%%">remove</a> </SPAN> </p>
-			</SPAN>
-			</p>
-			%%[end:client]%%
+
+			<li><!--<img src="images/vcard.png">&nbsp;--><strong><a href="%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%&case_id=%%[case_id]%%&number=%%[number]%%">%%[client_name]%%</a></strong></li>
+			<li>Primary Client</li>
+
+		</ul>
+
+		<ul>			
+			
+			<li>Address:</li>
+			<li><strong>%%[client_address]%%</strong></li>
+			<li>Phone: <strong>%%[client_phone]%% %%[phone_notes]%%</strong></li>
+			<li>Notes: <strong>%%[notes]%%</strong></li>
+			<li>Language: <strong>%%[language,language,text]%%</strong></li>
+			<li>Birth Date: <strong>%%[birth_date]%%</strong></li>
+		
+			<script LANGUAGE="JavaScript" type="text/javascript">
+				var client_name = "%%[client_name]%%";
+			</script>
+
+		</ul>
+
+		<ul>
+
+			<li class="remove"><i class="material-icons undo">undo</i> <a onClick="return confirm('Are you sure you want to remove ' + client_name + 'from this case?');" href="%%[base_url]%%/ops/delete_conflict.php?conflict_id=%%[conflict_id]%%&case_id=%%[case_id]%%">Remove the person, above</a>
+			
+			%%[end:client]%%</li>			
+
+		</ul>
+
+		<hr>
+
+		<ul>
 			
 			%%[begin:contacts]%%
-			<p class="well">
-				<!--<img src="images/vcard.png">&nbsp;--><strong><a href='%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%&case_id=%%[case_id]%%&number=%%[number]%%'>%%[full_name]%%</a></strong><br/>
-				<em>%%[role]%%</em><br/>
-				%%[full_phone]%% %%[phone_notes]%%<br/>
-        <script LANGUAGE="JavaScript" type="text/javascript">
-		    var full_name%%[contact_id]%% = "%%[full_name]%%";
-		</script>
 
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-        <a onClick="return confirm('Are you sure you want to remove ' + full_name%%[contact_id]%% + ' from this case?');" href="%%[base_url]%%/ops/delete_conflict.php?conflict_id=%%[conflict_id]%%&case_id=%%[case_id]%%">remove</a> </p>
-			</p>
-			%%[end:contacts]%%
-      <h2>Actions</h2>
-      <p> <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> <a class="butt" href="%%[base_url]%%/timer.php?case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a><br/>
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> Add <a class="butt" href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&act_type=K">Tickle</a><br/>
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> Add <a class="butt" href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&problem=%%[problem]%%&act_type=L">LSC Other Matter</a><br/>
-<!-- 07-14-2011 - caw - email link added -->       		    
-		<img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-		<a href="mailto:?subject=Case: %%[number]%%
+			<li><strong><a href='%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%&case_id=%%[case_id]%%&number=%%[number]%%'>%%[full_name]%%</a></strong></li>
+			<li>%%[role]%%</li>
+			<li>%%[full_phone]%%</li>
+			<li>%%[phone_notes]%%</li>
+
+			<script LANGUAGE="JavaScript" type="text/javascript">
+	    		var full_name%%[contact_id]%% = "%%[full_name]%%";
+			</script>
+
+		</ul>
+
+		<ul>
+
+			<li class="remove"><i class="material-icons undo">undo</i> <a onClick="return confirm('Are you sure you want to remove ' + full_name%%[contact_id]%% + ' from this case?');" href="%%[base_url]%%/ops/delete_conflict.php?conflict_id=%%[conflict_id]%%&case_id=%%[case_id]%%">Remove the person, above</a></li>
+			
+		%%[end:contacts]%%
+
+		</ul>
+
+		<h2>Actions</h2>
+
+		<ul class="actions-list">
+
+			<li><a href="%%[base_url]%%/timer.php?case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a></li>
+			
+			<li>Add <a href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&act_type=K">Tickle</a></li>
+			
+			<li>Add <a href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&problem=%%[problem]%%&act_type=L">LSC Other Matter</a></li>
+			
+			<li><a href="mailto:?subject=Case: %%[number]%%
 				&body=Please be advised:
 				%0A%0A%0A%0AFollowing is a link to the case file: 
 				%0Ahttps://%%[server_url]%%%%[base_url]%%/case.php?case_id=%%[case_id]%%
-				%0A%0A**Access to case is dependent upon valid Pika CMS login **">Email Case Link</a><br/>
- <!-- end of addition -->   
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> <a class="butt" href="%%[base_url]%%/transfer.php?case_id=%%[case_id]%%&case_number=%%[number]%%">Transfer this case</a> <br/>
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> <a class="butt" href="%%[base_url]%%/ops/duplicate_case.php?case_id=%%[case_id]%%">Duplicate this case</a> <br/>
-        <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> <a class="butt" href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=confirm_delete">Delete this case</a> <br/>
-      <form action="%%[base_url]%%/case_contact.php" method="get">
-        <p class="side"> <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> Add to this case:
-          %%[relation_code,relation_codes,menu_no_blank]%%<br/>
-          First:<br/>
-          <input type=text name=first_name tabindex="1"/>
-          <br/>
-          Middle:<br/>
-          <input type=text name=middle_name tabindex="1"/>
-          <br/>
-          Last (or Org. Name):<br/>
-          <input type=text name=last_name tabindex="1"/>
-          <br/>
-          Jr., Sr., etc.<br/>
-          <input type=text name=extra_name tabindex="1"/>
-          <br/>
-          Date of Birth:<br/>
-          <input type="text" name="birth_date" maxlength="25" tabindex="1"/>
-          <br/>
-          SSN: <br/>
-          <input type="text" name="ssn" onkeyup="pika_ssn(this);" value="" maxlength="11" size="20" tabindex="1"/>
-          <br/>
-          <input type="hidden" name="case_id" value="%%[case_id]%%"/>
-          <input type="hidden" name="number" value="%%[number]%%"/>
-          <!--<input type=hidden name=screen value="new_intake"/>-->
-        </p>
-        <p class="side">
-          <input type="submit" value="Add" tabindex="1"/>
-        </p>
-      </form>
+				%0A%0A**Access to case is dependent upon valid Pika CMS login **">Email Case Link</a></li>
+			
+			<li><a href="%%[base_url]%%/transfer.php?case_id=%%[case_id]%%&case_number=%%[number]%%">Transfer this case</a></li>
+			
+			<li><a href="%%[base_url]%%/ops/duplicate_case.php?case_id=%%[case_id]%%">Duplicate this case</a> </li>
+			
+			<li><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=confirm_delete">Delete this case</a> </li>
+			
+		</ul>
+
+		<hr>
+
+		<form action="%%[base_url]%%/case_contact.php" method="get">
+	
+			<h2>Add to this case</h2>
+	
+			<ul class="add">
+
+				<li>%%[relation_code,relation_codes,menu_no_blank]%%</li>
+			  	
+				<li><label for="first_name">First Name</label>
+					<input type="text" name="first_name" tabindex="1"/></li>
+			
+				<li><label for="middle_name">Middle Name</label>
+					<input type="text" name="middle_name" tabindex="1"/></li>
+			
+				<li><label for="last_name">Last Name / Org.</label>
+					<input type="text" name="last_name" tabindex="1"/></li>
+			
+				<li><label for="extra_name">Suffix (e.g., Jr.)</label>
+					<input class="w-120 suffix" type="text" name="extra_name" tabindex="1"/></li>
+			
+				<li><label for="birth_date">Date of Birth</label>
+					<input class="w-120 dob" type="text" name="birth_date" maxlength="25" tabindex="1"/></li>
+			
+				<li><label for="ssn">SSN</label>
+					<input class="w-120 ssn" type="text" name="ssn" onkeyup="pika_ssn(this);" value="" maxlength="11" tabindex="1"/></li>
+						
+				<li>
+					<input type="hidden" name="case_id" value="%%[case_id]%%"/>
+		  			<input type="hidden" name="number" value="%%[number]%%"/>
+					<input class="submit" type="submit" value="Add" tabindex="1"/>
+				
+				</li>	
+
+			</ul> <!-- /.add -->
+
+		</form>
+
+	</aside>
+
  </div>
- <div class="span8">
-		<div id="case_tabs">%%[case_tabs]%%</div>
-		<div id="case_screen">%%[case_screen]%%</div>
-</div>
+ 
+ <div id="case_screen">%%[case_screen]%%</div>
+
 <script type="text/javascript" language="JavaScript" src="%%[base_url]%%/js/popUp.js"></script>
 <script language="JavaScript" type="text/javascript"><!--
 

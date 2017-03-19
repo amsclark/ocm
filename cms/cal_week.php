@@ -468,9 +468,9 @@ $tmp_date = pl_date_unmogrify($cal_date);
 
 $plTemplate["content"] = pl_template($content, 'subtemplates/cal_week.html');
 $plTemplate["page_title"] = "Calendar";
-$plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> &gt;
-	<a href='cal_day.php'>Calendar</a> &gt; 
-	<a href='cal_day.php?cal_date=$cal_date'>$tmp_date</a> &gt;
+$plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> <span class=\"nav-arrow\">&#10140;</span>
+	<a href='cal_day.php'>Calendar</a> <span class=\"nav-arrow\">&#10140;</span>
+	<a href='cal_day.php?cal_date=$cal_date'>$tmp_date</a> <span class=\"nav-arrow\">&#10140;</span>
 	Week View &nbsp; ";
 
 

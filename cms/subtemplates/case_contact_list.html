@@ -1,124 +1,173 @@
 <form name="form1" method="get" action="%%[base_url]%%/case_contact.php">
-<h2>Contact Info.</h2>
-<table id="middle-content" width="100%" summary="">
-	<tr valign="top">
-		<td class="clf">
-			First:<br/>
-			<input type=text name=first_name value="%%[first_name]%%" tabindex="1"/><br/>
-		</td>
-		<td class="clf">
-			Middle:<br/>
-			<input type=text name=middle_name value="%%[middle_name]%%" tabindex="1"/><br/>
-		</td>
-		<td class="clf">
-			Last (or Org. Name):<br/>
-			<input type=text name=last_name value="%%[last_name]%%" tabindex="1"/><br/>
-		</td>
-		<td class="clf">
-			Jr., Sr., etc.<br/>
-			<input type=text name=extra_name value="%%[extra_name]%%" tabindex="1"/><br/>
-		</td>
-		<td class="clf">
-			Date of Birth:<br/>
-			<input type="text" name="birth_date" value="%%[birth_date]%%" maxlength="25" tabindex="1"/><br/>
-		</td>
-	</tr>
-	<tr>
-		<td class="clf" colspan="2">
-			Telephone Number: <br/>
-			<span class="maskt">
-			(<input type=text name="area_code" value="%%[area_code]%%" onkeyup="pika_area_code(this, 3, 'phone');" style="width: 2em;" maxlength="3" tabindex=1 class=maskf>) 
-			<input type=text name="phone" value="%%[phone]%%" onkeyup="pika_phone(this);" style="width: 11.2em;" maxlength="8" tabindex="1" class="maskf">
-			</span>
-		</td>
-		<td class="clf">
-			%%[ssn_compat_mode]%%
-		</td>
-		<td class="clf" colspan="2">
-			<input type="hidden" name="case_id" value="%%[case_id]%%"/>
-			<input type="hidden" name="number" value="%%[number]%%"/>
-			<input type="hidden" name="relation_code" value="%%[relation_code]%%">
-			<input type="hidden" name="screen" value="%%[screen]%%"/>
-		    <input type="hidden" name="order_field" value="%%[order_field]%%"/>
-		    <input type="hidden" name="order" value="%%[order]%%"/>
-		    <input type="hidden" name="offset" value="%%[offset]%%"/>
-	    	<input type="submit" name="dmodes" value="Search Names" tabindex="1"/>
-	    	or
-	    	<input type="submit" name="dmodeb" value="Browse Names" tabindex="1"/>
-		</td>
-	</tr>
-</table>
+
+	<h2>Contact Info.</h2>
+
+	<table id="middle-content">
+
+		<tr>
+
+			<td>
+				First:<br/>
+				<input type=text name=first_name value="%%[first_name]%%" tabindex="1"/><br/>
+			</td>
+
+			<td>
+				Middle:<br/>
+				<input type=text name=middle_name value="%%[middle_name]%%" tabindex="1"/><br/>
+			</td>
+
+			<td>
+				Last (or Org. Name):<br/>
+				<input type=text name=last_name value="%%[last_name]%%" tabindex="1"/><br/>
+			</td>
+
+			<td>
+				Jr., Sr., etc.<br/>
+				<input type=text name=extra_name value="%%[extra_name]%%" tabindex="1"/><br/>
+			</td>
+			
+			<td>
+				Date of Birth:<br/>
+				<input type="text" name="birth_date" value="%%[birth_date]%%" maxlength="25" tabindex="1"/><br/>
+			</td>
+		
+		</tr>
+		
+		<tr>
+			
+			<td colspan="2">
+				
+				Telephone Number: <br/>
+				<span>
+				(<input type=text name="area_code" value="%%[area_code]%%" onkeyup="pika_area_code(this, 3, 'phone');" style="width: 2em;" maxlength="3" tabindex=1 class=maskf>) 
+				<input type=text name="phone" value="%%[phone]%%" onkeyup="pika_phone(this);" style="width: 11.2em;" maxlength="8" tabindex="1" class="maskf">
+				</span>
+			
+			</td>
+			
+			<td>
+				%%[ssn_compat_mode]%%
+			</td>
+			
+			<td colspan="2">
+			
+				<input type="hidden" name="case_id" value="%%[case_id]%%"/>
+				<input type="hidden" name="number" value="%%[number]%%"/>
+				<input type="hidden" name="relation_code" value="%%[relation_code]%%">
+				<input type="hidden" name="screen" value="%%[screen]%%"/>
+			    <input type="hidden" name="order_field" value="%%[order_field]%%"/>
+			    <input type="hidden" name="order" value="%%[order]%%"/>
+			    <input type="hidden" name="offset" value="%%[offset]%%"/>
+		    	
+		    	<input type="submit" name="dmodes" value="Search Names" tabindex="1"/>
+		    	or
+		    	<input type="submit" name="dmodeb" value="Browse Names" tabindex="1"/>
+			
+			</td>
+
+		</tr>
+
+	</table>
+
 </form>
-			<h2>Search Results</h2>
-			<p>The following is a list of existing names from the system.  If the person you are adding
-			to this case appears on this list, click the "Use" button next to their name to re-use their existing information...  
+			
+<h2>Search Results</h2>
+	
+<p>The following is a list of existing names from the system.  If the person you are adding to this case appears on this list, click the "Use" button next to their name to re-use their existing information...  
+
 %%[search_list]%%
 %%[ab_list]%%
 %%[begin:flex_header]%%
-			<table cellpadding="3" cellspacing="0" summary="" width="100%">
-				<tbody>
-				<tr>
-					<th>&nbsp;</th>
-					<th>Name</th>
-					<th>Birth&nbsp;Date/SSN</th>
-					<th>Phone&nbsp;#</th>
-					<th>Address</th>
-				</tr>
+	
+<table>
+<tbody>
+	
+	<tr>
+
+		<th>&nbsp;</th>
+		<th>Name</th>
+		<th>Birth&nbsp;Date/SSN</th>
+		<th>Phone&nbsp;#</th>
+		<th>Address</th>
+
+	</tr>
+
 %%[end:flex_header]%%
 %%[begin:flex_row]%%
-			    <tr class="row%%[row_class]%%" valign="top">
-			        <td>
-						<form action="%%[base_url]%%/ops/add_case_contact.php" method="post">
-							<input type="hidden" name="thiscon" value="%%[contact_id]%%">
-							<input type="hidden" name="case_id" value="%%[case_id]%%">
-							<!--<input type="hidden" name="screen" value="%%[screen]%%"/>-->
-							<input type="hidden" name="relation_code" value="%%[relation_code]%%">
-							<input type="submit" value="Use" tabindex="1">
-						<img src="%%[base_url]%%/images/point.gif" width="%%[arrow_img]%%" height="%%[arrow_img]%%" alt=""/>
-						</form>
-			        </td>
-			        
-			       	<td>
-						<a href="%%[base_url]%%/contact_pop_up.php?contact_id=%%[contact_id]%%" onclick="popUp({url:this.href,name:'popUpContact'});return false;">%%[client_name]%%</a>
-			        </td>
-			        <td>
-			        	%%[birth_date]%%<br/>%%[ssn]%%
-			        </td>
-			        <td>
-			        	%%[area_code]%% %%[phone]%% %%[phone_notes]%% <br/> %%[area_code_alt]%% %%[phone_alt]%% %%[phone_notes_alt]%%
-			        </td>
-			        <td>
-			        	%%[address]%% %%[address2]%%<br/>%%[city]%% %%[state]%% %%[zip]%%
-			        </td>
-			    </tr>
+
+    <tr class="row%%[row_class]%%">
+        
+        <td>
+		
+			<form action="%%[base_url]%%/ops/add_case_contact.php" method="post">
+
+				<input type="hidden" name="thiscon" value="%%[contact_id]%%">
+				<input type="hidden" name="case_id" value="%%[case_id]%%">
+				<!--<input type="hidden" name="screen" value="%%[screen]%%"/>-->
+				<input type="hidden" name="relation_code" value="%%[relation_code]%%">
+				
+				<input type="submit" class="use-button" value="Use" tabindex="1">
+
+			</form>
+        
+        </td>
+        
+       	<td>
+			<a href="%%[base_url]%%/contact_pop_up.php?contact_id=%%[contact_id]%%" onclick="popUp({url:this.href,name:'popUpContact'});return false;">%%[client_name]%%</a>
+        </td>
+        
+        <td>
+        	%%[birth_date]%%<br/>%%[ssn]%%
+        </td>
+        
+        <td>
+        	%%[area_code]%% %%[phone]%% %%[phone_notes]%% <br/> %%[area_code_alt]%% %%[phone_alt]%% %%[phone_notes_alt]%%
+        </td>
+        
+        <td>
+        	%%[address]%% %%[address2]%%<br/>%%[city]%% %%[state]%% %%[zip]%%
+        </td>
+    
+    </tr>
+
 %%[end:flex_row]%%
 %%[begin:flex_footer]%%
-			    </tbody>
-			</table>
+    
+    </tbody>
+
+</table>
+
 %%[end:flex_footer]%%
 %%[begin:new_contact_link]%%
-		<br/><hr noshade/><br/>
-		<h2>Create a New %%[relation_code text source=relation_codes]%% Record</h2>
-			<p>...otherwise, click the "Continue" button below to create a new record on the system
-			for the person you are adding to this case.
-			</p>
 
-			<form action="%%[base_url]%%/ops/add_case_new_contact.php" method="post" autocomplete="off">
-			<p>
-				<input type="hidden" name="case_id" value="%%[case_id]%%">
-				<input type="hidden" name="relation_code" value="%%[relation_code]%%">
-				<!--<input type="hidden" name="screen" value="%%[screen]%%"/>-->
-				<input type="hidden" name="first_name" value="%%[first_name]%%">
-				<input type="hidden" name="middle_name" value="%%[middle_name]%%">
-				<input type="hidden" name="last_name" value="%%[last_name]%%">
-				<input type="hidden" name="extra_name" value="%%[extra_name]%%">
-				<input type="hidden" name="birth_date" value="%%[birth_date]%%">
-				<input type="hidden" name="ssn" value="%%[ssn]%%">
-				<input type="hidden" name="area_code" value="%%[area_code]%%">
-				<input type="hidden" name="phone" value="%%[phone]%%">
-				<input type="submit" value="Continue" tabindex="1">
-			</p>
-			</form>
+<h2>Create a New %%[relation_code text source=relation_codes]%% Record</h2>
+
+<p>...otherwise, click the "Continue" button below to create a new record on the system
+for the person you are adding to this case.
+</p>
+
+<form action="%%[base_url]%%/ops/add_case_new_contact.php" method="post" autocomplete="off">
+
+	<p>
+	
+		<input type="hidden" name="case_id" value="%%[case_id]%%">
+		<input type="hidden" name="relation_code" value="%%[relation_code]%%">
+		<!--<input type="hidden" name="screen" value="%%[screen]%%"/>-->
+		<input type="hidden" name="first_name" value="%%[first_name]%%">
+		<input type="hidden" name="middle_name" value="%%[middle_name]%%">
+		<input type="hidden" name="last_name" value="%%[last_name]%%">
+		<input type="hidden" name="extra_name" value="%%[extra_name]%%">
+		<input type="hidden" name="birth_date" value="%%[birth_date]%%">
+		<input type="hidden" name="ssn" value="%%[ssn]%%">
+		<input type="hidden" name="area_code" value="%%[area_code]%%">
+		<input type="hidden" name="phone" value="%%[phone]%%">
+		
+		<input type="submit" value="Continue" tabindex="1">
+	
+	</p>
+
+</form>
+
 %%[end:new_contact_link]%%
 
 <script type="text/javascript" language="JavaScript" src="%%[base_url]%%/js/popUp.js"></script>

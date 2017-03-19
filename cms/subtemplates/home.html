@@ -1,94 +1,79 @@
-<div class="span2">
+<div class="home">
 
-	<h2>Frequent Tasks</h2>
-	<div class="btn-toolbar">	
-		<div class="btn-group">
-			<a class="btn btn-primary" style="width: 6.4em;" href="%%[base_url]%%/case_list.php?mode=open"><i class="icon-user icon-white"></i> Case List</a>
-			<a class="btn btn-primary dropdown-toggle" data-toggle="dropdown" href="#"><span class="caret"></span></a>
-			<ul class="dropdown-menu">
-						<li>
-			<a href="%%[base_url]%%/case_list.php?mode=closed">My Closed Cases</a>
-			</li>
-			
-			<li>
-			<a href="%%[base_url]%%/case_list.php?mode=all">All Cases</a>
-			</li>
-			
-			<li>
-			<a href="%%[base_url]%%/case_list.php">Case List Options</a></li>
-			</ul>
-		</div>
-	</div>
+	<!-- first column -->
+
+	<div class="home-column-one">
+
+		<h2>Frequent Tasks</h2>
 		
-	<div class="btn-toolbar">
-		<div class="btn-group">
-			<a class="btn btn-primary" style="width: 6.4em;" href="reports/"><i class="icon-list-alt icon-white"></i> Reports</a>
-			<a class="btn btn-primary dropdown-toggle" data-toggle="dropdown" href="#"><span class="caret"></span></a>
-			<ul class="dropdown-menu">
-				%%[report_list]%%
-			</ul>
-		</div>
-	</div>
-	
-	<p><a class="btn btn-primary btn-block" href="%%[base_url]%%/intake2.php"><i class="icon-star icon-white"></i> New Client Intake</a></p>
-	<p><a class="btn btn-primary btn-block" href="%%[base_url]%%/ops/new_case_no_client.php"><i class="icon-star icon-white"></i> Eligibility Intake</a></p>
-	<p><a class="btn btn-primary btn-block" href="activity.php?screen=compose&act_type=T"><i class="icon-time icon-white"></i> New Time Slip</a></p>
-	<p><a class="btn btn-primary btn-block" href="activity.php?screen=compose&act_type=K"><i class="icon-exclamation-sign icon-white"></i> New Tickler</a></p>
-	<p><a class="btn btn-primary btn-block" href="activity.php?screen=compose&completed=0"><i class="icon-calendar icon-white"></i> Calendar Entry</a></p>
-	<p><a class="btn btn-primary btn-block" href="prefs.php"><i class="icon-wrench icon-white"></i> Preferences</a></p>
-	<p><a class="btn btn-primary btn-block" href="password.php"><i class="icon-lock icon-white"></i> Change My Password</a></p>
+		<div class="tasks">	
+		
+			<a href="%%[base_url]%%/intake2.php"><i class="material-icons">folder_shared</i>&nbsp;&nbsp;New Client Intake</a>
+			<a href="%%[base_url]%%/case_list.php?mode=open"><i class="material-icons">folder_open</i>&nbsp;&nbsp;My Open Cases</a>
+			<a href="%%[base_url]%%/case_list.php?mode=closed"><i class="material-icons">folder</i>&nbsp;&nbsp;My Closed Cases</a>
+			<a href="%%[base_url]%%/case_list.php?mode=all"><i class="material-icons">view_list</i>&nbsp;&nbsp;All Cases</a>		
+			<a href="%%[base_url]%%/reports/"><i class="material-icons">poll</i>&nbsp;&nbsp;All Reports</a>
+			<a href="%%[base_url]%%/search.php"><i class="material-icons">search</i>&nbsp;&nbsp;Search Filters</a>
+			
+		</div> <!-- /.tasks -->
 
-	<p>
-		Can't find what you're looking for? Try the <a href="%%[base_url]%%/site_map.php">Site Map</a>.
-	</p>
+	</div> <!-- /.home-column-one -->
+
+	<!-- second column -->
+
+	<div class="home-column-two">
+
+		<h2>Time | Dates</h2>
+		
+		<div class="tasks">	
+		
+			<a href="%%[base_url]%%/activity.php?screen=compose&act_type=T"><i class="material-icons">schedule</i>&nbsp;&nbsp;New Timeslip</a>
+			<a href="%%[base_url]%%/activity.php?screen=compose&act_type=K"><i class="material-icons">watch_later</i>&nbsp;&nbsp;New Case Tickler</a>
+			<a href="%%[base_url]%%/cal_day.php"><i class="material-icons">today</i>&nbsp;&nbsp;My Day Calendar</a>
+			<a href="%%[base_url]%%/cal_week.php"><i class="material-icons">event_note</i>&nbsp;&nbsp;My Week Calendar</a>
+						<a href="%%[base_url]%%/cal_adv.php"><i class="material-icons">view_comfy</i>&nbsp;&nbsp;Advanced Calendar</a>
+			<a href="%%[base_url]%%/site_map.php"><i class="material-icons">map</i>&nbsp;&nbsp;Sitemap</a>
+
+		</div> <!-- /.tasks -->
+
+	</div> <!-- third column -->
+
+	 <!-- /.home-column-two -->
+
+	<div class="message-board">
+	
+		<h2>Message Board</h2>
+		
+		%%[begin:motd]%%
+		
+		<div  class="message">
+
+			<div id="motd">
+				
+				<div>
+					<strong>%%[title]%%</strong>
+					<small>By %%[full_name]%%</small>
+					<div id="motd-content-%%[motd_id]%%" style="display:none">
+					%%[content]%% ... [<a href="#" onclick="toggleMotd(%%[motd_id]%%); return false;">Hide Full Text</a>]
+				</div>
+			
+			</div>
+			
+			<div id="motd-summary-%%[motd_id]%%">
+				%%[summary_content]%%
+			
+			</div>
+
+		</div> <!-- /.message -->
+		
+	</div> <!-- /.message-board -->
+
+		%%[end:motd]%%
+
+	</div> <!-- /.home-column-three -->
+
 </div>
-<div class="span5">
-	<h2>Message Board</h2>
-	%%[begin:motd]%%
-	<div id="motd">
-		<strong>%%[title]%%</strong>
-		<small>By %%[full_name]%%</small>
-		<div id="motd-content-%%[motd_id]%%" style="display:none">
-		%%[content]%% ... (<i><a href="#" onclick="toggleMotd(%%[motd_id]%%); return false;">Hide Full Text</a></i>)
-		</div>
-		<div id="motd-summary-%%[motd_id]%%">
-		%%[summary_content]%%
-		</div>
-	</div>
-	<br/>
-	%%[end:motd]%%
-	
-	%%[begin:rss_feeds]%%
-	<div id="feed">
-		<b><a href=%%[link]%%>%%[title]%%</a></b><br/>
-		<div id="feed-content-%%[feed_id]%%" style="padding:5px;display:none">
-		%%[content]%% ... (<i><a href="#" onclick="toggleFeed(%%[feed_id]%%); return false;">Hide Full Text</a></i>)
-		</div>
-		<div id="feed-summary-%%[feed_id]%%" style="padding:5px">
-		%%[summary_content]%%
-		</div>
-	</div>
-	<br/>
-	%%[end:rss_feeds]%%
-</div>
-<div class="span3">
-	<h2>Learn to Use Pika</h2>
-	<p>Have a question?</p>
-	
-	<p>The 
-	<a href="http://pikasoftware.com/docs/index.php/Pika_User_Manual">User's Manual</a>
-	covers the fundamentals of using Pika CMS.  This is a good place to start for attorneys and 
-	staff interested in learning how to use the system.</p>
-	
-	<p>If you are the person responsible for running your program's Pika site, the 
-	<a href="http://pikasoftware.com/docs/index.php/Pika_Admin_Manual">Admin Manual</a>
-	gives technical instructions on how to perform many common maintenance tasks.</p>
-	
-	<p>For further reading, please visit  
-	<a href="http://pikasoftware.com/docs/index.php/Main_Page">Pika Docs</a>, the Pika
-	CMS wiki site.
-	(<a href="http://en.wikipedia.org/wiki/Wiki">What is a wiki?</a>)</p>
-</div>
+
 
 <script type="text/javascript" language="Javascript">
 <!--

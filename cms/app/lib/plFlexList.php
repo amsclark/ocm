@@ -142,7 +142,7 @@ class plFlexList
 			$last_page = (int) (($this->total_records - 1) / $this->records_per_page);
 		}
 		
-		$pager_str .= "<table width=\"95%\" cellspacing=0 summary='Pager'><tr>\n<td align=left width=100>";
+		$pager_str .= "<table class=\"pager-table\"><tr>\n<td>";
 		
 		if ($current_page > 0)
 		{
@@ -150,7 +150,7 @@ class plFlexList
 			$pager_str .= "<a href=\"{$pager_url}&{$this->pager_prefix}offset={$t}\">Previous {$this->records_per_page}</a>";
 		}
 		
-		$pager_str .= "</td>\n<td align=center>";
+		$pager_str .= "</td>\n<td>";
 		
 		if ($last_page < 10)
 		{
@@ -284,12 +284,12 @@ class plFlexList
 			{
 				if ('ASC' == $this->order)
 				{
-					$this->template_array["{$val}_img"] = "<img src=\"{$base_url}/images/asc.gif\" alt=\"Asc.\"/>";
+					// $this->template_array["{$val}_img"] = "<img src=\"{$base_url}/images/asc.gif\" alt=\"Asc.\"/>";
 				}
 				
 				else
 				{
-					$this->template_array["{$val}_img"] = "<img src=\"{$base_url}/images/desc.gif\" alt=\"Desc.\"/>";
+					// $this->template_array["{$val}_img"] = "<img src=\"{$base_url}/images/desc.gif\" alt=\"Desc.\"/>";
 				}
 			}
 			
