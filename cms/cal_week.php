@@ -66,6 +66,7 @@ else
 }
 */
 $user_list = pl_grab_var('user_list', null, 'REQUEST', 'array');
+if(is_null($user_list)){$user_list = array();}
 
 if ($user_id == 'mine')
 {
