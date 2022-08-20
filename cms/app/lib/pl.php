@@ -417,6 +417,7 @@ function pl_clean_form_input($form_str, $mode = 'nomode')
 		else 
 		{
 			$magic_quotes_on = false;
+		}
 	}
 	
 	if (is_array($form_str))
