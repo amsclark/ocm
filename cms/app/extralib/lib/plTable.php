@@ -69,7 +69,7 @@ class plTable
 		}
 		
 		// This grabs the the db column names from the data in $rows
-		while (list($key, $val) = each($this->rows[0]))
+		foreach ($this->rows[0] as $key => $val)
 		{
 			$col_vals[] = $key;
 		}
@@ -179,7 +179,7 @@ class plTable
 			reset($this->rows);
 			$z = 0;
 			
-			while ($dummy = each($this->rows))
+			foreach (array_keys($this->rows) as $dummy)
 			{
 				if($z % 2 == 0)
 				{
@@ -196,7 +196,7 @@ class plTable
 				reset($this->rows[$z]);
 				
 				$q = 0;
-				while (list($key, $val) = each($this->rows[$z]))
+				foreach ($this->rows[$z] as $key => $val)
 				{
 					if ($q == 0 && $this->min_row_height)
 					{
