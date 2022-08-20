@@ -82,7 +82,7 @@ switch ($action) {
 		$options_list = new plFlexList();
 		$options_list->template_file = 'subtemplates/transfer_options.html';
 
-		$result = pikaTransferOption::getTransferOptionDB();
+		$result = (new pikaTransferOption())->getTransferOptionDB();
 		while ($row = DBResult::fetchRow($result)) {
 			if ($row['transfer_mode']) {
 				$row['transfer_mode'] = $plMenus['transfer_mode'][$row['transfer_mode']];
