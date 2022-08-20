@@ -20,7 +20,9 @@ $base_url = pl_settings_get('base_url');
 $action = pl_grab_get('action');
 $contact_id = pl_grab_get('contact_id');
 $user_list = pl_grab_get('user_list');
+if (is_null($user_list)) {$user_list = array();}
 $pba_list = pl_grab_get('pba_list');
+if (is_null($pba_list)) {$pba_list = array();}
 
 $cal_date = pl_grab_get('cal_date');
 $user_id = pl_grab_get('user_id');
