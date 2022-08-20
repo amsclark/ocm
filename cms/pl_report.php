@@ -285,7 +285,7 @@ class pikaReportTable
 			reset($this->rows);
 			$z = 0;
 			
-			while ($dummy = each($this->rows))
+			foreach (array_keys($this->rows) as $dummy)
 			{
 				if($z % 2 == 0)
 					$C .= "<tr bgcolor='$this->rowa_bg' valign='top'>";
