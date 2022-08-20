@@ -427,7 +427,7 @@ function pl_grab_vars($table, $append='')
 	$fl = $plFields["$table"];
 	
 	reset($fl);
-	while (list($key, $val) = each($fl))
+	foreach ($fl as $key => $val)
 	{
 		if (isset($_POST["{$key}{$append}"]))
 		{
@@ -477,7 +477,7 @@ function pl_table_autosql_update($table, $data)
 	$sql = "UPDATE $table SET";
 	
 	$i = 0;
-	while (list($key, $val) = each($plFields["$table"]))
+	foreach ($plFields["$table"] as $key => $val)
 	{
 		if ('primary_key' == $val)
 		{
@@ -572,7 +572,7 @@ function pl_table_autosql_insert($table, $data)
 	$sql = "INSERT $table SET";
 	
 	$i = 0;
-	while (list($key, $val) = each($plFields["$table"]))
+	foreach ($plFields["$table"] as $key => $val)
 	{
 		if (isset($data["$key"]))
 		{
