@@ -296,7 +296,7 @@ class pikaReportTable
 	
 				reset($this->rows[$z]);
 				
-				while (list($key, $val) = each($this->rows[$z]))
+				foreach ($this->rows[$z] as $key => $val)
 				{
 					if ($val == '') // this test lets the value '0' through
 						$C .= "<td><font size=-2>&nbsp;</font></td>\n";
