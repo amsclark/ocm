@@ -410,7 +410,13 @@ function pl_clean_form_input($form_str, $mode = 'nomode')
 	
 	if (is_null($magic_quotes_on))
 	{
-		$magic_quotes_on = get_magic_quotes_gpc();
+		if (PHP_VERSION_ID < 80000)
+		{
+		  $magic_quotes_on = get_magic_quotes_gpc();
+		}
+		else 
+		{
+			$magic_quotes_on = false;
 	}
 	
 	if (is_array($form_str))
@@ -1597,7 +1603,7 @@ function pl_prepare_dir($fs_dir_path)
 	{
 		$b = explode('/', $fs_dir_path);
 		$dir_name = array_pop($b);
-		$parent_dir = implode($b, '/');	
+		$parent_dir = implode('/', $b);	
 		pl_prepare_dir($parent_dir);
 		
 		if (!mkdir($fs_dir_path, 0700))

@@ -35,7 +35,8 @@ switch($_POST['action'])
 	$menu_array = array();
 
 	// build the new, updated menu
-	while (list($key, $val) = each($menu_elements))
+	
+	foreach ($menu_elements as $key => $val)
 	{
 		$a = explode("|", $val);
 
@@ -80,7 +81,9 @@ switch($_POST['action'])
 
 	unset($plMenus[$menu]);
 
-	while (list($key, $val) = each($menu_elements))
+	
+	
+	foreach ($menu_elements as $key => $val)
 	{
 		$a = explode("=>", $val);
 
@@ -116,7 +119,8 @@ switch($_POST['action'])
 
 	$menu_elements = explode("\n", $_POST['values']);
 
-	while (list($key, $val) = each($menu_elements))
+
+	foreach ($menu_elements as $key => $val)
 	{
 		$a = explode("=>", $val);
 
@@ -141,7 +145,8 @@ switch($_POST['action'])
 
 	case 'save_settings':
 
-	while (list($key, $val) = each($plSettings))
+
+	foreach ($plSettings as $key => $val)
 	{
 		$plSettings[$key] = pl_grab_var($key, null, 'POST');
 	}
@@ -474,7 +479,9 @@ switch($_POST['action'])
 		$active = 1;
 	}
 
-	while (list($key, $val) = each($q)) {
+	
+	foreach ($q as $key => $val)
+	{
 		$sql = "UPDATE q_questionnaires SET active=$active WHERE questionnaire_id=$key";
 		DB::query($sql);
 		//		echo "<br>$sql\n";

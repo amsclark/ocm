@@ -914,7 +914,7 @@ switch($action)
 	
 	$a = pl_grab_vars('events');
 	//$user_array = pl_grab_var('{user_id}', array(), 'POST', 'array');
-	$a['user_ids'] = ','. implode($user_id, ',') . ',';
+	$a['user_ids'] = ','. implode(',', $user_id) . ',';
 	$event = new event();
 	$event->setValues($a);
 	

@@ -70,7 +70,7 @@ function forms2db ($directory_name,$parent_directory_id)
 					$exe_path = "c:/Pika/Cygwin/";
 				}
 				exec("{$exe_path}strings {$directory_name}/{$file}", $string_array);
-				$contents_text = implode($string_array, "\n");
+				$contents_text = implode("\n", $string_array);
 				$file_obj->doc_text = $contents_text;
 				$file_obj->save();
 				echo "{$file} - DocID={$file_obj->doc_id} - {$directory_name} Form Uploaded<br/>\n";

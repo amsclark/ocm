@@ -66,6 +66,7 @@ else
 }
 */
 $user_list = pl_grab_var('user_list', null, 'REQUEST', 'array');
+if(is_null($user_list)){$user_list = array();}
 
 if ($user_id == 'mine')
 {
@@ -425,7 +426,7 @@ $fund_breakdown->show_pager = FALSE;
 $fund_breakdown->width = "200";
 
 
-while(list($key, $val) = each($tbf))
+foreach ($tbf as $key => $val)
 {
 	if (!$key)
 	{

@@ -220,18 +220,18 @@ class pikaDocument extends plBase
 				case '.pdf':
 					exec("ps2ascii {$safe_full_path}", $string_array);
 					//exec("pdftotext {$safe_full_path} -", $string_array);
-					$contents_text = implode($string_array, "\n"); 
+					$contents_text = implode("\n", $string_array); 
 					
 				break;
 						
 				case '.txt':
 					exec("cat {$safe_full_path}", $string_array);
-					$contents_text = implode($string_array, "\n");
+					$contents_text = implode("\n", $string_array);
 				break;
 			
 				default:
 					exec("strings {$safe_full_path}", $string_array);
-					$contents_text = implode($string_array, "\n");
+					$contents_text = implode("\n", $string_array);
 			
 				break;
 			}
@@ -317,7 +317,7 @@ class pikaDocument extends plBase
 				{
 					case '.pdf':
 						exec("ps2ascii {$safe_full_path}", $string_array);
-						$contents_text = implode($string_array, "\n");
+						$contents_text = implode("\n", $string_array);
 						/*
 						exec("pdftotext {$safe_full_path}", $string_array);
 						$contents_text = implode($string_array, "\n"); 
@@ -325,11 +325,11 @@ class pikaDocument extends plBase
 					break;		
 					case '.txt':
 						exec("cat {$safe_full_path}", $string_array);
-						$contents_text = implode($string_array, "\n");
+						$contents_text = implode("\n", $string_array);
 					break;
 					default:
 						exec("strings {$safe_full_path}", $string_array);
-						$contents_text = implode($string_array, "\n");
+						$contents_text = implode("\n", $string_array);
 					break;
 				}
 				$this->doc_text = $contents_text;

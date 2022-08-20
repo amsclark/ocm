@@ -33,7 +33,9 @@ function scan_extension_folder($subdir, $base_path)
 	    }
     }
     
-    closedir($h);
+    if ($h != false) {
+      closedir($h);
+    }
     return $a;
 }
 
