@@ -426,7 +426,7 @@ $fund_breakdown->show_pager = FALSE;
 $fund_breakdown->width = "200";
 
 
-while(list($key, $val) = each($tbf))
+foreach ($tbf as $key => $val)
 {
 	if (!$key)
 	{
