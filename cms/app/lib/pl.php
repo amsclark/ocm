@@ -1597,7 +1597,7 @@ function pl_prepare_dir($fs_dir_path)
 	{
 		$b = explode('/', $fs_dir_path);
 		$dir_name = array_pop($b);
-		$parent_dir = implode($b, '/');	
+		$parent_dir = implode('/', $b);	
 		pl_prepare_dir($parent_dir);
 		
 		if (!mkdir($fs_dir_path, 0700))
