@@ -1147,7 +1147,7 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 		    ';
 	}
 	
-	while (list($key, $label) = each($a))
+	foreach ($a as $key => $label)
 	{
 		/*
 		Don't eval. fields with string values with this test; strings
