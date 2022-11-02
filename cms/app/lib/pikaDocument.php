@@ -201,6 +201,7 @@ class pikaDocument extends plBase
 			$content = file_get_contents($file_array['tmp_name']);
 			
 			$this->doc_data = addslashes(gzcompress($content,9));
+			//$this->doc_data = addslashes($content);
 			$this->description = $description;
 			$this->case_id = $case_id;
 			$this->doc_name = $file_array['name'];
@@ -217,12 +218,12 @@ class pikaDocument extends plBase
 			$safe_full_path = escapeshellarg($file_array['tmp_name']);
 			switch ($extension)
 			{
-				case '.pdf':
-					exec("ps2ascii {$safe_full_path}", $string_array);
+				//case '.pdf':
+				//	exec("ps2ascii {$safe_full_path}", $string_array);
 					//exec("pdftotext {$safe_full_path} -", $string_array);
-					$contents_text = implode("\n", $string_array); 
+				//	$contents_text = implode("\n", $string_array); 
 					
-				break;
+				//break;
 						
 				case '.txt':
 					exec("cat {$safe_full_path}", $string_array);
@@ -270,9 +271,12 @@ class pikaDocument extends plBase
 			// Determine mime type from list
 			switch ($extension)
 			{
+				//case '.pdf':
+				//	$mime_type = 'application/pdf';
+				//break;		
 				case '.pdf':
-					$mime_type = 'application/pdf';
-				break;		
+					$mime_type = 'application/octet-stream';
+				break;
 				case '.rtf':
 					$mime_type = 'application/rtf';
 				break;
@@ -315,14 +319,14 @@ class pikaDocument extends plBase
 				$safe_full_path = escapeshellarg($full_path);
 				switch ($extension)
 				{
-					case '.pdf':
-						exec("ps2ascii {$safe_full_path}", $string_array);
-						$contents_text = implode("\n", $string_array);
+					//case '.pdf':
+					//	exec("ps2ascii {$safe_full_path}", $string_array);
+					//	$contents_text = implode("\n", $string_array);
 						/*
 						exec("pdftotext {$safe_full_path}", $string_array);
 						$contents_text = implode($string_array, "\n"); 
 						*/
-					break;		
+					//break;		
 					case '.txt':
 						exec("cat {$safe_full_path}", $string_array);
 						$contents_text = implode("\n", $string_array);

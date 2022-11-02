@@ -1,0 +1,161 @@
+%%[begin:find_pb]%%
+%%[add_link]%%
+<form method="GET">
+<table cellpadding="3" cellspacing="0">
+<tr>
+	<td>
+	County:<br/>
+	%%[county,input_text]%%<br/>
+	</td><td>
+	Language:<br/>
+	%%[languages,input_text]%%<br/>
+	</td><td>
+	Practice Areas:<br/>
+	%%[practice_areas,input_text]%%<br/>
+	</td><td>
+	Last Name:<br/>
+	%%[last_name,input_text]%%<br/>
+	</td>
+</tr>
+</table>
+%%[order,input_hidden]%%
+%%[order_field,input_hidden]%%
+%%[offset,input_hidden]%%
+%%[case_id,input_hidden]%%
+%%[field,input_hidden]%%
+%%[screen,input_hidden]%%
+<input type="submit" name="search" value="Search" class="save">
+<a type="button" class="btn btn-info" href="%%[base_url]%%/services/get_pba_csv.php" role="button">Download All</a>
+</form>
+%%[atty_list]%%
+<center><b>%%[total_pba]%%</b></center>
+%%[end:find_pb]%%
+
+%%[begin:flex_header]%%
+<table cellspacing="0" cellpadding="3">
+<tr>
+	<th><a href="%%[atty_name_url]%%">Name</a>%%[atty_name_img]%%</th>
+	<th><a href="%%[last_case_url]%%">Last Case</a>%%[last_case_img]%%</th>
+	<th>Firm</th>
+	<th>Address</th>
+	<th>Phone</th>
+	<th>E-mail</th>
+	<th>County</th>
+	<th>Languages</th>
+	<th>Practice Areas</th>
+	<th>Notes</th>
+</tr>
+%%[end:flex_header]%%
+%%[begin:flex_row]%%
+<tr class="%%[css_class]%%">
+	<td>%%[atty_name]%%</td>
+	<td>%%[last_case]%%</td>
+	<td>%%[firm]%%</td>
+	<td>%%[atty_address]%%</td>
+	<td>%%[phone_notes]%%</td>
+	<td><a href="mailto:%%[email]%%">%%[email]%%</a></td>
+	<td>%%[county]%%</td>
+	<td>%%[languages]%%</td>
+	<td>%%[practice_areas]%%</td>
+	<td>%%[notes]%%</td>
+</tr>
+%%[end:flex_row]%%
+%%[begin:flex_footer]%%
+</table>
+%%[end:flex_footer]%%
+
+%%[begin:edit_pba]%%
+<form method="GET" name="ws"><!-- AMW changed from form1 -->
+<table border="0" summary="" cellpadding="5">
+<tr valign="top"> 
+	<td>
+	First Name:<br/>
+	%%[first_name,input_text]%%<br/>
+	Last Name:<br/>
+	%%[last_name,input_text]%%<br/>
+	Phone:<br/>
+	%%[phone_notes,input_text]%%<br/>
+	Practice Areas:<br/>
+	%%[practice_areas,input_text]%%<br/>
+	</td><td>
+	Middle Name:<br/>
+	%%[middle_name,input_text]%%<br/>
+    Extra Name:<br/>
+    %%[extra_name,input_text]%%<br/>
+	Email Address:<br/>
+	%%[email,input_text]%%<br/>
+	Languages:<br/>
+	%%[languages,input_text]%%<br/>
+	Misc. Notes: <br/>
+	%%[notes,input_text]%%<br/>
+	</td><td> 
+	Firm:<br/>
+	%%[firm,input_text]%%<br/>
+	Address:<br/>
+	%%[address,input_text]%%<br/>
+	%%[address2,input_text]%%<br/>
+    City, State:<br/>
+	%%[city,input_text,class=city]%%%%[state,input_text,size=3,class=state]%%<br/>
+	ZIP Code, County:<br/>
+	%%[zip,input_text,onblur=zipcode_lookup(this.value),size=5]%%%%[county,input_text,class=county]%%<br/>
+    </td>
+</tr>
+</table>
+<div class="well">
+%%[enabled,yes_no,checkbox,label=Allow this attorney to log into VAM]%%<br>
+Username:<br>
+%%[username,input_text]%%<br>
+Password:<br>
+<input type="password" name="password" tabindex="1" autocomplete="off"><br>
+</div>
+%%[pba_id,input_hidden]%%
+%%[action,input_hidden,default=update_pba]%%
+<input type=submit value="Save" tabindex="9" name="submit">
+</form>
+<h2>Case List for %%[atty_name]%%</h2>
+%%[case_list]%% 
+%%[ajax_init.js,javascript]%%
+%%[zip-server-ajax.js,javascript,parse]%%
+%%[end:edit_pba]%%
+
+%%[begin:case_list_header]%%
+<table cellpadding="3" cellspacing="0" border="0" summary="" width="95%">
+<tbody>
+  <tr>
+    <th>Case Number</th>
+    <th>Client Name</th>
+    <th>Status</th>
+    <th>Staff</th>
+    <th>Office</th>
+    <th>Funding</th>
+    <th>Problem</th>
+    <th>Opened</th>
+    <th>Closed</th>
+    <th>Time</th>
+  </tr>
+%%[end:case_list_header]%%
+%%[begin:case_list_row]%%
+  <tr valign="top" class="%%[css_class]%%">
+    <td>
+    	<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%"%%[link_target]%%>%%[number]%%</a><br/>
+    	<span style="color: %%[open_closed_color]%%;">%%[open_closed]%%</span>
+    </td>
+    <td><strong>%%[client_name]%%</strong></td>
+    <td>%%[status text source=case_status]%%</td>
+    <td>%%[user_id text]%%</td>
+    <td>%%[office text source=office]%%</td>
+    <td>%%[funding text source=funding]%%</td>
+    <td>%%[problem]%%</td>
+    <td>%%[open_date]%%</td>
+    <td>%%[close_date]%%</td>
+    <td>
+    	<a href="%%[base_url]%%/activity.php?screen=compose&case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%&act_type=T">
+    	Add
+    	</a>
+    </td>
+  </tr>
+%%[end:case_list_row]%%
+%%[begin:case_list_footer]%%
+</tbody>
+</table>
+%%[end:case_list_footer]%%

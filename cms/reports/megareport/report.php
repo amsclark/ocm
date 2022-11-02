@@ -1,5 +1,8 @@
 <?php 
 
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
 /**********************************/
 /* Pika CMS (C) 2009 Aaron Worley */
 /* http://pikasoftware.com        */
@@ -173,7 +176,7 @@ else
 $i = 0;
 $special_fields = array('counsel_id', 'pba_id');
 
-while (list($key, $val) = each($ffield))
+foreach ($ffield as $key => $val)
 {
 	if ($val)
 	{
