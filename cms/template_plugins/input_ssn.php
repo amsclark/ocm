@@ -3,6 +3,10 @@ function input_ssn($field_name = null, $field_value = null, $menu_array = null, 
 {
 	$C = '';
 	$ssn_type = null;
+	if (is_array($field_value))
+	{
+		$field_value = null;
+	}
 	$result = DB::query("DESCRIBE contacts") or trigger_error(DB::error());
 	
 	while ($row = DBResult::fetchRow($result))
