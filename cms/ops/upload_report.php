@@ -16,7 +16,7 @@ $doc_name = pl_grab_get('doc_name');
 $report_list = pikaMisc::reportList();
 $xml_doc = new DOMDocument();
 if($xml_doc->loadXML($postText)){
-	if($report_name && in_array($report_name,array_keys($report_list))) {
+	if($report_name) {
 		//print_r($report_list);
 		$contents = $xml_doc->saveXML();
 		if(function_exists('mb_strlen')) {
