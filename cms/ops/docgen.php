@@ -149,6 +149,7 @@ if (is_numeric($opposing))
 
 	$a['opposing_name'] = $a['opposing'] = pikaTempLib::plugin('text_name','',$opposing_row);
 	$a['opposing_full_address'] = pikaTempLib::plugin('text_address','',$opposing_row,'',array("output={$output_format}"));
+	$a['opposing_dob'] = $opposing_row['birth_date'];
 }
 
 $opp_counsel_row = array();
@@ -172,7 +173,7 @@ if (sizeof($pba_row) > 0)
 {
 	$a['vol_attorney_name'] = $a['vol_attorney'] = pikaTempLib::plugin('text_name','',$pba_row);
 	$a['vol_attorney_firm'] = $pba_row['firm'];
-	$a['vol_attorney_address'] = pikaTempLib::plugin('text_address','',$pba_row,'',array("output={$output_format}"));
+	$a['vol_attorney_address'] = str_replace(' ', ' ', pikaTempLib::plugin('text_address','',$pba_row,'',array("output={$output_format}"))); // string replace non-breaking space character with regular space
 	// AMW - 2014-07-23 - Added for ILCM.
         $a['vol_attorney_phone'] = $pba_row['phone_notes'];
         $a['vol_attorney_email'] = $pba_row['email'];

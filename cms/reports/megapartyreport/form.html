@@ -1,0 +1,173 @@
+<form action="%%[base_url]%%/reports/%%[report_name]%%/report.php" method="POST" id="mega" name="mega" target="_blank">
+<table>
+<tr>
+	<td>
+	Select Cases fields...<br>
+	<div style="background-color:#FFFFFF;width:270px;height:250px;border:1px black solid;overflow:auto;">%%[cases,field_list]%%</div>
+	</td><td>
+	Client fields...<br>
+	<div style="background-color:#FFFFFF;width:270px;height:250px;border:1px black solid;overflow:auto;">%%[contacts,field_list]%%</div>
+	</td><td>
+	and Activity fields to display.
+	<div style="background-color:#FFFFFF;width:270px;height:250px;border:1px black solid;overflow:auto;">%%[activities,field_list]%%</div>
+	</td>
+</tr><tr valign="top">
+	<td colspan="2">
+	Select report parameters:
+	<table summary="Case List Filters" cellpadding="0" cellspacing="0" class=small>
+	<tr>
+			<td class="de" nowrap>
+			%%[ffield0,fields,nomsg]%%
+			%%[fcomp0,comparison_sql]%%
+			%%[fvalue0,input_text]%%
+			<br/>
+			%%[ffield1,fields,nomsg]%%
+			%%[fcomp1,comparison_sql]%%
+			%%[fvalue1,input_text]%%
+			<br/>
+			%%[ffield2,fields,nomsg]%%
+			%%[fcomp2,comparison_sql]%%
+			%%[fvalue2,input_text]%%
+			<br/>
+			%%[ffield3,fields,nomsg]%%
+			%%[fcomp3,comparison_sql]%%
+			%%[fvalue3,input_text]%%
+			<br/>
+			%%[ffield4,fields,nomsg]%%
+			%%[fcomp4,comparison_sql]%%
+			%%[fvalue4,input_text]%%
+			<br/>
+			%%[ffield5,fields,nomsg]%%
+			%%[fcomp5,comparison_sql]%%
+			%%[fvalue5,input_text]%%
+			</td>
+	</tr>			
+	</table>
+	</td><td>
+		Change the order of fields on the report:<br/>
+		%%[fo,fo,multiselect,style=border:1px black solid;width: 220px;,nomsg,noblank,size=8]%%<br/>
+		<input type="button" value="Move Up" onclick="move_up();" />
+		<input type="button" value="Move Down" onclick="move_down();" />
+	</td>
+</tr><tr valign="top">
+	<td rowspan="3">
+	Report only on these staff:<br>
+	%%[users_list,user_list]%%
+	<br/>
+	<input type="submit" value="Run Report" class="save" onClick="highlight_all_fo();" />
+	</td><td class="de">
+	Calculate sum of:<br/>
+	%%[sum,sum,nomsg]%%<br/>
+	Calculate totals of:<br/>
+	%%[count,count,nomsg]%%<br/>
+	Group sums by:<br/>
+	%%[group_by,group_by,nomsg]%%,<br/>
+	%%[group_by2,group_by,nomsg]%%<br/>
+	</td><td class="de">
+	Maximum results returned:<br/>
+   	%%[recordlimit,recordlimit,noblank]%%<br/>
+	Order report results by:<br>
+	%%[order_by,order_by,nomsg]%%,<br/>
+	%%[order_by2,order_by,nomsg]%%<br/>
+	%%[show_sql,yes_no,checkbox,label=Show SQL]%%<br/>
+	%%[report_format,checkbox,default_value=csv,label=Send to a spreadsheet]%%<br/>
+	Included Party Types:<br>
+	<div class='party_types'>
+	%%[relation_codes,relation_codes,checkbox_list,width=auto]%%
+	</div>
+	</td>
+</tr>
+</table>
+</form>
+<hr>
+<h2>Load Saved Report</h2>
+<table>
+<tr>
+	<td>
+	
+	%%[saved_reports,file_list,mode=edit_select,doc_type=R,folder_field=parent_folder,doc_field=form_id]%%
+	<br/>
+	<form name='docgen' id='docgen'>
+	<button onclick="load_report('mega',document.docgen.form_id.value);return false;">Load Saved Report</button><br/>
+	
+	</td>
+	<td valign="top">
+	%%[form_id,input_hidden]%%
+	Report Name:<br/>
+	<input type="text" id="doc_name" name="doc_name" value="Megareport Saved: %%[current_date]%%" size="25" tabindex="1"/>
+	<button onclick="save_report('mega','doc_name');setTimeout('reload(\'saved_reports\')',500);return false;">Save Report</button>
+	</form>
+	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">
+	New Folder Name:<br/>
+	<input type="text" value="" name="folder_name"/>
+	<input type="submit" name="add_folder" value="Add Folder"/>
+	<input type='hidden' name='folder' value="1"/>
+	<input type='hidden' name='parent_folder' value=""/>
+	<input type="hidden" name="doc_type" value="R"/>
+	<input type="hidden" name="report_name" value="%%[report_name]%%"/>
+	</form>
+	</td>
+</tr>
+</table>
+<script>
+  // handling of adding relation_codes to the field ordering.
+  checkboxes = document.querySelectorAll('input[type=checkbox]');
+  relation_checkboxes = [];
+  for (var i = 0; i < checkboxes.length; i++) 
+  {
+    if (checkboxes[i].parentElement.parentElement.parentElement.parentElement.parentElement.parentElement.parentElement.classList.contains("party_types")) 
+    {
+      relation_checkboxes.push(checkboxes[i]);
+    }
+  }
+  for (var i = 0; i < relation_checkboxes.length; i++) 
+  {
+    relation_checkboxes[i].addEventListener('change', (event) => { handle_relation_codes_selection(); });
+  }
+
+  function handle_relation_codes_selection() 
+  {
+    add_option_rel("fo",'conflict.relation_code', 'Party Type');
+  }
+
+
+  function add_option_rel(menu_name, field_name, field_text)
+  {
+    var container = document.getElementById(menu_name);
+    var is_found = false;
+    checked_relation_checkboxes = [];
+    for (var h = 0; h < relation_checkboxes.length; h++)
+    {
+      if (relation_checkboxes[h].checked) 
+      {
+        checked_relation_checkboxes.push(relation_checkboxes[h]);
+      }
+    }
+    if(container.length) 
+    {
+      for (var i = 0; i < container.length; i++)
+      {
+        if (container.options[i].value == field_name)
+        {
+          if (checked_relation_checkboxes.length == 0) 
+          {
+	    container.options[i] = null;
+          }
+          is_found = true;
+          break;
+        }
+      }
+    }
+    if (is_found == false)
+    {
+      var addIndex = container.length;
+      container.options[addIndex] = new Option(field_text,field_name);
+    }
+  } 
+</script>
+
+%%[megareport.js,javascript,parse]%%
+%%[ajax_init.js,javascript]%%
+%%[file_list.js,javascript,parse]%%
+%%[save_report.js,javascript,parse]%%
+%%[checkbox_list.js,javascript]%%

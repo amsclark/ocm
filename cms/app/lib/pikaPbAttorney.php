@@ -34,12 +34,12 @@ class pikaPbAttorney extends plBase
 	$order='ASC', $first_row='0', $list_length='100') {
 		$sql_filter = $limit_sql = $order_sql = "";
 
-		// Filter elements need to be escaped
+		
 		foreach ($filter as $key => $val)
 		{
 			$filter[$key] = DB::escapeString($val);
 		}
-
+		
 		if (isset($filter['county']) && $filter['county']){
 			$sql_filter .= " AND county LIKE '%{$filter['county']}%'";
 		}
@@ -68,7 +68,6 @@ class pikaPbAttorney extends plBase
 		} elseif ($list_length){
 			$limit_sql = " LIMIT $list_length";
 		}
-
 
 
 		$sql = "SELECT count(*) as nbr

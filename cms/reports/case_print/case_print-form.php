@@ -489,7 +489,7 @@ while ($row = DBResult::fetchRow($result))
 	
 	if ($row['contact_id'] != $a['client_id'])
 	{
-		$a['additional'] .= "$relatmp:  <b>$nametmp</b><br>\n";
+		$a['additional'] .= "$relatmp:  <b>$nametmp</b>\n";
 		
 		if ($phonetmp)
 		{
@@ -505,8 +505,13 @@ while ($row = DBResult::fetchRow($result))
 		{
 			$a['additional'] .= $row['notes'] . "<br>\n";
 		}
+
+		if (strlen(trim($row['birth_date'])) > 0)
+		{
+			$a['additional'] .= "Date of Birth: " . $row['birth_date'] . "<br>\n";
+		}
 		
-		$a['additional'] .= "<br>\n";
+		$a['additional'] .= "<hr>\n";
 	}
 }
 

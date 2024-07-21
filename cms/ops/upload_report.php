@@ -11,12 +11,17 @@ require_once('pikaMisc.php');
 if ( $_SERVER['REQUEST_METHOD'] === 'POST' ){ 
         $postText = file_get_contents('php://input'); 
 }
+
+//error_log('length of postText is ' . strlen($postText) );
+
 $report_name = pl_grab_get('report_name');
 $doc_name = pl_grab_get('doc_name');
 $report_list = pikaMisc::reportList();
 $xml_doc = new DOMDocument();
 if($xml_doc->loadXML($postText)){
-	if($report_name && in_array($report_name,array_keys($report_list))) {
+	//this was weird...the condition seemed to be checking that the report was in the list of canned reports from pikaMisc::reportList() and wouldn't let it be added if not. Not sure how this ever worked. Condition changed on 2022-12-15 by aclark
+	//if($report_name && in_array($report_name,array_keys($report_list))) {
+	if($report_name) {
 		//print_r($report_list);
 		$contents = $xml_doc->saveXML();
 		if(function_exists('mb_strlen')) {
