@@ -73,7 +73,7 @@ class pikaAuthDb
 			$safe_identity = DB::escapeString($identity);
 			
 			$sql  = "SELECT user_id, username, enabled, password_expire, 
-					users.group_id AS group_name, `groups`.*, password
+					users.group_id AS group_name, `groups`.*, password, ethical_wall_list 
 					FROM {$this->table_name}
 					LEFT JOIN `groups` ON users.group_id=groups.group_id
 					WHERE enabled = '1'
