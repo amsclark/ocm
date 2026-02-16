@@ -15,7 +15,8 @@ class pikaAuth
 	private $is_authorized = false;
 	private $auth_row = array(	'user_id' => '',
 								'username' => '',
-								'group_id' => ''										
+								'group_id' => '',
+							    'ethical_wall_list => '' 
 	);
 	
 	public $user_agent;
