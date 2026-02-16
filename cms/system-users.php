@@ -131,6 +131,7 @@ switch ($action)
 		$a['extra_name'] = pl_grab_post('extra_name');
 		$a['enabled'] = pl_grab_post('enabled');
 		$a['group_id'] = pl_grab_post('group_id');
+	    $a['ethical_wall_list'] = pl_grab_post('ethical_wall_list');
 		$a['description'] = pl_grab_post('description');
 		$a['email'] = pl_grab_post('email');
 		$a['attorney'] = pl_grab_post('attorney');
