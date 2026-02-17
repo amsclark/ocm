@@ -68,6 +68,13 @@
 	Misc. Notes: <br/>
 	%%[notes,input_textarea,cols=18,rows=5]%%
 	</td>
+</tr><tr>
+	<td colspan="3">
+	<strong>Ethical Wall Contacts</strong><br/>
+	<p>This setting allows administrators to define a list of contact card numbers which the user cannot access. If a contact is listed, the user will not be able to open any cases where the user is a party. It does not prevent users from accessing case or contact data through megareport or other reports and does not prevent appearances in search resuts or case lists or calendars.</p>
+	<textarea id="ethical_wall_list" name="ethical_wall_list">%%[ethical_wall_list]%%</textarea>
+	<p>Enter contact ids seperated by commas. A contact id number can be seen in the '/contact.php?contact_id=5489' part of the url for a contact card where '5489' is the id number.</p>
+	</td>
 </tr>
 </table>
 <br/>
@@ -135,14 +142,6 @@
 	<input type="submit" name="filter" value="Filter" />
 	</td>
 </tr>
-	<tr>
-		<td>
-	<strong>Ethical Wall Contacts</strong><br>
-			<p>This setting allows administrators to define a list of contact card numbers which the user cannot access. If a contact is listed, the user will not be able to open any cases where the user is a party. It does not prevent users from accessing case or contact data through megareport or other reports and does not prevent appearances in search resuts or case lists or calendars.</p>
-			<textarea id="ethical_wall_list" name="ethical_wall_list"> %%[ethical_wall_list]%%</textarea>
-		<p>Enter contact ids seperated by commas. A contact id number can be seen in the '/contact.php?contact_id=5489' part of the url for a contact card where '5489' is the id number.</p>
-		</td>
-	</tr>
 </table>
 %%[order_field,input_hidden]%%
 %%[order,input_hidden]%%
