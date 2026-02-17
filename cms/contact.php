@@ -42,7 +42,7 @@ $clean_contact_screen['submit_label'] = 'Save';
 	
 	
 
-$wall_sql = "SELECT ethical_wall_list from users where user_id =  $auth_row['user_id']";
+$wall_sql = "SELECT ethical_wall_list from users where user_id =  {$auth_row['user_id']}";
 $wall_result = DB::query($wall_sql);
 $wall_row = DBResult::fetchRow($wall_result);
 $ethical_wall_list = $wall_row['ethical_wall_list'];
