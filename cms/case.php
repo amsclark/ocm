@@ -39,6 +39,35 @@ if (!is_numeric($case_id))
 	header("Location: {$base_url}/cal_week.php");
 	exit();
 }
+// Check to make sure that the user is not ethics walled off from any of the contacts associated with the case
+$wall_sql = "SELECT contact_id from conflict where case_id = {$case_id}";
+$wall_result = DB::query($wall_sql);
+
+
+$walled_contact_list_sql = "SELECT ethical_wall_list FROM users WHERE user_id = {$auth_row['user_id']}";
+$wall_check_contacts_result = DB::query($walled_contact_list_sql);
+
+$wall_contact_row = DBResult::fetchRow($wall_check_contacts_result);
+$wall_contact_list = $wall_contact_row['ethical_wall_list'] ?? '';   // fallback if NULL
+
+// normalize list
+$wall_contact_list = trim($wall_contact_list);
+
+if ($wall_contact_list !== '' && DBResult::numRows($wall_result) > 0) {
+    // split by comma, trim each, and remove empties
+    $wall_contact_array = array_filter(array_map('trim', explode(',', $wall_contact_list)));
+
+
+    while ($wall_row = DBResult::fetchRow($wall_result)) {
+        $wall_contact_id = $wall_row['contact_id'];
+
+        if (in_array($wall_contact_id, $wall_contact_array)) {
+            die("Access denied to case due to association to ethically walled contact with contact_id $wall_contact_id");
+        }
+    }
+}
+
+
 
 /* Get case record data (it'll be needed on every page is some form), store in $case_row. */
 $case1 = new pikaCase($case_id);
