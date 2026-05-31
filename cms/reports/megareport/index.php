@@ -23,7 +23,7 @@ if(!pika_report_authorize($report_name)) {
 	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a>
     				  &gt; <a href=\"{$base_url}/reports/\">Reports</a> 
     				  &gt; $report_title";
-	$main_html['content'] = "You are not authorized to run this report";
+	$main_html['content'] = "You are not authorized to run this report ($report_name) ";
 
 	$buffer = pl_template('templates/default.html', $main_html);
 	pika_exit($buffer);

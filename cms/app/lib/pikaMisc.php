@@ -978,7 +978,7 @@ class pikaMisc
 		}
 		// End AMW
 		
-		sort($reports);
+	asort($reports);
 		
 		return $reports;
 	}
