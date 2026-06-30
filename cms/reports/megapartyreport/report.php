@@ -80,7 +80,7 @@ $users_list = pl_grab_post('users_list');
 $recordlimit = pl_grab_post('recordlimit', 10000);
 $relation_codes = pl_grab_post('relation_codes');
 
-$fo = pl_grab_post('fo'); // Defines which columns to display, and in what order.
+$fo = pl_grab_post('fo'); if (!is_array($fo)) $fo = array(); /* 2026-06-30 amsclark: PHP8 sizeof(null) guard */ // Defines which columns to display, and in what order.
 
 $showfields = '';  // This is basically the SELECT clause for the report query.
 // to the SELECT clause, so the commas look correct.

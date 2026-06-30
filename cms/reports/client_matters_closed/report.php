@@ -78,7 +78,7 @@ if ($close_date_begin && $close_date_end) {
 // run the report
 
 
-$sql = "SELECT	case_id, number, close_date, pension_case_closure_notes, primary_client.first_name, primary_client.last_name
+$sql = "SELECT	case_id, number, close_date, primary_client.first_name, primary_client.last_name
 		FROM cases 
 		LEFT JOIN contacts AS primary_client ON cases.client_id=primary_client.contact_id
 		WHERE 1{$where_sql}
@@ -86,7 +86,7 @@ $sql = "SELECT	case_id, number, close_date, pension_case_closure_notes, primary_
 
 
 $t->title = $report_title;
-$t->set_header(array('Case Number', 'Client Name', 'Closing Date', 'Closure Notes'));
+$t->set_header(array('Case Number', 'Client Name', 'Closing Date'));
 
 $result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 while ($row = DBResult::fetchRow($result))
@@ -103,7 +103,6 @@ while ($row = DBResult::fetchRow($result))
 		$r['client_name'] = pikaTempLib::plugin('text_name','',$row);
 	}
 	$r['close_date'] = pl_date_unmogrify($row['close_date']);
-	$r['pension_case_closure_notes'] = pl_html_text($row['pension_case_closure_notes']);
 	$t->add_row($r);
 }
 
