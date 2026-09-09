@@ -287,6 +287,11 @@ document.ws.summary.focus();
 		%%[hours,input_text]%%<br/>
 		Date:<br/>
 		%%[act_date,input_date_selector]%%<br/>
+		<script>
+      		jQuery(document).ready(function() {
+        		jQuery("#act_date").datepicker();
+      		});
+    	</script>
 		Start Time:<br/>
 		%%[act_time,input_text]%%<br/>
 		Type of Activity:<br/>
