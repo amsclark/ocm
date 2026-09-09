@@ -52,6 +52,10 @@ else
 
 $safe_inactive_date_begin = DB::escapeString(pl_date_mogrify($inactive_date_begin));
 
+if (strlen($safe_inactive_date_begin) != 10) {
+  die('A date must be provided.');
+}
+
 // build the sql using UNION to combine the different selects into a derived table 
 // sort the derived table creating a 2nd derived table that can then be grouped
 // to obtain the MAX date per user
