@@ -36,7 +36,7 @@ class pikaMisc
 
 		while ($row = DBResult::fetchArray($result))
 		{
-			$a[$row['pba_id']] = "{$row['last_name']}, {$row['first_name']} {$row['middle_name']} {$row['extra_name']}";
+			$a[$row['pba_id']] = "{$row['last_name']}, {$row['first_name']} {$row['middle_name']} {$row['extra_name']} <a href=\"tel:{$row['phone_notes']}\">{$row['phone_notes']}</a>";
 		}
 
 		return $a;
