@@ -877,6 +877,79 @@ else
 fi
 
 
+# 13. The server-side tree is not served.
+#
+# cms/app/ holds the library classes, the SQL schema and the maintenance
+# scripts. Every .php file in it used to be a URL, and the scripts under
+# app/scripts/ do their work at top level with no authentication check because
+# they were written for cron and a shell prompt.
+echo
+echo "13. cms/app is not reachable over HTTP"
+
+for path in \
+	app/scripts/checksum.php \
+	app/scripts/fs2db.php \
+	app/scripts/forms2db.php \
+	app/lib/pl.php \
+	app/lib/DB.php \
+	app/extralib/lib/pikaCms.php \
+	app/sql/install/new_install.sql \
+	app/ \
+	; do
+	code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$OCM_URL/$path")"
+	if [ "$code" = 403 ]; then
+		ok "/cms/$path is refused (403)"
+	else
+		bad "/cms/$path answered $code, not 403 ($(wc -c < "$BODY") bytes)"
+	fi
+done
+
+# The refusal must be the branded document, not Apache's, and it must not name
+# the path it just refused.
+code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/app/scripts/checksum.php")"
+if [ "$code" = 403 ] && grep -q 'Error 403' "$BODY"; then
+	ok "a denied cms/app path gets the branded 403"
+else
+	bad "a denied cms/app path did not get the branded 403 (status $code)"
+fi
+if grep -qE 'Apache/[0-9]|checksum\.php' "$BODY"; then
+	bad "the cms/app 403 leaks the server version or echoes the script name"
+else
+	ok "the cms/app 403 names neither the server version nor the script"
+fi
+
+# Second lock. The Apache rule is one line in one vhost; the scripts also refuse
+# a non-CLI SAPI themselves, so they stay safe behind a vhost that lacks it.
+# This image has no CGI SAPI to drive them through, so the check is that the
+# guard is in every script rather than that it fires.
+scripts_root="$(cd "$(dirname "$0")/.." && pwd)/cms/app/scripts"
+if [ -d "$scripts_root" ]; then
+	missing=""
+	for f in "$scripts_root"/*.php; do
+		[ -e "$f" ] || continue
+		if ! grep -q "PHP_SAPI !== 'cli'" "$f"; then
+			missing="$missing $(basename "$f")"
+		fi
+	done
+	if [ -z "$missing" ]; then
+		ok "every script in cms/app/scripts refuses a non-CLI SAPI"
+	else
+		bad "no CLI-only guard in cms/app/scripts:$missing"
+	fi
+else
+	bad "cms/app/scripts not found at $scripts_root - CLI guards unchecked"
+fi
+
+# The application itself still works. A deny rule on a parent path is easy to
+# write too wide.
+curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
+if [ "$(wc -c < "$BODY")" -ge 500 ] && ! grep -qF 'Pika Error' "$BODY"; then
+	ok "the case list still renders with cms/app denied ($(wc -c < "$BODY") bytes)"
+else
+	bad "the case list broke when cms/app was denied ($(wc -c < "$BODY") bytes)"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
