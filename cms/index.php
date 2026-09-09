@@ -69,7 +69,13 @@ else
 		$messages_text .= pl_template('subtemplates/home.html', $row, 'motd');
 	}
 }
-
+$reports = pikaMisc::reportList(true);
+$y = "";
+foreach ($reports as $report)
+{
+  $y .= "<li>${z}</li>";
+}
+$main_html['report_list'] = $y;
 
 $feeds_array = pikaRssFeed::getFeeds();
 $feeds_text = '';
