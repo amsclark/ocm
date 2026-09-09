@@ -93,10 +93,12 @@ fi
 # Keyed on the password being empty rather than on the schema being fresh, so a
 # first start that died partway through still ends up with a usable login.
 #
-# NOTE: this repository still hashes passwords with unsalted md5 — see
-# pikaAuthDb in cms/app/lib/pl.php. That is a known weakness and is being
-# addressed separately. The hash written here is what the login code expects
-# today; when the hashing changes, this changes with it.
+# The hash is written with password_hash(), the same function pikaAuthDb uses
+# to verify. pl.php passes a 4th argument of 'md5' to the pikaAuthDb
+# constructor, which looks like a hashing mode but is not: the constructor
+# marks that parameter DEPRECATED and ignores it. Verification is
+# password_verify(), with an md5 comparison kept only as a fallback that
+# rewrites the row to bcrypt on the next successful login.
 if [ -z "$(mysql_run -N -B -e "SELECT password FROM users WHERE user_id=1" 2>/dev/null)" ]; then
 	ADMIN_USER="${ADMIN_USER:-admin}"
 	ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
@@ -108,7 +110,14 @@ if [ -z "$(mysql_run -N -B -e "SELECT password FROM users WHERE user_id=1" 2>/de
 		ADMIN_PASSWORD="$(head -c 200 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 20)"
 		generated=1
 	fi
-	HASH="$(printf '%s' "$ADMIN_PASSWORD" | md5sum | cut -d' ' -f1)"
+	# Via the environment, not the argument list: a password on a command line
+	# is readable in the process table.
+	HASH="$(ADMIN_PASSWORD="$ADMIN_PASSWORD" php -r \
+		'echo password_hash(getenv("ADMIN_PASSWORD"), PASSWORD_DEFAULT);')"
+	if [ -z "$HASH" ]; then
+		echo "entrypoint: password_hash produced nothing; refusing to write an empty password" >&2
+		exit 1
+	fi
 	mysql_run -e "UPDATE users SET username='${ADMIN_USER}', password='${HASH}', group_id='system', enabled=1 WHERE user_id=1"
 	if [ "$generated" = 1 ]; then
 		echo "entrypoint: ================================================="
