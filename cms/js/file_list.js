@@ -183,7 +183,13 @@ function removeFile(container,folder_ptr,mode,doc_type,folder_field,doc_field,ca
 function draw(container)
 {
 	var file_list_container = document.getElementById(container);
-	file_list_container.innerHTML = xmlHttp.responseText;
+	
+	// Parse the response text and append it as nodes
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(xmlHttp.responseText, 'text/html');
+  Array.from(doc.body.childNodes).forEach(function(node) {
+    file_list_container.appendChild(node);
+  });	
 	return false; // to prevent user from following link href
 }
 
