@@ -12,6 +12,13 @@ screen after the data operation is completed.
 
 require_once ('pika_cms.php');
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 // VARIABLES
 $pk = new pikaCms;
 $action = pl_grab_var('action', null, 'REQUEST');

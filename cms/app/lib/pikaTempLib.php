@@ -222,6 +222,18 @@ class pikaTempLib {
 	 */
 	public function draw() 
 	{
+		// Pre-fill the CSRF token so the bare %%[csrf_field]%% tag in form
+		// templates resolves through the plain-variable lookup path. Without
+		// this the tag finds nothing there, renders as an empty string, and
+		// every CSRF-gated POST returns 403 for every real user. A caller
+		// that set csrf_field itself keeps its own value, so this is purely
+		// additive.
+		if(function_exists('pl_csrf_hidden_input')
+			&& (!isset($this->_data['csrf_field']) || $this->_data['csrf_field'] === ''))
+		{
+			$this->_data['csrf_field'] = pl_csrf_hidden_input();
+		}
+		
 		// Check subTemplates
 		$this->_template_string = $this->subTemplate();
 		// Check for legacy templates

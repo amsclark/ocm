@@ -898,6 +898,434 @@ if (!function_exists('pl_log_error')) {
 }
 
 /**
+ * ── CSRF token framework ────────────────────────────────────────────
+ *
+ * One token per session, persisted in the `csrf_tokens` table keyed by
+ * the PHP session id — NOT in $_SESSION. OCM's session save-handler in
+ * this file (pl_session_read / pl_session_write) is a deliberate no-op:
+ * $_SESSION does not survive across requests, only $_SESSION['SID'] is
+ * restored from the serialized stub pl_session_read returns. A token
+ * kept in $_SESSION would be regenerated on every request and could
+ * never match across the render-then-submit boundary. Every other piece
+ * of cross-request state in OCM lives in a DB table and is reloaded on
+ * each request; CSRF tokens follow the same pattern.
+ *
+ * The token is emitted into forms as a hidden <input name="_csrf"> via
+ * the csrf_field template tag, and verified on every POST by
+ * pl_csrf_check(). It is rotated on successful login so a token handed
+ * out before authentication cannot be replayed afterwards.
+ *
+ * Within a single request the token is cached in a global so a page
+ * that renders many forms does not round-trip to the DB for each one.
+ *
+ * Endpoints that receive posts from third parties must NOT call
+ * pl_csrf_check — they have no session and have to be authenticated
+ * some other way. In this tree that is cms/services/twilio.php,
+ * cms/services/transfer_case.php (HTTP Basic), cms/services/login.php
+ * (pre-session) and cms/services/calendar.php (per-user cal_token).
+ */
+
+/**
+ * Resolve the session id to key csrf_tokens by. Prefers
+ * $_SESSION['SID'], which pl_session_read populates at request start
+ * and pikaAuth rewrites after session_regenerate_id() on login; falls
+ * back to PHP's own session_id().
+ *
+ * Returns null when there is no session at all. Callers then fall back
+ * to a transient token that cannot verify, which is correct: an
+ * endpoint reached without session bootstrap is not CSRF-gated either.
+ */
+if (!function_exists('pl_csrf_session_id')) {
+	function pl_csrf_session_id()
+	{
+		if (isset($_SESSION['SID']) && is_string($_SESSION['SID']) && strlen($_SESSION['SID']) > 0) {
+			return $_SESSION['SID'];
+		}
+		$sid = session_id();
+		if (is_string($sid) && strlen($sid) > 0) {
+			return $sid;
+		}
+		return null;
+	}
+}
+
+if (!function_exists('pl_csrf_token')) {
+	function pl_csrf_token()
+	{
+		// Cache for the rest of this request. Cleared by pl_csrf_rotate().
+		global $_pl_csrf_cache;
+		if (isset($_pl_csrf_cache) && is_string($_pl_csrf_cache) && strlen($_pl_csrf_cache) === 64) {
+			return $_pl_csrf_cache;
+		}
+
+		$sid = pl_csrf_session_id();
+		if ($sid === null) {
+			$_pl_csrf_cache = bin2hex(random_bytes(32));
+			return $_pl_csrf_cache;
+		}
+
+		// Any DB failure here has to degrade to a transient token rather
+		// than fatal: DB::preparedQuery throws when the legacy non-mysqli
+		// driver is in use, and csrf_tokens is absent until a deployment
+		// runs cms/app/sql/upgrades/add_csrf_tokens_table.sql.
+		try {
+			$result = DB::preparedQuery(
+				"SELECT token FROM csrf_tokens WHERE session_id = ? LIMIT 1",
+				array($sid)
+			);
+			if ($result && DBResult::numRows($result) === 1) {
+				$row = DBResult::fetchRow($result);
+				if (is_array($row) && isset($row['token'])
+						&& is_string($row['token']) && strlen($row['token']) === 64) {
+					$_pl_csrf_cache = $row['token'];
+					return $_pl_csrf_cache;
+				}
+			}
+
+			// No row yet. ON DUPLICATE KEY UPDATE covers the race where two
+			// requests for the same session id both try to insert.
+			$token = bin2hex(random_bytes(32));
+			DB::preparedQuery(
+				"INSERT INTO csrf_tokens (session_id, token) VALUES (?, ?) "
+				. "ON DUPLICATE KEY UPDATE token = VALUES(token)",
+				array($sid, $token)
+			);
+			$_pl_csrf_cache = $token;
+			return $_pl_csrf_cache;
+		} catch (Exception $e) {
+			pl_log_error('pl_csrf_token storage unavailable', $e->getMessage());
+		} catch (Throwable $e) {
+			pl_log_error('pl_csrf_token storage unavailable', $e->getMessage());
+		}
+
+		$_pl_csrf_cache = bin2hex(random_bytes(32));
+		return $_pl_csrf_cache;
+	}
+}
+
+if (!function_exists('pl_csrf_rotate')) {
+	function pl_csrf_rotate()
+	{
+		global $_pl_csrf_cache;
+		$_pl_csrf_cache = null;
+
+		$sid = pl_csrf_session_id();
+		if ($sid === null) {
+			return;
+		}
+
+		$token = bin2hex(random_bytes(32));
+		try {
+			DB::preparedQuery(
+				"INSERT INTO csrf_tokens (session_id, token) VALUES (?, ?) "
+				. "ON DUPLICATE KEY UPDATE token = VALUES(token)",
+				array($sid, $token)
+			);
+			$_pl_csrf_cache = $token;
+
+			// Opportunistic GC on roughly 1 login in 100: drop rows not
+			// touched in a week. Rare enough to cost nothing, frequent
+			// enough that the table does not grow without bound.
+			if (mt_rand(1, 100) === 1) {
+				DB::preparedQuery(
+					"DELETE FROM csrf_tokens WHERE last_used < DATE_SUB(NOW(), INTERVAL 7 DAY)",
+					array()
+				);
+			}
+		} catch (Exception $e) {
+			pl_log_error('pl_csrf_rotate failed', $e->getMessage());
+		} catch (Throwable $e) {
+			pl_log_error('pl_csrf_rotate failed', $e->getMessage());
+		}
+	}
+}
+
+/**
+ * Return a hidden <input> carrying the CSRF token, for PHP that emits a
+ * form directly instead of going through the template system. Templates
+ * use the %%[csrf_field]%% tag, which resolves to this.
+ */
+if (!function_exists('pl_csrf_hidden_input')) {
+	function pl_csrf_hidden_input()
+	{
+		$token = pl_csrf_token();
+		$escaped = htmlspecialchars($token, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		return '<input type="hidden" name="_csrf" value="' . $escaped . '">';
+	}
+}
+
+/**
+ * Classify where the current request came from: 'same', 'cross', or
+ * 'unknown'.
+ *
+ * This exists because a large amount of this tree mutates state on GET —
+ * cms/ops/delete_case.php deletes on a GET, system-groups.php dispatches
+ * its update action out of pl_grab_get(), and so on. The session cookie
+ * is SameSite=Lax at best, and Lax deliberately DOES attach the cookie
+ * to a cross-site top-level GET navigation, so an admin who clicks an
+ * attacker's link carries their session into that mutation.
+ *
+ * A token cannot be the answer for those endpoints: their triggers are
+ * <a href> links, not forms, so there is no request body to put a token
+ * in without rewriting the feature. Checking the request's provenance
+ * needs nothing from the markup.
+ *
+ * Sec-Fetch-Site is the load-bearing signal: the browser sets it and
+ * page script cannot forge it. Origin and Referer are the fallback for
+ * older browsers.
+ */
+if (!function_exists('pl_request_cross_site_verdict')) {
+	function pl_request_cross_site_verdict()
+	{
+		if (isset($_SERVER['HTTP_SEC_FETCH_SITE'])) {
+			switch (strtolower(trim((string)$_SERVER['HTTP_SEC_FETCH_SITE']))) {
+				// 'none' is a user-initiated load: a typed URL, a
+				// bookmark, the browser home button. No page is involved.
+				case 'none':
+				case 'same-origin':
+				case 'same-site':
+					return 'same';
+				case 'cross-site':
+					return 'cross';
+			}
+			return 'unknown';
+		}
+
+		// Origin first (older browsers still send it on form submissions),
+		// then Referer. Compare against the Host the browser used for THIS
+		// request: an attacker can set neither header from the victim's
+		// browser, so a match means the navigation started on our own page.
+		$self = isset($_SERVER['HTTP_HOST']) ? strtolower((string)$_SERVER['HTTP_HOST']) : '';
+		$candidate = '';
+		if (isset($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN'] !== '' && $_SERVER['HTTP_ORIGIN'] !== 'null') {
+			$candidate = (string)$_SERVER['HTTP_ORIGIN'];
+		} elseif (isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER'] !== '') {
+			$candidate = (string)$_SERVER['HTTP_REFERER'];
+		}
+		if ($candidate === '' || $self === '') {
+			// Nothing to judge. Bookmarks and typed URLs land here, as
+			// does any browser too old to send Origin.
+			return 'unknown';
+		}
+		$host = parse_url($candidate, PHP_URL_HOST);
+		if (!is_string($host) || $host === '') {
+			return 'unknown';
+		}
+		$port = parse_url($candidate, PHP_URL_PORT);
+		$host = strtolower($host) . ($port ? ':' . (int)$port : '');
+		if ($host === $self) {
+			return 'same';
+		}
+		return 'cross';
+	}
+}
+
+/**
+ * Reject the request unless it carries the session's CSRF token.
+ * Records a csrf.rejected audit row and exits with HTTP 403; on the
+ * common benign failure (an authenticated user resubmitting a form
+ * whose token went stale) it renders a recovery page instead so the
+ * user's data is not lost. Never returns to the caller on failure.
+ *
+ * On POST this is the token check. On any other method there is no
+ * token to compare, so it falls through to
+ * pl_request_cross_site_verdict() and refuses a mutation that a foreign
+ * site initiated — the only defence available to the legacy handlers
+ * that mutate on GET.
+ */
+if (!function_exists('pl_csrf_check')) {
+	function pl_csrf_check()
+	{
+		if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+			// 'unknown' is allowed through on purpose: a verdict we cannot
+			// establish must not lock out a bookmark or an old browser,
+			// and the POST endpoints still have the real token.
+			if (pl_request_cross_site_verdict() === 'cross') {
+				if (function_exists('pl_audit')) {
+					pl_audit('csrf.cross_site_get', null, null, array(
+						'method'  => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '',
+						'script'  => isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '',
+						'referer' => isset($_SERVER['HTTP_REFERER']) ? substr((string)$_SERVER['HTTP_REFERER'], 0, 255) : null,
+					));
+				}
+				header('HTTP/1.1 403 Forbidden');
+				header('Content-Type: text/plain; charset=utf-8');
+				echo "Blocked: this request came from another site.\n\n"
+				   . "Open the application directly and retry the action from inside it.\n";
+				exit();
+			}
+			return;
+		}
+
+		$got = isset($_POST['_csrf']) ? (string)$_POST['_csrf'] : '';
+		$sid = pl_csrf_session_id();
+		$expected = '';
+		if ($sid !== null && strlen($got) === 64) {
+			try {
+				$result = DB::preparedQuery(
+					"SELECT token FROM csrf_tokens WHERE session_id = ? LIMIT 1",
+					array($sid)
+				);
+				if ($result && DBResult::numRows($result) === 1) {
+					$row = DBResult::fetchRow($result);
+					if (is_array($row) && isset($row['token']) && is_string($row['token'])) {
+						$expected = (string)$row['token'];
+					}
+				}
+				// Touch last_used so a session in active use is not GC'd
+				// out from under the user mid-flow.
+				if (strlen($expected) === 64) {
+					DB::preparedQuery(
+						"UPDATE csrf_tokens SET last_used = CURRENT_TIMESTAMP WHERE session_id = ?",
+						array($sid)
+					);
+				}
+			} catch (Exception $e) {
+				pl_log_error('pl_csrf_check storage unavailable', $e->getMessage());
+			} catch (Throwable $e) {
+				pl_log_error('pl_csrf_check storage unavailable', $e->getMessage());
+			}
+		}
+
+		if (strlen($expected) !== 64 || !hash_equals($expected, $got)) {
+			// Separate the benign, common failure — an authenticated user
+			// resubmitting a form whose per-session token went stale (page
+			// left open across a re-login, reached with the Back button,
+			// kept open overnight) — from an anonymous, malformed or
+			// genuinely forged request. Only the former gets the recovery
+			// page. _csrf_recovery is a loop guard: a recovery resubmit
+			// that also fails falls through to the plain 403.
+			$authed      = !empty($GLOBALS['auth_row']['user_id']);
+			$well_formed = (strlen($got) === 64 && ctype_xdigit($got));
+			$recovering  = isset($_POST['_csrf_recovery']) && $_POST['_csrf_recovery'] === '1';
+			$offer_recovery = ($authed && $well_formed && !$recovering);
+
+			if (function_exists('pl_audit')) {
+				pl_audit('csrf.rejected', null, null, array(
+					'method'   => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '',
+					'script'   => isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '',
+					'referer'  => isset($_SERVER['HTTP_REFERER']) ? substr((string)$_SERVER['HTTP_REFERER'], 0, 255) : null,
+					'recovery' => $offer_recovery ? 1 : 0,
+				));
+			}
+
+			if ($offer_recovery) {
+				pl_csrf_render_recovery_form();
+				exit();
+			}
+
+			header('HTTP/1.1 403 Forbidden');
+			header('Content-Type: text/plain; charset=utf-8');
+			echo "CSRF validation failed.\n\n"
+			   . "Your session may have expired, or the form was submitted without a valid "
+			   . "token. Return to the previous page, reload it, and resubmit.\n";
+			exit();
+		}
+	}
+}
+
+/**
+ * Recursively emit hidden <input> elements reproducing a possibly nested
+ * POST value, so an in-flight save can be replayed verbatim. Array
+ * fields matter here: a flat scalar carry would silently drop exactly
+ * the data we are trying not to lose.
+ */
+if (!function_exists('pl_csrf_carry_hidden_inputs')) {
+	function pl_csrf_carry_hidden_inputs($name, $value)
+	{
+		if (is_array($value)) {
+			$out = '';
+			foreach ($value as $k => $v) {
+				$out .= pl_csrf_carry_hidden_inputs($name . '[' . $k . ']', $v);
+			}
+			return $out;
+		}
+		if (!is_scalar($value)) {
+			return '';
+		}
+		// Never echo a password back as a hidden field. The endpoints read
+		// these with pl_grab_post, so the user simply retypes it if a flow
+		// ever needs one on replay.
+		$lname = strtolower((string)$name);
+		if (strpos($lname, 'password') !== false
+				|| strpos($lname, 'newpass') !== false
+				|| strpos($lname, 'oldpass') !== false) {
+			return '';
+		}
+		$safe_n = htmlspecialchars((string)$name,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		$safe_v = htmlspecialchars((string)$value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		return '<input type="hidden" name="' . $safe_n . '" value="' . $safe_v . '">' . "\n";
+	}
+}
+
+/**
+ * Render a "confirm your save" page and exit, for an authenticated user
+ * whose POST carried a stale but well-formed token. Re-emits the
+ * in-flight POST body as hidden fields with a FRESH token behind a
+ * single button, so the user loses nothing instead of hitting a dead-end
+ * 403 and a Back-button resubmit loop.
+ *
+ * Only reachable for an authenticated session (see the gate in
+ * pl_csrf_check). A real cross-site forgery gains nothing from it: the
+ * attacker's origin can neither read the fresh token nor auto-submit the
+ * form, and the replay needs a deliberate click on our own origin.
+ */
+if (!function_exists('pl_csrf_render_recovery_form')) {
+	function pl_csrf_render_recovery_form()
+	{
+		$base       = pl_settings_get('base_url');
+		$owner      = pl_settings_get('owner_name');
+		$safe_base  = htmlspecialchars((string)$base,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		$safe_owner = htmlspecialchars((string)$owner, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+		// Re-post to the exact path executing now. SCRIPT_NAME already
+		// carries base_url and any subdirectory (e.g. /ops/), which a
+		// basename()-based action would drop. Keep the query string for
+		// handlers that read it.
+		$path = isset($_SERVER['SCRIPT_NAME']) ? (string)$_SERVER['SCRIPT_NAME'] : '';
+		$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string)$_SERVER['QUERY_STRING']) > 0)
+			? '?' . (string)$_SERVER['QUERY_STRING'] : '';
+		$action = htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+		// Carry the in-flight POST body, nested arrays included. Skip our
+		// own markers and _csrf; a fresh token is emitted below.
+		$carry = '';
+		$skip  = array('_csrf', '_csrf_recovery');
+		if (is_array($_POST)) {
+			foreach ($_POST as $name => $value) {
+				if (!is_scalar($name) || in_array($name, $skip, true)) {
+					continue;
+				}
+				$carry .= pl_csrf_carry_hidden_inputs((string)$name, $value);
+			}
+		}
+
+		header('HTTP/1.1 200 OK');
+		header('Content-Type: text/html; charset=utf-8');
+		echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+		   . '<meta name="robots" content="noindex, nofollow">'
+		   . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+		   . '<title>Confirm your save - ' . $safe_owner . '</title>'
+		   . '<style>body{font-family:sans-serif;max-width:38em;margin:3em auto;padding:0 1em;'
+		   . 'line-height:1.5}button{font-size:1em;padding:.5em 1.2em}</style>'
+		   . '</head><body>';
+		echo '<h1>Confirm your save</h1>';
+		echo '<p>Your security token had expired &mdash; usually because this page was '
+		   . 'left open for a while, or was reached with the browser&rsquo;s Back '
+		   . 'button. Your information was <strong>not</strong> lost. Click '
+		   . '&ldquo;Save again&rdquo; to finish saving it.</p>';
+		echo '<form method="POST" action="' . $action . '">'
+		   . pl_csrf_hidden_input()
+		   . '<input type="hidden" name="_csrf_recovery" value="1">'
+		   . $carry
+		   . '<button type="submit">Save again</button>'
+		   . '</form>';
+		echo '<p><a href="' . $safe_base . '/">Cancel and discard</a></p>';
+		echo '</body></html>';
+	}
+}
+
+/**
  * Append a row to the audit_log table.
  *
  * Call sites supply the action (dotted-lowercase, e.g. 'user.disable'),
@@ -2200,6 +2628,17 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 	if (strlen($subtpl_label) < 4)
 	{
 		$subtpl_label = null;
+	}
+	
+	// Auto-inject the CSRF token, same as pikaTempLib::draw(). Without it,
+	// templates rendered through this function emit a literal
+	// %%[csrf_field]%% placeholder and no token, so every POST through
+	// those forms trips pl_csrf_check and the user sees a misleading
+	// "CSRF validation failed" page.
+	if (function_exists('pl_csrf_hidden_input')
+		&& (!isset($template_data['csrf_field']) || $template_data['csrf_field'] === ''))
+	{
+		$template_data['csrf_field'] = pl_csrf_hidden_input();
 	}
 	
 	// Handle custom templates.

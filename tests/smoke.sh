@@ -24,6 +24,7 @@ trap 'rm -f "$COOKIES" "$BODY"' EXIT
 
 pass=0
 fail=0
+HAVE_DB=0
 ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
 
@@ -185,6 +186,7 @@ if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
 	if [ -z "$(adb 'SELECT 1')" ]; then
 		printf '  skip audit log checks (cannot reach the database)\n'
 	else
+		HAVE_DB=1
 		if [ -n "$(adb "SELECT 1 FROM audit_log LIMIT 1")" ] \
 			|| [ -n "$(adb "SHOW TABLES LIKE 'audit_log'")" ]; then
 			ok "audit_log table exists"
@@ -233,6 +235,175 @@ if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
 else
 	printf '  skip audit log checks (set COMPOSE_PROJECT to enable)\n'
 fi
+
+# ── 7. CSRF ────────────────────────────────────────────────────────────────
+# Two properties matter here and they fail in opposite directions.
+#
+# Under-enforcement: a state-changing request succeeds without the session's
+# token, which is the vulnerability.
+#
+# Over-enforcement: a legitimate form renders without a token — because a
+# template lost its %%[csrf_field]%% tag, or the tag resolved to nothing — and
+# then every real user's save returns 403. That is the more likely regression
+# and the harder one to notice, so it is checked first.
+#
+# system-maint.php is the probe for the POST path. It is CSRF-gated, and an
+# unrecognised action falls through its switch to the default branch, which
+# renders the page and changes nothing. So the accept case can be tested for
+# real without a mutation to undo afterwards.
+MAINT="$OCM_URL/system-maint.php"
+
+# 7a. A rendered form carries a resolved 64-hex token.
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$MAINT" >/dev/null
+CSRF_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+	| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+if [ "${#CSRF_TOKEN}" -eq 64 ]; then
+	ok "system-maint.php form carries a 64-hex CSRF token"
+else
+	bad "system-maint.php form has no usable CSRF token (got ${#CSRF_TOKEN} chars)"
+fi
+
+# 7b. No POST form anywhere renders without a token, and no template leaks the
+# raw tag. An unresolved tag or an empty value is the over-enforcement failure:
+# the page looks fine and every save from it is refused.
+for page in \
+	"" \
+	system-maint.php \
+	system-settings.php \
+	system-users.php \
+	prefs.php \
+	password.php \
+	search.php \
+	addressbook.php \
+	; do
+	label="${page:-/ (home)}"
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/$page" >/dev/null
+	# Only POST forms need a token; GET forms are deliberately excluded so the
+	# token never lands in a URL or a browser history entry.
+	post_forms="$(grep -oiE '<form[^>]*method=["'"'"']?post' "$BODY" | wc -l)"
+	tokens="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | wc -l)"
+	if grep -q '%%\[csrf_field\]%%' "$BODY"; then
+		bad "$label: literal %%[csrf_field]%% in the output — the tag did not resolve"
+	elif grep -qE 'name="_csrf" value=""' "$BODY"; then
+		bad "$label: a _csrf field rendered EMPTY — every POST from this page will 403"
+	elif [ "$post_forms" -gt "$tokens" ]; then
+		bad "$label: $post_forms POST form(s) but only $tokens token(s)"
+	else
+		ok "$label: $post_forms POST form(s), $tokens token(s)"
+	fi
+done
+
+# 7c. A POST with no token is refused.
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	-X POST -d 'action=smoke-no-token' "$MAINT")"
+if [ "$code" = 403 ] && grep -q 'CSRF validation failed' "$BODY"; then
+	ok "POST without a token is refused (403)"
+else
+	bad "POST WITHOUT A TOKEN WAS NOT REFUSED (status $code, $(wc -c < "$BODY") bytes)"
+fi
+
+# 7d. A POST with a well-formed but wrong token, from a logged-in user, gets
+# the recovery form rather than a bare 403, so an expired token does not
+# discard the work in the form.
+bogus="$(printf 'a%.0s' $(seq 64))"
+curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+	-X POST -d "action=smoke-bad-token&_csrf=${bogus}" "$MAINT" >/dev/null
+if grep -q 'Confirm your save' "$BODY" && grep -q '_csrf_recovery' "$BODY"; then
+	ok "a stale token offers the recovery form, not a dead end"
+elif grep -q 'CSRF validation failed' "$BODY"; then
+	bad "a stale token gave a bare 403 — the recovery path did not fire"
+else
+	bad "a stale token gave neither recovery nor refusal ($(wc -c < "$BODY") bytes)"
+fi
+
+# 7e. The real token is accepted.
+if [ "${#CSRF_TOKEN}" -eq 64 ]; then
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		-X POST -d "action=smoke-valid-token&_csrf=${CSRF_TOKEN}" "$MAINT")"
+	if [ "$code" = 200 ] \
+		&& ! grep -q 'CSRF validation failed' "$BODY" \
+		&& ! grep -q 'Confirm your save' "$BODY" \
+		&& grep -q 'Truncate SSNs' "$BODY"; then
+		ok "POST with the session token is processed"
+	else
+		bad "POST with a VALID token was rejected (status $code, $(wc -c < "$BODY") bytes)"
+	fi
+else
+	bad "cannot test the accept path: no token was extracted in 7a"
+fi
+
+# 7f. Pages that change state on a GET cannot carry a hidden field, so they
+# fall back to the request's own provenance. system-groups.php is one of them.
+# Not GROUPS: that is a read-only bash special variable holding the
+# caller's group ids, and assigning to it fails silently.
+GROUPS_URL="$OCM_URL/system-groups.php"
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	-H 'Sec-Fetch-Site: cross-site' "$GROUPS_URL")"
+if [ "$code" = 403 ] && grep -q 'came from another site' "$BODY"; then
+	ok "a cross-site GET to a GET-mutating page is refused (Sec-Fetch-Site)"
+else
+	bad "a cross-site GET was ALLOWED (status $code)"
+fi
+
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	-H 'Origin: https://evil.example' "$GROUPS_URL")"
+if [ "$code" = 403 ]; then
+	ok "a foreign Origin on a GET-mutating page is refused"
+else
+	bad "a foreign Origin was ALLOWED (status $code)"
+fi
+
+# ...and a request with no provenance headers at all must still work. Old
+# browsers and bookmarks send neither header, and locking them out would be a
+# self-inflicted outage, so 'unknown' is allowed through on purpose.
+code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' "$GROUPS_URL")"
+size="$(wc -c < "$BODY")"
+if [ "$code" = 200 ] && [ "$size" -gt 500 ]; then
+	ok "a request with no provenance headers is still served ($size bytes)"
+else
+	bad "a plain request to $GROUPS_URL was blocked (status $code, $size bytes)"
+fi
+
+# 7g. The refusals above are on the record, and the token really is the one in
+# the database rather than a value the page invented.
+if [ "$HAVE_DB" = 1 ]; then
+	if [ -n "$(adb "SHOW TABLES LIKE 'csrf_tokens'")" ]; then
+		ok "csrf_tokens table exists"
+	else
+		bad "csrf_tokens table is MISSING (add_csrf_tokens_table.sql did not run)"
+	fi
+
+	if [ "${#CSRF_TOKEN}" -eq 64 ]; then
+		n="$(adb "SELECT COUNT(*) FROM csrf_tokens WHERE token='${CSRF_TOKEN}'")"
+		if [ "${n:-0}" -ge 1 ]; then
+			ok "the rendered token matches its csrf_tokens row"
+		else
+			bad "the rendered token is in no csrf_tokens row — the token is not persisted"
+		fi
+	fi
+
+	# recovery=0 is 7c, recovery=1 is 7d. Both must be distinguishable in the
+	# log, because one is a likely attack and the other is a user whose token
+	# expired.
+	for want in 0 1; do
+		n="$(adb "SELECT COUNT(*) FROM audit_log WHERE action='csrf.rejected' AND details LIKE '%\"recovery\":${want}%'")"
+		if [ "${n:-0}" -ge 1 ]; then
+			ok "audit_log recorded csrf.rejected with recovery=${want}"
+		else
+			bad "audit_log has no csrf.rejected row with recovery=${want}"
+		fi
+	done
+
+	n="$(adb "SELECT COUNT(*) FROM audit_log WHERE action='csrf.cross_site_get'")"
+	if [ "${n:-0}" -ge 1 ]; then
+		ok "audit_log recorded csrf.cross_site_get"
+	else
+		bad "audit_log has no csrf.cross_site_get row"
+	fi
+else
+	printf '  skip CSRF database checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
 
 echo
 echo "smoke: $pass passed, $fail failed"

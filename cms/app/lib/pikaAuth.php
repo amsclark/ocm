@@ -131,6 +131,16 @@ class pikaAuth
 					$new_session->logout = 0;
 					$new_session->user_id = $this->auth_row['user_id'];
 					$new_session->save();
+					
+					// Rotate the CSRF token on every successful login so a
+					// token handed out before authentication cannot be reused
+					// in the authenticated session. This must come AFTER
+					// session_regenerate_id() above, because pl_csrf_rotate
+					// keys the new token by the session id.
+					if(function_exists('pl_csrf_rotate'))
+					{
+						pl_csrf_rotate();
+					}
 				}
 				else 
 				{

@@ -6,7 +6,7 @@ Transfer Case# <b>%%[case_number]%%</b>
 %%[end:main_menu]%%
 
 %%[begin:pika_menu]%%
-<form method="POST" action="%%[base_url]%%/ops/transfer_case.php">
+<form method="POST" action="%%[base_url]%%/ops/transfer_case.php">%%[csrf_field]%%
 <h2 class="hdt">Pika Direct Case Transfer - %%[label]%%</h2>
 Are you sure that you would like to transfer Case #%%[case_number]%% to %%[label]%%?<br/>
 <br/>

@@ -29,7 +29,7 @@
 %%[end:flex_footer]%%
 
 
-<form action="%%[base_url]%%/ops/update_case.php" method=POST name=ws>
+<form action="%%[base_url]%%/ops/update_case.php" method=POST name=ws>%%[csrf_field]%%
 <p class="de">Does this case have conflicts?<br/> %%[conflicts,yes_no]%% <br/>
 
 <input type="hidden" name="case_id" value="%%[case_id]%%">

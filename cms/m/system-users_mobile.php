@@ -10,6 +10,15 @@ chdir('..');
 require_once('pika-danio.php');
 pika_init();
 
+// This page performs its state changes on a GET: the user record is saved out
+// of pl_grab_get() values, which read $_GET only, and the links that trigger
+// the action are plain <a href> markup, so a hidden token field is not
+// available as a defence here. On a non-POST request pl_csrf_check() falls
+// through to the same-site check, which refuses a mutation that a foreign page
+// initiated and needs nothing from the markup. See
+// pl_request_cross_site_verdict() in cms/app/lib/pl.php.
+pl_csrf_check();
+
 require_once('pikaTempLib.php');
 require_once('plFlexList.php');
 require_once('pikaUser.php');

@@ -479,6 +479,7 @@ if($gen && strlen($gen) > 0)
 $form = <<<FORM
 <h2>Generate Sample Data</h2>
 <form method="POST">
+%%[csrf_field]%%
 Number of Cases:<br/>
 %%[count,input_text]%%
 <input type=submit name="gen" value="Generate" tabindex="">

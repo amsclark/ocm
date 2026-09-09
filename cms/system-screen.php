@@ -7,6 +7,13 @@
 
 require_once('pika-danio.php');
 pika_init();
+
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
 require_once('pikaTempLib.php');
 require_once('pikaScreen.php');
 require_once('pikaUdf.php');
@@ -92,8 +99,10 @@ if (strlen($edit) > 0)
 	$main_html['content'] = '';
 	$main_html['content'] .= '<h3>Screen Editor</h3>';
 	$main_html['content'] .= '<div class="row"><div class="span4"><h4>Case Tab Properties</h4>';
+	// Heredocs interpolate variables, not calls, so precompute the token.
+	$csrf_field = pl_csrf_hidden_input();
 	$main_html['content'] .= <<<EOF
-		<form action="system-screen.php" method="POST">
+		<form action="system-screen.php" method="POST">{$csrf_field}
 		<input type="hidden" name="action" value="save">
 		<input type="hidden" name="screen_id" value="{$edit}">
 		Case Tab Name:<input type="text" name="screen_name" value="{$s->screen_name}">
@@ -207,7 +216,7 @@ else
 		$main_html['content'] .= "<a href='system-screen.php?edit={$screen_id}' class='btn btn-large btn-success'>{$screen_name}</a><br><br>\n";
 	}
 
-	$main_html['content'] .= '</p><form action="system-screen.php" method="POST"><input type="hidden" name="action" value="add	">Add a new case tab screen named:<br><input type="text" name="screen_name"><br><input type="submit" value="Add Screen"> </form>';
+	$main_html['content'] .= '</p><form action="system-screen.php" method="POST">' . pl_csrf_hidden_input() . '<input type="hidden" name="action" value="add	">Add a new case tab screen named:<br><input type="text" name="screen_name"><br><input type="submit" value="Add Screen"> </form>';
 
 	$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
 							 <a href=\"{$base_url}/site_map.php\">Site Map</a> &gt;

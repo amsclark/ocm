@@ -1,7 +1,7 @@
 %%[begin:zipcode_default]%%
 <table><tr><td>
 
-<form name="form1" method="post" action="zipcode.php">
+<form name="form1" method="post" action="zipcode.php">%%[csrf_field]%%
 <h2>Look Up a ZIP Code</h2>
 <p class="de">
 <input type="text" name="zipcode" value=""><br/>
@@ -11,7 +11,7 @@
 <br/>
 </form>
 
-<form name="form2" method="post" action="zipcode.php">
+<form name="form2" method="post" action="zipcode.php">%%[csrf_field]%%
 <h2>Add a New ZIP Code</h2>
 <p class="de">
 <input type="submit" name="Submit" value="Add New Zipcode">
@@ -23,7 +23,7 @@
 %%[begin:zipcode]%%
 </td></tr></table>
 
-<form name="form1" method="post" action="ops/update_zipcode.php">
+<form name="form1" method="post" action="ops/update_zipcode.php">%%[csrf_field]%%
 <p class="de">
 	Zip Code:<br/>
     <input type="text" name="zipcode" value="%%[zip]%%">

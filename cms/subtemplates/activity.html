@@ -1,6 +1,6 @@
 %%[begin:N]%%
 <!-- 2013-07-11 AMW - Changed form name to "ws" so unsaved form warning can be used. -->
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
+<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">%%[csrf_field]%%
 <table>
 	<tr valign="top">
 		<td>
@@ -68,7 +68,7 @@ document.ws.summary.focus();
 
 
 %%[begin:C]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method=POST>
+<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method=POST>%%[csrf_field]%%
 <table>
 	<tr valign="top">
 		<td>
@@ -132,7 +132,7 @@ document.ws.summary.focus();
 
 %%[begin:K]%%
 
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
+<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">%%[csrf_field]%%
 <table>
 	<tr valign="top">
 		<td>
@@ -199,7 +199,7 @@ document.ws.summary.focus();
 
 
 %%[begin:L]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
+<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">%%[csrf_field]%%
 <table>
 	<tr valign="top">
     	<td class="de" nowrap>
@@ -267,7 +267,7 @@ document.ws.summary.focus();
 %%[end:L]%%
 
 %%[begin:T]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">
+<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">%%[csrf_field]%%
 <table>
 	<tr valign="top">
 		<td>
@@ -343,7 +343,7 @@ document.ws.summary.focus();
 		</td>
 	</tr>
 </table>
-<form action="%%[base_url]%%/ops/delete_activity.php" method="POST">
+<form action="%%[base_url]%%/ops/delete_activity.php" method="POST">%%[csrf_field]%%
 	<input type=hidden name=act_id value=%%[act_id]%%>
 	<input type="submit" name="delete" value="Delete" class="save">
 	<input type="submit" name="cancel" value="Cancel" class="save">

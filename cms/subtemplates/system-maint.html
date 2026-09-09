@@ -1,4 +1,4 @@
-<form action="%%[base_url]%%/system-maint.php" method="POST">
+<form action="%%[base_url]%%/system-maint.php" method="POST">%%[csrf_field]%%
 <h2>System Maintenance</h2>
 WARNING: This page is reserved for site administration and should only
 be used by system administrators with full knowledge of Pika and its database.
@@ -13,7 +13,7 @@ performance of Pika users.
 %%[action,input_hidden,default=metaphone]%%
 </form>
 
-<form action="%%[base_url]%%/system-maint.php" method="POST">
+<form action="%%[base_url]%%/system-maint.php" method="POST">%%[csrf_field]%%
 <h2>Calculate Ages</h2>
 <input type="submit" name="submit" value="Calculate Client Ages">
 %%[action,input_hidden,default=calc_age]%%

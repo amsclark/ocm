@@ -96,7 +96,7 @@ fi
 # idempotent — replaying pika602.sql on a 7.00 schema would fail or corrupt
 # it. Only add a file here once it is safe to run repeatedly, which in
 # practice means CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS only.
-for upgrade in add_audit_log.sql; do
+for upgrade in add_audit_log.sql add_csrf_tokens_table.sql; do
 	path="/var/www/html/cms/app/sql/upgrades/${upgrade}"
 	if [ ! -f "$path" ]; then
 		echo "entrypoint: ${upgrade} is missing from the image" >&2
