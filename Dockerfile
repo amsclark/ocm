@@ -10,26 +10,42 @@
 #
 FROM php:8.2-apache
 
-# System libraries needed to build the PHP extensions, plus ghostscript, which
-# OCM shells out to when it indexes the text of an uploaded PDF.
+# Build dependencies for the PHP extensions, plus the command-line tools OCM
+# shells out to. Each of those tools is a real call site, not a guess:
+#
+#   pdftotext (poppler-utils)  cms/app/lib/pikaDocument.php — indexes the text
+#                              of an uploaded PDF so document search can find it
+#   htmldoc                    cms/pl_report.php, app/extralib/lib/plWebDoc.php
+#                              — renders a report to PDF
+#   strings (binutils)         cms/app/scripts/forms2db.php — indexes the text
+#                              of a WordPerfect document
+#   mysql client               the entrypoint uses it to load the schema
+#
+# Ghostscript is deliberately absent. The older documentation lists it, but the
+# only two ps2ascii calls in the tree are commented out; pdftotext replaced it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libpng-dev \
-        libjpeg62-turbo-dev \
         libxml2-dev \
         libonig-dev \
         libzip-dev \
         default-mysql-client \
-        ghostscript \
-    && docker-php-ext-configure gd --with-jpeg \
+        poppler-utils \
+        htmldoc \
+        binutils \
     && docker-php-ext-install -j"$(nproc)" \
         mysqli \
-        gd \
         mbstring \
-        soap \
         opcache \
         zip \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Extensions not installed here, and why:
+#   gd    Nothing uses it. The one <img> that would have needed it points at
+#         cms/daily.php, which does not exist in this tree, and its only caller
+#         is inside a commented-out block in cms/cal_day.php.
+#   soap  No SoapClient or SoapServer anywhere in cms/.
+# curl, dom, simplexml, json and openssl are all compiled into the base image
+# already, so they need no line here.
 
 # rewrite and headers are required by the shipped Apache configuration.
 RUN a2enmod rewrite headers
