@@ -243,7 +243,7 @@ while ($row = DBResult::fetchRow($result))
 	$total += $row['a'];
 }
 
-$t->add_row($total);
+$t->add_row(array('Total:',$total));
 
 if($show_sql) 
 {
@@ -287,7 +287,7 @@ while ($row = DBResult::fetchRow($result))
 	$total += $row['a'];
 }
 
-$t->add_row($total);
+$t->add_row(array('Total:',$total));
 
 if($show_sql) 
 {
@@ -316,7 +316,7 @@ while ($row = DBResult::fetchRow($result))
 	$total += $row['a'];
 }
 
-$t->add_row($total);
+$t->add_row(array('Total:',$total));
 
 if($show_sql) 
 {
