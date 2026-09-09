@@ -156,8 +156,26 @@ class pikaCase extends plBaseWithUdf
 		and to this object.
 		*/
 		$case_id = $this->getValue('case_id');
+		
+		/*	$role reaches here straight from the caller and was not checked
+			at all. ops/add_case_contact.php and ops/add_case_new_contact.php
+			pass pl_grab_post('relation_code'), and pl_clean_form_input()
+			encodes only < and >, so a quote arrived intact and closed this
+			string early. A POST of
+			
+				relation_code=2'),('88888888','7','7','9
+			
+			appended a second VALUES tuple, which links any contact to any
+			case in the table the conflict-of-interest check reads. The same
+			value also arrives unfiltered from services/transfer_case.php
+			(a payload from another instance) and from pikaLSXML_V2 (an
+			uploaded XML import). The contact id is already constrained by
+			the is_numeric() test above; the cast is belt and braces.
+		*/
+		$safe_role = DB::escapeString($role);
+		$safe_contact_id = (int) $contact_id;
 		$sql = "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
-					VALUES ('{$conflict_id}', '{$contact_id}', '{$case_id}', '{$role}')";
+					VALUES ('{$conflict_id}', '{$safe_contact_id}', '{$case_id}', '{$safe_role}')";
 		DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		$this->contacts[$contact_id] = $role;
 		

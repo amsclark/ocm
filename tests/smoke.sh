@@ -950,6 +950,126 @@ else
 	bad "the case list broke when cms/app was denied ($(wc -c < "$BODY") bytes)"
 fi
 
+# 14. A request cannot choose the primary key of a row it creates.
+#
+# plBase::__construct(null) takes the new row's id from the counters table and
+# stores it in $this->values. setValues() then walks the request array and
+# writes every key that matches a column, so a request carrying case_id or
+# contact_id used to overwrite the id that was just allocated. Pick an id just
+# above the counter and the next legitimate intake is the request that fails.
+echo
+echo "14. mass assignment on the case and contact insert paths"
+
+# Fetch the token fresh rather than reusing the one from section 7: that one has
+# already been spent on a POST, and a single-use scheme would make every
+# assertion below pass for the wrong reason.
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$MAINT" >/dev/null
+MASS_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+	| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+
+if [ "$HAVE_DB" = 1 ] && [ "${#MASS_TOKEN}" -eq 64 ]; then
+	MASS_ID=987654321
+
+	cleanup_mass() {
+		mass_case="$(adb "SELECT case_id FROM cases WHERE number LIKE 'ZZMASS%'" | tr '\n' ',' | sed 's/,$//')"
+		if [ -n "$mass_case" ]; then
+			adb "DELETE FROM conflict WHERE case_id IN ($mass_case)" >/dev/null
+		fi
+		adb "DELETE FROM cases WHERE number LIKE 'ZZMASS%' OR case_id = $MASS_ID" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZMASS%' OR contact_id = $MASS_ID" >/dev/null
+		adb "DELETE FROM conflict WHERE contact_id = $MASS_ID OR conflict_id = 88888888" >/dev/null
+	}
+	cleanup_mass
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mass' EXIT
+
+	# The eligibility-intake handler creates a case from the query string.
+	curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/ops/new_case_no_client.php?screen=elig&number=ZZMASS1&case_id=$MASS_ID" \
+		>/dev/null
+	planted="$(adb "SELECT COUNT(*) FROM cases WHERE case_id = $MASS_ID")"
+	created="$(adb "SELECT COUNT(*) FROM cases WHERE number = 'ZZMASS1'")"
+	if [ "${planted:-1}" = 0 ]; then
+		ok "a chosen case_id in the query string is ignored"
+	else
+		bad "A REQUEST PLANTED A CASE AT case_id=$MASS_ID"
+	fi
+	if [ "${created:-0}" -ge 1 ]; then
+		ok "the eligibility intake still creates its case"
+	else
+		bad "the eligibility intake no longer creates a case — the strip is too wide"
+	fi
+
+	# The case-contact handler creates a contact from the POST body. It needs a
+	# real case to hang it on, so use the one just created.
+	case_id="$(adb "SELECT case_id FROM cases WHERE number = 'ZZMASS1' LIMIT 1")"
+	if [ -n "$case_id" ]; then
+		curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=$MASS_TOKEN" \
+			-d "case_id=$case_id" \
+			-d 'relation_code=2' \
+			-d 'last_name=ZZMASS2' \
+			-d 'first_name=Smoke' \
+			-d "contact_id=$MASS_ID" \
+			"$OCM_URL/ops/add_case_new_contact.php" >/dev/null
+		planted="$(adb "SELECT COUNT(*) FROM contacts WHERE contact_id = $MASS_ID")"
+		created="$(adb "SELECT COUNT(*) FROM contacts WHERE last_name = 'ZZMASS2'")"
+		if [ "${planted:-1}" = 0 ]; then
+			ok "a chosen contact_id in the POST body is ignored"
+		else
+			bad "A REQUEST PLANTED A CONTACT AT contact_id=$MASS_ID"
+		fi
+		if [ "${created:-0}" -ge 1 ]; then
+			ok "the case-contact handler still creates its contact"
+		else
+			bad "the case-contact handler no longer creates a contact"
+		fi
+
+		# relation_code went from the POST body into an unescaped INSERT in
+		# pikaCase::addContact(). pl_clean_form_input() encodes only < and >,
+		# so the quote arrived intact and the payload below appended a second
+		# VALUES tuple: an arbitrary contact attached to an arbitrary case in
+		# the conflict table, which is what the conflict-of-interest check
+		# reads. This handler redirects and prints nothing, so the assertion
+		# has to be on the table, not on the response body.
+		curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=$MASS_TOKEN" \
+			-d "case_id=$case_id" \
+			-d "relation_code=2'),('88888888','7','7','9" \
+			-d 'last_name=ZZMASS3' \
+			-d 'first_name=Smoke' \
+			"$OCM_URL/ops/add_case_new_contact.php" >/dev/null
+		rogue="$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id = 88888888")"
+		if [ "${rogue:-1}" = 0 ]; then
+			ok "a quoted relation_code inserts no rogue conflict row"
+		else
+			bad "A QUOTED relation_code INSERTED $rogue ROGUE conflict ROW(S)"
+		fi
+		adb "DELETE FROM conflict WHERE conflict_id = 88888888" >/dev/null
+
+		# Positive control: an ordinary relation_code still links the contact.
+		curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=$MASS_TOKEN" \
+			-d "case_id=$case_id" \
+			-d 'relation_code=2' \
+			-d 'last_name=ZZMASS4' \
+			-d 'first_name=Smoke' \
+			"$OCM_URL/ops/add_case_new_contact.php" >/dev/null
+		linked="$(adb "SELECT COUNT(*) FROM conflict WHERE case_id = $case_id AND contact_id IN (SELECT contact_id FROM contacts WHERE last_name = 'ZZMASS4')")"
+		if [ "${linked:-0}" -ge 1 ]; then
+			ok "an ordinary relation_code still links the contact to the case"
+		else
+			bad "the conflict INSERT no longer links a contact - the escape is too tight"
+		fi
+	else
+		bad "no ZZMASS1 case to hang the contact tests on"
+	fi
+
+	cleanup_mass
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	bad "section 14 skipped: no database access or no CSRF token"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -2366,6 +2366,68 @@ if (!function_exists('pl_case_readable')) {
 	}
 }
 
+if (!function_exists('pl_strip_protected_columns')) {
+	/*	Remove the keys that must never come from a request body before the
+		array is handed to plBase::setValues().
+		
+		setValues() walks whatever array it is given and writes every key
+		that happens to match a column, so handing it $_POST or $_GET lets
+		the client decide which columns get written -- and the client sends
+		whatever it likes, not what the page rendered.
+		
+		The primary key is the one that bites in this codebase.
+		plBase::__construct(null) allocates the row's id from the counters
+		table and stores it in $this->values, so a request that carries
+		contact_id or case_id overwrites the allocated id and save() runs
+		INSERT ... SET contact_id='<whatever was sent>'. Pick an id that is
+		already taken and the insert is a duplicate-key error; pick one just
+		above the counter and the NEXT legitimate insert is the one that
+		fails, so intake breaks for everybody until an operator bumps the
+		counter by hand. Every caller already reads the id it means to use
+		with pl_grab_post('contact_id') or similar and passes it to the
+		constructor, so the copy inside the request array is redundant as
+		well as dangerous.
+		
+		The application-managed stamps are listed for the same reason but
+		none of them exist in this schema, so they are inert here. They stay
+		in the list because they cost nothing and a later migration adding a
+		soft-delete column should not reopen the hole: posting deleted_at
+		through a form that offers no such control would delete a record,
+		and posting it empty would bring one back.
+		
+		Table-specific columns go in $extra.
+	*/
+	function pl_strip_protected_columns($post, $extra = array())
+	{
+		if (!is_array($post))
+		{
+			return array();
+		}
+		
+		if (!is_array($extra))
+		{
+			$extra = array();
+		}
+		
+		// Primary keys of the tables these handlers write. The names are
+		// this schema's, not a guess: activities is act_id, doc_storage is
+		// doc_id.
+		$protected = array(
+			'contact_id', 'case_id', 'act_id', 'user_id', 'group_id',
+			'transfer_id', 'doc_id',
+			// Application-managed, never user-supplied.
+			'deleted_at', 'created_at', 'updated_at', 'date_created',
+		);
+		
+		foreach (array_merge($protected, $extra) AS $key)
+		{
+			unset($post[$key]);
+		}
+		
+		return $post;
+	}
+}
+
 // User SESSION Functions
 
 function pl_session_close()

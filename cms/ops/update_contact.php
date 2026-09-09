@@ -38,7 +38,9 @@ $screen = pl_grab_post('screen', $next_tab);
 // The user is saving the case record. 
 
 $contact = new pikaContact($contact_id);
-$contact->setValues(pl_clean_form_input($_POST));
+// The row to write is the one named by $contact_id above. Strip the copy
+// of the key out of the body so it cannot also come from the form.
+$contact->setValues(pl_strip_protected_columns(pl_clean_form_input($_POST)));
 $contact->save();
 
 if ($case_id)

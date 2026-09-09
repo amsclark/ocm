@@ -37,7 +37,9 @@ for an existing contact.  Don't import any data from previous cases, however.
 
 // add the case record...
 $case1 = new pikaCase();
-$case1->setValues(pl_clean_form_input($_GET));
+// pl_strip_protected_columns() so a crafted query string cannot hand this
+// insert a chosen case_id. See app/lib/pl.php.
+$case1->setValues(pl_strip_protected_columns(pl_clean_form_input($_GET)));
 // Now link the client to the case and set the first client as the primary client
 $case1->addContact($thiscon, 1);
 

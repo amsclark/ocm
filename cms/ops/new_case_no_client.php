@@ -37,7 +37,9 @@ $screen = pl_grab_get('screen', $next_tab);
 
 // BEGIN MAIN CODE
 
-$case1->setValues(pl_clean_form_input($_GET));
+// pl_strip_protected_columns() so a crafted query string cannot hand this
+// insert a chosen case_id. See app/lib/pl.php.
+$case1->setValues(pl_strip_protected_columns(pl_clean_form_input($_GET)));
 /*	Since no client is added, and no conflict check will be performed, poten_conflicts
 	will still be set to its default value of 1.  Fix this.
 	
