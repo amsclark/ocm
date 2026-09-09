@@ -1772,6 +1772,7 @@ class pikaCms
 		LEFT JOIN cases ON activities.case_id=cases.case_id 
 		LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
 		WHERE activities.user_id=$user_id
+		AND act_type = 'K'
 		AND (act_date < '$act_date' OR (act_date = '$act_date' && act_time <= '$act_time'))
 		AND completed = 0
 		ORDER BY act_date ASC, act_time ASC, act_id ASC LIMIT 1000";
