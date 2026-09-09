@@ -17,6 +17,71 @@ if(!defined('PIKA_CODE_NAME')) {  define('PIKA_CODE_NAME', 'danio'); }
 
 
 /**
+ * pl_act_row_owner_matches - true when an activity row belongs to this user,
+ * with the empty and zero cases excluded.
+ *
+ * The historical test was a bare ==, which in PHP puts '', 0 and null
+ * uncomfortably close together depending on the version and the column type.
+ * Compare as strings and refuse to match on an empty owner, so an unowned row
+ * is never "owned by whoever is asking".
+ *
+ * @return boolean
+ * @param array $row      activity row
+ * @param array $auth_row current user's auth row
+*/
+function pl_act_row_owner_matches($row, $auth_row)
+{
+	if (!is_array($row) || !is_array($auth_row))
+	{
+		return false;
+	}
+	
+	$owner = isset($row['user_id']) ? (string) $row['user_id'] : '';
+	$me = isset($auth_row['user_id']) ? (string) $auth_row['user_id'] : '';
+	
+	if ('' === $owner || '' === $me || '0' === $owner)
+	{
+		return false;
+	}
+	
+	return $owner === $me;
+}
+
+
+/**
+ * pl_act_row_is_pro_bono - true when an activity row is genuinely a pro bono
+ * attorney's row, that is: it names a pba and no staff user.
+ *
+ * This is the question the "no user owns it, so it must be PB" grants in
+ * read_act and edit_act were trying to ask. Asking it directly fails closed on
+ * the rows that merely have a blank user_id -- imports, rows left behind by a
+ * deleted user, rows written by an integration -- instead of exposing them to
+ * every authenticated user.
+ *
+ * @return boolean
+ * @param array $row activity row
+*/
+function pl_act_row_is_pro_bono($row)
+{
+	if (!is_array($row))
+	{
+		return false;
+	}
+	
+	$owner = isset($row['user_id']) ? (string) $row['user_id'] : '';
+	
+	if ('' !== $owner && '0' !== $owner)
+	{
+		return false;
+	}
+	
+	$pba = isset($row['pba_id']) ? (string) $row['pba_id'] : '';
+	
+	return '' !== $pba && '0' !== $pba;
+}
+
+
+/**
  * Determine whether the user identified by $row has permission to perform action $op.
  * @return boolean
  * @param string $op
@@ -155,13 +220,30 @@ function pika_authorize($op, $row)
 			$allow_this = true;
 		}
 		
-		else if ($row['user_id'] == $auth_row['user_id'])
+		else if (pl_act_row_owner_matches($row, $auth_row))
 		{
 			$allow_this = true;
 		}
 		
-		/* AMW - Allow anyone to read that no user owns (should only be PB). */
-		else if (strlen($row['user_id']) == 0)
+		/*	AMW's grant here was "allow anyone to read a row that no user owns
+			(should only be PB)", tested as strlen($row['user_id']) == 0. The
+			parenthetical was the intent and the test was not: an activity ends
+			up with an empty user_id for several reasons that have nothing to do
+			with pro bono work -- an imported row, a row created by a user who
+			has since been deleted, a row written by an integration -- and every
+			one of those became readable by every authenticated user, whatever
+			their office scope and whether or not they could read the case the
+			activity hangs off.
+			
+			Confirmed on this codebase before the fix: a user in a group with
+			no read_all, no read_office and no intake was refused
+			case.php?case_id=N outright, and still got the full notes of an
+			activity on that case by asking for activity.php?act_id=M.
+			
+			So ask the question the comment was asking -- is this actually a pro
+			bono attorney's row? -- which needs a pba_id and no staff user.
+		*/
+		else if (pl_act_row_is_pro_bono($row))
 		{
 			$allow_this = true;
 		}
@@ -189,13 +271,15 @@ function pika_authorize($op, $row)
 			$allow_this = true;
 		}
 		
-		else if ($row['user_id'] == $auth_row['user_id'])
+		else if (pl_act_row_owner_matches($row, $auth_row))
 		{
 			$allow_this = true;
 		}
 		
-		/* AMW - Allow anyone to edit that no user owns (should only be PB). */
-		else if (strlen($row['user_id']) == 0)
+		// Same correction as read_act above, and it matters more here: an
+		// unowned row was editable by any authenticated user, which includes
+		// rewriting its notes and re-pointing its hours.
+		else if (pl_act_row_is_pro_bono($row))
 		{
 			$allow_this = true;
 		}

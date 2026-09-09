@@ -1184,5 +1184,123 @@ else
 fi
 
 echo
+echo "16. an activity with no owner is not readable by everybody"
+
+# read_act and edit_act used to grant on strlen($row['user_id']) == 0, with the
+# comment "should only be PB". An activity gets a blank user_id for reasons that
+# have nothing to do with pro bono work -- an import, a row left by a deleted
+# user, a row written by an integration -- and each of those became readable and
+# editable by every authenticated user, whatever their office scope.
+#
+# The fixture is a case this group cannot read, holding two activities with no
+# staff owner: one with no pba_id (an orphan, must be refused) and one with a
+# pba_id (a real pro bono row, must still be allowed).
+if [ "$HAVE_DB" = 1 ]; then
+	AGROUP='zz_act_grp'
+	AUSER='zz_act_user'
+	APASS='zz-act-Passw0rd'
+	AJAR="$(mktemp)"
+
+	cleanup_act() {
+		adb "DELETE FROM activities WHERE notes LIKE 'ZZACT-%'" >/dev/null
+		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZACTPBA'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-ACT-1'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${AUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${AGROUP}'" >/dev/null
+		rm -f "$AJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_act' EXIT
+	cleanup_act
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${AGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	AHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$APASS" </dev/null 2>/dev/null)"
+	AUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${AUID}, '${AUSER}', '${AHASH}', 1, '${AGROUP}', 0)" >/dev/null
+
+	# The case names a handler and an office, so no intake or office grant can
+	# reach it either.
+	ACASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${ACASE}, 'ZZ-ACT-1', 1, 'ZZOFF', '1')" >/dev/null
+
+	AORPHAN="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, case_id, user_id, pba_id, act_date, act_type, completed, summary, notes)
+		VALUES (${AORPHAN}, ${ACASE}, NULL, NULL, CURDATE(), 'N', 0, 'ZZACT orphan', 'ZZACT-ORPHAN-SECRET')" >/dev/null
+
+	APBA="$(adb "SELECT COALESCE(MAX(pba_id), 0) + 1 FROM pb_attorneys")"
+	adb "INSERT INTO pb_attorneys (pba_id, first_name, last_name, enabled)
+		VALUES (${APBA}, 'Zz', 'ZZACTPBA', 1)" >/dev/null
+
+	APB="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, case_id, user_id, pba_id, act_date, act_type, completed, summary, notes)
+		VALUES (${APB}, ${ACASE}, NULL, ${APBA}, CURDATE(), 'N', 0, 'ZZACT pro bono', 'ZZACT-PROBONO-OK')" >/dev/null
+
+	if [ -z "$AHASH" ] || [ -z "${AORPHAN:-}" ] || [ -z "${APB:-}" ] || [ -z "${APBA:-}" ]; then
+		bad "could not seed the activity authorization fixtures"
+	else
+		# Positive controls on the fixture itself. activity.php picks the
+		# subtemplate section from act_type, so a row with a code that
+		# subtemplates/activity.html does not define renders an empty page
+		# and every check below would pass without proving anything.
+		for pair in "${AORPHAN}:ZZACT-ORPHAN-SECRET" "${APB}:ZZACT-PROBONO-OK"; do
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/activity.php?act_id=${pair%%:*}" >/dev/null
+			if grep -q "${pair#*:}" "$BODY"; then
+				ok "the admin sees the ${pair#*:} fixture"
+			else
+				bad "the admin does NOT see the ${pair#*:} fixture - section 16 proves nothing"
+			fi
+		done
+
+		: > "$AJAR"
+		curl -sL --max-time 30 -c "$AJAR" -b "$AJAR" -o "$BODY" \
+			-X POST -d "login_user=${AUSER}&login_pass=${APASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway activity user could not log in - section 16 is untested"
+		else
+			ok "the throwaway activity user can log in"
+
+			# Positive control on the fixture. If this user could read the case
+			# itself then nothing below says anything about read_act.
+			curl -sL --max-time 30 -b "$AJAR" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${ACASE}" >/dev/null
+			if grep -q 'This case is not viewable' "$BODY"; then
+				ok "the fixture case is refused to this user"
+			else
+				bad "the fixture case is readable by this user - section 16 proves nothing"
+			fi
+
+			curl -sL --max-time 30 -b "$AJAR" -o "$BODY" \
+				"$OCM_URL/activity.php?act_id=${AORPHAN}" >/dev/null
+			if grep -q 'ZZACT-ORPHAN-SECRET' "$BODY"; then
+				bad "AN UNOWNED ACTIVITY ON AN UNREADABLE CASE IS READABLE BY A USER WITH NO PERMISSIONS"
+			else
+				ok "an unowned activity is not readable by a user with no permissions"
+			fi
+
+			# And the grant the original comment was actually aiming at still
+			# works, so refusing the orphans has not broken pro bono access.
+			curl -sL --max-time 30 -b "$AJAR" -o "$BODY" \
+				"$OCM_URL/activity.php?act_id=${APB}" >/dev/null
+			if grep -q 'ZZACT-PROBONO-OK' "$BODY"; then
+				ok "a pro bono activity is still readable"
+			else
+				bad "a pro bono activity is no longer readable - the fix is too wide"
+			fi
+		fi
+	fi
+
+	cleanup_act
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip activity authorization checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
