@@ -46,7 +46,9 @@ switch ($action) {
 		$menu_transfer_mode = pl_menu_get('transfer_mode');
 		$option_list = new plFlexList();
 		$option_list->template_file = 'subtemplates/transfer.html';
-		$result = pikaTransferOption::getTransferOptionDB();
+		$pikaTransferOption = new pikaTransferOption();
+    	$result = $pikaTransferOption->getTransferOptionDB();
+		//$result = pikaTransferOption::getTransferOptionDB();
 		while ($row = DBResult::fetchRow($result)) {
 			$row['case_id'] = $case_id;
 			$row['case_number'] = $case_number;
