@@ -54,8 +54,12 @@ function closeCalendar(container) {
 function drawCalendar(container)
 {
 	calendar_container = document.getElementById(container);
-	calendar_container.innerHTML = xmlHttp.responseText;
-	
+
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(xmlHttp.responseText, 'text/html');
+  Array.from(doc.body.childNodes).forEach(function(node) {
+    calendar_container.appendChild(node);
+  });
 	
 }
 
