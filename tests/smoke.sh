@@ -1070,6 +1070,119 @@ else
 	bad "section 14 skipped: no database access or no CSRF token"
 fi
 
+# ── 15. A template tag typed into a form does not resolve into a secret ────
+#
+# pl_template_sub() falls back to pl_settings_get_all() for any tag it
+# cannot find in the page data, and its last line calls itself on the
+# string it just built, so a substituted value is scanned again. Together
+# those two made every reflection an oracle for the settings table:
+# search.php puts ?s= into $content_t['search_value'] and
+# subtemplates/search_screen.html renders it into a value= attribute, so
+# GET search.php?s=%%[db_password]%% came back carrying the real database
+# password. Escaping does not help - htmlspecialchars() leaves %, [ and ]
+# alone.
+#
+# Both directions are asserted. The block has to hold, and it must not
+# blank the admin pages that legitimately render the same labels: those
+# put the value into the page data explicitly, so it resolves from the
+# template-data branch that runs first.
+echo
+echo "15. a template tag does not resolve into a settings secret"
+
+# The value to look for is the password this stack actually runs on, so
+# the test cannot pass by accident against some placeholder.
+SECRET="${DB_PASSWORD:-}"
+
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/search.php?s=%25%25%5Bdb_password%5D%25%25" >/dev/null
+if [ -s "$BODY" ] && ! grep -q '%%\[db_password\]%%' "$BODY" \
+	&& { [ -z "$SECRET" ] || ! grep -qF "$SECRET" "$BODY"; }
+then
+	ok "a db_password tag in the search box resolves to nothing"
+else
+	bad "search.php reflected the db_password setting or left the tag intact"
+fi
+
+# These three come from cms-custom/config/settings.php, so they always
+# hold a value and the check cannot pass by finding nothing there. Each
+# one was confirmed to come back in the value= attribute before the fix.
+for label in db_host db_user base_directory; do
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/search.php?s=%25%25%5B${label}%5D%25%25" >/dev/null
+	# The tag renders empty, so the field comes back as value="".
+	if grep -q 'name="s" size="48" value=""' "$BODY"; then
+		ok "a $label tag in the search box resolves to nothing"
+	else
+		bad "search.php resolved the $label setting: $(grep -o 'name="s" size="48" value="[^\"]*"' "$BODY" | head -1)"
+	fi
+done
+
+# The credentials system-sms.php writes live in the settings table and are
+# empty on a fresh install, so each one is seeded with a marker first.
+# Without that the check passes on an unfixed build by finding nothing to
+# leak, which is the failure mode this whole section exists to catch.
+if [ "$HAVE_DB" = 1 ]; then
+	for label in twilio_auth_token sparkpost_api_key; do
+		adb "DELETE FROM settings WHERE label = '$label'" >/dev/null
+		adb "INSERT INTO settings (label, value) VALUES ('$label', 'ZZLEAK-$label')" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/search.php?s=%25%25%5B${label}%5D%25%25" >/dev/null
+		if grep -q "ZZLEAK-$label" "$BODY"; then
+			bad "search.php reflected the configured $label"
+		else
+			ok "a configured $label is not reflected by search.php"
+		fi
+		adb "DELETE FROM settings WHERE label = '$label'" >/dev/null
+	done
+else
+	bad "section 15 credential checks skipped: no database access"
+fi
+
+# Positive control on the fallback itself. base_url is resolved through
+# it by templates on every page, so blocking too much would blank the
+# chrome everywhere.
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/search.php?s=abcd" >/dev/null
+if grep -q "search.php?s=abcd&m=D" "$BODY"; then
+	ok "the app-settings fallback still resolves base_url"
+else
+	bad "base_url no longer resolves - the settings denylist is too wide"
+fi
+
+# A blocked label still has to render on the page that configures it.
+# system-sms.php assigns each one to $html, so it resolves from the page
+# data rather than the fallback.
+if [ "$HAVE_DB" = 1 ]; then
+	adb "DELETE FROM settings WHERE label = 'twilio_account_sid'" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('twilio_account_sid', 'ACzzzSMOKE')" >/dev/null
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-sms.php" >/dev/null
+	if grep -q 'ACzzzSMOKE' "$BODY"; then
+		ok "a blocked setting still renders on its own admin page"
+	else
+		bad "system-sms.php no longer shows twilio_account_sid - the denylist reaches the page data"
+	fi
+	# And that same value must not come back through a reflection.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/search.php?s=%25%25%5Btwilio_account_sid%5D%25%25" >/dev/null
+	if grep -q 'ACzzzSMOKE' "$BODY"; then
+		bad "search.php reflected the configured twilio_account_sid"
+	else
+		ok "a configured twilio_account_sid is not reflected by search.php"
+	fi
+	adb "DELETE FROM settings WHERE label = 'twilio_account_sid'" >/dev/null
+else
+	bad "section 15 admin-page control skipped: no database access"
+fi
+
+# The template plugin loader only accepts a PHP identifier, so a
+# directive carrying ../ cannot make require_once() leave
+# template_plugins/.
+templib="$(cd "$(dirname "$0")/.." && pwd)/cms/app/lib/pikaTempLib.php"
+if [ -f "$templib" ] && grep -qF "preg_match('/^[A-Za-z_][A-Za-z0-9_]*\$/'" "$templib"; then
+	ok "pikaTempLib::loadModule constrains the plugin name to an identifier"
+else
+	bad "pikaTempLib::loadModule no longer checks the plugin name"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

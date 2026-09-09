@@ -2503,6 +2503,76 @@ function pl_settings_get_all()
 }
 
 
+if (!function_exists('pl_settings_template_blocked'))
+{
+	/*	Settings that pl_template_sub() must never resolve from its
+		app-settings fallback.
+		
+		pl_template_sub() falls back to pl_settings_get_all() for any tag it
+		cannot find in the page's own data array, and it re-scans the text it
+		just substituted -- the last line of the function calls itself on the
+		string it just built. That recursion is load-bearing: subtemplate
+		slots are inserted as values and have to resolve their own tags
+		afterwards, so it cannot simply be removed. Put the two together and
+		any page that renders user-controlled text through pl_template()
+		turns "%%[db_password]%%" typed into a form field into the actual
+		password, because the tag is not in the page data and the fallback
+		answers it.
+		
+		Confirmed live on this codebase before the fix. search.php is the
+		shortest path: it puts ?s= into $content_t['search_value'] at line
+		23 and subtemplates/search_screen.html renders that into a value=
+		attribute, so
+		
+			GET search.php?s=%%%%[db_password]%%%%
+		
+		came back as value="<the real database password>". Any account that
+		can reach the search box could read it -- an intake volunteer, a
+		shared partner login. pl_clean_html() and pl_html_escape() are both
+		transparent to this: htmlspecialchars() does not escape %, [ or ].
+		
+		The list is the infrastructure keys from
+		cms-custom/config/settings.php plus the credentials that
+		system-sms.php writes into the settings table. Presentation values
+		from the same config file are deliberately absent: base_url in
+		particular is resolved through this fallback by templates on every
+		page, so blocking it would blank the chrome everywhere.
+		
+		Blocking a label here does not blank any admin form. Both pages that
+		render these labels put them into the page data explicitly --
+		system-sms.php assigns each one to $html, and system-settings.php
+		starts from pl_settings_get_all() -- so they resolve from the
+		template-data branch, which runs first. They also both render through
+		pikaTempLib, which has no settings fallback at all.
+	*/
+	function pl_settings_template_blocked($label)
+	{
+		static $set = null;
+		
+		if (null === $set)
+		{
+			$set = array_flip(array(
+				// cms-custom/config/settings.php infrastructure keys.
+				'db_type',
+				'db_host',
+				'db_name',
+				'db_user',
+				'db_password',
+				'base_directory',
+				// Filesystem path to the document store.
+				'docs_directory',
+				// Written by system-sms.php into the settings table.
+				'twilio_account_sid',
+				'twilio_auth_token',
+				'sparkpost_api_key',
+			));
+		}
+		
+		return is_string($label) && isset($set[$label]);
+	}
+}
+
+
 function pl_settings_init($x = null)
 {
 	static $plSettings;
@@ -3389,7 +3459,14 @@ function pl_template_sub($str, $template_data)
 	}
 	
 	// Next, check the application settings.
-	else if (array_key_exists($next_name, $app_settings))
+	//
+	// Secrets and infrastructure keys are refused here -- see
+	// pl_settings_template_blocked(). They fall through to the
+	// unresolved-tag branch below and render as '', the same as any other
+	// unknown tag, so an injected %%[db_password]%% looks like a typo
+	// instead of answering with the password.
+	else if (array_key_exists($next_name, $app_settings)
+		&& !pl_settings_template_blocked($next_name))
 	{
 		// we have the name, now replace the first and any additional fields
 		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $app_settings[$next_name], substr($str, $pos));

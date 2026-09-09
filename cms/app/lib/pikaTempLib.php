@@ -373,7 +373,26 @@ class pikaTempLib {
 		{ 
 			return false;
 		} 
-		elseif(file_exists(pl_custom_directory() . "/template_plugins/{$op_name}.php")) 
+		
+		/*	$op_name is interpolated into a filesystem path just below and
+			then called as a function name, so it should always be a plain
+			identifier. Nothing enforced that. Every caller in this tree
+			passes either a literal or a directive read out of a template
+			file on disk, and the tag loop in parse() resumes its scan past
+			the text it just substituted, so request data placed into a tag
+			value is not re-parsed as a tag -- there is no known request path
+			that reaches here. The check is here so that stays true: a value
+			containing ../ would make require_once() reach outside
+			template_plugins/ and execute whatever it found. Constrain it to
+			what a PHP function name can actually be; every real plugin
+			already matches.
+		*/
+		if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $op_name))
+		{
+			return false;
+		}
+		
+		if (file_exists(pl_custom_directory() . "/template_plugins/{$op_name}.php")) 
 		{
 			require_once(pl_custom_directory() . "/template_plugins/{$op_name}.php");
 		} 
