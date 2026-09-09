@@ -57,21 +57,43 @@ function pika_authorize($op, $row)
 			$allow_this = true;
 		}
 		
-		else if (is_null($row['user_id']))
+		// Intake permission: a group flagged `intake` may read cases that
+		// are not fully set up yet -- no primary handler assigned, or no
+		// office assigned -- so a new record can be triaged and completed
+		// during intake without the person entering it locking themselves
+		// out of it.
+		//
+		// This REPLACES two unconditional grants that used to sit here, one
+		// on a null user_id and one on a null office. The comment beside
+		// them read "this is handy for intake staff who don't have a default
+		// office set", which is a real need, but the grants were not limited
+		// to intake staff: they applied to every authenticated user. A user
+		// whose group had read_all = 0 and no office in read_office could
+		// still read any case with no handler or no office -- and on a legal
+		// aid installation those are the new intakes, the most sensitive
+		// records in the system. CWE-639.
+		//
+		// The flag defaults to 0, so this narrows access on upgrade. Grant
+		// `intake` to whichever group does intake at your organisation
+		// (System > Security Levels).
+		else if (!empty($auth_row['intake'])
+			&& (is_null($row['user_id']) || is_null($row['office'])))
 		{
 			$allow_this = true;
 		}
 		
-		else if (is_null($row['office']))
+		// read_office is a comma-separated char(64) in the groups table that
+		// pikaAuth::processAuthRow() explodes into an array -- but only when
+		// it is a non-empty string. A group with no offices leaves it NULL,
+		// and in_array() with a NULL haystack is a TypeError on PHP 8, which
+		// this application answers with HTTP 200 and an empty body. Check the
+		// shape before using it.
+		else if (!empty($auth_row['read_office'])
+			&& is_array($auth_row['read_office'])
+			&& in_array($row['office'], $auth_row['read_office']))
 		{
 			$allow_this = true;
 		}
-		
-		else if (in_array($row['office'], $auth_row['read_office']))
-		{
-			$allow_this = true;
-		}
-		// this is handy for intake staff who don't have a default office set
 		
 		break;
 		
@@ -98,23 +120,31 @@ function pika_authorize($op, $row)
 			$allow_this = true;
 		}
 		
-		else if (is_null($row['user_id']))
+		// Intake permission -- see the matching branch in 'read_case' above.
+		// An intake group gets FULL edit on a case that is not fully set up
+		// yet (no handler, or no office) so they can finish the data entry.
+		// This replaces the same pair of unconditional any-user grants, which
+		// on the write side meant every authenticated user could edit any
+		// unassigned case.
+		//
+		// Note what this does not fix: ops/update_case.php still assigns
+		// $_POST onto the case row wholesale, so a user who reaches a case
+		// through this branch can set arbitrary case columns on it. That
+		// field allowlist is a separate change.
+		else if (!empty($auth_row['intake'])
+			&& (is_null($row['user_id']) || is_null($row['office'])))
 		{
 			$allow_this = true;
 		}
 		
-		else if (is_null($row['office']))
+		// Same NULL-haystack guard as read_office above.
+		else if (!empty($auth_row['edit_office'])
+			&& is_array($auth_row['edit_office'])
+			&& in_array($row['office'], $auth_row['edit_office']))
 		{
 			$allow_this = true;
 		}
 		
-		else if (in_array($row['office'], $auth_row['edit_office']))
-		{
-			$allow_this = true;
-		}
-		
-		
-		// this is handy for intake staff who don't have a default office set
 		break;
 		
 		

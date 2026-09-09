@@ -92,6 +92,7 @@ switch ($action)
 		$tmp['users'] = pl_grab_get('users');
 		$tmp['pba'] = pl_grab_get('pba');
 		$tmp['motd'] = pl_grab_get('motd');
+		$tmp['intake'] = pl_grab_get('intake');
 		$tmp['reports'] = pl_grab_get('reports');
 		if(is_array($tmp['reports'])) { $tmp['reports'] = implode(',',$tmp['reports']); }
 		$group->setValues($tmp);
@@ -114,6 +115,7 @@ switch ($action)
 			$row['users'] = pl_array_lookup($row['users'],$plMenus['yes_no']);
 			$row['pba'] = pl_array_lookup($row['pba'],$plMenus['yes_no']);
 			$row['motd'] = pl_array_lookup($row['motd'],$plMenus['yes_no']);
+			$row['intake'] = pl_array_lookup($row['intake'],$plMenus['yes_no']);
 
 			$group_list->addRow($row);
 		}

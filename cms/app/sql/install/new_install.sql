@@ -360,6 +360,10 @@ CREATE TABLE `groups` (
   `users` tinyint(4) NOT NULL default '0',
   `pba` tinyint(4) NOT NULL default '0',
   `motd` tinyint(4) NOT NULL default '0',
+  -- May this group read and edit cases that have no handler or no office
+  -- assigned yet? See cms/app/sql/upgrades/add_groups_intake.sql for why
+  -- this is a permission rather than something every user gets.
+  `intake` tinyint(4) NOT NULL default '0',
   `reports` text,
   PRIMARY KEY  (`group_id`)
 ) ENGINE = INNODB;
@@ -1142,8 +1146,13 @@ INSERT INTO `flags` VALUES (10, 'income', 'Income Info is Blank', 'a:1:{i:0;a:4:
 INSERT INTO `flags` VALUES (11, 'problem', 'LSC Problem Code is Blank', 'a:1:{i:0;a:3:{s:10:"field_name";s:13:"cases.problem";s:10:"comparison";s:1:"1";s:5:"value";s:0:"";}}', 1, '2008-10-03 12:40:36', '0000-00-00 00:00:00');
 INSERT INTO `flags` VALUES (12, 'num_opposings', 'No Opposing Parties Have Been Entered', 'a:1:{i:0;a:3:{s:10:"field_name";s:15:"relation_code.2";s:10:"comparison";s:1:"7";s:5:"value";s:1:"1";}}', 1, '2008-10-03 12:41:38', '0000-00-00 00:00:00');
 
-INSERT INTO `groups` VALUES ('system', NULL, 1, NULL, 1, 1, 1, 1, NULL);
-INSERT INTO `groups` VALUES ('default', NULL, 1, NULL, 1, 0, 0, 0, NULL);
+-- Named columns, not positional VALUES: adding a column to `groups` above
+-- silently breaks a positional insert (ERROR 1136, and the rest of this file
+-- never loads).
+INSERT INTO `groups` (`group_id`, `read_office`, `read_all`, `edit_office`, `edit_all`, `users`, `pba`, `motd`, `intake`, `reports`)
+	VALUES ('system', NULL, 1, NULL, 1, 1, 1, 1, 1, NULL);
+INSERT INTO `groups` (`group_id`, `read_office`, `read_all`, `edit_office`, `edit_all`, `users`, `pba`, `motd`, `intake`, `reports`)
+	VALUES ('default', NULL, 1, NULL, 1, 0, 0, 0, 0, NULL);
 
 INSERT INTO `menu_act_type` VALUES ('N','Case Note',0),('L','LSC Other Services',1),('T','Time Slip',2),('K','Tickler',3),('C','Appointment',4);
 INSERT INTO `menu_annotate_activities` VALUES ('act_id','act_id',0),('act_date','Activity Date',1),('act_time','Activity Start Time',2),('act_end_time','Activity End Time',3),('hours','Hours',4),('completed','Completed',5),('act_type','Type of Activity',6),('category','Category',7),('case_id','case_id',8),('user_id','User ID',9),('pba_id','PBA ID',10),('funding','Funding Source Code',11),('summary','Summary',12),('notes','Notes',13),('last_changed','Last Updated',14),('om_code','LSC OS Code',15),('ph_measured','LSC OS PH Measured',16),('ph_estimated','LSC OS PH Estimated',17),('estimate_notes','LSC OS Estimate Notes',18),('act_end_date','Activity End Date',19),('problem','LSC Problem Code',20),('location','Location',21),('media_items','OS Media Items',22);

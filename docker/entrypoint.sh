@@ -72,7 +72,17 @@ mysql_run() { mariadb -h "$DB_HOST" -u "$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" "$
 # loaded, so a restart must not reload it — that would discard real data.
 if ! mysql_run -e 'SELECT 1 FROM settings LIMIT 1' >/dev/null 2>&1; then
 	echo "entrypoint: empty database, loading cms/app/sql/install/new_install.sql"
-	mysql_run < /var/www/html/cms/app/sql/install/new_install.sql
+	# Check the exit status. The client stops at the first failed statement
+	# but the entrypoint used to ignore that and carry on, leaving a
+	# half-built database that starts and then misbehaves in ways that look
+	# unrelated to the real cause -- an unloaded `settings` table, for
+	# instance, makes every page redirect to https.
+	if ! mysql_run < /var/www/html/cms/app/sql/install/new_install.sql
+	then
+		echo "entrypoint: FATAL: new_install.sql failed. Refusing to start" >&2
+		echo "entrypoint: the database is half-built; drop it and try again" >&2
+		exit 1
+	fi
 
 	# The shipped seed forces HTTPS. That is right for a real deployment behind
 	# a TLS proxy and wrong for `docker compose up` on a laptop, where it
@@ -96,7 +106,7 @@ fi
 # idempotent — replaying pika602.sql on a 7.00 schema would fail or corrupt
 # it. Only add a file here once it is safe to run repeatedly, which in
 # practice means CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS only.
-for upgrade in add_audit_log.sql add_csrf_tokens_table.sql; do
+for upgrade in add_audit_log.sql add_csrf_tokens_table.sql add_groups_intake.sql; do
 	path="/var/www/html/cms/app/sql/upgrades/${upgrade}"
 	if [ ! -f "$path" ]; then
 		echo "entrypoint: ${upgrade} is missing from the image" >&2
