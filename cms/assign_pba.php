@@ -47,8 +47,10 @@ switch ($action)
 			$pb_attorney = new pikaPbAttorney($pba_id);
 			$pb_attorney->last_case = date('Y-m-d');
 			$pb_attorney->save();
+			$pb_type = $pb_attorney->pb_type;
+      		$type_field = 'pba_type' . substr($field, -1);
 		}
-		header("Location:{$base_url}/ops/update_case.php?case_id={$case_id}&{$field}={$pba_id}&screen=pb");
+		header("Location:{$base_url}/ops/update_case.php?case_id={$case_id}&{$field}={$pba_id}&{$type_filed}={$pb_type}&screen=pb");
 		break;
 	default:
 		$filter = array();
