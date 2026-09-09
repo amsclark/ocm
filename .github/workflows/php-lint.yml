@@ -1,0 +1,35 @@
+name: php-lint
+
+# Syntax-checks every PHP file on the version the container ships.
+# Catches a fatal parse error before it reaches the smoke test, where it would
+# only show up as a suspiciously small HTTP 200 response.
+
+on:
+  push:
+    branches: [master, 'backport/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: php -l every file
+        run: |
+          fail=0
+          # -print0 / read -d '' because a couple of legacy paths contain spaces.
+          while IFS= read -r -d '' f; do
+            if ! out="$(php -l "$f" 2>&1)"; then
+              echo "$out"
+              fail=1
+            fi
+          done < <(find cms cms-custom -name '*.php' -type f -print0)
+          exit "$fail"

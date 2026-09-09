@@ -1,0 +1,73 @@
+# Open Case Management — development and small-deployment stack.
+#
+#   cp .env.example .env      # then set DB_PASSWORD
+#   docker compose up -d
+#   open http://localhost:8080/cms/
+#
+# The admin password is printed in the app log on first start:
+#   docker compose logs app | grep "generated admin login" -A3
+#
+# For a real deployment, put a TLS-terminating reverse proxy in front, set
+# FORCE_HTTPS=1, and read docs/DEPLOYMENT.md first.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # Loopback by default. OCM holds client case data; do not bind this to a
+      # public interface without a TLS proxy in front. Set HTTP_BIND=0.0.0.0
+      # only if you know what is between this port and the internet.
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+    environment:
+      DB_HOST: db
+      DB_NAME: ${DB_NAME:-cms}
+      DB_USER: ${DB_USER:-ocm}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      BASE_URL: ${BASE_URL:-/cms}
+      FORCE_HTTPS: ${FORCE_HTTPS:-0}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      # The application code, bind-mounted so an edit on the host takes effect
+      # on the next request without a rebuild. Remove this line for a
+      # deployment that should run only the code baked into the image.
+      - ./cms:/var/www/html/cms
+      # Per-deployment configuration and template overrides. A named volume so
+      # it survives a rebuild; the entrypoint seeds it on first start.
+      - cms_custom:/var/www/html/cms-custom
+      # Uploaded client documents. Never in the image.
+      - uploads:/var/www/html/cms/uploads
+
+  db:
+    image: mariadb:lts
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-cms}
+      MARIADB_USER: ${DB_USER:-ocm}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-${DB_PASSWORD}}
+    # OCM's schema predates strict mode. NO_ENGINE_SUBSTITUTION alone matches
+    # what the application was written against; leaving STRICT_TRANS_TABLES on
+    # makes the 2019 INSERTs fail on columns that have no default.
+    command: >-
+      --sql-mode=NO_ENGINE_SUBSTITUTION
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_general_ci
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - db_data:/var/lib/mysql
+
+volumes:
+  db_data:
+  cms_custom:
+  uploads:
