@@ -27,13 +27,13 @@ function input_date_selector($field_name = null, $field_value = null, $menu_arra
 	
 	$container_name = "date_selector-".str_pad(rand(0,99999),5,'0');
 	
-	$date_selector_output = "<div class=\"input-append\">";
+	$date_selector_output = "<div class=\"input-group\">";
 	$date_selector_output .= pikaTempLib::plugin('input_date',$field_name,$field_value,array(),$args);
 	
 	if(!isset($temp_args['disabled']) || !$temp_args['disabled']) 
 	{
-		$date_selector_output .= "<button class=\"btn\" type=\"button\" onclick=\"openCalendar('{$field_name}','{$container_name}');\">";
-		$date_selector_output .= "<i class=\"icon-calendar\"></i></button>";
+		$date_selector_output .= "<div class=\"input-group-append\"><button class=\"btn\" type=\"button\" onclick=\"openCalendar('{$field_name}','{$container_name}');\">";
+		$date_selector_output .= "<i class=\"far fa-calendar\"></i></button></div>";
 	}
 	
 	else
