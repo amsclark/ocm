@@ -30,6 +30,21 @@ if (strlen($cal_date) < 1)
 
 $user_id = pl_grab_var('user_id');
 
+// Same reflected value as cal_week.php, interpolated into the chart <img> src
+// and the RSS <link>. cal_day.php has no office view and never resolved the
+// 'mine' keyword either, so a user id is the only valid shape and everything
+// else -- 'mine' included -- falls back to the current user below, which is
+// what 'mine' was asking for. See the longer note in cal_week.php.
+if (strlen($user_id) > 0 && !ctype_digit((string) $user_id))
+{
+	if ('mine' != $user_id)
+	{
+		pl_log_error('calendar user_id rejected', 'not a user id');
+	}
+	
+	$user_id = '';
+}
+
 if (strlen($user_id) < 1)
 {
 	$user_id = $auth_row['user_id'];

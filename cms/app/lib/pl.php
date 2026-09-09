@@ -2210,6 +2210,162 @@ function pl_prepare_dir($fs_dir_path)
 	return true;
 }
 
+/**
+ * Return $ident when it is a bare SQL identifier, false when it is not.
+ *
+ * ORDER BY columns, table names and sequence names reach the query layer
+ * from query strings and from saved list preferences. DB::escapeString()
+ * does nothing for them: it escapes quotes, and an identifier is not
+ * quoted, so "1, (SELECT ...)" survives escaping unchanged. An identifier
+ * needs an allowlist instead.
+ *
+ * Fail closed. Every caller in this application passes either a literal
+ * column name or a value that came from a fixed list, so a rejection means
+ * the request was malformed.
+ */
+if (!function_exists('pl_safe_identifier')) {
+	function pl_safe_identifier($ident, $context = 'SQL identifier')
+	{
+		// One optional table qualifier, because public callers pass
+		// 'contacts.last_name' as well as bare column names.
+		if (!is_string($ident) || $ident === ''
+			|| !preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/', $ident))
+		{
+			// Log which call site rejected and what it was handed, with
+			// control characters removed (log injection) and the length
+			// capped so a large request body cannot flood the log.
+			$candidate = is_string($ident) ? $ident : gettype($ident);
+			$candidate = preg_replace('/[^\x20-\x7E]/', '.', $candidate);
+			if (strlen($candidate) > 64)
+			{
+				$candidate = substr($candidate, 0, 64) . '...';
+			}
+			pl_log_error(
+				'invalid SQL identifier rejected by allowlist',
+				$context . ' = ' . $candidate
+			);
+			return false;
+		}
+		return $ident;
+	}
+}
+
+/**
+ * Normalise a sort direction to one of the two literals MySQL accepts.
+ *
+ * The companion to pl_safe_identifier() for the other half of an ORDER BY.
+ * Anything that is not recognisably descending is treated as ascending,
+ * which is what every caller's default already was.
+ */
+if (!function_exists('pl_safe_sort_direction')) {
+	function pl_safe_sort_direction($order)
+	{
+		if (is_string($order) && 0 === strcasecmp(trim($order), 'DESC'))
+		{
+			return 'DESC';
+		}
+		return 'ASC';
+	}
+}
+
+/**
+ * Build an ORDER BY clause from a caller-supplied column list.
+ *
+ * $order_field may name more than one column, comma separated: cal_week.php
+ * asks for 'user_id, act_time'. Each name goes through pl_safe_identifier(),
+ * and one rejected name drops the whole clause instead of reaching the query.
+ * An empty return is a valid unordered query, which is what these list pages
+ * did before they had a sort control.
+ */
+if (!function_exists('pl_safe_order_by')) {
+	function pl_safe_order_by($order_field, $order = 'ASC', $context = 'sort column')
+	{
+		if (!is_string($order_field) || trim($order_field) === '')
+		{
+			return '';
+		}
+		
+		$direction = pl_safe_sort_direction($order);
+		$safe = array();
+		
+		foreach (explode(',', $order_field) AS $part)
+		{
+			$ident = pl_safe_identifier(trim($part), $context);
+			
+			if (false === $ident)
+			{
+				return '';
+			}
+			
+			$safe[] = $ident . ' ' . $direction;
+		}
+		
+		return ' ORDER BY ' . implode(', ', $safe);
+	}
+}
+
+/**
+ * True when the logged-in user is allowed to read $case_id.
+ *
+ * pika_authorize('read_case', $row) is the authority, but it needs the case
+ * row. Anything that produces a list of cases from a query with no ownership
+ * predicate of its own -- the free-text search, above all -- has to ask per
+ * row. The answers are memoised for the request, because a search result page
+ * asks about the same case many times.
+ *
+ * Fails closed: a missing case, a query error or a build with no
+ * pika_authorize() all answer false.
+ */
+if (!function_exists('pl_case_readable')) {
+	function pl_case_readable($case_id)
+	{
+		$case_id = (int) $case_id;
+		
+		if ($case_id <= 0)
+		{
+			return false;
+		}
+		
+		if (!isset($GLOBALS['pl_case_readable_cache'])
+			|| !is_array($GLOBALS['pl_case_readable_cache']))
+		{
+			$GLOBALS['pl_case_readable_cache'] = array();
+		}
+		
+		if (array_key_exists($case_id, $GLOBALS['pl_case_readable_cache']))
+		{
+			return $GLOBALS['pl_case_readable_cache'][$case_id];
+		}
+		
+		$allowed = false;
+		
+		if (function_exists('pika_authorize'))
+		{
+			// Only the columns pika_authorize('read_case') reads. Selecting
+			// the whole row would pull the case narrative into memory for
+			// every hit on a search results page.
+			$result = DB::preparedQuery(
+				'SELECT case_id, number, user_id, cocounsel1, cocounsel2, office '
+				. 'FROM cases WHERE case_id = ? LIMIT 1',
+				array($case_id)
+			);
+			
+			if ($result && 1 === DBResult::numRows($result))
+			{
+				$row = DBResult::fetchRow($result);
+				
+				if (is_array($row))
+				{
+					$allowed = (bool) pika_authorize('read_case', $row);
+				}
+			}
+		}
+		
+		$GLOBALS['pl_case_readable_cache'][$case_id] = $allowed;
+		return $allowed;
+	}
+}
+
 // User SESSION Functions
 
 function pl_session_close()

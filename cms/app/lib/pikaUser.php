@@ -122,29 +122,35 @@ class pikaUser extends plBase
 				LEFT JOIN user_sessions ON user_sessions.user_id = users.user_id 
 				WHERE 1" . $sql_filter . " GROUP BY users.user_id";
 		
+		// system-users.php passes ?order_field= and ?order= through unchecked.
+		// $order in particular reached the query raw, so the direction alone
+		// was an injection point.
 		$sql_order = '';
 		if ($order_field && $order)
 		{
+			$direction = pl_safe_sort_direction($order);
+			
 			if ('name' == $order_field)
 			{
-				$sql_order .= ' ORDER BY users.last_name ' . $order . ', users.first_name ' . $order;
+				$sql_order .= ' ORDER BY users.last_name ' . $direction
+					. ', users.first_name ' . $direction;
 			}
 			elseif ('last_active' == $order_field)
 			{
-				$sql_order .= ' ORDER BY last_active ' . $order; 
+				$sql_order .= ' ORDER BY last_active ' . $direction; 
 			}
 			else
 			{
-				$sql_order .= " ORDER BY {$order_field} {$order}";
+				$sql_order .= pl_safe_order_by($order_field, $order, 'user list sort column');
 			}
 		}
 		
 		$sql_limit = '';
 		if($list_length) {
 			$sql_limit = " LIMIT ";
-			if($first_row) { $sql_limit .= $first_row . ", "; }
+			if($first_row) { $sql_limit .= (int) $first_row . ", "; }
 			else { $sql_limit .= "0, "; }
-			$sql_limit .= $list_length;
+			$sql_limit .= (int) $list_length;
 		}
 		$sql .= $sql_order . $sql_limit;
 		

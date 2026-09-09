@@ -659,6 +659,224 @@ else
 fi
 
 
+# ── 10. SQL injection through the list sort and calendar filters ───────────
+# The list builders interpolated ?order_field= and ?order= straight into
+# ORDER BY, and pikaCms::fetchActivitiesCaseClient() interpolated the calendar
+# filter values into WHERE. pl_grab_var() lets a single quote through, so
+# cal_week.php?user_id=office_' OR 1=1 -- was a working injection.
+#
+# What is checked: the payload page still renders as a page (so the fix did
+# not just replace an injection with a broken query), it is not the Pika Error
+# page (a MySQL syntax error lands there), and a legitimate sort still works.
+# The rejection is then confirmed in the application log, which is the only
+# positive proof that the allowlist ran rather than the payload being harmless
+# by accident.
+
+# A payload that MySQL would accept, and one it would choke on. The first
+# would have leaked; the second would have produced the error page.
+sqli_probe() {
+	# $1 label, $2 url (already encoded)
+	curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" "$OCM_URL/$2" >/dev/null
+	size="$(wc -c < "$BODY")"
+	if [ "$size" -lt 500 ]; then
+		bad "$1: only $size bytes (PHP fatal?)"
+	elif grep -q 'Pika Error' "$BODY"; then
+		bad "$1: the payload reached MySQL and errored (Pika Error page)"
+	elif grep -qiE 'You have an error in your SQL syntax|SQLSTATE|check the manual that corresponds to your (MariaDB|MySQL)' "$BODY"; then
+		bad "$1: SQL error text in the body"
+	elif grep -q 'login_pass' "$BODY"; then
+		bad "$1: bounced to the login form"
+	else
+		ok "$1 ($size bytes)"
+	fi
+}
+
+sqli_probe "case list survives an ORDER BY subquery payload" \
+	"case_list.php?order_field=%28SELECT+1%29&order=ASC"
+sqli_probe "case list survives an unbalanced ORDER BY payload" \
+	"case_list.php?order_field=open_date%29--+&order=ASC"
+sqli_probe "user list survives a payload in the sort DIRECTION" \
+	"system-users.php?order_field=user_id&order=ASC%2C%28SELECT+1%29"
+sqli_probe "activity search survives an ORDER BY payload" \
+	"search.php?m=A&s=zzzz&order_field=%28SELECT+1%29"
+sqli_probe "the weekly calendar survives a quote in the office filter" \
+	"cal_week.php?user_id=office_%27+OR+1%3D1+--+"
+sqli_probe "the weekly calendar survives a UNION in user_id" \
+	"cal_week.php?user_id=1%27+UNION+SELECT+password+FROM+users+--+"
+
+# The positive control: a real sort column must still sort, or the allowlist
+# has broken the feature it is protecting.
+sqli_probe "a legitimate sort column still renders the case list" \
+	"case_list.php?order_field=open_date&order=DESC"
+sqli_probe "a legitimate dotted sort column still renders the case list" \
+	"case_list.php?order_field=contacts.last_name&order=ASC"
+
+# The allowlist logs every rejection. Without this the probes above would also
+# pass on a build where the payload simply happened not to break anything.
+if [ -n "${COMPOSE_PROJECT:-}" ]; then
+	if docker compose -p "$COMPOSE_PROJECT" logs app 2>/dev/null \
+		| grep -q 'invalid SQL identifier rejected by allowlist'; then
+		ok "the identifier allowlist logged the rejected sort columns"
+	else
+		bad "no allowlist rejection in the app log - pl_safe_order_by() did not run"
+	fi
+else
+	printf '  skip allowlist log check (set COMPOSE_PROJECT to enable)\n'
+fi
+
+
+# ── 11. The free-text search is scoped to readable cases ───────────────────
+# pikaMisc::getActivitiesByText() and pikaDocument::getDocumentsByText() query
+# every row on the box: neither has an office or ownership predicate. search.php
+# used to print whatever came back, so the search box handed any user who could
+# log in the activity summaries and document names of every case in every
+# office. Both loops now drop rows that fail pl_case_readable().
+#
+# The fixture is a case that belongs to somebody else, in an office the
+# throwaway group cannot read, with one activity and one document carrying a
+# token that nothing else in the database contains.
+if [ "$HAVE_DB" = 1 ]; then
+	SGROUP='zz_smoke_grp2'
+	SUSER='zz_smoke_user2'
+	SPASS='zz-smoke-Passw0rd2'
+	STOKEN='zzsmoketoken'
+	SJAR="$(mktemp)"
+
+	cleanup_search() {
+		adb "DELETE FROM activities WHERE summary LIKE '%${STOKEN}%'" >/dev/null
+		adb "DELETE FROM doc_storage WHERE doc_name LIKE '%${STOKEN}%'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-SMOKE-2'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${SUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SGROUP}'" >/dev/null
+		rm -f "$SJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_search' EXIT
+	cleanup_search
+
+	# No read_all, no offices, no intake: this group may read nothing at all.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	SHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SPASS" </dev/null 2>/dev/null)"
+	SUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${SUID}, '${SUSER}', '${SHASH}', 1, '${SGROUP}', 0)" >/dev/null
+
+	# Somebody else's case, in an office this group has no claim on.
+	SCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${SCASE}, 'ZZ-SMOKE-2', 1, 'zzz', '1')" >/dev/null
+
+	SACT="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, case_id, user_id, act_date, act_type, completed, summary, notes)
+		VALUES (${SACT}, ${SCASE}, 1, CURDATE(), 'A', 0, '${STOKEN} summary', '${STOKEN} notes')" >/dev/null
+
+	# getDocumentsByText() only looks at loose case documents.
+	SDOC="$(adb "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM doc_storage")"
+	adb "INSERT INTO doc_storage (doc_id, doc_name, doc_type, description, created, case_id, user_id, folder)
+		VALUES (${SDOC}, '${STOKEN}.txt', 'C', '${STOKEN} description', CURDATE(), ${SCASE}, 1, 0)" >/dev/null
+
+	if [ -z "$SHASH" ] || [ -z "${SUID:-}" ] || [ -z "${SCASE:-}" ]; then
+		bad "could not seed the search-scoping fixtures"
+	else
+		# 11a. Positive control. The admin is in the `system` group, so if the
+		# admin cannot see the fixture the test proves nothing about scoping.
+		for mode in A D; do
+			curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/search.php?m=${mode}&s=${STOKEN}" >/dev/null
+			if grep -q 'ZZ-SMOKE-2' "$BODY"; then
+				ok "the admin's search finds the fixture (mode ${mode})"
+			else
+				bad "the admin's search does NOT find the fixture (mode ${mode}) - 11b proves nothing"
+			fi
+		done
+
+		: > "$SJAR"
+		curl -sL --max-time 30 -c "$SJAR" -b "$SJAR" -o "$BODY" \
+			-X POST -d "login_user=${SUSER}&login_pass=${SPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway search user could not log in - the rest of section 11 is untested"
+		else
+			ok "the throwaway search user can log in"
+
+			# 11b. The leak. A user with no read permission at all must get
+			# neither the activity nor the document.
+			for mode in A D; do
+				curl -sL --max-time 60 -b "$SJAR" -o "$BODY" \
+					"$OCM_URL/search.php?m=${mode}&s=${STOKEN}" >/dev/null
+				if grep -q 'ZZ-SMOKE-2' "$BODY"; then
+					bad "SEARCH LEAKS ANOTHER OFFICE'S CASE TO A USER WITH NO PERMISSIONS (mode ${mode})"
+				elif grep -q "$STOKEN" "$BODY"; then
+					# The search box echoes the term back, which is fine; the
+					# case number and the document name are what must be gone.
+					if grep -qE "${STOKEN}\.txt|${STOKEN} summary|${STOKEN} description" "$BODY"; then
+						bad "SEARCH LEAKS THE MATCHED ROW ITSELF TO A USER WITH NO PERMISSIONS (mode ${mode})"
+					else
+						ok "search shows no unreadable case (mode ${mode}, term echoed only)"
+					fi
+				else
+					ok "search shows no unreadable case (mode ${mode})"
+				fi
+			done
+		fi
+	fi
+
+	cleanup_search
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip search scoping checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+
+# ── 12. The calendar user_id is reflected ──────────────────────────────────
+# cal_week.php and cal_day.php echoed ?user_id= into a dozen single-quoted
+# hrefs, an <img src> and an RSS <link>. pl_grab_var() encodes < and > but not
+# quotes, so a quote broke out of the attribute. Both pages now check the shape
+# of the value and fall back to the current user, so nothing is echoed back.
+for probe in \
+	"cal_week.php|%27+onmouseover%3Dalert%281%29+x%3D%27|onmouseover=alert(1)" \
+	"cal_day.php|%27+onmouseover%3Dalert%281%29+x%3D%27|onmouseover=alert(1)" \
+	"cal_week.php|zzunexpected|zzunexpected" \
+	"cal_day.php|zzunexpected|zzunexpected" \
+	; do
+	page="${probe%%|*}"
+	rest="${probe#*|}"
+	payload="${rest%%|*}"
+	marker="${rest#*|}"
+	curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/$page?user_id=$payload" >/dev/null
+	size="$(wc -c < "$BODY")"
+	if [ "$size" -lt 500 ]; then
+		bad "$page with a bad user_id: only $size bytes"
+	elif grep -qF "$marker" "$BODY"; then
+		bad "$page REFLECTS an unvalidated user_id back into the page ($marker)"
+	else
+		ok "$page does not reflect a bad user_id ($size bytes)"
+	fi
+done
+
+# The office view is the reason the value cannot simply be cast to (int): the
+# private build did that and silently broke its own office calendar filter.
+curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/cal_week.php?user_id=office_zzz" >/dev/null
+if grep -qF 'user_id=office_zzz' "$BODY"; then
+	ok "the weekly calendar still keeps an office filter"
+else
+	bad "the office calendar filter was dropped by the user_id shape check"
+fi
+
+# And a plain user id still drives the day view.
+curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/cal_day.php?user_id=1" >/dev/null
+if [ "$(wc -c < "$BODY")" -ge 500 ] && grep -qF 'user_id=1' "$BODY"; then
+	ok "the day calendar still accepts a numeric user id"
+else
+	bad "a numeric user id no longer reaches the day calendar"
+fi
+
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

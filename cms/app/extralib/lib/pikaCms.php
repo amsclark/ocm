@@ -652,6 +652,10 @@ class pikaCms
 	// get all contact records, in alphabetical order (within a range)
 	function fetchLetterContacts($letter, &$dataset_size, $offset='0', $limit='5')
 	{
+		$letter = DB::escapeString($letter);
+		$offset = (int) $offset;
+		$limit = (int) $limit;
+		
 		// get the total number of contacts
 		$result = DB::query("SELECT COUNT(*) AS count FROM aliases WHERE last_name LIKE '$letter%'");
 		$row = DBResult::fetchRow($result);
@@ -1116,6 +1120,9 @@ class pikaCms
 	
 	function fetchNotes($case_id, $order='ASC')
 	{
+			$order = pl_safe_sort_direction($order);
+			$case_id = DB::escapeString($case_id);
+			
 			$sql = "SELECT activities.*,
 								users.first_name, 
 								users.last_name
@@ -1331,10 +1338,10 @@ class pikaCms
 				$order_field = 'contacts.last_name';
 			}
 			
-			$sql .= " ORDER BY $order_field $order";
+			$sql .= pl_safe_order_by($order_field, $order, 'case list sort column');
 		}
 		
-		$sql .= " LIMIT $first_row, $list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		
 		$full_sql = 'SELECT case_id, number, problem, status, cases.user_id, cocounsel1, 
 			cocounsel2, office, open_date, close_date, funding, client_id, 
@@ -1542,12 +1549,12 @@ class pikaCms
 		{
 			if ($first_row && $list_length)
 			{
-				$sql_limit = " LIMIT $first_row, $list_length";
+				$sql_limit = " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 			}
 			
 			elseif ($list_length)
 			{
-				$sql_limit = " LIMIT $list_length";
+				$sql_limit = " LIMIT " . (int) $list_length;
 			}
 			
 			// handle filter options
@@ -1726,15 +1733,15 @@ class pikaCms
 		// displayed on this screen.
 		if ($order_field == 'last_name' && $order)
 		{
-			$sql .= " ORDER BY last_name, first_name $order";
+			$sql .= " ORDER BY last_name, first_name " . pl_safe_sort_direction($order);
 		}
 		
 		else if ($order_field && $order)
 		{
-			$sql .= " ORDER BY $order_field $order";
+			$sql .= pl_safe_order_by($order_field, $order, 'activity sort column');
 		}
 		
-		$sql .= " LIMIT $first_row, $list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		
 		$full_sql = 'SELECT act_id, act_date, act_time, act_end_time, hours, completed,
 				user_id, case_id, category, funding, summary' . $sql;
@@ -1868,20 +1875,33 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	function fetchActivitiesCaseClient($filter, &$contact_count, $order_field='act_date', 
 		$order='ASC', $first_row='0', $list_length='30')
 	{
+		// Every value below arrives from the calendar's query string
+		// through pl_grab_var(), which encodes < and > and nothing else --
+		// a single quote passes straight through. These were interpolated
+		// raw, so cal_week.php?user_id=office_' OR 1=1 -- was a working
+		// injection. Escape at the point of interpolation rather than in
+		// the callers, because six of them reach this method.
 		$sql = ' FROM activities LEFT JOIN cases ON activities.case_id=cases.case_id LEFT JOIN contacts ON cases.client_id=contacts.contact_id WHERE 1';
 		
 		if (isset($filter["act_date"]) && $filter["act_date"])
 		{
-			$sql .= " AND act_date='{$filter["act_date"]}'";
+			$sql .= " AND act_date='" . DB::escapeString($filter["act_date"]) . "'";
 		}
 		
 		if (isset($filter['user_list']) && is_array($filter['user_list']))
 		{
+			// The elements went into IN (...) unquoted, so this branch did
+			// not even need a quote to be injectable. User ids are
+			// integers; a non-numeric entry is a malformed request, so it
+			// is dropped rather than escaped.
 			$tmpa = "0";
 			
 			foreach ($filter['user_list'] AS $val)
 			{
-				$tmpa .= ",$val";
+				if (is_numeric($val))
+				{
+					$tmpa .= ',' . (int) $val;
+				}
 			}
 			
 			$sql .= " AND activities.user_id IN ($tmpa)";
@@ -1889,17 +1909,17 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 
 		else if ($filter['user_id'])
 		{
-			$sql .= " AND activities.user_id='{$filter['user_id']}'";
+			$sql .= " AND activities.user_id='" . DB::escapeString($filter['user_id']) . "'";
 		}
 		
 		if ($filter["starting"])
 		{
-			$sql .= " AND act_date >= '{$filter["starting"]}'";
+			$sql .= " AND act_date >= '" . DB::escapeString($filter["starting"]) . "'";
 		}
 		
 		if ($filter["ending"])
 		{
-			$sql .= " AND act_date <= '{$filter["ending"]}'";
+			$sql .= " AND act_date <= '" . DB::escapeString($filter["ending"]) . "'";
 		}
 		
 		if (isset($filter['no_date']) && $filter['no_date'])
@@ -1909,12 +1929,12 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		
 		if (isset($filter["funding"]) && $filter["funding"])
 		{
-			$sql .= " AND activities.funding='{$filter["funding"]}'";
+			$sql .= " AND activities.funding='" . DB::escapeString($filter["funding"]) . "'";
 		}
 		
 		if (isset($filter["act_type"]) && $filter["act_type"])
 		{
-			$sql .= " AND act_type='{$filter["act_type"]}'";
+			$sql .= " AND act_type='" . DB::escapeString($filter["act_type"]) . "'";
 		}
 		
 		if (isset($filter['completed']) && is_numeric($filter['completed']))
@@ -1924,12 +1944,12 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		
 		if (isset($filter['office']) && strlen($filter['office']) > 0)
 		{
-			$sql .= " AND office='{$filter['office']}'";
+			$sql .= " AND office='" . DB::escapeString($filter['office']) . "'";
 		}
 
 		if (isset($filter['number']) && strlen($filter['number']) > 0)
 		{
-			$sql .= " AND number LIKE '{$filter['number']}'";
+			$sql .= " AND number LIKE '" . DB::escapeString($filter['number']) . "'";
 		}
 		
 		if (isset($filter['category']) && strlen($filter['category']) > 0)
@@ -1953,20 +1973,21 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		// displayed on this screen.
 		if ($order_field == 'last_name' && $order)
 		{
-			$sql .= " ORDER BY last_name, first_name $order";
+			$sql .= " ORDER BY last_name, first_name " . pl_safe_sort_direction($order);
 		}
 		
 		else if ($order_field == 'date-user-time' && $order)
 		{
-			$sql .= " ORDER BY act_date $order, user_id $order, act_time $order";
+			$dir = pl_safe_sort_direction($order);
+			$sql .= " ORDER BY act_date $dir, user_id $dir, act_time $dir";
 		}
 			
 		else if ($order_field && $order)
 		{
-			$sql .= " ORDER BY $order_field $order";
+			$sql .= pl_safe_order_by($order_field, $order, 'activity sort column');
 		}
 		
-		$sql .= " LIMIT $first_row, $list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		
 		$full_sql = 'SELECT act_id, act_type, act_date, act_time, act_end_time, hours, completed, location, activities.funding,
 				activities.user_id, category, summary, cases.case_id, number, office, client_id, last_name, first_name, phone, area_code, phone_notes' . $sql;

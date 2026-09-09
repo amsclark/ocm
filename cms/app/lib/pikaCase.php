@@ -268,7 +268,7 @@ class pikaCase extends plBaseWithUdf
 	
 	public function getNotes($order = 'ASC', $list_length = 50, $first_row = 0, &$row_count = NULL, &$total_hours = NULL)
 	{
-		$clean_order = DB::escapeString($order);
+		$clean_order = pl_safe_sort_direction($order);
 		//$clean_first_row = mysql_real_escape_string($first_row);
 		//$clean_list_length = mysql_real_escape_string($list_length);
 		
@@ -297,9 +297,9 @@ class pikaCase extends plBaseWithUdf
 				WHERE case_id='{$this->values['case_id']}'
 				ORDER BY act_date {$clean_order}, act_time {$clean_order}, last_changed {$clean_order}";
 		if ($first_row && $list_length){
-			$sql .= " LIMIT $first_row, $list_length";
+			$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$sql .= " LIMIT $list_length";
+			$sql .= " LIMIT " . (int) $list_length;
 		}
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;

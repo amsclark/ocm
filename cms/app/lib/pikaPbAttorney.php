@@ -55,18 +55,19 @@ class pikaPbAttorney extends plBase
 		if (isset($filter['last_name']) && $filter['last_name']){
 			$sql_filter .= " AND last_name LIKE '%{$filter['last_name']}%'";
 		}
-		if($order != 'ASC') {$order = 'DESC'; }
+		// ?order_field= from pb_attorneys.php and assign_pba.php.
+		$order = pl_safe_sort_direction($order);
 		if ($order_field && $order){
 			if ('atty_name' == $order_field){
 				$order_sql = " ORDER BY last_name {$order}, first_name {$order}";
 			} else {
-				$order_sql = " ORDER BY {$order_field} {$order}";
+				$order_sql = pl_safe_order_by($order_field, $order, 'pro bono list sort column');
 			}
 		}
 		if ($first_row && $list_length){
-			$limit_sql = " LIMIT $first_row, $list_length";
+			$limit_sql = " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$limit_sql = " LIMIT $list_length";
+			$limit_sql = " LIMIT " . (int) $list_length;
 		}
 
 
