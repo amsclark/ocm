@@ -50,20 +50,20 @@ function menu_groups($field_name = null, $field_value = null, $menu_array = null
 	$menu_output = '';
 	$menu_output .= "<select ";
 	
-	$menu_output .= "name=\"{$temp_args['name']}\" ";
-	$menu_output .= "id=\"{$temp_args['id']}\" ";
-	$menu_output .= "class=\"{$temp_args['class']}\" ";
-	$menu_output .= "tabindex=\"{$temp_args['tabindex']}\" ";
+	$menu_output .= "name=\"" . pl_html_escape($temp_args['name']) . "\" ";
+	$menu_output .= "id=\"" . pl_html_escape($temp_args['id']) . "\" ";
+	$menu_output .= "class=\"" . pl_html_escape($temp_args['class']) . "\" ";
+	$menu_output .= "tabindex=\"" . pl_html_escape($temp_args['tabindex']) . "\" ";
 	if($temp_args['disabled']) {
 		$menu_output .= "disabled ";
 	}
 	
 	if($temp_args['onfocus'] != '') {
-		$menu_output .= "onFocus=\"{$temp_args['onfocus']}\" ";	
+		$menu_output .= "onFocus=\"" . pl_html_escape($temp_args['onfocus']) . "\" ";	
 	} if($temp_args['onblur'] != '') {
-		$menu_output .= "onBlur=\"{$temp_args['onblur']}\" ";
+		$menu_output .= "onBlur=\"" . pl_html_escape($temp_args['onblur']) . "\" ";
 	} if($temp_args['onchange'] != '') {
-		$menu_output .= "onChange=\"{$temp_args['onchange']}\" ";
+		$menu_output .= "onChange=\"" . pl_html_escape($temp_args['onchange']) . "\" ";
 	}
 	
 	$menu_output .= ">\n";
@@ -81,7 +81,7 @@ function menu_groups($field_name = null, $field_value = null, $menu_array = null
 	}
 	
 	if (!is_null($field_value) && !isset($menu_array[$field_value]) && strlen($field_value) > 0) {
-		$menu_output .= "<option selected value=\"{$field_value}\">{$field_value}</option>\n";
+		$menu_output .= "<option selected value=\"" . pl_html_escape($field_value) . "\">" . pl_html_escape($field_value) . "</option>\n";
 	}
 	
 	// catch any cases where no menu data is available
@@ -91,13 +91,13 @@ function menu_groups($field_name = null, $field_value = null, $menu_array = null
 	}
 	
 	foreach ($menu_array_groups as $key => $group) {
-		$menu_output .= "<optgroup label=\"$key\">\n";
+		$menu_output .= "<optgroup label=\"" . pl_html_escape($key) . "\">\n";
 		foreach ($group as $key => $label) {
 			$selected = '';
 			if($key == $field_value) {
 				$selected = 'selected';
 			}
-			$menu_output .= "\t<option {$selected} value=\"{$key}\">{$label}</option>\n";
+			$menu_output .= "\t<option {$selected} value=\"" . pl_html_escape($key) . "\">" . pl_html_escape($label) . "</option>\n";
 		}
 		$menu_output .= "</optgroup>\n";
 	}

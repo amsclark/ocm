@@ -1,0 +1,170 @@
+/*
+ * OCM branded error pages — shared stylesheet.
+ *
+ * Deliberately self-contained. These pages are served by Apache's
+ * ErrorDocument, which means they have to render when the application is
+ * the thing that is broken: no PHP, no session, no database, no CDN. So
+ * every value the pages need is a literal here rather than a reference to
+ * anything under cms/ — a 500 page that depends on the app is useless
+ * exactly when you need it. That includes the app's own stylesheets: a
+ * request for cms/css/screen.css.php runs PHP, which is precisely what may
+ * have failed.
+ *
+ * Light and dark are chosen from the OS hint with prefers-color-scheme.
+ * Reading a stored theme preference would mean shipping JavaScript onto an
+ * error page, and that is not worth it here.
+ */
+
+:root {
+    --err-surface-0: #f7f8fa;
+    --err-surface-1: #ffffff;
+    --err-text-1:    #1b1d22;
+    --err-text-2:    #4d5158;
+    --err-border:    #e4e6ea;
+    --err-accent:    #1a5fb4;
+    --err-accent-fg: #ffffff;
+    --err-wash-a:    rgba(120, 170, 230, 0.16);
+    --err-wash-b:    rgba(150, 140, 220, 0.12);
+    --err-shadow:    rgba(15, 23, 42, 0.08);
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --err-surface-0: #14161a;
+        --err-surface-1: #1d2026;
+        --err-text-1:    #eceef2;
+        --err-text-2:    #a9aeb8;
+        --err-border:    #31353d;
+        --err-accent:    #7fb0ee;
+        --err-accent-fg: #10131a;
+        --err-wash-a:    rgba(90, 140, 210, 0.14);
+        --err-wash-b:    rgba(130, 120, 200, 0.10);
+        --err-shadow:    rgba(0, 0, 0, 0.45);
+        color-scheme: dark;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    /* No @font-face and no webfont request: a font file the page has to
+       fetch is one more thing that can be unavailable at the moment the
+       page is needed. This is the plain system stack. */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--err-text-1);
+    background-color: var(--err-surface-0);
+    background-image:
+        radial-gradient(ellipse 1200px 800px at 0% 0%, var(--err-wash-a), transparent 60%),
+        radial-gradient(ellipse 1000px 700px at 100% 100%, var(--err-wash-b), transparent 60%);
+    background-attachment: fixed;
+}
+
+.ocm-err-wrap {
+    width: 100%;
+    max-width: 460px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.ocm-err-brand {
+    text-align: center;
+    margin: 0;
+}
+
+.ocm-err-brand-name {
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0;
+    color: var(--err-text-1);
+}
+
+.ocm-err-card {
+    padding: 28px 32px;
+    border-radius: 14px;
+    background: var(--err-surface-1);
+    border: 1px solid var(--err-border);
+    box-shadow: 0 1px 2px var(--err-shadow), 0 12px 32px var(--err-shadow);
+}
+
+.ocm-err-code {
+    display: inline-block;
+    margin: 0 0 10px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--err-border);
+    background: var(--err-surface-0);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--err-text-2);
+}
+
+.ocm-err-card h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 10px;
+    color: var(--err-text-1);
+}
+
+.ocm-err-card p {
+    margin: 0 0 18px;
+    color: var(--err-text-2);
+}
+
+.ocm-err-card p:last-of-type { margin-bottom: 0; }
+
+.ocm-err-actions {
+    margin-top: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.ocm-err-btn {
+    display: inline-block;
+    padding: 9px 18px;
+    border-radius: 8px;
+    background: var(--err-accent);
+    color: var(--err-accent-fg);
+    border: 1px solid var(--err-accent);
+    font-size: 15px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.ocm-err-btn:hover,
+.ocm-err-btn:focus { filter: brightness(1.08); }
+
+.ocm-err-btn-quiet {
+    background: transparent;
+    color: var(--err-accent);
+    border-color: var(--err-border);
+}
+
+/* Visible keyboard focus — the page has only two controls and both are
+   links, so the browser default is not enough of a target on the tinted
+   background. */
+.ocm-err-btn:focus-visible {
+    outline: 3px solid var(--err-accent);
+    outline-offset: 2px;
+}
+
+.ocm-err-foot {
+    margin: 0;
+    text-align: center;
+    font-size: 13px;
+    color: var(--err-text-2);
+}

@@ -8,7 +8,11 @@
 			</p>
 			
 			%%[begin:client]%%
-			<p class="well">
+			<!-- Was a <p class="well">. The "remove" control below is now a
+			     <form>, and the HTML parser implicitly closes an open <p>
+			     when it hits a <form> start tag, which would have split this
+			     card in two. A <div> holds the form legally. -->
+			<div class="well">
 			<!--<img src="images/vcard.png">&nbsp;--><strong><a href="%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%&case_id=%%[case_id]%%&number=%%[number]%%">%%[client_name]%%</a></strong><br/>
 			<em>Primary Client</em><br/>
 			<span class="small">
@@ -22,14 +26,32 @@
     		var client_name = "%%[client_name]%%";
 		</script>
         
+        </SPAN>
+        <!-- "remove" detaches a party from the case, so it posts instead of
+             following a GET link: a plain <a href> carried no CSRF token, and
+             any page that could make this browser fetch the URL removed the
+             party. Same shape as the other delete forms: POST plus the
+             csrf_field tag expanded below.
+             The confirm() prompt moves from the link's onClick to the form's
+             onSubmit and still reads the name out of the client_name global
+             the <script> above sets, rather than interpolating
+             %%[client_name]%% into a JS string literal here -- an apostrophe
+             in a client's name would break the literal. -->
+        <form action="%%[base_url]%%/ops/delete_conflict.php" method="POST" style="display:inline;" onSubmit="return confirm('Are you sure you want to remove ' + client_name + ' from this case?');">
+%%[csrf_field]%%
+        <input type="hidden" name="conflict_id" value="%%[conflict_id]%%"/>
+        <input type="hidden" name="case_id" value="%%[case_id]%%"/>
         <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-        <a onClick="return confirm('Are you sure you want to remove ' + client_name + 'from this case?');" href="%%[base_url]%%/ops/delete_conflict.php?conflict_id=%%[conflict_id]%%&case_id=%%[case_id]%%">remove</a> </SPAN> </p>
-			</SPAN>
-			</p>
+        <button type="submit" class="butt">remove</button>
+        </form>
+			</div>
 			%%[end:client]%%
 			
 			%%[begin:contacts]%%
-			<p class="well">
+			<!-- <div> rather than <p> for the same reason as the client card
+			     above: the "remove" <form> below would implicitly close a
+			     <p>. -->
+			<div class="well">
 				<!--<img src="images/vcard.png">&nbsp;--><strong><a href='%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%&case_id=%%[case_id]%%&number=%%[number]%%'>%%[full_name]%%</a></strong><br/>
 				<em>%%[role]%%</em><br/>
 				%%[full_phone]%% %%[phone_notes]%%<br/>
@@ -37,9 +59,15 @@
 		    var full_name%%[contact_id]%% = "%%[full_name]%%";
 		</script>
 
+        <!-- POST + CSRF, same as the client card above. -->
+        <form action="%%[base_url]%%/ops/delete_conflict.php" method="POST" style="display:inline;" onSubmit="return confirm('Are you sure you want to remove ' + full_name%%[contact_id]%% + ' from this case?');">
+%%[csrf_field]%%
+        <input type="hidden" name="conflict_id" value="%%[conflict_id]%%"/>
+        <input type="hidden" name="case_id" value="%%[case_id]%%"/>
         <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/>
-        <a onClick="return confirm('Are you sure you want to remove ' + full_name%%[contact_id]%% + ' from this case?');" href="%%[base_url]%%/ops/delete_conflict.php?conflict_id=%%[conflict_id]%%&case_id=%%[case_id]%%">remove</a> </p>
-			</p>
+        <button type="submit" class="butt">remove</button>
+        </form>
+			</div>
 			%%[end:contacts]%%
       <h2>Actions</h2>
       <p> <img src="%%[base_url]%%/images/point.gif" alt="Arrow"/> <a class="butt" href="%%[base_url]%%/timer.php?case_id=%%[case_id]%%&funding=%%[funding]%%&number=%%[number]%%" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a><br/>

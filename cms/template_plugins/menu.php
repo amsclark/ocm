@@ -48,21 +48,21 @@ function menu($field_name = null, $field_value = null, $menu_array = null, $args
 	$menu_output = '';
 	$menu_output .= "<select ";
 	
-	$menu_output .= "name=\"{$temp_args['name']}\" ";
-	$menu_output .= "id=\"{$temp_args['id']}\" ";
-	$menu_output .= "class=\"{$temp_args['class']}\" ";
-	$menu_output .= "style=\"{$temp_args['style']}\" ";
-	$menu_output .= "tabindex=\"{$temp_args['tabindex']}\" ";
+	$menu_output .= "name=\"" . pl_html_escape($temp_args['name']) . "\" ";
+	$menu_output .= "id=\"" . pl_html_escape($temp_args['id']) . "\" ";
+	$menu_output .= "class=\"" . pl_html_escape($temp_args['class']) . "\" ";
+	$menu_output .= "style=\"" . pl_html_escape($temp_args['style']) . "\" ";
+	$menu_output .= "tabindex=\"" . pl_html_escape($temp_args['tabindex']) . "\" ";
 	if($temp_args['disabled']) {
 		$menu_output .= "disabled ";
 	}
 	
 	if($temp_args['onfocus'] != '') {
-		$menu_output .= "onFocus=\"{$temp_args['onfocus']}\" ";	
+		$menu_output .= "onFocus=\"" . pl_html_escape($temp_args['onfocus']) . "\" ";	
 	} if($temp_args['onblur'] != '') {
-		$menu_output .= "onBlur=\"{$temp_args['onblur']}\" ";
+		$menu_output .= "onBlur=\"" . pl_html_escape($temp_args['onblur']) . "\" ";
 	} if($temp_args['onchange'] != '') {
-		$menu_output .= "onChange=\"{$temp_args['onchange']}\" ";
+		$menu_output .= "onChange=\"" . pl_html_escape($temp_args['onchange']) . "\" ";
 	}
 	
 	$menu_output .= ">\n";
@@ -91,7 +91,7 @@ function menu($field_name = null, $field_value = null, $menu_array = null, $args
 	}
 	
 	if (!is_null($field_value) && !isset($menu_array[$field_value]) && strlen($field_value) > 0) {
-		$menu_output .= "<option selected value=\"{$field_value}\">{$field_value}</option>\n";
+		$menu_output .= "<option selected value=\"" . pl_html_escape($field_value) . "\">" . pl_html_escape($field_value) . "</option>\n";
 	}
 	
 	// catch any cases where no menu data is available
@@ -107,7 +107,14 @@ function menu($field_name = null, $field_value = null, $menu_array = null, $args
 			$selected = 'selected';
 		}
 		
-		$menu_output .= "<option {$selected} value=\"{$key}\">{$label}</option>\n";
+		// The option VALUE is escaped; the LABEL deliberately is not. Menu
+		// labels come from the per-org menu_* tables and some ship pre-encoded
+		// entities (menu_comparison_sql.label holds &gt; and &lt; for the SQL
+		// comparison operators), so escaping here would double-encode them and
+		// show users the raw entity text. Labels are admin-curated reference
+		// data, not request input. Escaping them properly means first cleaning
+		// the stored data, which is a data migration, not a code change.
+		$menu_output .= "<option {$selected} value=\"" . pl_html_escape($key) . "\">{$label}</option>\n";
 	}
 	
 	

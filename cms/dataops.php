@@ -691,9 +691,15 @@ switch($action)
 	
 	case 'set_case_user':
 	
-	$case_id = pl_grab_var('case_id');
-	$user_id = pl_grab_var('user_id');
-	$field = pl_grab_var('field');
+	// Same GET-mutation shape as delete_conflict below: reassigning the
+	// handling attorney (and stamping their last_case date) ran off
+	// REQUEST, so it fired on a plain GET with no token. The only caller
+	// is the POST form in subtemplates/assign_atty.html, which already
+	// ships %%[csrf_field]%%, so reading POST-only costs nothing and makes
+	// the file-level pl_csrf_check() actually cover this action.
+	$case_id = pl_grab_post('case_id');
+	$user_id = pl_grab_post('user_id');
+	$field = pl_grab_post('field');
 	$x = "";
 	
 	if ($case_id && $user_id && 'user_id' == $field || 'cocounsel1' == $field || 'cocounsel2' == $field)
@@ -771,10 +777,37 @@ switch($action)
 	
 	case 'delete_conflict':
 	
-	$conflict_id = pl_grab_var('conflict_id');
-	$case_id = pl_grab_var('case_id');
+	// GET-driven mutation. These reads used pl_grab_var(), which defaults
+	// to the REQUEST superglobal, so
+	//   GET dataops.php?action=delete_conflict&conflict_id=X&case_id=1
+	// deleted the row outright. Authorization IS enforced (the edit_case
+	// gate above), but authorization is not CSRF: any page a logged-in
+	// staff member visits could fire this from an <img src>.
+	//
+	// The file-level pl_csrf_check() at the top of dataops.php already
+	// covers the POST side, so the missing half is exactly what
+	// ops/delete_activity.php and ops/delete_contact.php do -- read the
+	// mutation inputs from POST only, so a GET that still reaches this
+	// handler arrives with nothing to act on.
+	//
+	// Nothing links here: the live "remove" control posts to
+	// ops/delete_conflict.php (subtemplates/case_screen.html), and the
+	// only builder of the GET URL is the vestigial "OLD WAY" block in
+	// case.php, whose $clients_html is assigned but whose output block is
+	// commented out.
+	//
+	// A separate $conflict_case_id keeps the outer $case_id (read from
+	// REQUEST at the top of the file, and used by the redirect) intact
+	// when the POST body carries nothing, so a bare GET still lands the
+	// user back on a case page instead of on case.php?case_id=.
+	$conflict_id = pl_grab_post('conflict_id');
+	$conflict_case_id = pl_grab_post('case_id');
 	
-	$result = $pk->deleteConflict($conflict_id, $case_id);
+	if (!is_null($conflict_id) && !is_null($conflict_case_id))
+	{
+		$result = $pk->deleteConflict($conflict_id, $conflict_case_id);
+		$case_id = $conflict_case_id;
+	}
 	
 	header("Location: {$base_url}/case.php?case_id={$case_id}&screen=info");
 	

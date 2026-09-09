@@ -58,6 +58,11 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 COPY cms        /var/www/html/cms
 COPY cms-custom /opt/ocm/cms-custom-skel
 
+# Branded 403/404/500 documents, served by Apache's ErrorDocument. They sit
+# outside cms/ so that rendering one cannot re-trip the rules that produced
+# the error; see the comment in docker/apache.conf.
+COPY errors     /var/www/html/errors
+
 # Uploaded documents and generated files live under cms/uploads and cms/tmp.
 RUN mkdir -p /var/www/html/cms/uploads /var/www/html/cms/tmp \
     && chown -R www-data:www-data /var/www/html/cms

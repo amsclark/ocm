@@ -11,29 +11,89 @@ define('PL_DISABLE_DISPLAY_LOGIN',true);
 require_once('pika-danio.php');
 pika_init();
 
-// Every POST to this handler must carry the per-session CSRF token.
+require_once('pikaDocument.php');
+require_once('pikaTempLib.php');
+
+// This file serves two kinds of request: read-only screens (download, edit,
+// confirm_delete, the file list) that stay GET, and the two state changes
+// below (`update`, `delete`) which are now POST + CSRF token. Read each
+// parameter from the method that actually carries it, POST body winning, so
+// one set of variables serves both shapes and a caller that keeps
+// ?action=delete in the query string while POSTing the token still resolves.
+$is_post = isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST';
+
+$grab = function ($name, $default = null, $filter = 'nomode') use ($is_post)
+{
+	if ($is_post && isset($_POST[$name]))
+	{
+		return pl_grab_post($name, $default, $filter);
+	}
+	
+	return pl_grab_get($name, $default, $filter);
+};
+
+/**
+ * A hidden _csrf input to append to the `edit` and `confirm_delete`
+ * fragments.
+ *
+ * Those two fragments are the launch points for the `update` and `delete`
+ * POSTs, and cms/js/file_list.js reads the token out of the live DOM. It
+ * cannot come from the template: subtemplates/documents.html carries no
+ * %%[csrf_field]%% tag, and it is one of the files a per-org custom template
+ * directory commonly replaces, so a token added there would be missing on
+ * exactly the deployments that matter. Stamping it from PHP puts the token in
+ * the DOM whenever -- and only when -- one of the two mutating flows is
+ * actually on screen, regardless of what the host page renders.
+ *
+ * Outside the <form> on purpose: updateFile() walks the form's elements to
+ * build its request body, and a hidden field in there would be sent twice.
+ */
+function pl_documents_csrf_stamp()
+{
+	if (!function_exists('pl_csrf_hidden_input'))
+	{
+		return '';
+	}
+	
+	return "\n<div data-documents-csrf hidden>" . pl_csrf_hidden_input() . "</div>\n";
+}
+
+$container = $grab('container');
+$action = $grab('action');
+$mode = $grab('mode');
+
+
+$doc_id = $grab('doc_id');
+$folder_ptr = $grab('folder_ptr');
+$case_id = $grab('case_id');
+$user_id = $grab('user_id');
+$report_name = $grab('report_name');
+$doc_type = $grab('doc_type');
+$folder_field = $grab('folder_field');
+$doc_field = $grab('doc_field');
+
+// CSRF. `update` and `delete` used to be driven straight off the query string
+// with no token at all: any page that could make a logged-in browser issue a
+// GET could rename, re-folder, or destroy a client document by doc_id. Both
+// now require a POST carrying the per-session token. Every POST is checked,
+// matching the idiom in the other handlers; the read-only actions are
+// untouched and stay GET.
 // See pl_csrf_check() in cms/app/lib/pl.php for the framework.
-if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+if ($is_post)
 {
 	pl_csrf_check();
 }
 
-require_once('pikaDocument.php');
-require_once('pikaTempLib.php');
-
-$container = pl_grab_get('container');
-$action = pl_grab_get('action');
-$mode = pl_grab_get('mode');
-
-
-$doc_id = pl_grab_get('doc_id');
-$folder_ptr = pl_grab_get('folder_ptr');
-$case_id = pl_grab_get('case_id');
-$user_id = pl_grab_get('user_id');
-$report_name = pl_grab_get('report_name');
-$doc_type = pl_grab_get('doc_type');
-$folder_field = pl_grab_get('folder_field');
-$doc_field = pl_grab_get('doc_field');
+if (!$is_post && ($action === 'update' || $action === 'delete'))
+{
+	// Refuse rather than silently falling through to the file-list render, so
+	// a stale caller fails loudly instead of looking like it worked.
+	header('HTTP/1.1 405 Method Not Allowed');
+	header('Allow: POST');
+	header('Content-Type: text/plain; charset=utf-8');
+	echo "This action must be submitted as a POST with a CSRF token.\n";
+	exit();
+}
 
 
 $html = array();
@@ -108,7 +168,7 @@ switch($action) {
 			
 		}
 		
-		$buffer = $template->draw();
+		$buffer = $template->draw() . pl_documents_csrf_stamp();
 		break;
 	case 'confirm_delete':
 		
@@ -130,20 +190,32 @@ switch($action) {
 		}
 		else {
 			$template = new pikaTempLib('subtemplates/documents.html',$html,'confirm_delete');
-			$buffer = $template->draw();
+			$buffer = $template->draw() . pl_documents_csrf_stamp();
 		}
 		break;
 	case 'update':
-		$doc_name = pl_grab_get('doc_name');
-		$description = pl_grab_get('description');
+		// Read through $grab like every other parameter on this file:
+		// `update` is POST-only now, so a straight pl_grab_get() here would
+		// silently see an empty name and a NULL description and wipe the
+		// metadata it was asked to change.
+		$doc_name = $grab('doc_name');
+		$description = $grab('description');
 		$doc = new pikaDocument($doc_id);
-		if(strlen($doc_name) > 0)
+		// Authorization: only persist the metadata change if the caller is
+		// allowed to edit this document. Without the gate any authenticated
+		// user could rename / re-describe / re-folder any document by doc_id
+		// (the `delete` action below already gates the same way; this brings
+		// `update` into line).
+		if (pika_authorize("edit_doc", $doc->getValues()))
 		{
-			$doc->doc_name = $doc_name;
+			if(strlen($doc_name) > 0)
+			{
+				$doc->doc_name = $doc_name;
+			}
+			$doc->description = $description;
+			$doc->folder_ptr = $folder_ptr;
+			$doc->save();
 		}
-		$doc->description = $description;
-		$doc->folder_ptr = $folder_ptr;
-		$doc->save();
 		$buffer = 1;
 		break;
 	case 'delete':

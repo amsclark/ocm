@@ -169,17 +169,27 @@ done
 # Needs a compose project to reach the db container; skipped when the suite is
 # pointed at a host it cannot query.
 if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
+	# The password goes in MYSQL_PWD, never in a -p argument. `mariadb -p`
+	# with an empty value does not mean "no password" -- it means "prompt for
+	# one", and under `exec -T` there is no terminal to answer, so the client
+	# blocks forever and the whole suite hangs with no output. Setting the
+	# variable to an empty string is an actual empty password.
+	#
+	# `< /dev/null` for the same reason: nothing here should ever be able to
+	# wait on stdin.
 	adb() {
-		docker compose -p "$COMPOSE_PROJECT" exec -T db \
-			mariadb -u"${DB_USER:-cms}" -p"${DB_PASSWORD:-}" -N -B \
-			-e "$1" "${DB_NAME:-cms}" 2>/dev/null
+		docker compose -p "$COMPOSE_PROJECT" exec -T \
+			-e MYSQL_PWD="${DB_PASSWORD:-}" db \
+			mariadb -u"${DB_USER:-cms}" -N -B \
+			-e "$1" "${DB_NAME:-cms}" </dev/null 2>/dev/null
 	}
 	if [ -z "$(adb 'SELECT 1')" ]; then
 		# Fall back to root, which the compose file always sets.
 		adb() {
-			docker compose -p "$COMPOSE_PROJECT" exec -T db \
-				mariadb -uroot -p"${DB_ROOT_PASSWORD:-}" -N -B \
-				-e "$1" "${DB_NAME:-cms}" 2>/dev/null
+			docker compose -p "$COMPOSE_PROJECT" exec -T \
+				-e MYSQL_PWD="${DB_ROOT_PASSWORD:-}" db \
+				mariadb -uroot -N -B \
+				-e "$1" "${DB_NAME:-cms}" </dev/null 2>/dev/null
 		}
 	fi
 
@@ -402,6 +412,133 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 else
 	printf '  skip CSRF database checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+
+# ── 8. Default-deny gates and the server-level error pages ─────────────────
+# Everything here fails open, so the assertions are written the same way as
+# section 7: the refusal is checked, and so is the case that must still work,
+# because a gate that refuses everything is as broken as one that refuses
+# nothing.
+
+# 8a. ops/upload_document.php had no authorization at all. It now denies by
+# default, so an unrecognised doc_type must be refused even for the admin.
+UPLOAD="$OCM_URL/ops/upload_document.php"
+if [ "${#CSRF_TOKEN}" -eq 64 ]; then
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		-X POST -d "doc_type=Z&_csrf=${CSRF_TOKEN}" "$UPLOAD")"
+	if [ "$code" = 403 ] && grep -q 'Access denied' "$BODY"; then
+		ok "upload_document.php refuses an unknown doc_type (403)"
+	else
+		bad "UPLOAD WITH AN UNKNOWN doc_type WAS NOT REFUSED (status $code, $(wc -c < "$BODY") bytes)"
+	fi
+
+	# 8b. A case document names a case, so a case_id that resolves to no row
+	# has nothing to authorize against and must not fall through.
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		-X POST -d "doc_type=C&case_id=999999999&_csrf=${CSRF_TOKEN}" "$UPLOAD")"
+	if [ "$code" = 403 ] && grep -q 'Access denied' "$BODY"; then
+		ok "upload_document.php refuses a case document for an unknown case (403)"
+	else
+		bad "UPLOAD FOR AN UNKNOWN CASE WAS NOT REFUSED (status $code, $(wc -c < "$BODY") bytes)"
+	fi
+else
+	bad "cannot test the upload gate: no token was extracted in 7a"
+fi
+
+# 8c. documents.php update and delete are POST-only now. A GET must be refused
+# with 405 rather than performed, and the refusal has to name the method that
+# works or the next caller has to guess.
+DOCS="$OCM_URL/documents.php"
+for act in update delete; do
+	code="$(curl -s --max-time 30 -b "$COOKIES" -D "$BODY" -o /dev/null \
+		-w '%{http_code}' "$DOCS?action=$act&doc_id=1")"
+	if [ "$code" = 405 ] && grep -qi '^Allow: *POST' "$BODY"; then
+		ok "documents.php refuses a GET $act (405, Allow: POST)"
+	else
+		bad "documents.php GET $act WAS NOT REFUSED (status $code)"
+	fi
+done
+
+# 8d. services/date_selector-server.php runs with PL_DISABLE_SECURITY, so it is
+# reachable with no session at all. Both checks matter: a malformed field name
+# is refused, and a real one still renders the calendar. Deliberately no cookie
+# jar -- that is how the endpoint is actually reached.
+CAL="$OCM_URL/services/date_selector-server.php"
+code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+	--get --data-urlencode 'field_name="><script>x</script>' \
+	--data-urlencode 'container=date_selector-00001' "$CAL")"
+if [ "$code" = 400 ] && grep -q 'Invalid field_name' "$BODY"; then
+	ok "date_selector-server.php refuses a malformed field_name (400)"
+else
+	bad "date_selector-server.php ACCEPTED a malformed field_name (status $code)"
+fi
+
+code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+	"$CAL?field_name=open_date&container=date_selector-00001&month=1&year=2020")"
+size="$(wc -c < "$BODY")"
+if [ "$code" = 200 ] && [ "$size" -gt 200 ]; then
+	ok "date_selector-server.php still renders a legitimate field ($size bytes)"
+else
+	bad "date_selector-server.php refused a LEGITIMATE field (status $code, $size bytes)"
+fi
+
+# 8e. reports/index.php filters the list by the per-report permission. The admin
+# must still see reports; an empty list here is the over-enforcement failure.
+code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/reports/")"
+if [ "$code" = 200 ] && ! grep -q 'not authorized to run any reports' "$BODY"; then
+	ok "reports/index.php still lists reports for a permitted user"
+else
+	bad "reports/index.php listed NOTHING for the admin (status $code)"
+fi
+
+# 8f. The branded error documents. A 404 has to be the project's page, not
+# Apache's, and it must not carry the server version or echo the path back.
+ROOT_URL="${OCM_URL%/cms}"
+code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/no-such-page-smoke-test.php")"
+if [ "$code" = 404 ] && grep -q 'Error 404' "$BODY"; then
+	ok "a missing page gets the branded 404"
+else
+	bad "a missing page did not get the branded 404 (status $code, $(wc -c < "$BODY") bytes)"
+fi
+if grep -qE 'Apache/[0-9]|no-such-page-smoke-test' "$BODY"; then
+	bad "the 404 page leaks the server version or echoes the requested path"
+else
+	ok "the 404 page names neither the server version nor the requested path"
+fi
+
+code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$ROOT_URL/errors/error.css")"
+if [ "$code" = 200 ] && grep -q 'ocm-err-card' "$BODY"; then
+	ok "the error stylesheet is served"
+else
+	bad "the error stylesheet is NOT served (status $code) — the pages render unstyled"
+fi
+
+# The config directory is denied (section 5), so it is also the handiest probe
+# for the 403 document.
+code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$ROOT_URL/cms-custom/")"
+if [ "$code" = 403 ] && grep -q 'Error 403' "$BODY"; then
+	ok "a denied path gets the branded 403"
+else
+	bad "a denied path did not get the branded 403 (status $code, $(wc -c < "$BODY") bytes)"
+fi
+
+# 8g. The upload refusals in 8a and 8b are on the record, and the two reasons
+# are distinguishable: one is someone probing an unknown type, the other is a
+# stale case link.
+if [ "$HAVE_DB" = 1 ]; then
+	for want in unsupported_doc_type unknown_case; do
+		n="$(adb "SELECT COUNT(*) FROM audit_log WHERE action='document.upload.denied' AND details LIKE '%\"reason\":\"${want}\"%'")"
+		if [ "${n:-0}" -ge 1 ]; then
+			ok "audit_log recorded document.upload.denied with reason=${want}"
+		else
+			bad "audit_log has no document.upload.denied row with reason=${want}"
+		fi
+	done
+else
+	printf '  skip upload-gate database checks (set COMPOSE_PROJECT to enable)\n'
 fi
 
 
