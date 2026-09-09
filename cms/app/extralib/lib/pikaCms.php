@@ -1447,11 +1447,13 @@ class pikaCms
 	
 	function setPassword($user_id, $password)
 	{
-		$password_md5 = md5($password);
+		// bcrypt, not md5: pikaAuthDb verifies with password_verify() and
+		// only falls back to md5 for pre-migration rows.
+		$password_hash = password_hash($password, PASSWORD_DEFAULT);
 		
-		$sql = "UPDATE users SET password='$password_md5' WHERE user_id=$user_id LIMIT 1";
-		
-		$result = DB::query($sql);
+		$sql = "UPDATE users SET password=? WHERE user_id=? LIMIT 1";
+		$params = array($password_hash, $user_id);
+		$result = DB::preparedQuery($sql, $params);
 	}
 	
 	function fetchStaffArray()

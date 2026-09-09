@@ -857,6 +857,167 @@ function pl_db_column_type($table, $column)
 }
 
 
+
+/**
+ * Escape a value for interpolation into HTML text or a quoted attribute.
+ *
+ * Returns '' for null and for values that cannot be stringified, so a
+ * caller never emits the word "Array" into a page. ENT_SUBSTITUTE keeps
+ * invalid UTF-8 from collapsing the whole string to ''.
+ */
+if (!function_exists('pl_html_escape')) {
+	function pl_html_escape($value)
+	{
+		if (is_null($value))
+		{
+			return '';
+		}
+		if (is_array($value) || (is_object($value) && !method_exists($value, '__toString')))
+		{
+			return '';
+		}
+		return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+	}
+}
+
+/**
+ * Record a developer-facing error detail to the server log without sending
+ * it to the client. Use this anywhere we would otherwise leak paths, SQL
+ * fragments, raw user input, or stack detail through trigger_error or
+ * direct output.
+ */
+if (!function_exists('pl_log_error')) {
+	function pl_log_error($context, $detail = '')
+	{
+		$message = '[pl] ' . $context;
+		if (strlen((string)$detail) > 0) {
+			$message .= ': ' . $detail;
+		}
+		error_log($message);
+	}
+}
+
+/**
+ * Append a row to the audit_log table.
+ *
+ * Call sites supply the action (dotted-lowercase, e.g. 'user.disable'),
+ * and optionally the target object's type/id and a structured details
+ * payload. The actor's user_id / username / IP / User-Agent are pulled
+ * from the current request context automatically; callers can override
+ * via $actor_user_id / $actor_username for logging events where no
+ * authenticated session exists yet (failed login of a known user, for
+ * example).
+ *
+ * $details may be a scalar, array, or object; arrays/objects are
+ * json_encoded. Keep payloads small — this is a log, not a shadow copy
+ * of the underlying row.
+ *
+ * Failures are swallowed (logged to error_log via pl_log_error). An
+ * audit-log insert must never break the primary action; a missing row
+ * is a monitoring problem, not a user-facing error.
+ *
+ * @param string       $action         e.g. 'login.success', 'case.delete'
+ * @param string|null  $object_type    'user'|'case'|'activity'|'setting'|...
+ * @param mixed        $object_id      scalar stringified onto the row
+ * @param mixed        $details        scalar, array, or object (serialised)
+ * @param int|null     $actor_user_id  override the session actor (e.g. pre-auth)
+ * @param string|null  $actor_username override the session actor's username
+ * @return void
+ */
+function pl_audit(
+    $action,
+    $object_type = null,
+    $object_id = null,
+    $details = null,
+    $actor_user_id = null,
+    $actor_username = null
+) {
+    // Resolve actor from the current request context if the caller didn't
+    // pass one in. OCM does not persist $_SESSION across requests
+    // (pl_session_write is a no-op), so $_SESSION['auth_row'] is never
+    // populated — the authenticated user lives in the global $auth_row
+    // seeded by pika_init() instead. Fall back to the pikaAuth singleton's
+    // getAuthRow() if the global has not been set for any reason.
+    if ($actor_user_id === null) {
+        $actor_row = null;
+        if (isset($GLOBALS['auth_row']) && is_array($GLOBALS['auth_row'])
+                && !empty($GLOBALS['auth_row']['user_id'])) {
+            $actor_row = $GLOBALS['auth_row'];
+        } elseif (class_exists('pikaAuth', false)) {
+            try {
+                $candidate = pikaAuth::getInstance()->getAuthRow();
+                if (is_array($candidate) && !empty($candidate['user_id'])) {
+                    $actor_row = $candidate;
+                }
+            } catch (Exception $e) {
+                // Singleton not ready yet; skip.
+            }
+        }
+        if ($actor_row !== null) {
+            if (isset($actor_row['user_id'])) {
+                $actor_user_id = $actor_row['user_id'];
+            }
+            if ($actor_username === null && isset($actor_row['username'])) {
+                $actor_username = $actor_row['username'];
+            }
+        }
+    }
+
+    // Prefer the direct connection IP. X-Forwarded-For is only trustworthy
+    // when a known proxy fronts the app, and OCM's deployments vary; record
+    // both where available by folding XFF into details rather than the
+    // indexed ip_address column.
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null;
+    $ua = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : null;
+
+    // If a forwarded IP is present, keep it in details so operators can
+    // correlate without trusting an unverified header in the indexed column.
+    if (isset($_SERVER['HTTP_X_FORWARDED_FOR']) && strlen((string)$_SERVER['HTTP_X_FORWARDED_FOR']) > 0) {
+        if (!is_array($details)) {
+            $details = array('value' => $details);
+        }
+        if (!isset($details['x_forwarded_for'])) {
+            $details['x_forwarded_for'] = (string)$_SERVER['HTTP_X_FORWARDED_FOR'];
+        }
+    }
+
+    if (is_array($details) || is_object($details)) {
+        $encoded = json_encode($details, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $details = ($encoded === false) ? null : $encoded;
+    } elseif ($details !== null) {
+        $details = (string)$details;
+    }
+
+    $sql = "INSERT INTO audit_log "
+         . "(ts, user_id, username, ip_address, user_agent, action, object_type, object_id, details) "
+         . "VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?)";
+    $params = array(
+        ($actor_user_id !== null && is_numeric($actor_user_id)) ? (int)$actor_user_id : null,
+        ($actor_username !== null) ? substr((string)$actor_username, 0, 64) : null,
+        ($ip !== null) ? substr((string)$ip, 0, 45) : null,
+        ($ua !== null) ? substr((string)$ua, 0, 255) : null,
+        substr((string)$action, 0, 64),
+        ($object_type !== null) ? substr((string)$object_type, 0, 32) : null,
+        ($object_id !== null) ? substr((string)$object_id, 0, 64) : null,
+        $details,
+    );
+
+    // An audit-log failure must never break the primary action. Catch
+    // everything: DB::preparedQuery throws when the legacy (non-mysqli)
+    // driver is in use, and the table may be absent on a deployment that
+    // has not run cms/app/sql/upgrades/add_audit_log.sql yet.
+    try {
+        $result = DB::preparedQuery($sql, $params);
+        if (!$result) {
+            pl_log_error('pl_audit insert failed', $action);
+        }
+    } catch (Exception $e) {
+        pl_log_error('pl_audit insert threw', $action . ': ' . $e->getMessage());
+    } catch (Throwable $e) {
+        pl_log_error('pl_audit insert threw', $action . ': ' . $e->getMessage());
+    }
+}
+
 function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline = null)
 {
 	$str = "

@@ -160,6 +160,80 @@ for path in \
 	fi
 done
 
+# ── 6. The audit log records privileged actions ────────────────────────────
+# The two login attempts in sections 2 and 3 above must have left rows. This
+# is checked in the database rather than through the viewer page so a broken
+# viewer and a broken writer are distinguishable failures.
+#
+# Needs a compose project to reach the db container; skipped when the suite is
+# pointed at a host it cannot query.
+if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
+	adb() {
+		docker compose -p "$COMPOSE_PROJECT" exec -T db \
+			mariadb -u"${DB_USER:-cms}" -p"${DB_PASSWORD:-}" -N -B \
+			-e "$1" "${DB_NAME:-cms}" 2>/dev/null
+	}
+	if [ -z "$(adb 'SELECT 1')" ]; then
+		# Fall back to root, which the compose file always sets.
+		adb() {
+			docker compose -p "$COMPOSE_PROJECT" exec -T db \
+				mariadb -uroot -p"${DB_ROOT_PASSWORD:-}" -N -B \
+				-e "$1" "${DB_NAME:-cms}" 2>/dev/null
+		}
+	fi
+
+	if [ -z "$(adb 'SELECT 1')" ]; then
+		printf '  skip audit log checks (cannot reach the database)\n'
+	else
+		if [ -n "$(adb "SELECT 1 FROM audit_log LIMIT 1")" ] \
+			|| [ -n "$(adb "SHOW TABLES LIKE 'audit_log'")" ]; then
+			ok "audit_log table exists"
+		else
+			bad "audit_log table is MISSING (add_audit_log.sql did not run)"
+		fi
+
+		# Section 2 posted a deliberately wrong password; section 3 a correct
+		# one. Both must be on the record, with the acting username attached.
+		for action in login.failure login.success; do
+			n="$(adb "SELECT COUNT(*) FROM audit_log WHERE action='${action}' AND username='${OCM_USER}'")"
+			if [ "${n:-0}" -ge 1 ]; then
+				ok "audit_log recorded ${action} for ${OCM_USER}"
+			else
+				bad "audit_log has no ${action} row for ${OCM_USER}"
+			fi
+		done
+
+		# A row with no actor means pl_audit's actor resolution regressed.
+		# It reads the global $auth_row, not $_SESSION, which OCM never
+		# persists across requests.
+		orphans="$(adb "SELECT COUNT(*) FROM audit_log WHERE action='login.success' AND user_id IS NULL")"
+		if [ "${orphans:-0}" -eq 0 ]; then
+			ok "audit_log login rows carry an actor"
+		else
+			bad "audit_log has ${orphans} login.success row(s) with no user_id"
+		fi
+
+		# The viewer must be system-only. An anonymous request that returns
+		# audit content is a disclosure of the security event stream.
+		curl -sL -o "$BODY" "$OCM_URL/system-audit.php" >/dev/null
+		if grep -qE 'login\.(success|failure)|audit_id' "$BODY"; then
+			bad "system-audit.php LEAKS THE AUDIT LOG WITHOUT A SESSION"
+		else
+			ok "system-audit.php reveals nothing without a session"
+		fi
+
+		# ...and must render the real rows for an authenticated admin.
+		code="$(curl -sL -b "$COOKIES" -o "$BODY" -w '%{http_code}' "$OCM_URL/system-audit.php")"
+		if [ "$code" = 200 ] && grep -q 'login\.success' "$BODY"; then
+			ok "system-audit.php renders the log for an admin ($(wc -c < "$BODY") bytes)"
+		else
+			bad "system-audit.php did not render the log for an admin (status $code, $(wc -c < "$BODY") bytes)"
+		fi
+	fi
+else
+	printf '  skip audit log checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

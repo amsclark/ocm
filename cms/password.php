@@ -84,12 +84,18 @@ if($action == 'update')
 	
 	if($is_authorized)
 	{
-		$user->password = md5($newpass1);
+		// password_hash, not md5. pikaAuthDb verifies with password_verify and
+		// only falls back to md5 for rows that predate the bcrypt migration;
+		// writing md5 here would downgrade an already-bcrypt hash on every
+		// self-service password change.
+		$user->password = password_hash($newpass1, PASSWORD_DEFAULT);
 		$user->save();	
+		pl_audit('password.self_change', 'user', $auth_row['user_id']);
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Password updated successfully");
 	}
 	else 
 	{
+		pl_audit('password.self_change_failed', 'user', $auth_row['user_id']);
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Errors detected - Password not updated");
 	}
 }

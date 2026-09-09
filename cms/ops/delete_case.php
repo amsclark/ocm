@@ -21,6 +21,9 @@ $base_url = pl_settings_get('base_url');
 // BEGIN MAIN CODE...
 if (pika_authorize('delete_case', $case1->getValues())) 
 {
+	pl_audit('case.delete', 'case', $case_id, array(
+		'case_number' => $case1->number,
+	));
 	$case1->delete();
 	header("Location: {$base_url}/");
 }

@@ -54,13 +54,40 @@ if ($auth_row['pba'] != true && $auth_row['group_name'] != 'system' && $screen !
 
 switch ($action) {
 	case 'update_pba':
+		// The entry guard above deliberately exempts screen=find_pb so
+		// non-PBA staff can use the find-an-attorney picker. That exemption
+		// MUST NOT extend to mutating actions - without this gate any
+		// authenticated user could request
+		// ?screen=find_pb&action=update_pba&pba_id=N&password=Y
+		// and reset any pro bono attorney's password (CWE-285 / CWE-269).
+		if (!($auth_row['pba'] == true || $auth_row['group_name'] == 'system'))
+		{
+			$main_html['page_title'] = "Pro Bono Attorneys";
+			$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
+									Pro Bono Attorneys";
+			$main_html['content'] = 'Access denied';
+			
+			$default_template = new pikaTempLib('templates/default.html',$main_html);
+			$buffer = $default_template->draw();
+			pika_exit($buffer);
+		}
 		$pba = new pikaPbAttorney($pba_id);
-		$pba_row = $_GET;
+		// This mass-assigned $_GET straight into the row. Every other save
+		// path in the tree routes its input through pl_clean_form_input()
+		// first, and the unescaped renderers downstream were written against
+		// that invariant, so restore it here too.
+		$pba_row = pl_clean_form_input($_GET);
 // AMW - added this for the VAM.
 		$password = pl_grab_get('password');
 
 		if(strlen($password) > 0) {
-			$pba_row['password'] = md5($password);
+			// bcrypt, not md5 (CWE-916). PBA passwords are not consumed by
+			// any in-tree login flow - pikaAuthDb authenticates against the
+			// users table, not pb_attorneys - so there is no verify side to
+			// migrate here. Any external consumer reading
+			// pb_attorneys.password must accept both bcrypt ($2y$ prefix)
+			// and legacy md5 hashes still on disk. New resets are bcrypt.
+			$pba_row['password'] = password_hash($password, PASSWORD_DEFAULT);
 		}
 
 		else

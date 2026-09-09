@@ -213,6 +213,12 @@ while ($notes = DBResult::fetchRow($result))
 $case->status = 4;
 $case->save();
 
+pl_audit('case.transfer', 'case', $case_id, array(
+    'case_number'        => $case->number,
+    'transfer_option_id' => $transfer_option_id,
+    'remote_case_id'     => $tx_case_id,
+));
+
 $number = $case->number;
 if(strlen($number) < 1)
 {

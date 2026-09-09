@@ -86,6 +86,29 @@ else
 	echo "entrypoint: schema already present, leaving the database alone"
 fi
 
+
+# ── 3b. Idempotent additive upgrades ───────────────────────────────────────
+# These run on EVERY start, fresh database or not, so an existing deployment
+# picks up new tables by restarting the container.
+#
+# The list is an explicit allowlist, not `upgrades/*.sql`. The historical
+# pika<version>.sql scripts in that directory are version-stepped and NOT
+# idempotent — replaying pika602.sql on a 7.00 schema would fail or corrupt
+# it. Only add a file here once it is safe to run repeatedly, which in
+# practice means CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS only.
+for upgrade in add_audit_log.sql; do
+	path="/var/www/html/cms/app/sql/upgrades/${upgrade}"
+	if [ ! -f "$path" ]; then
+		echo "entrypoint: ${upgrade} is missing from the image" >&2
+		exit 1
+	fi
+	if ! mysql_run < "$path"; then
+		echo "entrypoint: ${upgrade} failed to apply" >&2
+		exit 1
+	fi
+	echo "entrypoint: applied ${upgrade}"
+done
+
 # ── 4. Admin password ──────────────────────────────────────────────────────
 # The shipped seed creates user_id 1 (`pikasupport`) with an empty password,
 # which cannot be logged in with. Give it one.

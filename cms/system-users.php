@@ -123,7 +123,9 @@ switch ($action)
 		$a['username'] = pl_grab_post('username');
 		$password = pl_grab_post('password');
 		if(strlen($password) > 0) {
-			$a['password'] = md5($password);
+			// bcrypt, not md5. Writing md5 here would downgrade an
+			// already-bcrypt hash every time an admin sets a password.
+			$a['password'] = password_hash($password, PASSWORD_DEFAULT);
 		}
 		$a['first_name'] = pl_grab_post('first_name');
 		$a['middle_name'] = pl_grab_post('middle_name');
@@ -151,8 +153,51 @@ switch ($action)
         $a['emp_end_date'] = pl_grab_post('emp_end_date');		
 		
 		$user = new pikaUser($user_id);
+		// Capture the prior state of the security-relevant fields so the
+		// audit log carries a focused diff rather than the whole row.
+		$prev_group   = $user->group_id;
+		$prev_enabled = $user->enabled;
+		$is_create    = !is_numeric($user_id) || strlen($user_id) === 0;
 		$user->setValues($a);
 		$user->save();
+		
+		$target_user_id  = $user->user_id;
+		$target_username = $user->username;
+		
+		if ($is_create)
+		{
+			pl_audit('user.create', 'user', $target_user_id, array(
+				'username' => $target_username,
+				'group_id' => $a['group_id'],
+				'enabled'  => $a['enabled'],
+			));
+		}
+		
+		else
+		{
+			pl_audit('user.update', 'user', $target_user_id, array(
+				'username' => $target_username,
+			));
+			if ($prev_group !== $a['group_id'])
+			{
+				pl_audit('user.group_change', 'user', $target_user_id, array(
+					'username' => $target_username,
+					'old'      => $prev_group,
+					'new'      => $a['group_id'],
+				));
+			}
+			if ($prev_enabled !== $a['enabled'])
+			{
+				$evt = ($a['enabled']) ? 'user.enable' : 'user.disable';
+				pl_audit($evt, 'user', $target_user_id, array('username' => $target_username));
+			}
+			if (strlen($password) > 0)
+			{
+				// An admin set this user's password; self-service changes
+				// land in password.php as password.self_change.
+				pl_audit('user.password_admin_reset', 'user', $target_user_id, array('username' => $target_username));
+			}
+		}
 		header("Location:{$base_url}/system-users.php");
 		break;
 

@@ -33,6 +33,10 @@ if(is_numeric($act_id) && !$cancel) {
 	if ((pl_settings_get('db_name') == 'legalaidnebraska' && pika_authorize('edit_act', $act_row))
 			|| pika_authorize('delete_act', array()))
 	{
+		pl_audit('activity.delete', 'activity', $act_id, array(
+			'case_id'          => $case_id,
+			'activity_user_id' => $activity->user_id,
+		));
 		$activity->delete();
 	}
 	

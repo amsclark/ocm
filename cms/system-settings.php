@@ -104,6 +104,9 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 switch ($action)
 {
 	case 'update':
+		// Track which settings actually changed so the audit log records a
+		// usable diff rather than every key in the form.
+		$changed = array();
 		foreach ($list_of_settings as $setting_name)
 		{
 			if(isset($_POST[$setting_name]))
@@ -113,17 +116,40 @@ switch ($action)
 					//  AMW
 					// Users enter the session timeout in minutes.  Convert this
 					// to seconds for use by Pika.
-					pl_settings_set('session_timeout', $_POST['session_timeout'] * 60);
+					$new_value = $_POST['session_timeout'] * 60;
+					$old_value = pl_settings_get('session_timeout');
+					pl_settings_set('session_timeout', $new_value);
 				}
 				
 				else
 				{
-					pl_settings_set($setting_name, $_POST[$setting_name]);
+					$new_value = $_POST[$setting_name];
+					$old_value = pl_settings_get($setting_name);
+					pl_settings_set($setting_name, $new_value);
+				}
+				
+				if ((string)$old_value !== (string)$new_value)
+				{
+					// Never log a password-like setting value; just record
+					// that it changed. Keeps secrets out of audit records
+					// even when they live in the settings table.
+					$is_secret = (stripos($setting_name, 'password') !== false
+					           || stripos($setting_name, 'secret')   !== false
+					           || stripos($setting_name, 'api_key')  !== false
+					           || stripos($setting_name, 'auth_token') !== false);
+					$changed[$setting_name] = $is_secret
+						? array('redacted' => true)
+						: array('old' => $old_value, 'new' => $new_value);
 				}
 			}
 		}
 		
 		pl_settings_save();
+		
+		if (!empty($changed))
+		{
+			pl_audit('setting.update', 'setting', null, array('changed' => $changed));
+		}
 		
 	default:
 

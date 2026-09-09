@@ -94,6 +94,7 @@ class pikaAuthDb
 				{  // Identity & Credential match existing records - allow login
 					$this->is_authorized = true;
 					$this->auth_row = $row;
+					pl_audit('login.success', 'user', $row['user_id'], null, $row['user_id'], $row['username']);
 					
 					if (password_needs_rehash($row['password'], PASSWORD_DEFAULT)) 
 					{
@@ -108,6 +109,7 @@ class pikaAuthDb
 				{
 					$this->is_authorized = true;
 					$this->auth_row = $row;
+					pl_audit('login.success', 'user', $row['user_id'], array('note' => 'legacy_md5_upgraded'), $row['user_id'], $row['username']);
 					
 					if (PHP_VERSION_ID >= 50303)
 					{
@@ -123,6 +125,7 @@ class pikaAuthDb
 				
 				else 
 				{  // No matching user credentials found - pass login error			
+					pl_audit('login.failure', 'user', $row['user_id'], array('reason' => 'bad_password'), $row['user_id'], $row['username']);
 					$msgstr = 'The Login Credentials you supplied are invalid.  Please re-check your Username and Password and try again.';
 					$this->setMessage('0100',$msgstr,__FILE__,__LINE__);
 				}
@@ -130,6 +133,9 @@ class pikaAuthDb
 			
 			else
 			{
+				// Log the attempted username, truncated, so operators can spot
+				// credential stuffing. Never log the credential itself.
+				pl_audit('login.failure', null, null, array('reason' => 'no_matching_user', 'attempted_username' => substr((string)$identity, 0, 64)));
 				$msgstr = 'The Login Credentials you supplied are invalid.  Please re-check your Username and Password and try again.';
 				$this->setMessage('0100',$msgstr,__FILE__,__LINE__);
 			}

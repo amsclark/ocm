@@ -98,7 +98,8 @@ switch ($action)
 		$a['username'] = pl_grab_get('username');
 		$password = pl_grab_get('password');
 		if(strlen($password) > 0) {
-			$a['password'] = md5($password);
+			// bcrypt, not md5. Same fix as system-users.php.
+			$a['password'] = password_hash($password, PASSWORD_DEFAULT);
 		}
 		$a['first_name'] = pl_grab_get('first_name');
 		$a['middle_name'] = pl_grab_get('middle_name');
