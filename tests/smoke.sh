@@ -1302,5 +1302,295 @@ else
 fi
 
 echo
+echo "17. a menu name cannot carry SQL into the table-name position"
+
+# pikaMenu puts $menu_name straight into FROM, and system-menus.php takes it
+# off the query string. A table name is not quoted, so DB::escapeString() did
+# nothing there. Before the fix this URL printed every user's password hash
+# into the menu editor.
+MENU_INJ='close_code%20WHERE%201=0%20UNION%20SELECT%20username%20AS%20value,%20password%20AS%20label,%201%20AS%20menu_order%20FROM%20users'
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/system-menus.php?action=edit_menu&menu_name=${MENU_INJ}" >/dev/null
+if grep -q '\$2y\$' "$BODY"; then
+	bad "THE MENU EDITOR LEAKS PASSWORD HASHES THROUGH menu_name"
+elif grep -q 'Invalid menu name' "$BODY" || grep -q 'Pika Error' "$BODY"; then
+	ok "an injected menu name is refused"
+else
+	bad "an injected menu name neither leaked nor errored - check pikaMenu"
+fi
+
+# Quotes survive pl_clean_form_input(), so the same value must not reach an
+# HTML attribute either.
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/system-menus.php?action=edit_menu&menu_name=close_code%22%20onmouseover%3D%22zzXSS()" >/dev/null
+if grep -qF 'onmouseover="zzXSS()' "$BODY"; then
+	bad "menu_name breaks out of an HTML attribute on system-menus.php"
+else
+	ok "a quote in menu_name does not reach an HTML attribute"
+fi
+
+# Positive control: a real menu still lists its rows, so the allowlist has
+# not simply broken the page.
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/system-menus.php?action=edit_menu&menu_name=close_code" >/dev/null
+if grep -q 'menu_name=close_code' "$BODY" && ! grep -q 'Pika Error' "$BODY" \
+	&& ! grep -q 'Invalid menu name' "$BODY"; then
+	ok "a real menu name still opens in the editor"
+else
+	bad "the close_code menu no longer opens - the identifier allowlist is too tight"
+fi
+
+echo
+echo "18. document assembly authorizes the case and the form"
+
+# cms/ops/docgen.php had no pika_authorize call anywhere in it. The case row was
+# loaded under the comment "needs security enforcement" and used as-is, and
+# form_id was never checked at all, so an authenticated user with no read
+# permission on anything could merge any case into a document, and could read
+# any stored document verbatim by posting its doc_storage id as form_id.
+if [ "$HAVE_DB" = 1 ]; then
+	DGROUP='zz_dg_grp'
+	DUSER='zz_dg_user'
+	DPASS='zz-dg-Passw0rd'
+	DJAR="$(mktemp)"
+
+	cleanup_dg() {
+		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZDG%'" >/dev/null
+		adb "DELETE FROM cases WHERE number IN ('ZZ-DG-SECRET', 'ZZ-DG-MINE')" >/dev/null
+		adb "DELETE FROM users WHERE username = '${DUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${DGROUP}'" >/dev/null
+		rm -f "$DJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dg' EXIT
+	cleanup_dg
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${DGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	DHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$DPASS" </dev/null 2>/dev/null)"
+	DUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${DUID}, '${DUSER}', '${DHASH}', 1, '${DGROUP}', 0)" >/dev/null
+
+	# One case this user has no claim on, and one it owns, because the CSRF
+	# token has to be read out of a form the user is allowed to load.
+	DCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${DCASE}, 'ZZ-DG-SECRET', 1, 'ZZOFF', '1')" >/dev/null
+	DMINE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${DMINE}, 'ZZ-DG-MINE', ${DUID}, 'ZZMINE', '1')" >/dev/null
+
+	# A form template (doc_type F) and a private case document (doc_type C).
+	# doc_data is gzcompress()ed binary, so PHP inside the container writes the
+	# UPDATE and mariadb reads it back rather than passing it through a shell.
+	seed_doc_body() {
+		docker compose -p "$COMPOSE_PROJECT" exec -T app php -r '
+			file_put_contents("/tmp/zzsmokedoc.sql",
+				"UPDATE doc_storage SET doc_data=\x27"
+				. addslashes(gzcompress($argv[2]))
+				. "\x27 WHERE doc_id=" . $argv[1] . ";");
+		' "$1" "$2" </dev/null
+		docker compose -p "$COMPOSE_PROJECT" exec -T app \
+			sh -c 'cat /tmp/zzsmokedoc.sql' </dev/null > "$BODY"
+		docker compose -p "$COMPOSE_PROJECT" exec -T \
+			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
+			mariadb -uroot "$DB_NAME" < "$BODY"
+	}
+
+	DFORM="$(adb "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM doc_storage")"
+	adb "INSERT INTO doc_storage (doc_id, doc_name, doc_type, description, created, case_id, user_id, folder, mime_type)
+		VALUES (${DFORM}, 'ZZDGform.txt', 'F', 'ZZDG form', CURDATE(), NULL, 1, 0, 'text/plain')" >/dev/null
+	seed_doc_body "$DFORM" 'ZZDGFORM number=%%[number]%%'
+
+	DDOC="$(adb "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM doc_storage")"
+	adb "INSERT INTO doc_storage (doc_id, doc_name, doc_type, description, created, case_id, user_id, folder, mime_type)
+		VALUES (${DDOC}, 'ZZDGdoc.txt', 'C', 'ZZDG doc', CURDATE(), ${DCASE}, 1, 0, 'text/plain')" >/dev/null
+	seed_doc_body "$DDOC" 'ZZDGDOC-SECRET private case document body'
+
+	if [ -z "$DHASH" ] || [ -z "${DFORM:-}" ] || [ -z "${DDOC:-}" ]; then
+		bad "could not seed the document generation fixtures"
+	else
+		# Positive control. The admin can read every case, so the legitimate
+		# path must still merge the case number into the generated document.
+		# The docgen form lives on the case Documents tab, which is screen=docs.
+		ATOK="$(curl -sL --max-time 30 -b "$COOKIES" \
+			"$OCM_URL/case.php?case_id=${DCASE}&screen=docs" \
+			| grep -o 'name="_csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')"
+		curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=${ATOK}&case_id=${DCASE}&form_id=${DFORM}" \
+			"$OCM_URL/ops/docgen.php" >/dev/null
+		if [ "${#ATOK}" -eq 64 ] && grep -q 'ZZ-DG-SECRET' "$BODY"; then
+			ok "the admin still generates a document from a form template"
+		else
+			bad "the admin cannot generate a document - the docgen gate is too tight"
+		fi
+
+		: > "$DJAR"
+		curl -sL --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" \
+			-X POST -d "login_user=${DUSER}&login_pass=${DPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway docgen user could not log in - section 18 is untested"
+		else
+			ok "the throwaway docgen user can log in"
+
+			# The token has to come from a form this user is allowed to load,
+			# or every check below is refused by pl_csrf_check() instead of by
+			# the authorization gate and proves nothing.
+			DTOK="$(curl -sL --max-time 30 -b "$DJAR" \
+				"$OCM_URL/case.php?case_id=${DMINE}&screen=docs" \
+				| grep -o 'name="_csrf" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')"
+			if [ "${#DTOK}" -eq 64 ]; then
+				ok "the throwaway docgen user holds a CSRF token"
+			else
+				bad "no CSRF token for the docgen user - section 18 is untested"
+			fi
+
+			curl -s --max-time 60 -b "$DJAR" -o "$BODY" -X POST \
+				-d "_csrf=${DTOK}&case_id=${DCASE}&form_id=${DFORM}" \
+				"$OCM_URL/ops/docgen.php" >/dev/null
+			if grep -q 'ZZ-DG-SECRET' "$BODY"; then
+				bad "DOCUMENT ASSEMBLY MERGES A CASE THE USER CANNOT READ"
+			else
+				ok "document assembly refuses a case the user cannot read"
+			fi
+
+			# form_id names a row in doc_storage, and docgen decompresses it and
+			# writes it to the response. Only doc_type F belongs there.
+			curl -s --max-time 60 -b "$DJAR" -o "$BODY" -X POST \
+				-d "_csrf=${DTOK}&case_id=${DMINE}&form_id=${DDOC}" \
+				"$OCM_URL/ops/docgen.php" >/dev/null
+			if grep -q 'ZZDGDOC-SECRET' "$BODY"; then
+				bad "form_id READS AN ARBITRARY STORED DOCUMENT OUT OF doc_storage"
+			else
+				ok "form_id cannot name a document that is not a form template"
+			fi
+		fi
+	fi
+
+	cleanup_dg
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip document generation checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
+echo "19. pro bono assignment authorizes the case and the target column"
+
+# cms/assign_pba.php had no pika_authorize call either. The assign action
+# redirects into ops/update_case.php with a case id and a field name taken from
+# the query string, so it both stamped an assignment onto any case in the org
+# and offered that handler's mass assignment an arbitrary column name.
+if [ "$HAVE_DB" = 1 ]; then
+	PGROUP='zz_pba_grp'
+	PUSER='zz_pba_user'
+	PPASS='zz-pba-Passw0rd'
+	PJAR="$(mktemp)"
+
+	cleanup_pba() {
+		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZPBAATTY'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-PBA-SECRET'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${PUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${PGROUP}'" >/dev/null
+		rm -f "$PJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pba' EXIT
+	cleanup_pba
+
+	# pba = 0 as well, so the bare pro bono directory is out of reach too.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${PGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	PHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$PPASS" </dev/null 2>/dev/null)"
+	PUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${PUID}, '${PUSER}', '${PHASH}', 1, '${PGROUP}', 0)" >/dev/null
+
+	PCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, pba_id1)
+		VALUES (${PCASE}, 'ZZ-PBA-SECRET', 1, 'ZZOFF', '1', NULL)" >/dev/null
+
+	PPBA="$(adb "SELECT COALESCE(MAX(pba_id), 0) + 1 FROM pb_attorneys")"
+	adb "INSERT INTO pb_attorneys (pba_id, first_name, last_name, county, enabled)
+		VALUES (${PPBA}, 'Zz', 'ZZPBAATTY', 'ZZCOUNTY', 1)" >/dev/null
+
+	if [ -z "$PHASH" ] || [ -z "${PCASE:-}" ] || [ -z "${PPBA:-}" ]; then
+		bad "could not seed the pro bono assignment fixtures"
+	else
+		: > "$PJAR"
+		curl -sL --max-time 30 -c "$PJAR" -b "$PJAR" -o "$BODY" \
+			-X POST -d "login_user=${PUSER}&login_pass=${PPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway pro bono user could not log in - section 19 is untested"
+		else
+			ok "the throwaway pro bono user can log in"
+
+			curl -sL --max-time 30 -b "$PJAR" -o "$BODY" \
+				"$OCM_URL/assign_pba.php?case_id=${PCASE}&field=pba_id1&screen=pb" >/dev/null
+			if grep -q 'ZZPBAATTY' "$BODY"; then
+				bad "THE PRO BONO PICKER OPENS ON A CASE THE USER CANNOT EDIT"
+			else
+				ok "the pro bono picker refuses a case the user cannot edit"
+			fi
+
+			curl -s --max-time 30 -b "$PJAR" -o "$BODY" \
+				"$OCM_URL/assign_pba.php?action=assign_pba&case_id=${PCASE}&pba_id=${PPBA}&field=pba_id1&screen=pb" >/dev/null
+			if [ "$(adb "SELECT COALESCE(pba_id1, 'none') FROM cases WHERE case_id = ${PCASE}")" = 'none' ]; then
+				ok "a pro bono attorney cannot be assigned to a case the user cannot edit"
+			else
+				bad "A PRO BONO ATTORNEY WAS ASSIGNED TO A CASE THE USER CANNOT EDIT"
+			fi
+
+			# field named the column update_case.php would write. Only the three
+			# pro bono slots belong there.
+			curl -s --max-time 30 -b "$PJAR" -o "$BODY" \
+				"$OCM_URL/assign_pba.php?action=assign_pba&case_id=${PCASE}&pba_id=${PPBA}&field=user_id&screen=pb" >/dev/null
+			if [ "$(adb "SELECT user_id FROM cases WHERE case_id = ${PCASE}")" = '1' ]; then
+				ok "field cannot name a case column outside the pro bono slots"
+			else
+				bad "field REWROTE AN ARBITRARY CASE COLUMN THROUGH update_case.php"
+			fi
+
+			# With no case_id it is the plain directory, gated on the group flag.
+			curl -sL --max-time 30 -b "$PJAR" -o "$BODY" \
+				"$OCM_URL/assign_pba.php" >/dev/null
+			if grep -q 'ZZPBAATTY' "$BODY"; then
+				bad "the pro bono directory is readable with the pba flag off"
+			else
+				ok "the pro bono directory is refused with the pba flag off"
+			fi
+		fi
+
+		# Positive controls. The admin can edit every case, so the picker must
+		# still list attorneys and the assignment must still land.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/assign_pba.php?case_id=${PCASE}&field=pba_id1&screen=pb" >/dev/null
+		if grep -q 'ZZPBAATTY' "$BODY"; then
+			ok "the admin still sees the pro bono picker"
+		else
+			bad "the admin cannot open the pro bono picker - the gate is too tight"
+		fi
+
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/assign_pba.php?action=assign_pba&case_id=${PCASE}&pba_id=${PPBA}&field=pba_id1&screen=pb" >/dev/null
+		if [ "$(adb "SELECT COALESCE(pba_id1, 'none') FROM cases WHERE case_id = ${PCASE}")" = "$PPBA" ]; then
+			ok "the admin still assigns a pro bono attorney"
+		else
+			bad "the admin can no longer assign a pro bono attorney - the gate is too tight"
+		fi
+
+	fi
+
+	cleanup_pba
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip pro bono assignment checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -58,7 +58,58 @@ $debug = pl_grab_post('debug');
 $base_url = pl_settings_get('base_url');
 
 
+/*	Authorize the case BEFORE touching the document.
+	
+	Nothing in this file checked anything. The case row was loaded further
+	down under the comment "needs security enforcement" and used as-is, and
+	$form_id was never checked at all, so any authenticated user could:
+	
+	  - generate a form for any case in the org by id, which merges the whole
+	    case row and the client contact row into the output; and
+	  - post any doc_storage id as form_id, which this script decompresses and
+	    echoes, with the response filename and MIME type taken from the
+	    victim document's own row.
+	
+	Both were confirmed on this codebase before the fix. A user in a group
+	with read_all = 0, read_office NULL and intake 0, holding one case of
+	their own, posted case_id for somebody else's case and got its case
+	number back in the generated document; and posted another case's private
+	document id as form_id and got that document's body back verbatim.
+	
+	Both ids are checked with is_numeric() first, because
+	plBase::__construct() with an empty id takes the new-row path and draws
+	an id from the counters table. That is a write, and this handler has no
+	reason to perform one.
+*/
+if (!is_numeric($case_id) || !is_numeric($form_id))
+{
+	die('Access denied');
+}
+
+$case1 = new pikaCase($case_id);
+$a = $case1->getValues();
+
+if (empty($a['case_id']) || !pika_authorize('read_case', $a))
+{
+	die('Access denied');
+}
+
+/*	The form picker on the case Documents tab lists doc_type = 'F' only.
+	Hold this endpoint to the same set. A form template is an org-wide
+	document with no case of its own, so there is nothing else here to
+	authorize it against, and anything that is not a form template has no
+	business being run through document assembly.
+*/
 $doc = new pikaDocument($form_id);
+$doc_values = $doc->getValues();
+
+if (empty($doc_values['doc_id'])
+	|| !isset($doc_values['doc_type'])
+	|| 'F' !== $doc_values['doc_type'])
+{
+	die('Access denied');
+}
+
 $doc_data = gzuncompress(stripslashes($doc->doc_data));
 
 
@@ -75,9 +126,6 @@ elseif ($extension == 'docx') {
 	$output_format = 'docx';
 }
 
-// needs security enforcement
-$case1 = new pikaCase($case_id);
-$a = $case1->getValues();
 
 if (is_numeric($a['client_id']))
 {
