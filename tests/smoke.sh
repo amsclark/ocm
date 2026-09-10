@@ -2385,6 +2385,29 @@ MFAPY
 			bad "the enrollment page is incomplete (key ${#MFA_SECRET} chars, token ${#MFA_TOKEN} chars, csrf ${#MFA_CSRF} chars)"
 		fi
 
+		# The way out. An account that is held on the enrollment page has
+		# exactly one other link, and the enrollment gate lets exactly one
+		# other page through. A link that 404s leaves a user who cannot
+		# enrol -- lost phone, no authenticator app yet -- with no way to
+		# end the session at all. Follow the link the page actually renders
+		# rather than reading the source, so a future edit that points it
+		# somewhere else is caught too.
+		MFA_OUT="$(sed -n 's/.*<a href="\([^"]*logout[^"]*\)".*/\1/p' "$BODY" | head -1)"
+		# base_url is a path, not an absolute URL, on a stock install.
+		case "$MFA_OUT" in
+			http*) ;;
+			/*) MFA_OUT="$(printf '%s' "$OCM_URL" | sed -E 's#^(https?://[^/]+).*#\1#')${MFA_OUT}" ;;
+		esac
+		# Without the fixture's cookies: following it with them would end the
+		# session the rest of this section still needs. Whether the URL
+		# exists is the whole question.
+		if [ -n "$MFA_OUT" ] \
+			&& [ "$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' "$MFA_OUT")" != 404 ]; then
+			ok "the enrollment page's sign-out link resolves"
+		else
+			bad "the enrollment page's sign-out link is broken (${MFA_OUT:-none found})"
+		fi
+
 		mfa_enroll_post() {
 			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
 				--data-urlencode "enroll_token=${MFA_TOKEN}" \
