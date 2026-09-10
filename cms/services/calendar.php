@@ -39,13 +39,19 @@ $auth_array = array();
 
 
 require_once ('plFlexList.php');
+require_once ('app/lib/plIcalText.php');
 
 
 
 // Functions
+/*	Kept under its own name because both feeds call it; the escaping itself
+	lives in app/lib/plIcalText.php so the two cannot drift apart again.  It
+	now also escapes backslash, semicolon and comma per RFC 5545, which the
+	local version never did - see pl_ical_text_escape().
+*/
 function ical_text_mogrify($x)
 {
-	return str_replace("\n", "\\n", str_replace("\r","",$x));
+	return pl_ical_text_escape($x);
 }
 
 function ical_datetime_mogrify($d, $t)
@@ -108,19 +114,19 @@ while ($row = DBResult::fetchRow($result))
 		$temp_description .= "Hours: " . ($row['hours']+0) . "\\n";
 	}
 	if(isset($row['completed'])) {
-		$temp_description .= "Completed: " . pl_array_lookup($row['completed'], $plMenus['yes_no']) . "\\n";
+		$temp_description .= "Completed: " . ical_text_mogrify(pl_array_lookup($row['completed'], $plMenus['yes_no'])) . "\\n";
 	}
 	if(isset($row['act_type']) && $row['act_type']) {
-		$temp_description .= "Activity Type: " . pl_array_lookup($row['act_type'],$plMenus['act_type']) . "\\n";
+		$temp_description .= "Activity Type: " . ical_text_mogrify(pl_array_lookup($row['act_type'],$plMenus['act_type'])) . "\\n";
 	}
 	if(isset($row['category']) && $row['category']) {
-		$temp_description .= "Category: " . pl_array_lookup($row['category'], $plMenus['category']) . "\\n";
+		$temp_description .= "Category: " . ical_text_mogrify(pl_array_lookup($row['category'], $plMenus['category'])) . "\\n";
 	}
 	if(isset($row['funding']) && $row['funding']) {
-		$temp_description .= "Funding: " . pl_array_lookup($row['funding'],$plMenus['funding']) . "\\n";
+		$temp_description .= "Funding: " . ical_text_mogrify(pl_array_lookup($row['funding'],$plMenus['funding'])) . "\\n";
 	}
 	if(isset($row['case_id']) && $row['case_id']) {
-		$temp_description .= "Case: " . $row['number'] . "\\n";
+		$temp_description .= "Case: " . ical_text_mogrify($row['number']) . "\\n";
 	}
 	$row['cal_url'] = $cal_url . "/activity.php?act_id={$row['act_id']}";
 	$temp_description .= $row['cal_url'];
@@ -134,7 +140,14 @@ while ($row = DBResult::fetchRow($result))
 		$row['end'] = ical_datetime_mogrify($row['act_date'], $row['act_end_time']);
 	}
 	$row['time_zone'] = $time_zone;
-	$row['alarm'] = ical_datetime_mogrify($row['act_date'], $row['act_time']).";P1D;7;TICKLE - " .stripslashes($row['summary']);
+	/*	$row['summary'] was escaped a few lines up, and the stripslashes() that
+		used to be here undid it: the escaped \n became a bare n, so a two-line
+		summary reached subscribers as one run-on word.  It did not forge a
+		property - the newline was already gone rather than restored - but now
+		that the escape set also covers backslash, semicolon and comma it would
+		corrupt those too, and this property is semicolon delimited.
+	*/
+	$row['alarm'] = ical_datetime_mogrify($row['act_date'], $row['act_time']).";P1D;7;TICKLE - " .$row['summary'];
 	
 	if (!is_null($row['act_date'])) {
 		// TODO doesn't work
