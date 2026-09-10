@@ -1,8 +1,17 @@
 <?php 
 
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+/*	Three lines of leftover debugging used to sit here: ini_set on
+	display_errors and display_startup_errors, plus error_reporting(E_ALL).
+	They forced PHP's own error output into the response for this one page
+	no matter how the server was configured, so a fatal here printed the
+	absolute file path and a stack trace to whoever ran the report.
+	
+	Whether error detail reaches the browser is decided by php.ini, through
+	pl_is_debug_mode() in cms/app/lib/pl.php -- display_errors Off is what a
+	server holding client data should have, and what the shipped Docker image
+	sets. Define PL_DEBUG in settings.php to turn the detail on for one
+	installation instead.
+*/
 /**********************************/
 /* Pika CMS (C) 2009 Aaron Worley */
 /* http://pikasoftware.com        */
@@ -141,7 +150,12 @@ else if ($count)
 
 else
 {
-	if (sizeof($fo) < 1)
+	/*	pl_grab_post() returns null for a field that was not submitted, and
+		"no columns ticked" is exactly the case the message below was written
+		for. Under PHP 8 sizeof(null) is a fatal TypeError, so the report died
+		with a stack trace instead of printing it.
+	*/
+	if (!is_array($fo) || count($fo) < 1)
 	{
 		echo "<h1>Error:  you need to check off the fields you want displayed on this report</h1>\n";
 		exit();
