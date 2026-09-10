@@ -771,6 +771,18 @@ function pika_init()
 	require_once('app/lib/pikaMfaEnroll.php');
 	pl_mfa_enroll_gate();
 	
+	/*	Forced password change. An account whose password was set by somebody
+		else -- the container entrypoint on first run, or an administrator on
+		the user form -- goes to password.php and nowhere else until the
+		account holder has picked their own. Fails open on any error -- see
+		cms/app/lib/pikaPasswordChange.php.
+		
+		After the enrollment gate, so a user who owes both finishes
+		enrollment first and is not bounced between the two pages.
+	*/
+	require_once('app/lib/pikaPasswordChange.php');
+	pl_password_change_gate();
+	
 	require_once('pikaDefPrefs.php');
 	pikaDefPrefs::getInstance()->initPrefs($auth_row['user_id']);
 	

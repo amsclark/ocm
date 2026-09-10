@@ -3539,6 +3539,160 @@ else
 	printf '  skip the ops authorization checks (needs the database)\n'
 fi
 
+# ── 41. The forced password change ─────────────────────────────────────────
+# A password somebody else chose - the container entrypoint's generated
+# bootstrap value, or one an administrator typed on the user form - is a
+# credential the account holder does not own. users.must_change_password
+# marks that, and every page except password.php, enroll_mfa.php and
+# logout.php sends the account back to password.php until it is cleared.
+# These checks drive it through a real session.
+echo
+echo "41. the forced password change"
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	MCPGROUP="zz_mcp_grp"
+	MCPUSER="zz_mcp_user"
+	MCPPASS="zz-mcp-Passw0rd"
+	MCPNEW="zz-mcp-Newpass1"
+	MCPJAR="$(mktemp)"
+
+	cleanup_mcp() {
+		adb "DELETE FROM user_sessions WHERE user_id = ${MCPUID:-0}" >/dev/null
+		adb "DELETE FROM users WHERE username = '${MCPUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${MCPGROUP}'" >/dev/null
+		rm -f "$MCPJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mcp' EXIT
+
+	# read_all so the fixture has somewhere to be redirected away from.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${MCPGROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	MCPHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$MCPPASS" </dev/null 2>/dev/null)"
+	MCPUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire, must_change_password)
+		VALUES (${MCPUID}, '${MCPUSER}', '${MCPHASH}', 1, '${MCPGROUP}', 0, 1)" >/dev/null
+
+	# Sign the fixture in. Echoes the URL the browser ended on, which is the
+	# whole point: a flagged account is redirected off the page it asked for.
+	mcp_login() {
+		: > "$MCPJAR"
+		curl -s --max-time 30 -c "$MCPJAR" -b "$MCPJAR" -o /dev/null "$OCM_URL/" >/dev/null
+		curl -sL --max-time 30 -c "$MCPJAR" -b "$MCPJAR" -o "$BODY" -w '%{url_effective}' \
+			-d "login_user=${MCPUSER}&login_pass=${MCPPASS}&auth_id=1" "$OCM_URL/"
+	}
+
+	# The CSRF token off whatever page the fixture is looking at.
+	mcp_token() {
+		grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	if [ -z "$MCPHASH" ] || [ -z "${MCPUID:-}" ]; then
+		bad "could not build the forced-password-change fixture - section 41 is untested"
+	else
+		# The column the whole feature rests on. Without the upgrade applied
+		# the gate is a no-op and every other check here passes vacuously.
+		if [ "$(adb "SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = 'users'
+			AND column_name = 'must_change_password'")" = 1 ]; then
+			ok "users carries the must_change_password column"
+		else
+			bad "users has no must_change_password column - add_must_change_password.sql was not applied"
+		fi
+
+		# The login POST is the request that trips the gate most often. It
+		# has to arrive at password.php, not at the home page, and not at an
+		# error: a 302 here would make the browser repeat the login POST
+		# against password.php, where it is refused for carrying no CSRF
+		# token. The gate answers 303 for that reason.
+		MCPLANDED="$(mcp_login)"
+		case "$MCPLANDED" in
+			*password.php*)
+				ok "a flagged account lands on the password page after signing in" ;;
+			*)
+				bad "a flagged account signed in and landed on ${MCPLANDED}" ;;
+		esac
+
+		if grep -q 'newpass1' "$BODY"; then
+			ok "the password page renders for a flagged account"
+		else
+			bad "a flagged account cannot reach the form that would clear the flag"
+		fi
+
+		# Every other page. system-maint.php is a plain authenticated page
+		# the fixture's group can otherwise load.
+		MCPLANDED="$(curl -sL --max-time 30 -b "$MCPJAR" -c "$MCPJAR" -o "$BODY" \
+			-w '%{url_effective}' "$OCM_URL/system-maint.php")"
+		case "$MCPLANDED" in
+			*password.php*)
+				ok "a flagged account is turned back from another page" ;;
+			*)
+				bad "a flagged account reached ${MCPLANDED} without changing its password" ;;
+		esac
+
+		# Most of the reads and writes in this application go through
+		# services/*-server-ajax.php. A gate that only covers the front door
+		# would leave a flagged account free to drive the whole application
+		# from there. The answer has to be JSON: an ajax caller parses a
+		# redirect body as if it were the reply.
+		MCPCODE="$(curl -s --max-time 30 -b "$MCPJAR" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/services/cases-lookup-ajax.php?q=zz")"
+		if [ "$MCPCODE" = 403 ] && grep -q 'password_change_required' "$BODY"; then
+			ok "an ajax endpoint refuses a flagged account in JSON"
+		else
+			bad "the ajax endpoint answered a flagged account with ${MCPCODE} and no JSON refusal"
+		fi
+
+		# Now clear it the way a person does.
+		curl -sL --max-time 30 -b "$MCPJAR" -c "$MCPJAR" -o "$BODY" \
+			"$OCM_URL/password.php" >/dev/null
+		MCPTOK="$(mcp_token)"
+		curl -sL --max-time 30 -b "$MCPJAR" -c "$MCPJAR" -o "$BODY" \
+			-d "action=update" -d "_csrf=${MCPTOK}" \
+			--data-urlencode "oldpass=${MCPPASS}" \
+			--data-urlencode "newpass1=${MCPNEW}" \
+			--data-urlencode "newpass2=${MCPNEW}" \
+			"$OCM_URL/password.php" >/dev/null
+
+		if [ "$(adb "SELECT must_change_password FROM users WHERE user_id = ${MCPUID}")" = 0 ]; then
+			ok "changing the password clears the flag"
+		else
+			bad "the flag survived a password change - the account is stuck on the password page"
+		fi
+
+		MCPLANDED="$(curl -sL --max-time 30 -b "$MCPJAR" -c "$MCPJAR" -o "$BODY" \
+			-w '%{url_effective}' "$OCM_URL/system-maint.php")"
+		case "$MCPLANDED" in
+			*system-maint.php*)
+				ok "the account reaches other pages once its password is its own" ;;
+			*)
+				bad "the account still cannot leave the password page: ${MCPLANDED}" ;;
+		esac
+
+		# And the other half: an administrator setting somebody's password
+		# has to raise the flag, or the admin-known value stays in service.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-users.php?action=edit&user_id=${MCPUID}" >/dev/null
+		MCPTOK="$(mcp_token)"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-d "action=update" -d "_csrf=${MCPTOK}" -d "user_id=${MCPUID}" \
+			-d "username=${MCPUSER}" -d "group_id=${MCPGROUP}" -d "enabled=1" \
+			--data-urlencode "password=zz-mcp-Adminset1" \
+			"$OCM_URL/system-users.php" >/dev/null
+
+		if [ "$(adb "SELECT must_change_password FROM users WHERE user_id = ${MCPUID}")" = 1 ]; then
+			ok "a password an administrator sets is marked for replacement"
+		else
+			bad "an admin-set password was not marked - it stays a credential two people know"
+		fi
+	fi
+
+	cleanup_mcp
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the forced password change (needs the database and compose)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

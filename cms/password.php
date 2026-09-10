@@ -29,6 +29,20 @@ $html['pass_min_length'] = $pass_min_length = $settings['pass_min_length'];
 $html['flags'] = '';
 
 $action = pl_grab_post('action');
+
+/*	Say why every other page keeps sending them here. pika-danio.php appends
+	?must_change=1 when it redirects, but the flag on the row is what decides,
+	so check both: a user who reaches this page by clicking Change Password
+	still needs to be told.
+*/
+require_once('app/lib/pikaPasswordChange.php');
+
+if (pl_password_change_required($auth_row['user_id']) || pl_grab_get('must_change') === '1')
+{
+	$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',
+		'You must set a new password before you can continue. Every other '
+		. 'page will send you back here until you have.');
+}
 $menu_pass_strength = array('' => 'None - No Strength Requirement',
 							'0' => 'None - No Strength Requirement',
 							'1' => '(1) Light',
@@ -97,6 +111,13 @@ if($action == 'update')
 		// self-service password change.
 		$user->password = password_hash($newpass1, PASSWORD_DEFAULT);
 		$user->save();	
+		/*	Clear the forced-change flag. The account holder has now picked
+			a password nobody else has seen, which is the whole point of the
+			flag. Written with its own statement rather than through
+			pikaUser, so an installation without add_must_change_password.sql
+			applied keeps working.
+		*/
+		pl_password_change_set($auth_row['user_id'], false);
 		pl_audit('password.self_change', 'user', $auth_row['user_id']);
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Password updated successfully");
 	}
