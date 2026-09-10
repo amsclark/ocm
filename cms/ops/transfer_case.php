@@ -63,6 +63,44 @@ function post_transfer($url = null,$data = null,$optional_headers = null)
 	return $response;
 }
 
+/*	Build one packet for the receiving installation.
+	
+	Signed JSON when this side has a shared secret, because the receiving
+	end reads a serialize() body with unserialize() only if its operator has
+	explicitly turned that back on. The signature covers the action, the
+	body and the timestamp together, so none of the three can be swapped out
+	of a captured packet, and the receiver refuses a timestamp more than 300
+	seconds from its own clock.
+	
+	No secret configured means the old serialize() body, so that a pair of
+	installations can be upgraded one at a time. Configure
+	peer_transfer_shared_secret on both ends and this stops happening.
+*/
+function build_transfer_packet($action,$row_data)
+{
+	$secret = pl_settings_get('peer_transfer_shared_secret');
+	if (is_string($secret) && strlen($secret) > 0)
+	{
+		$json_payload = json_encode($row_data,JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		if (false !== $json_payload)
+		{
+			$ts = (string) time();
+			return array(	'action' => $action,
+							'payload' => $json_payload,
+							'format' => 'json',
+							'ts' => $ts,
+							'signature' => hash_hmac('sha256',$action . "\n" . $json_payload . "\n" . $ts,$secret),
+							'_row_for_v5_checksum' => $row_data
+			);
+		}
+	}
+	
+	return array(	'action' => $action,
+					'payload' => serialize($row_data),
+					'_row_for_v5_checksum' => $row_data
+	);
+}
+
 function pika_transfer($data,$transfer_option_id)
 {
 	$response = false;
@@ -77,8 +115,14 @@ function pika_transfer($data,$transfer_option_id)
 	$auth_header = 	"Content-type: application/x-www-form-urlencoded\r\n" .
 					"Authorization: Basic {$auth}\r\n";
 	
-	// Pika CMS v5 needs a valid MD5 checksum otherwise the transfer op will fail.
-	$data['checksum'] = md5(var_export(unserialize($data['payload']), true));
+	/*	Pika CMS v5 receivers check this exact MD5 of the row and refuse the
+		request without it, so it stays for interoperability. It is not an
+		authenticity check: that is HTTP Basic, plus the HMAC signature that
+		build_transfer_packet() adds. The row is taken from the packet
+		rather than by unserializing the body back out of it.
+	*/
+	$data['checksum'] = md5(var_export($data['_row_for_v5_checksum'], true));
+	unset($data['_row_for_v5_checksum']);
 	
 	$data = http_build_query($data);
 	
@@ -139,9 +183,7 @@ $client_id = $case_row['client_id'];
 unset($case_row['client_id']);
 
 
-$data = array(	'action' => 'newCase',
-				'payload' => serialize($case_row)				
-);
+$data = build_transfer_packet('newCase',$case_row);
 
 $response = pika_transfer($data,$transfer_option_id);
 
@@ -157,9 +199,7 @@ $stack = array();
 $result = $case->getContactsDb();
 while ($contact_row = DBResult::fetchRow($result))
 {
-	$data = array(	'action' => 'newContact',
-					'payload' => serialize($contact_row)				
-	);
+	$data = build_transfer_packet('newContact',$contact_row);
 	
 	$response = pika_transfer($data,$transfer_option_id);
 	
@@ -182,9 +222,7 @@ while ($contact_row = DBResult::fetchRow($result))
 
 while (sizeof($stack) > 0) 
 {
-	$data = array(	'action' => 'addCaseContact',
-					'payload' => serialize(array_shift($stack))				
-	);
+	$data = build_transfer_packet('addCaseContact',array_shift($stack));
 	
 	$response = pika_transfer($data,$transfer_option_id);
 	if (!is_numeric($response))
@@ -206,9 +244,7 @@ while ($notes = DBResult::fetchRow($result))
 	unset($notes['user_id']);
 	unset($notes['act_id']);
 
-	$data = array(	'action' => 'newActivity',
-					'payload' => serialize($notes)
-	);
+	$data = build_transfer_packet('newActivity',$notes);
 	$response = pika_transfer($data,$transfer_option_id);
 	if (!is_numeric($response))
 	{

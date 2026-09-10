@@ -3246,6 +3246,11 @@ if (!function_exists('pl_settings_template_blocked'))
 				// application, which is the whole of the trust the identity
 				// provider places in the deployment.
 				'sso_client_secret',
+				// The HMAC key for peer case transfer. Anybody holding it
+				// can sign a case, contact or activity of their choosing
+				// into this installation, because the signature is the only
+				// thing that says a packet came from the peer.
+				'peer_transfer_shared_secret',
 			));
 		}
 		

@@ -2962,6 +2962,293 @@ else
 	printf '  skip the SSO checks (needs a running stack and the database)\n'
 fi
 
+# ── 27. Peer case transfer ─────────────────────────────────────────────────
+# cms/services/transfer_case.php takes a case, a contact or an activity pushed
+# in by another OCM installation, authenticated with HTTP Basic. The body used
+# to be read with unserialize(), which lets whoever holds a peer password name
+# the classes this server builds. It now wants signed JSON, and the old format
+# is refused unless an operator turns it back on.
+#
+# Needs the database: the settings the endpoint reads are rows, and the
+# assertions about what was audited are rows too.
+echo
+echo "27. peer case transfer"
+if [ "$HAVE_DB" = 1 ]; then
+	PT_URL="$OCM_URL/services/transfer_case.php"
+	PT_LSXML_URL="$OCM_URL/services/transfer_case_lsxml.php"
+	PT_SECRET='smoke-peer-transfer-secret'
+	lsxml_case_id=''
+	# judge_name is a plain varchar on cases, so a value written through the
+	# endpoint can be read straight back out and compared.
+	PT_BODY='{"judge_name":"SmokePeerTransfer","court_city":"Smokeville"}'
+
+	pt_settings_save() {
+		PT_OLD_SECRET="$(adb "SELECT value FROM settings WHERE label = 'peer_transfer_shared_secret'")"
+		PT_OLD_LEGACY="$(adb "SELECT value FROM settings WHERE label = 'peer_transfer_allow_legacy_unserialize'")"
+	}
+	pt_settings_restore() {
+		adb "UPDATE settings SET value = '$(printf '%s' "$PT_OLD_SECRET" | sed "s/'/''/g")' WHERE label = 'peer_transfer_shared_secret'" >/dev/null
+		adb "UPDATE settings SET value = '$(printf '%s' "$PT_OLD_LEGACY" | sed "s/'/''/g")' WHERE label = 'peer_transfer_allow_legacy_unserialize'" >/dev/null
+	}
+	pt_set() { adb "UPDATE settings SET value = '$2' WHERE label = '$1'" >/dev/null; }
+
+	# The signature the sending side computes, over the three fields together.
+	pt_sign() {
+		printf '%s\n%s\n%s' "$1" "$2" "$3" \
+			| openssl dgst -sha256 -hmac "$PT_SECRET" -r | cut -d' ' -f1
+	}
+
+	# POST a signed JSON packet. $1 action, $2 payload, $3 ts, $4 signature.
+	# Prints the status code; the body lands in $BODY.
+	pt_post_json() {
+		curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+			-u "${OCM_USER}:${OCM_PASSWORD}" \
+			--data-urlencode "action=$1" \
+			--data-urlencode "payload=$2" \
+			--data-urlencode 'format=json' \
+			--data-urlencode "ts=$3" \
+			--data-urlencode "signature=$4" \
+			"$PT_URL"
+	}
+
+	# POST an old-style serialize() packet, with no format field at all.
+	pt_post_legacy() {
+		curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+			-u "${OCM_USER}:${OCM_PASSWORD}" \
+			--data-urlencode "action=$1" \
+			--data-urlencode "payload=$2" \
+			"$PT_URL"
+	}
+
+	if ! command -v openssl >/dev/null 2>&1; then
+		printf '  skip the peer transfer checks (needs openssl to sign a packet)\n'
+	elif [ -z "$(adb "SELECT 1 FROM settings WHERE label = 'peer_transfer_shared_secret'")" ]; then
+		bad "the settings table has no peer_transfer_shared_secret row — add_peer_transfer.sql did not run"
+	else
+		pt_settings_save
+
+		# 27a. The state a fresh install is in: no secret, legacy off. Both
+		# body formats must be refused, so an installation whose operator has
+		# never heard of peer transfer is not running a deserializer for
+		# anybody who guesses a password.
+		pt_set peer_transfer_shared_secret ''
+		pt_set peer_transfer_allow_legacy_unserialize '0'
+
+		code="$(pt_post_legacy newCase 'a:1:{s:10:"judge_name";s:5:"Smoke";}')"
+		if [ "$code" = 403 ] && grep -q 'legacy_unserialize_disabled' "$BODY"; then
+			ok "a serialize() body is refused by default"
+		else
+			bad "a serialize() body was not refused by default (status $code)"
+		fi
+
+		ts="$(date +%s)"
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$(pt_sign newCase "$PT_BODY" "$ts")")"
+		if [ "$code" = 403 ] && grep -q 'shared_secret_not_configured' "$BODY"; then
+			ok "a signed packet is refused while no shared secret is set"
+		else
+			bad "a signed packet was accepted with no shared secret configured (status $code)"
+		fi
+
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'peer_transfer.rejected' LIMIT 1")" ]; then
+			ok "audit_log recorded peer_transfer.rejected"
+		else
+			bad "audit_log has no peer_transfer.rejected row"
+		fi
+
+		# 27b. With a secret configured, a correctly signed packet works.
+		pt_set peer_transfer_shared_secret "$PT_SECRET"
+
+		ts="$(date +%s)"
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$(pt_sign newCase "$PT_BODY" "$ts")")"
+		new_case_id="$(cat "$BODY")"
+		case "$new_case_id" in
+			''|*[!0-9]*) new_case_id='' ;;
+		esac
+		if [ "$code" = 200 ] && [ -n "$new_case_id" ]; then
+			ok "a correctly signed newCase packet is accepted (case $new_case_id)"
+		else
+			bad "a correctly signed newCase packet was refused (status $code, body $(head -c 80 "$BODY"))"
+		fi
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'peer_transfer.accepted' LIMIT 1")" ]; then
+			ok "audit_log recorded peer_transfer.accepted"
+		else
+			bad "audit_log has no peer_transfer.accepted row"
+		fi
+		if [ -n "$new_case_id" ] \
+			&& [ "$(adb "SELECT judge_name FROM cases WHERE case_id = ${new_case_id}")" = 'SmokePeerTransfer' ]; then
+			ok "the transferred case row carries the values from the JSON body"
+		else
+			bad "the transferred case row does not carry the values from the JSON body"
+		fi
+
+		# 27c. Every way of getting the signature wrong.
+		ts="$(date +%s)"
+		good_sig="$(pt_sign newCase "$PT_BODY" "$ts")"
+
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "${good_sig%?}0")"
+		if [ "$code" = 403 ] && grep -q 'bad_signature' "$BODY"; then
+			ok "a packet with one flipped signature character is refused"
+		else
+			bad "a packet with a wrong signature was accepted (status $code)"
+		fi
+
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" '')"
+		if [ "$code" = 403 ]; then
+			ok "a packet with an empty signature is refused"
+		else
+			bad "a packet with an empty signature was accepted (status $code)"
+		fi
+
+		# The signature covers the action as well as the body, so a captured
+		# packet cannot be replayed under a different action.
+		code="$(pt_post_json newContact "$PT_BODY" "$ts" "$good_sig")"
+		if [ "$code" = 403 ] && grep -q 'bad_signature' "$BODY"; then
+			ok "a signature from one action does not authorise another"
+		else
+			bad "a newCase signature was accepted for newContact (status $code)"
+		fi
+
+		# ...and it covers the timestamp, so the window cannot be widened by
+		# editing ts and keeping the signature.
+		old_ts=$(( $(date +%s) - 400 ))
+		code="$(pt_post_json newCase "$PT_BODY" "$old_ts" "$(pt_sign newCase "$PT_BODY" "$old_ts")")"
+		if [ "$code" = 403 ] && grep -q 'ts_out_of_window' "$BODY"; then
+			ok "a correctly signed packet 400 seconds old is refused"
+		else
+			bad "a packet 400 seconds old was accepted (status $code)"
+		fi
+
+		code="$(pt_post_json newCase "$PT_BODY" 'not-a-number' "$good_sig")"
+		if [ "$code" = 403 ] && grep -q 'invalid_ts' "$BODY"; then
+			ok "a non-numeric timestamp is refused"
+		else
+			bad "a non-numeric timestamp was accepted (status $code)"
+		fi
+
+		# A body that is not JSON at all.
+		ts="$(date +%s)"
+		code="$(pt_post_json newCase 'not json' "$ts" "$(pt_sign newCase 'not json' "$ts")")"
+		if [ "$code" = 403 ] && grep -q 'bad_json_payload' "$BODY"; then
+			ok "a signed body that is not JSON is refused"
+		else
+			bad "a signed body that is not JSON was accepted (status $code)"
+		fi
+
+		# 27d. The legacy path, once an operator has turned it on, still must
+		# not build an object out of the wire. allowed_classes => false makes
+		# a serialized object come out as __PHP_Incomplete_Class, which is not
+		# an array, so the endpoint refuses it.
+		pt_set peer_transfer_allow_legacy_unserialize '1'
+
+		code="$(pt_post_legacy newCase 'O:8:"pikaCase":0:{}')"
+		if [ "$code" = 403 ] && grep -q 'bad_serialized_payload' "$BODY"; then
+			ok "a serialized object is refused even on the legacy path"
+		else
+			bad "a serialized object was accepted on the legacy path (status $code) — object injection"
+		fi
+
+		code="$(pt_post_legacy newCase 'a:1:{s:10:"judge_name";s:11:"SmokeLegacy";}')"
+		legacy_case_id="$(cat "$BODY")"
+		case "$legacy_case_id" in
+			''|*[!0-9]*) legacy_case_id='' ;;
+		esac
+		if [ "$code" = 200 ] && [ -n "$legacy_case_id" ]; then
+			ok "a serialized array still works once legacy is turned on"
+		else
+			bad "the legacy path is broken for a plain array (status $code)"
+		fi
+
+		pt_set peer_transfer_allow_legacy_unserialize '0'
+
+		# 27e. The shared secret does not come back out of the application.
+		# Anybody holding it can sign a case of their choosing into this
+		# installation, so it belongs in the same class as the SSO secret.
+		: > "$COOKIES"
+		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+			-d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" "$OCM_URL/" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
+		if grep -qF "$PT_SECRET" "$BODY"; then
+			bad "system-settings.php renders the peer transfer shared secret"
+		else
+			ok "system-settings.php does not render the peer transfer shared secret"
+		fi
+
+		# But it does have to offer somewhere to type it, because the wiki
+		# tells the operator to set both of these under System Settings.
+		if grep -q 'name="peer_transfer_shared_secret"' "$BODY" \
+			&& grep -q 'A shared secret is stored' "$BODY"; then
+			ok "system-settings.php offers a write-only shared secret field"
+		else
+			bad "system-settings.php has no peer transfer shared secret field"
+		fi
+
+		# The checkbox needs its hidden 0 companion. Without it an unchecked
+		# box posts nothing, the isset() test in system-settings.php skips
+		# the key, and the setting can be turned on but never off.
+		if grep -q '<input type="hidden" name="peer_transfer_allow_legacy_unserialize" value="0"' "$BODY" \
+			&& grep -q '<input type="checkbox" name="peer_transfer_allow_legacy_unserialize"' "$BODY"; then
+			ok "the legacy transfer format checkbox can be turned back off"
+		else
+			bad "peer_transfer_allow_legacy_unserialize has no off state on the form"
+		fi
+
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/search.php?s=%25%25%5Bpeer_transfer_shared_secret%5D%25%25" >/dev/null
+		if grep -qF "$PT_SECRET" "$BODY"; then
+			bad "search.php resolved the peer transfer shared secret into the page"
+		else
+			ok "a peer_transfer_shared_secret tag in the search box resolves to nothing"
+		fi
+
+		# 27f. The LSXML variant of the same endpoint. Two things: an XML
+		# document may not make this server read a file of the sender's
+		# choosing, and the reply is the new case id rather than a dump of
+		# every column of the row we just wrote.
+		code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+			-u "${OCM_USER}:${OCM_PASSWORD}" \
+			--data-urlencode 'lsxml=<?xml version="1.0"?><!DOCTYPE r [<!ENTITY xx SYSTEM "file:///etc/passwd">]><ClientIntake><Client><NameFirst>&xx;</NameFirst></Client></ClientIntake>' \
+			"$PT_LSXML_URL")"
+		if grep -q 'root:x:' "$BODY"; then
+			bad "the LSXML endpoint READ /etc/passwd out of a DOCTYPE declaration"
+		elif [ "$code" = 400 ]; then
+			ok "the LSXML endpoint refuses a document with a DOCTYPE declaration"
+		else
+			bad "an XML document with a DOCTYPE was not refused (status $code)"
+		fi
+
+		code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+			-u "${OCM_USER}:${OCM_PASSWORD}" \
+			--data-urlencode 'lsxml=<?xml version="1.0"?><ClientIntake><CaseInformation><LSCProblemCode>01</LSCProblemCode></CaseInformation><Client><NameFirst>Smoke</NameFirst><NameLast>Lsxml</NameLast></Client></ClientIntake>' \
+			"$PT_LSXML_URL")"
+		if [ "$code" != 200 ]; then
+			bad "a valid LSXML document was not imported (status $code)"
+		elif grep -qiE 'pikaCase Object|\[db_row\]|\[values\]' "$BODY"; then
+			bad "the LSXML endpoint dumps the whole case row back to the sender"
+		elif grep -qE '^\[[0-9]+\]$' "$BODY"; then
+			ok "the LSXML endpoint answers with the new case id and nothing else"
+			lsxml_case_id="$(tr -dc '0-9' < "$BODY")"
+		else
+			bad "the LSXML endpoint answered something unexpected: $(head -c 80 "$BODY")"
+		fi
+
+		pt_settings_restore
+
+		# Leave the tables as they were found.
+		for cid in $new_case_id $legacy_case_id $lsxml_case_id; do
+			adb "DELETE FROM cases WHERE case_id = ${cid}" >/dev/null
+		done
+		adb "DELETE FROM cases WHERE judge_name IN ('SmokePeerTransfer','SmokeLegacy','Smoke')" >/dev/null
+		adb "DELETE FROM audit_log WHERE action LIKE 'peer_transfer.%' OR action = 'lsxml_transfer.rejected'" >/dev/null
+	fi
+
+	# Section 27e replaced the admin session; put one back for anything after.
+	: > "$COOKIES"
+	curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+		-d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" "$OCM_URL/" >/dev/null
+else
+	printf '  skip the peer transfer checks (needs the database)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

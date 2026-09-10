@@ -18,3 +18,4 @@ add_csrf_tokens_table.sql
 add_groups_intake.sql
 add_totp.sql
 add_sso.sql
+add_peer_transfer.sql
