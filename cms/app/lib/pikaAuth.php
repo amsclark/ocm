@@ -57,7 +57,11 @@ class pikaAuth
 		return self::$instance;
 	}
 	
-	public function authenticate($user,$pass,$authAdapterObj) {
+	/*	$totp is the submitted second factor, or null. Optional so that every
+		existing caller keeps working; the adapter decides whether the account
+		it found actually needs one.
+	*/
+	public function authenticate($user,$pass,$authAdapterObj,$totp = null) {
 		$this->is_authorized = false;
 		// Clear messages
 		$this->messages = array();
@@ -110,7 +114,7 @@ class pikaAuth
 			{
 				$authAdapterObj = new pikaAuthDb('users','username','password');
 			}
-			if($authAdapterObj->authenticate($user,$pass))
+			if($authAdapterObj->authenticate($user,$pass,$totp))
 			{
 				// Check to see that the login is not a back/refresh of submission form
 				$auth_id = $_SESSION['auth_id'];

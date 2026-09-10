@@ -2138,5 +2138,342 @@ else
 fi
 
 echo
+echo "25. multi-factor authentication"
+# The whole loop: an administrator turns the requirement on, the account holder
+# enrols a device on enroll_mfa.php and is held there until they do, the login
+# form then wants a code as well as a password, a used code cannot be replayed,
+# and the administrator can reset or turn it off again. The codes are generated
+# here by an independent RFC 6238 implementation in python, so this section
+# fails if the application's own generator drifts.
+if [ "$HAVE_DB" = 1 ] && [ -n "${COMPOSE_PROJECT:-}" ] && command -v python3 >/dev/null 2>&1; then
+	if [ -n "$(adb "SHOW COLUMNS FROM users LIKE 'totp_secret'")" ]; then
+		ok "users.totp_secret column exists"
+	else
+		bad "users.totp_secret column is MISSING (add_totp.sql did not run)"
+	fi
+	if [ -n "$(adb "SHOW TABLES LIKE 'menu_totp_enabled'")" ]; then
+		ok "menu_totp_enabled table exists"
+	else
+		bad "menu_totp_enabled table is MISSING (add_totp.sql did not run)"
+	fi
+
+	MFA_GROUP='zz_mfa_grp'
+	MFA_USER='zz_mfa_user'
+	MFA_PASS='zz-mfa-Passw0rd'
+	MFA_JAR="$(mktemp)"
+	MFA_PY="$(mktemp)"
+
+
+	mfa_code()   { python3 "$MFA_PY" "$1" "${2:-0}"; }
+	mfa_window() { python3 -c 'import time; print(int(time.time()) // 30)'; }
+	# The login form is rate limited per address. This section produces several
+	# deliberate failures, so clear the counters between steps or a later
+	# assertion passes because everything is locked out.
+	mfa_rl_clear() {
+		docker compose -p "$COMPOSE_PROJECT" exec -T app \
+			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+	}
+
+	cleanup_mfa() {
+		adb "DELETE FROM users WHERE username = '${MFA_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${MFA_GROUP}'" >/dev/null
+		mfa_rl_clear
+		rm -f "$MFA_JAR" "$MFA_PY"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mfa' EXIT
+
+	cleanup_mfa
+
+# Unindented: a quoted heredoc keeps the body verbatim, tabs included.
+cat > "$MFA_PY" <<'MFAPY'
+import base64, hmac, hashlib, struct, sys, time
+
+secret = sys.argv[1].strip().upper().replace(' ', '')
+offset = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+pad = '=' * ((8 - len(secret) % 8) % 8)
+key = base64.b32decode(secret + pad)
+counter = int(time.time()) // 30 + offset
+digest = hmac.new(key, struct.pack('>Q', counter), hashlib.sha1).digest()
+start = digest[19] & 0x0f
+value = struct.unpack('>I', digest[start:start + 4])[0] & 0x7fffffff
+sys.stdout.write('%06d' % (value % 1000000))
+MFAPY
+
+	# read_all so that a successful sign-in lands on a page this section can
+	# tell apart from the enrollment page.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${MFA_GROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	MFA_HASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$MFA_PASS" </dev/null 2>/dev/null)"
+	MFA_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${MFA_UID}, '${MFA_USER}', '${MFA_HASH}', 1, '${MFA_GROUP}', 0)" >/dev/null
+
+	mfa_admin_edit() {
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-users.php?action=edit&user_id=${MFA_UID}" >/dev/null
+	}
+	# Post the account form with one MFA value. The form is the only way an
+	# administrator can reach these columns, so drive it rather than the table.
+	mfa_admin_set() {
+		mfa_admin_edit
+		mfa_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-d "action=update&user_id=${MFA_UID}&_csrf=${mfa_tok}" \
+			-d "username=${MFA_USER}&enabled=1&group_id=${MFA_GROUP}" \
+			-d "totp_enabled=$1" \
+			"$OCM_URL/system-users.php" >/dev/null
+	}
+	mfa_login() {
+		: > "$MFA_JAR"
+		curl -sL --max-time 30 -c "$MFA_JAR" -b "$MFA_JAR" -o "$BODY" \
+			-d "login_user=${MFA_USER}&login_pass=${MFA_PASS}&auth_id=1&totp=${1:-}" \
+			"$OCM_URL/" >/dev/null
+	}
+
+	if [ -z "$MFA_HASH" ] || [ -z "${MFA_UID:-}" ]; then
+		bad "could not seed the MFA fixtures (hash/user)"
+	else
+		# 25a. The control renders, and the account's own secret does not.
+		mfa_admin_edit
+		if grep -q 'Multi-Factor Authentication' "$BODY" \
+			&& grep -q 'name="totp_enabled"' "$BODY"; then
+			ok "the account form carries the MFA control"
+		else
+			bad "the account form has no MFA control - pl_mfa_admin_control() rendered nothing"
+		fi
+		if grep -q 'Off. This account signs in with a password only.' "$BODY"; then
+			ok "a new account reports MFA off"
+		else
+			bad "a new account does not report MFA off"
+		fi
+		if grep -q 'name="totp_secret"' "$BODY"; then
+			bad "the account form carries a totp_secret input - an admin page must never handle the secret"
+		else
+			ok "the account form carries no totp_secret input"
+		fi
+		if grep -q '>Reset<' "$BODY"; then
+			bad "the account form offers a reset for an account with no enrolled device"
+		else
+			ok "the account form offers no reset before a device is enrolled"
+		fi
+
+		# 25b. Turning it on writes the flag and nothing else.
+		mfa_admin_set 1
+		if [ "$(adb "SELECT totp_enabled FROM users WHERE user_id = ${MFA_UID}")" = 1 ]; then
+			ok "the admin form turns MFA on"
+		else
+			bad "the admin form did not turn MFA on"
+		fi
+		if [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ]; then
+			ok "turning MFA on stores no secret"
+		else
+			bad "turning MFA on stored a secret - the secret must come from the user, not the admin"
+		fi
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'user.mfa_enabled' LIMIT 1")" ]; then
+			ok "audit_log recorded user.mfa_enabled"
+		else
+			bad "audit_log has no user.mfa_enabled row"
+		fi
+
+		# 25c. The gate holds the account on the enrollment page.
+		mfa_rl_clear
+		mfa_login
+		if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+			ok "a user with MFA on and no device lands on the enrollment page"
+		else
+			bad "the enrollment gate did not fire - a user with MFA on reached the application"
+		fi
+		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
+		if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+			ok "the gate also holds an ordinary page request"
+		else
+			bad "case_list.php was served to an un-enrolled account"
+		fi
+
+		# 25d. Enrolment: the page hands out a key, a wrong code is refused
+		# and stores nothing, the right code stores the secret encrypted.
+		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/enroll_mfa.php" >/dev/null
+		MFA_SECRET="$(sed -n 's/.*class="enroll-key">\([A-Z2-7]*\)<.*/\1/p' "$BODY" | head -1)"
+		MFA_TOKEN="$(grep -oE 'name="enroll_token" value="[^"]*"' "$BODY" \
+			| head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
+		MFA_CSRF="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+		if [ "${#MFA_SECRET}" -ge 16 ] && [ -n "$MFA_TOKEN" ] && [ "${#MFA_CSRF}" -eq 64 ]; then
+			ok "the enrollment page renders a key, a pending token and a CSRF token"
+		else
+			bad "the enrollment page is incomplete (key ${#MFA_SECRET} chars, token ${#MFA_TOKEN} chars, csrf ${#MFA_CSRF} chars)"
+		fi
+
+		mfa_enroll_post() {
+			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
+				--data-urlencode "enroll_token=${MFA_TOKEN}" \
+				--data-urlencode "_csrf=${MFA_CSRF}" \
+				--data-urlencode "mfa_code=$1" \
+				"$OCM_URL/enroll_mfa.php" >/dev/null
+		}
+
+		if [ "${#MFA_SECRET}" -lt 16 ]; then
+			bad "no enrollment key - the rest of section 25 is untested"
+		else
+			mfa_enroll_post 000000
+			if grep -q 'That code did not match' "$BODY" \
+				&& [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ]; then
+				ok "a wrong enrollment code is refused and stores nothing"
+			else
+				bad "a wrong enrollment code was accepted, or stored a secret anyway"
+			fi
+
+			MFA_ENROL_WINDOW="$(mfa_window)"
+			MFA_ENROL_CODE="$(mfa_code "$MFA_SECRET")"
+			mfa_enroll_post "$MFA_ENROL_CODE"
+			if grep -qi 'logout' "$BODY" && ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+				ok "the right enrollment code finishes enrollment and opens the application"
+			else
+				bad "the right enrollment code did not finish enrollment"
+			fi
+			if [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
+				ok "the stored secret is encrypted at rest"
+			else
+				bad "the stored secret is not in the enc: format - it may be cleartext"
+			fi
+			if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'user.totp_self_enrolled' LIMIT 1")" ]; then
+				ok "audit_log recorded user.totp_self_enrolled"
+			else
+				bad "audit_log has no user.totp_self_enrolled row"
+			fi
+			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/enroll_mfa.php" >/dev/null
+			if grep -q 'class="enroll-key"' "$BODY"; then
+				bad "enroll_mfa.php hands out a second key to an already-enrolled account"
+			else
+				ok "enroll_mfa.php refuses to re-issue a key to an enrolled account"
+			fi
+
+			# 25e. The login form now needs the code.
+			mfa_rl_clear
+			mfa_login
+			if grep -q 'login_pass' "$BODY"; then
+				ok "the password alone no longer signs the account in"
+			else
+				bad "the password alone still signs an MFA account in"
+			fi
+			if grep -q 'The credentials you supplied are invalid' "$BODY"; then
+				ok "the refusal does not say which factor was wrong"
+			else
+				bad "the refusal message names the failing factor"
+			fi
+
+			# Wait for the next 30-second window so that the code used during
+			# enrollment is in the past. Capped: a stopped clock must not hang
+			# the suite.
+			mfa_waited=0
+			while [ "$(mfa_window)" = "$MFA_ENROL_WINDOW" ] && [ "$mfa_waited" -lt 35 ]; do
+				sleep 1
+				mfa_waited=$((mfa_waited+1))
+			done
+
+			mfa_rl_clear
+			mfa_login "$MFA_ENROL_CODE"
+			if grep -q 'login_pass' "$BODY"; then
+				ok "a code that was already used is refused"
+			else
+				bad "a used code was accepted a second time - the replay guard is not working"
+			fi
+
+			mfa_rl_clear
+			mfa_login "$(mfa_code "$MFA_SECRET")"
+			if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+				ok "the password and a current code sign the account in"
+			else
+				bad "a valid password and a valid code were refused"
+			fi
+
+			# 25f. The admin sees the enrolled state, and Reset sends the
+			# account back to enrollment without turning the requirement off.
+			mfa_admin_edit
+			if grep -q 'An authenticator is enrolled' "$BODY"; then
+				ok "the account form reports the enrolled device"
+			else
+				bad "the account form does not report the enrolled device"
+			fi
+			if grep -q '>Reset<' "$BODY"; then
+				ok "the account form offers the reset option once a device is enrolled"
+			else
+				bad "the account form offers no reset option for an enrolled device"
+			fi
+
+			mfa_admin_set 2
+			if [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ] \
+				&& [ "$(adb "SELECT totp_enabled FROM users WHERE user_id = ${MFA_UID}")" = 1 ]; then
+				ok "reset drops the device and keeps the requirement"
+			else
+				bad "reset did not drop the device, or turned the requirement off"
+			fi
+			if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'user.mfa_reset' LIMIT 1")" ]; then
+				ok "audit_log recorded user.mfa_reset"
+			else
+				bad "audit_log has no user.mfa_reset row"
+			fi
+			mfa_rl_clear
+			mfa_login
+			if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+				ok "a reset account is sent back to the enrollment page"
+			else
+				bad "a reset account reached the application without enrolling"
+			fi
+
+			# 25g. Turning it off restores the plain password login.
+			mfa_admin_set 0
+			if [ "$(adb "SELECT totp_enabled FROM users WHERE user_id = ${MFA_UID}")" = 0 ]; then
+				ok "the admin form turns MFA off"
+			else
+				bad "the admin form did not turn MFA off"
+			fi
+			if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'user.mfa_disabled' LIMIT 1")" ]; then
+				ok "audit_log recorded user.mfa_disabled"
+			else
+				bad "audit_log has no user.mfa_disabled row"
+			fi
+			mfa_rl_clear
+			mfa_login
+			if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+				ok "the account signs in with a password again"
+			else
+				bad "the account cannot sign in after MFA was turned off"
+			fi
+		fi
+
+		# 25h. The key that encrypts the secrets stays in the settings file.
+		# pl_settings_save() copies the merged settings array into the table,
+		# so a missing unset() there would publish it to every admin page.
+		if [ -z "$(adb "SELECT 1 FROM settings WHERE label = 'totp_encryption_key'")" ]; then
+			ok "totp_encryption_key is not in the settings table"
+		else
+			bad "totp_encryption_key was written to the settings table - it belongs only in the settings file"
+		fi
+		# The value looked for is the key this stack actually runs on, so the
+		# check cannot pass against a placeholder.
+		MFA_KEY="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+			cat /var/www/html/cms-custom/config/totp_encryption_key 2>/dev/null \
+			| tr -d '\r\n')"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/search.php?s=%25%25%5Btotp_encryption_key%5D%25%25" >/dev/null
+		if grep -q 'name="s" size="48" value=""' "$BODY" \
+			&& { [ -z "$MFA_KEY" ] || ! grep -qF "$MFA_KEY" "$BODY"; }
+		then
+			ok "a totp_encryption_key tag in the search box resolves to nothing"
+		else
+			bad "search.php resolved the totp_encryption_key setting"
+		fi
+	fi
+
+	cleanup_mfa
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the MFA checks (needs COMPOSE_PROJECT, the database and python3)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

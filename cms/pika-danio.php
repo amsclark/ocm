@@ -762,6 +762,14 @@ function pika_init()
 		authenticate();
 		$auth_row = pikaAuth::getInstance()->getAuthRow();
 	}
+
+	/*	MFA enrollment gate. An account whose administrator turned MFA on but
+		which has no usable secret yet goes to enroll_mfa.php and nowhere
+		else, until it has one. Fails open on any error -- see
+		cms/app/lib/pikaMfaEnroll.php.
+	*/
+	require_once('app/lib/pikaMfaEnroll.php');
+	pl_mfa_enroll_gate();
 	
 	require_once('pikaDefPrefs.php');
 	pikaDefPrefs::getInstance()->initPrefs($auth_row['user_id']);

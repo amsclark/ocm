@@ -64,6 +64,13 @@ h1{
     </div>
   </div>
   <div class="control-group">
+    <label class="control-label" for="totp">MFA code</label>
+    <div class="controls">
+      <input type="text" name="totp" id="totp" placeholder="6-digit code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+      <span class="help-block">Leave blank unless two-factor authentication is set up on your account.</span>
+    </div>
+  </div>
+  <div class="control-group">
     <div class="controls">
       <button type="submit" class="btn">Sign In</button>
     </div>

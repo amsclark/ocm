@@ -22,6 +22,7 @@ require_once('plFlexList.php');
 require_once('pikaUser.php');
 require_once('pikaUserSession.php');
 require_once('pikaGroup.php');
+require_once('app/lib/pikaCrypto.php');
 
 // Menus
 
@@ -82,6 +83,85 @@ while ($row = DBResult::fetchRow($result)) {
 	$groups[$row['group_id']] = $row['group_id'];
 }
 
+/*	Build the MFA control for one user account.
+
+	The public build never lets an administrator see or create a shared
+	secret. The admin only turns the requirement on; the account holder
+	then enrols an authenticator on enroll_mfa.php the next time they
+	sign in (see pl_mfa_enroll_gate() in cms/app/lib/pikaMfaEnroll.php).
+	"Reset" keeps the requirement and drops the enrolled device, so the
+	same page asks them to enrol again.
+
+	Returns '' on a database that has not had cms/app/sql/upgrades/add_totp.sql
+	applied yet, which leaves the form exactly as it was before MFA.
+*/
+function pl_mfa_admin_control($values)
+{
+	if (!pl_totp_schema_ready())
+	{
+		return '';
+	}
+	
+	$flag = isset($values['totp_enabled']) ? (string) $values['totp_enabled'] : '0';
+	
+	// 2 is the "Reset" request, not a stored state. If one was written to
+	// the column anyway, it means the requirement is on.
+	if ('2' === $flag)
+	{
+		$flag = '1';
+	}
+	
+	$secret = isset($values['totp_secret']) ? (string) $values['totp_secret'] : '';
+	$enrolled = (strlen($secret) > 0 && false !== pl_totp_decrypt($secret));
+	
+	if ('1' !== $flag)
+	{
+		$status = 'Off. This account signs in with a password only.';
+	}
+	
+	elseif ($enrolled)
+	{
+		$status = 'On. An authenticator is enrolled.';
+	}
+	
+	else
+	{
+		$status = 'On. The next sign-in asks this user to enrol an authenticator.';
+	}
+	
+	$options = pikaMenu::getMenu('totp_enabled');
+	
+	if (!is_array($options) || 0 === count($options))
+	{
+		$options = array('1' => 'Yes', '0' => 'No');
+	}
+	
+	// Resetting a device that does not exist would do nothing, so only
+	// offer it once there is one to drop.
+	if (!$enrolled)
+	{
+		unset($options['2']);
+		unset($options[2]);
+	}
+	
+	/*	The label is part of the returned markup so that a database
+		without add_totp.sql shows no orphaned caption.
+	*/
+	$html = 'Multi-Factor Authentication:<br/>'
+			. '<select name="totp_enabled" id="totp_enabled">';
+	
+	foreach ($options as $value => $label)
+	{
+		$selected = ((string) $value === $flag) ? ' selected="selected"' : '';
+		$html .= '<option value="' . pl_html_escape($value) . '"' . $selected . '>'
+				. pl_html_escape_label($label) . '</option>';
+	}
+	
+	$html .= '</select><br/><em>' . pl_html_escape($status) . '</em>';
+	
+	return $html;
+}
+
 switch ($action)
 {
 	case 'edit':
@@ -91,11 +171,18 @@ switch ($action)
 			$user = new pikaUser($user_id);
 			$a = $user->getValues();
 			unset($a['password']);
+			$a['mfa_control'] = pl_mfa_admin_control($a);
+			/*	The shared secret and the replay counter never go to a
+				browser. The form carries the requirement flag only.
+			*/
+			unset($a['totp_secret']);
+			unset($a['totp_last_used']);
 		}
 		
 		else
 		{
 			$a = array();
+			$a['mfa_control'] = pl_mfa_admin_control($a);
 		}
 		
 		$a['p_len'] = '10';
@@ -164,6 +251,16 @@ switch ($action)
 		// audit log carries a focused diff rather than the whole row.
 		$prev_group   = $user->group_id;
 		$prev_enabled = $user->enabled;
+		/*	getValue() rather than isset($user->totp_enabled): plBase has a
+			__get() but no __isset(), so isset() on any column is always
+			false and the prior value would read as 0 for every account.
+			A column that is absent or NULL counts as off.
+		*/
+		$prev_mfa     = (string) $user->getValue('totp_enabled');
+		if ('' === $prev_mfa)
+		{
+			$prev_mfa = '0';
+		}
 		$is_create    = !is_numeric($user_id) || strlen($user_id) === 0;
 		$user->setValues($a);
 		$user->save();
@@ -203,6 +300,59 @@ switch ($action)
 				// An admin set this user's password; self-service changes
 				// land in password.php as password.self_change.
 				pl_audit('user.password_admin_reset', 'user', $target_user_id, array('username' => $target_username));
+			}
+		}
+		
+		/*	MFA. This form carries the requirement flag and a reset
+			request, never a secret: the secret is minted by the account
+			holder on enroll_mfa.php. The columns are written with their
+			own statement rather than through pikaUser so that a database
+			without add_totp.sql applied keeps working, and so that a
+			posted totp_secret cannot reach the table.
+		*/
+		if (pl_totp_schema_ready() && isset($_POST['totp_enabled']))
+		{
+			$posted_mfa = (string) pl_grab_post('totp_enabled');
+			
+			try
+			{
+				if ('2' === $posted_mfa)
+				{
+					// Keep the requirement, drop the enrolled device.
+					DB::preparedQuery(
+						"UPDATE users SET totp_enabled = 1, totp_secret = '', totp_last_used = NULL WHERE user_id = ? LIMIT 1",
+						array($target_user_id)
+					);
+					pl_audit('user.mfa_reset', 'user', $target_user_id, array(
+						'username' => $target_username,
+					));
+				}
+				
+				else
+				{
+					$new_mfa = ('1' === $posted_mfa) ? '1' : '0';
+					DB::preparedQuery(
+						"UPDATE users SET totp_enabled = ? WHERE user_id = ? LIMIT 1",
+						array($new_mfa, $target_user_id)
+					);
+					
+					if ($new_mfa !== $prev_mfa && !($is_create && '0' === $new_mfa))
+					{
+						$evt = ('1' === $new_mfa) ? 'user.mfa_enabled' : 'user.mfa_disabled';
+						pl_audit($evt, 'user', $target_user_id, array(
+							'username' => $target_username,
+						));
+					}
+				}
+			}
+			
+			/*	preparedQuery() throws on the legacy mysql_connect driver.
+				Leave the flag alone rather than fall back to a built
+				string; MFA needs PHP 5.5+ anyway for password_verify().
+			*/
+			catch (Exception $e)
+			{
+				error_log('system-users.php: could not write the MFA flag: ' . $e->getMessage());
 			}
 		}
 		header("Location:{$base_url}/system-users.php");

@@ -175,6 +175,12 @@ function authenticate()
 		$pass = $_POST['login_pass'];
 	}
 	
+	/*	The second factor, when the account has one. Read here and handed
+		straight to the adapter, which decides whether the account needs it.
+		Absent for every account with MFA off, and absent on the automatic
+		call that every authenticated page load makes to pick the session up.
+	*/
+	$totp = isset($_POST['totp']) ? $_POST['totp'] : null;
 	
 	require_once('app/lib/pikaAuthDb.php');
 	$auth = pikaAuth::getInstance();
@@ -199,7 +205,7 @@ function authenticate()
 		$auth->setMessage('0429',$msgstr,__FILE__,__LINE__);
 		$display_login = true;
 	}
-	elseif(!$auth->authenticate($user,$pass,$authdb)) 
+	elseif(!$auth->authenticate($user,$pass,$authdb,$totp)) 
 	{
 		pl_auth_rate_limit_record_failure_all($rl_keys);
 		$display_login = true;
@@ -232,7 +238,7 @@ function authenticate()
 			$form_data = $_POST;
 		}
 		$html['form_data'] = '';
-		$reserved_names = array('login_user','login_pass','auth_id','signin');
+		$reserved_names = array('login_user','login_pass','auth_id','signin','totp');
 		foreach ($form_data as $name => $value)
 		{
 			/*	Only scalars. An array in the POST body reached
@@ -3160,6 +3166,12 @@ if (!function_exists('pl_settings_template_blocked'))
 				'db_user',
 				'db_password',
 				'base_directory',
+				// Encrypts users.totp_secret at rest. Resolving this tag
+				// would hand the key to anybody who can type into a form
+				// field, and the key is the only thing standing between a
+				// database dump and a working second factor for every
+				// account.
+				'totp_encryption_key',
 				// Filesystem path to the document store.
 				'docs_directory',
 				// Written by system-sms.php into the settings table.
@@ -3220,6 +3232,14 @@ function pl_settings_save()
 	unset($pl_settings['db_password']);
 	unset($pl_settings['base_url']);
 	unset($pl_settings['base_directory']);
+	/*	Same reason, one step further. This key decrypts users.totp_secret,
+		so copying it into the settings table would put it in the same dump
+		as the ciphertext and a leaked backup would decrypt itself. It stays
+		in cms-custom/config/settings.php only. Saving any settings page
+		would otherwise migrate it into the database silently, because
+		pl_settings_init() merges the file and the table into one array.
+	*/
+	unset($pl_settings['totp_encryption_key']);
 	
 	DB::query("LOCK TABLE settings LOW_PRIORITY WRITE");
 	DB::query("DELETE FROM settings");

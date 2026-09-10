@@ -34,6 +34,30 @@ if [ -z "$(ls -A "$CUSTOM_DIR" 2>/dev/null)" ]; then
 fi
 mkdir -p "$CUSTOM_DIR/config"
 
+# ── 1b. The TOTP secret-encryption key ─────────────────────────────────────
+# Staff TOTP secrets are encrypted before they go in the `users` table, and the
+# key must NOT live in the same database as the ciphertext, or a leaked dump
+# decrypts itself. It goes in the settings FILE instead, which means it has to
+# survive the rewrite of settings.php above. Keep it in its own file on the
+# cms-custom volume and interpolate it in.
+#
+# Precedence: an explicit TOTP_ENCRYPTION_KEY in the environment wins, so a
+# deployment can hold the key in its own secret store and several app
+# containers can share one value. Otherwise a key is generated once, on first
+# start, and reused from then on. Regenerating it would make every stored
+# secret undecryptable and force every user to enrol again.
+TOTP_KEY_FILE="$CUSTOM_DIR/config/totp_encryption_key"
+if [ -n "${TOTP_ENCRYPTION_KEY:-}" ]; then
+	printf '%s' "$TOTP_ENCRYPTION_KEY" > "$TOTP_KEY_FILE"
+elif [ ! -s "$TOTP_KEY_FILE" ]; then
+	php -r 'echo base64_encode(random_bytes(32));' > "$TOTP_KEY_FILE"
+	echo "entrypoint: generated a TOTP secret-encryption key in $TOTP_KEY_FILE"
+fi
+chmod 600 "$TOTP_KEY_FILE"
+# base64 of 32 raw bytes: only [A-Za-z0-9+/=], so it is safe to interpolate
+# into a single-quoted PHP string literal without escaping.
+TOTP_KEY_VALUE="$(cat "$TOTP_KEY_FILE")"
+
 # Written every start, so changing a password in .env takes effect on restart.
 cat > "$CUSTOM_DIR/config/settings.php" <<PHP
 <?php
@@ -46,11 +70,13 @@ cat > "$CUSTOM_DIR/config/settings.php" <<PHP
 'db_user' => "${DB_USER}",
 'db_password' => '${DB_PASSWORD}',
 'base_url' => "${BASE_URL}",
-'base_directory' => "/var/www/html/cms"
+'base_directory' => "/var/www/html/cms",
+'totp_encryption_key' => '${TOTP_KEY_VALUE}'
 );
 PHP
 chown -R www-data:www-data "$CUSTOM_DIR"
 chmod 600 "$CUSTOM_DIR/config/settings.php"
+chmod 600 "$TOTP_KEY_FILE"
 
 # ── 2. Wait for the database ───────────────────────────────────────────────
 echo "entrypoint: waiting for ${DB_HOST}"
@@ -106,7 +132,7 @@ fi
 # idempotent — replaying pika602.sql on a 7.00 schema would fail or corrupt
 # it. Only add a file here once it is safe to run repeatedly, which in
 # practice means CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS only.
-for upgrade in add_audit_log.sql add_csrf_tokens_table.sql add_groups_intake.sql; do
+for upgrade in add_audit_log.sql add_csrf_tokens_table.sql add_groups_intake.sql add_totp.sql; do
 	path="/var/www/html/cms/app/sql/upgrades/${upgrade}"
 	if [ ! -f "$path" ]; then
 		echo "entrypoint: ${upgrade} is missing from the image" >&2
