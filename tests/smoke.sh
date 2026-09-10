@@ -3540,5 +3540,239 @@ else
 fi
 
 echo
+echo "58. the case page hardening pass"
+# ── 58. The case page hardening pass ───────────────────────────────────────
+# cms/case.php did four things wrong at once, all four checked here against a
+# throwaway group, user, case and pair of contacts.
+#
+#  a) Contact rows went to the page unescaped. $case_row was cleaned with
+#     pl_clean_html_array() but the per-contact $row in the contact loop was
+#     not, and every contact that is not the primary client renders through
+#     the 'contacts' subtemplate from that raw row. A name written by the
+#     LSXML transfer endpoint or an import tool became markup on the case page.
+#  b) The `screen` parameter reached file_exists() and the page body after only
+#     pl_clean_file_name(), which strips `;`, `/` and `..` and nothing else. A
+#     NUL byte and a double quote both went through into the output and into
+#     the include path construction. It is now held to [A-Za-z0-9_-].
+#  c) The read_case gate ran at line 122, after the block at lines 54-95 had
+#     already loaded the primary contact, taken a client data snapshot and
+#     called $case1->save() to write cases.client_age. A user who was refused
+#     the case still wrote to its row. The gate now runs immediately after the
+#     case record is read.
+#  d) screen=confirm_delete opened the delete confirmation to anybody who
+#     could read the case. ops/delete_case.php checks delete_case, which is
+#     system-group only, so the screen was offering an action the handler
+#     would refuse. The screen now checks the same permission.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	CPGROUP='zz_cp_grp'
+	CPUSER='zz_cp_user'
+	CPPASS='zz-cp-Passw0rd'
+	CPJAR="$(mktemp)"
+	CPXSS='ZZCP<img src=x onerror=zzcpx>'
+
+	cleanup_cp() {
+		adb "DELETE FROM conflict WHERE contact_id IN
+			(SELECT contact_id FROM contacts WHERE last_name IN ('ZZCPCLIENT', '${CPXSS}'))" >/dev/null
+		adb "DELETE FROM cases WHERE number IN ('ZZ-CP-DENY', 'ZZ-CP-READ')" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name IN ('ZZCPCLIENT', '${CPXSS}')" >/dev/null
+		adb "DELETE FROM users WHERE username = '${CPUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${CPGROUP}'" >/dev/null
+		rm -f "$CPJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cp' EXIT
+	cleanup_cp
+
+	# Same id rule as section 28: take the higher of MAX() and the counters
+	# row so a fixture never sits on a key plBase::getNextID is about to hand
+	# out, and move the counter up behind it.
+	cp_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	cp_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# read_all starts at 1 so the user can reach the case at all. It is not
+	# the `system` group, so pika_authorize() refuses delete_case -- that is
+	# the whole point of check (d). read_all is flipped off for check (c).
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${CPGROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	CPHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$CPPASS" </dev/null 2>/dev/null)"
+	CPUID="$(cp_next_id users user_id)"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${CPUID}, '${CPUSER}', '${CPHASH}', 1, '${CPGROUP}', 0)" >/dev/null
+	cp_bump_counter users "$CPUID"
+
+	# The primary client, with a birth date and an open date so that the
+	# client_age calculation in the pre-gate block has something to write.
+	CPCLIENT="$(cp_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name, birth_date)
+		VALUES (${CPCLIENT}, 'Zz', 'ZZCPCLIENT', '1990-01-01')" >/dev/null
+	cp_bump_counter contacts "$CPCLIENT"
+
+	# The opposing party, whose last name is markup. relation_code 2 keeps it
+	# out of the 'client' branch, so it renders from the raw contact row.
+	CPOPP="$(cp_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${CPOPP}, 'Zz', '${CPXSS}')" >/dev/null
+	cp_bump_counter contacts "$CPOPP"
+
+	# Two cases: one for the refused-write check, one for everything else.
+	CPDENY="$(cp_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id, open_date, client_age)
+		VALUES (${CPDENY}, 'ZZ-CP-DENY', 1, 'ZZCPOFF', '1', ${CPCLIENT}, '2020-01-01', NULL)" >/dev/null
+	cp_bump_counter cases "$CPDENY"
+	CPREAD="$(cp_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id, open_date)
+		VALUES (${CPREAD}, 'ZZ-CP-READ', 1, 'ZZCPOFF', '1', ${CPCLIENT}, '2020-01-01')" >/dev/null
+	cp_bump_counter cases "$CPREAD"
+
+	CPCONF="$(cp_next_id conflict conflict_id)"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+		VALUES (${CPCONF}, ${CPREAD}, ${CPCLIENT}, 1)" >/dev/null
+	cp_bump_counter conflict "$CPCONF"
+	CPCONF2="$(cp_next_id conflict conflict_id)"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+		VALUES (${CPCONF2}, ${CPREAD}, ${CPOPP}, 2)" >/dev/null
+	cp_bump_counter conflict "$CPCONF2"
+
+	cp_login() {
+		: > "$CPJAR"
+		curl -sL --max-time 30 -c "$CPJAR" -b "$CPJAR" -o /dev/null \
+			-X POST -d "login_user=${CPUSER}&login_pass=${CPPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+	}
+
+	if [ -z "$CPHASH" ] || [ -z "${CPREAD:-}" ] || [ -z "${CPDENY:-}" ]; then
+		bad "could not seed the case page fixtures (hash/cases/contacts)"
+	else
+		cp_login
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPREAD}" >/dev/null
+
+		if grep -q 'ZZ-CP-READ' "$BODY"; then
+			ok "the throwaway read_all user can open the seeded case"
+		else
+			bad "the throwaway user could not open the seeded case - most of section 58 is untested"
+		fi
+
+		# 58a. The opposing party's name must arrive escaped, not as a tag.
+		if grep -qF 'ZZCP<img src=x onerror=zzcpx>' "$BODY"; then
+			bad "A CONTACT NAME RENDERS AS LIVE MARKUP ON THE CASE PAGE (CWE-79, stored)"
+		elif grep -qF 'ZZCP&lt;img src=x onerror=zzcpx&gt;' "$BODY"; then
+			ok "a contact name holding markup is escaped on the case page"
+		else
+			bad "the seeded opposing party did not render at all ($(wc -c < "$BODY") bytes)"
+		fi
+
+		# 58b. `screen` is held to [A-Za-z0-9_-]. A NUL byte used to reach
+		# both file_exists() and the response body; a double quote was
+		# echoed back raw. Neither is a proven injection on its own, which is
+		# why this checks the bytes rather than an exploit.
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPREAD}&screen=act%00x" >/dev/null
+		if [ "$(tr -dc '\000' < "$BODY" | wc -c)" -eq 0 ]; then
+			ok "a NUL byte in screen= does not reach the page"
+		else
+			bad "A NUL BYTE IN screen= IS REFLECTED INTO THE PAGE AND INTO file_exists()"
+		fi
+
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPREAD}&screen=a%22b" >/dev/null
+		if grep -qF 'screen mode (a"b)' "$BODY"; then
+			bad "A RAW DOUBLE QUOTE IN screen= IS ECHOED BACK UNESCAPED"
+		else
+			ok "a double quote in screen= is not echoed back raw"
+		fi
+
+		# A valid screen name still has to work, or the allowlist is just an
+		# outage. The activity tab is the page default.
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPREAD}&screen=act" >/dev/null
+		if grep -q 'Invalid screen mode' "$BODY"; then
+			bad "the screen allowlist refuses the stock 'act' tab"
+		else
+			ok "the stock 'act' screen still loads through the allowlist"
+		fi
+
+		# 58d. confirm_delete is offered only to a group that can delete.
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPREAD}&screen=confirm_delete" >/dev/null
+		if grep -q 'permission to delete this case' "$BODY"; then
+			ok "the delete confirmation screen refuses a user without delete_case"
+		elif grep -q 'ops/delete_case.php' "$BODY"; then
+			bad "THE DELETE CONFIRMATION SCREEN OPENS TO ANY USER WHO CAN READ THE CASE"
+		else
+			bad "case.php gave neither the delete form nor the refusal ($(wc -c < "$BODY") bytes)"
+		fi
+
+		# The same request as the system group has to still reach the form,
+		# or the gate is refusing everybody. $COOKIES is the admin session.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPREAD}&screen=confirm_delete" >/dev/null
+		if grep -q 'ops/delete_case.php' "$BODY"; then
+			ok "the system group still reaches the delete confirmation form"
+		else
+			bad "the delete gate refuses the system group too"
+		fi
+
+		# 58c. Drop read_all and the case becomes unreadable. The refused
+		# request must not write cases.client_age.
+		adb "UPDATE \`groups\` SET read_all = 0 WHERE group_id = '${CPGROUP}'" >/dev/null
+		adb "UPDATE cases SET client_age = NULL WHERE case_id = ${CPDENY}" >/dev/null
+		cp_login
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPDENY}" >/dev/null
+
+		if grep -q 'This case is not viewable' "$BODY"; then
+			ok "the case is refused once read_all is dropped"
+		else
+			bad "the case was not refused after dropping read_all - 58c is untested"
+		fi
+
+		CPAGE="$(adb "SELECT COALESCE(client_age, 'NULL') FROM cases WHERE case_id = ${CPDENY}")"
+		if [ "$CPAGE" = 'NULL' ]; then
+			ok "a refused case page does not write cases.client_age"
+		else
+			bad "A REFUSED CASE PAGE STILL WROTE cases.client_age (${CPAGE}) - the authz gate runs too late"
+		fi
+
+		# And the write must still happen for a user who is allowed in, or
+		# the gate has broken the feature it was placed in front of.
+		adb "UPDATE \`groups\` SET read_all = 1 WHERE group_id = '${CPGROUP}'" >/dev/null
+		adb "UPDATE cases SET client_age = NULL WHERE case_id = ${CPDENY}" >/dev/null
+		cp_login
+		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=${CPDENY}" >/dev/null
+		CPAGE2="$(adb "SELECT COALESCE(client_age, 'NULL') FROM cases WHERE case_id = ${CPDENY}")"
+		if [ "$CPAGE2" != 'NULL' ] && [ "$CPAGE2" -gt 0 ] 2>/dev/null; then
+			ok "an authorized case page still writes cases.client_age (${CPAGE2})"
+		else
+			bad "an authorized case page no longer writes cases.client_age (got '${CPAGE2}')"
+		fi
+
+		# case_id is validated as a positive integer now. A non-numeric one
+		# redirects rather than building a query out of it.
+		CPCODE="$(curl -s --max-time 30 -b "$CPJAR" -o /dev/null -w '%{http_code}' \
+			"$OCM_URL/case.php?case_id=abc")"
+		if [ "$CPCODE" = '302' ]; then
+			ok "a non-numeric case_id redirects instead of loading a case"
+		else
+			bad "case.php?case_id=abc answered ${CPCODE}, not a redirect"
+		fi
+	fi
+
+	cleanup_cp
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the case page hardening checks (needs the database and compose)\n'
+fi
+
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -35,13 +35,32 @@ $main_html = array();  // Values for the main HTML template.
 $base_url = pl_settings_get('base_url');
 $warnings = '';  // HTML text for the red flags.
 $screen = pl_grab_get('screen', 'act');
-$clean_screen = pl_clean_file_name($screen);
-$case_id = pl_grab_get('case_id', null, 'number');
+
+/*	$clean_screen names a file this page include()s, so it is held to a list
+	of allowed characters instead of a list of forbidden ones.
+	pl_clean_file_name() only drops ';', '/' and '..', which leaves NUL
+	bytes, backslashes and everything else in place.
+*/
+$clean_screen = preg_replace('/[^A-Za-z0-9_-]/', '', (string) $screen);
+if (strlen($clean_screen) < 1)
+{
+	$clean_screen = 'act';
+}
+
+/*	'number' mode only asks is_numeric(), which says yes to 1.5, 1e3 and -1.
+	None of those is a primary key, and MySQL reads the leading digits of a
+	string when it compares one against an int column.
+*/
+$case_id = filter_var(pl_grab_get('case_id', null, 'number'), FILTER_VALIDATE_INT, array('options' => array('min_range' => 1)));
+if ($case_id === false)
+{
+	$case_id = null;
+}
 
 // BEGIN MAIN CODE...
 
 // first off, make sure there's a case_id
-if (!is_numeric($case_id))
+if (is_null($case_id))
 {
 	header("Location: {$base_url}/cal_week.php");
 	exit();
@@ -50,6 +69,25 @@ if (!is_numeric($case_id))
 /* Get case record data (it'll be needed on every page is some form), store in $case_row. */
 $case1 = new pikaCase($case_id);
 $case_row = $case1->getValues();
+
+/*	ENFORCE PERMISSIONS
+	
+	This gate used to sit further down, after the primary client record was
+	loaded. That load calls makeClientDataSnapshot() and $case1->save(), so
+	a request for a case the caller cannot read still wrote to the database
+	and still ran every query below. It runs here now, on the case row and
+	nothing else.
+*/
+if (!pika_authorize('read_case', $case_row))
+{
+	http_response_code(403);
+	$main_html['page_title'] = 'Case';
+	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php/\">Cases</a>";
+	$main_html['content'] = "This case is not viewable.";
+	$default_template = new pikaTempLib('templates/default.html',$main_html);
+	$buffer = $default_template->draw();
+	pika_exit($buffer);
+}
 
 if (is_numeric($case1->getValue('client_id')))
 {
@@ -85,7 +123,6 @@ if (is_numeric($case1->getValue('client_id')))
 }	
 
 // Prevent JS insertion attacks.
-$dirty_case_row = $case_row;
 $case_row = pl_clean_html_array($case_row);
 
 // Do this after HTML tags are stripped out so the line break is preserved.
@@ -118,18 +155,25 @@ $main_html['page_title'] = "Case # {$num}";
 $main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php/\">Cases</a> &gt; {$num} {$readonly}";
 
 
-// ENFORCE PERMISSIONS
-if (!pika_authorize('read_case', $dirty_case_row))
-{
-	// set up template, then display page
-	$main_html['content'] = "This case is not viewable.";
-	$default_template = new pikaTempLib('templates/default.html',$main_html);
-	$buffer = $default_template->draw();
-	pika_exit($buffer);
-}
+// (read_case is enforced above, before any case data is loaded.)
 
-if ('confirm_delete' == $screen) 
+if ('confirm_delete' == $clean_screen) 
 {
+	/*	The delete confirmation screen used to open to anybody who could read
+		the case, keyed on the raw $screen. ops/delete_case.php does check
+		delete_case, so this is the screen catching up with the operation it
+		leads to - and it asks the same question that handler asks, not a
+		weaker one.
+	*/
+	if (!pika_authorize('delete_case', $case_row))
+	{
+		http_response_code(403);
+		$main_html['content'] = "You do not have permission to delete this case.";
+		$default_template = new pikaTempLib('templates/default.html',$main_html);
+		$buffer = $default_template->draw();
+		pika_exit($buffer);
+	}
+	
 	$template = new pikaTempLib('subtemplates/case_delete.html', $case_row);
 	$main_html['content'] = $template->draw();
 	$default_template = new pikaTempLib('templates/default.html',$main_html);
@@ -198,6 +242,12 @@ while ($row = DBResult::fetchRow($result))
 {
 	$contact_ids[] = $row['contact_id'];
 	$clean_contact_name = addslashes($row['last_name']) . ', ' . addslashes($row['first_name']);
+	
+	/*	Kept unescaped for the two JavaScript values below, which are encoded
+		for JavaScript rather than for HTML.
+	*/
+	$dirty_row = $row;
+	
 	$row['full_name'] = pl_text_name($row);
 	$row['full_phone'] = pl_text_phone($row);
 	
@@ -227,7 +277,18 @@ while ($row = DBResult::fetchRow($result))
 	  $row['cnp_info_js'] .= trim($row['email']) . "\n";
 	}
 		
-	$row['cnp_info_js'] = json_encode($row['cnp_info_js']);
+	/*	Every value in $row is drawn on the page by pl_template(), which
+		substitutes a tag value exactly as it is given. $case_row is escaped
+		above for that reason; the contact row was not, so a name, address or
+		phone note held in the database went to the page as markup. Contact
+		records do not all arrive through a web form - the LSXML transfer
+		endpoint and the import tools write them too.
+	*/
+	$cnp_info_js = $row['cnp_info_js'];
+	$row = pl_clean_html_array($row);
+	
+	//	This one lands in a JavaScript string, so it is encoded for that.
+	$row['cnp_info_js'] = json_encode($cnp_info_js, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 	// End custom template variable for client.
 	
 	// NEW WAY
@@ -251,7 +312,16 @@ while ($row = DBResult::fetchRow($result))
 		if ($row['contact_id'] == $case_row['client_id'])
 		{
 			// Don't display the primary client; they've already been displayed.
-			$clients_html .= "<img src=\"images/point.gif\" alt=\"Arrow\"/> <a onClick=\"return confirm('Are you sure you want to remove " . pl_text_name($row) . " from this case?');\" href=\"dataops.php?action=delete_conflict&conflict_id={$row['conflict_id']}&case_id={$row['case_id']}\">remove</a>\n";
+			/*	The name goes into a JavaScript string that sits inside an
+				HTML attribute, so it is encoded twice over: json_encode()
+				for the string, then htmlspecialchars() for the attribute.
+				Interpolated straight in, an apostrophe in a contact name
+				ended the string and the rest of the name became code.
+			*/
+			$remove_name_js = htmlspecialchars(json_encode(pl_text_name($dirty_row), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), ENT_QUOTES | ENT_HTML5);
+			$conflict_id_safe = (int) $row['conflict_id'];
+			$case_id_safe = (int) $row['case_id'];
+			$clients_html .= "<img src=\"images/point.gif\" alt=\"Arrow\"/> <a onClick=\"return confirm('Are you sure you want to remove ' + {$remove_name_js} + ' from this case?');\" href=\"dataops.php?action=delete_conflict&conflict_id={$conflict_id_safe}&case_id={$case_id_safe}\">remove</a>\n";
 		}
 		
 		else
@@ -281,9 +351,14 @@ $case_row['contacts'] = $contacts_html;
 
 if ($case1->unread_sms > 0)
 {
-	$case_row['client'] = "<p><a href=\"{$base_url}\case.php?"
-		. "case_id={$case1->case_id}&screen=sms\"><span class=\"badge badge-info\">"
-		. "{$case1->unread_sms}</span> new SMS messages</a></p>" . $case_row['client'];
+	/*	"{$base_url}\case.php" put a literal backslash in the URL, so this
+		link has never worked.
+	*/
+	$sms_case_id = (int) $case1->case_id;
+	$sms_unread = (int) $case1->unread_sms;
+	$case_row['client'] = "<p><a href=\"{$base_url}/case.php?"
+		. "case_id={$sms_case_id}&amp;screen=sms\"><span class=\"badge badge-info\">"
+		. "{$sms_unread}</span> new SMS messages</a></p>" . $case_row['client'];
 }
 
 // OLD WAY
@@ -341,12 +416,11 @@ if (isset($case_row['in_holding_pen']) && true == $case_row['in_holding_pen'])
 
 
 // more TEMPLATE VARIABLES
-if(isset($_SESSION['def_relation_code']) && $_SESSION['def_relation_code']) {
-	$case_row['relation_code'] = $_SESSION['def_relation_code'];	
-}
-else {
-	$case_row['relation_code'] = 1;	
-}
+/*	def_relation_code is a stored user preference, so it is validated here
+	rather than trusted to be the menu key it should be.
+*/
+$def_relation_code = filter_var(isset($_SESSION['def_relation_code']) ? $_SESSION['def_relation_code'] : null, FILTER_VALIDATE_INT, array('options' => array('min_range' => 1)));
+$case_row['relation_code'] = ($def_relation_code !== false) ? $def_relation_code : 1;
 
 if (array_key_exists('client_id', $case_row) 
 	&& !is_null($case_row['client_id'])
@@ -386,11 +460,16 @@ $custom_dir = pl_custom_directory() . "/";
 pl_menu_set_temp('user_id', pikaMisc::fetchStaffArray());
 pl_menu_set_temp('case_handlers', pikaMisc::getCaseHandlerArray($case1->getValue('user_id'), $case1->getValue('cocounsel1'), $case1->getValue('cocounsel2')));
 // End GARBAGE.
-/*	Use $screen to look for a custom or stock tab module to include, otherwise 
-	give an error message.
-	Remove any naughty control characters before attempting to include the file.
+/*	Use $clean_screen to look for a custom or stock tab module to include,
+	otherwise give an error message. The name was reduced to
+	/^[A-Za-z0-9_-]+$/ where it was read; the pattern is asserted again here
+	so a later change to that line cannot quietly reach include().
 */
-if (file_exists("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php")){	
+if (!preg_match('/^[A-Za-z0-9_-]+$/', $clean_screen))
+{
+	$C .= "Error:  Invalid screen mode cannot be loaded";
+}
+else if (file_exists("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php")){	
 	include("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php");
 }elseif (file_exists("{$custom_dir}/modules/case-{$clean_screen}.php")){	
 	include("{$custom_dir}/modules/case-{$clean_screen}.php");
@@ -406,7 +485,8 @@ else if (pikaScreen::exists($clean_screen))
 
 else
 {
-	$C .= "Error:  Invalid screen mode ({$clean_screen}) cannot be loaded";
+	//	The screen name is echoed back, so it is escaped on the way out.
+	$C .= "Error:  Invalid screen mode (" . htmlspecialchars($clean_screen, ENT_QUOTES | ENT_HTML5) . ") cannot be loaded";
 }
 
 
@@ -434,7 +514,7 @@ foreach ($custom_screens as $key => $value)
 	$menu_case_tabs["custom-screen-{$key}"] = array('name' => $value, 'file' => "case-{$key}.php", 'enabled' => 1, 'tab_order' => 1000+$key, 'autosave' => true, 'tab_row' => 2);
 }
 
-$case_row['case_tabs'] = pikaTempLib::plugin('case_tabs',$screen,$case_row,$menu_case_tabs,array('js_mode'));
+$case_row['case_tabs'] = pikaTempLib::plugin('case_tabs',$clean_screen,$case_row,$menu_case_tabs,array('js_mode'));
 
 // end TABS
 
@@ -458,8 +538,15 @@ if ($warnings)
 
 $case_row['case_screen'] = $C;
 
-// 08-18-2011 - AMW - Populate the "server_url" template tag.  This is needed for email link.
-$case_row['server_url'] = $_SERVER['SERVER_NAME'];
+/*	08-18-2011 - AMW - Populate the "server_url" template tag.  This is needed
+	for email link.
+	
+	With UseCanonicalName Off, which is the Apache default, SERVER_NAME is
+	taken from the request's Host header. The tag is drawn into the mailto:
+	case link, so anything that is not a hostname character comes out.
+*/
+$server_name = isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '';
+$case_row['server_url'] = preg_replace('/[^A-Za-z0-9.\-]/', '', (string) $server_name);
 
 $main_html['content'] = pl_template('subtemplates/case_screen.html', $case_row);
 $main_html['rss'] = file_get_contents('js/form_save.js');
