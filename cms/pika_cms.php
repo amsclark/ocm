@@ -59,8 +59,16 @@ require_once('lib/pikaCms.php');
 // GLOBAL
 global $plSettings;
 
-// GZIP compression
-if ($plSettings['enable_compression'] && !defined('PIKA_NO_COMPRESSION'))
+/*	GZIP compression.
+	
+	pika_cms.php never calls pika_init(), so nothing here has filled
+	$plSettings. It is null on every request that comes in through this file -
+	the reports under cms/reports/ - and reading a key off it is a warning on
+	PHP 8. Compression stays off on these pages, which is what already
+	happened.
+*/
+if (is_array($plSettings) && !empty($plSettings['enable_compression'])
+	&& !defined('PIKA_NO_COMPRESSION'))
 {
 	ob_start("ob_gzhandler");
 }

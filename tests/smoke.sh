@@ -3832,5 +3832,177 @@ else
 fi
 
 echo
+echo "31. the conflict of interest check"
+
+# The check reads its values out of the tables, which is not the same thing as
+# safe: aliases.ssn is eleven characters of free text an intake user fills in,
+# and the social security block put it into two statements as text. It also
+# measured strlen($row['ssn'] > 0) instead of the length of the number, threw
+# away the statement of each pair that reads the contacts table, and searched
+# for an empty metaphone key. Every one of those made the report name people
+# who are not conflicts, or miss people who are.
+#
+# The fixture below is three cases whose parties are arranged so that each
+# check fails for exactly one reason. Both copies of the function are
+# exercised: cms/app/lib/pikaCase.php through case.php, and
+# cms/app/extralib/lib/pikaCms.php through the report under cms/reports/.
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_cf() {
+		adb "DELETE FROM conflict WHERE case_id BETWEEN 9991001 AND 9991099" >/dev/null
+		adb "DELETE FROM aliases WHERE contact_id BETWEEN 9991001 AND 9991099" >/dev/null
+		adb "DELETE FROM contacts WHERE contact_id BETWEEN 9991001 AND 9991099" >/dev/null
+		adb "DELETE FROM cases WHERE case_id BETWEEN 9991001 AND 9991099" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cf' EXIT
+	cleanup_cf
+
+	adb "INSERT INTO cases (case_id,number,user_id,office,status,problem) VALUES
+		(9991001,'ZZ-CONF-A',1,'ZZOFF','1','ZZ'),
+		(9991002,'ZZ-CONF-B',1,'ZZOFF','1','ZZ'),
+		(9991003,'ZZ-CONF-C',1,'ZZOFF','1','ZZ'),
+		(9991004,'ZZ-CONF-D',1,'ZZOFF','1','ZZ')" >/dev/null
+
+	# ZZCONFONE is two records for the same person, one on case A and one on
+	# case D. Contact 9991002, the one on D, deliberately has no aliases row:
+	# that is the shape a data migration leaves, and the party read used to
+	# reach contacts through aliases, so such a party carried no name and no
+	# number into the searches at all. It is alone on a case of its own so that
+	# nothing else on that case can report the conflict for it.
+	# ZZCONFIVE shares a real number with ZZCONFONE under a different surname,
+	# which is what a genuine social security match looks like.
+	# ZZCONFTRE and ZZCONFOUR both carry a placeholder in the number column.
+	# ZZORGONE and ZZORGTWO are organisations, so they have no metaphone key.
+	# ZZCONFTWO's number column holds SQL.
+	adb "INSERT INTO contacts (contact_id,first_name,last_name,mp_first,mp_last,ssn,notes) VALUES
+		(9991001,'Alpha','ZZCONFONE','ALF','SSKNFN','111223333','ZZCFFIXTURE'),
+		(9991002,'Alpha','ZZCONFONE','ALF','SSKNFN','111223333','ZZCFFIXTURE'),
+		(9991003,'Beta','ZZCONFTWO','BT','SSKNFT','1'' OR 1=1#','ZZCFFIXTURE'),
+		(9991004,'Gamma','ZZCONFTRE','KM','SSKNFTR','XXX-XX-XXXX','ZZCFFIXTURE'),
+		(9991005,'Delta','ZZCONFOUR','TLT','SSKNFR','XXX-XX-XXXX','ZZCFFIXTURE'),
+		(9991006,'','ZZORGONE','','',NULL,'ZZCFFIXTURE'),
+		(9991007,'','ZZORGTWO','','',NULL,'ZZCFFIXTURE'),
+		(9991008,'Echo','ZZCONFIVE','AK','SSKNF','111223333','ZZCFFIXTURE')" >/dev/null
+
+	# aliases.alias_id is NOT NULL DEFAULT 0, so a multi-row INSERT has to name
+	# every one of them or the second row is a duplicate key.
+	adb "INSERT INTO aliases (alias_id,contact_id,primary_name,first_name,last_name,mp_first,mp_last,ssn) VALUES
+		(9991001,9991001,1,'Alpha','ZZCONFONE','ALF','SSKNFN','111223333'),
+		(9991003,9991003,1,'Beta','ZZCONFTWO','BT','SSKNFT','1'' OR 1=1#'),
+		(9991004,9991004,1,'Gamma','ZZCONFTRE','KM','SSKNFTR','XXX-XX-XXXX'),
+		(9991005,9991005,1,'Delta','ZZCONFOUR','TLT','SSKNFR','XXX-XX-XXXX'),
+		(9991006,9991006,1,'','ZZORGONE','','',NULL),
+		(9991007,9991007,1,'','ZZORGTWO','','',NULL),
+		(9991008,9991008,1,'Echo','ZZCONFIVE','AK','SSKNF','111223333')" >/dev/null
+
+	# Case A holds relation code 1, cases B, C and D hold 2, so a party on one
+	# case can be a conflict with a party on another.
+	adb "INSERT INTO conflict (conflict_id,case_id,contact_id,relation_code) VALUES
+		(9991001,9991001,9991001,1),
+		(9991004,9991001,9991004,1),
+		(9991006,9991001,9991006,1),
+		(9991005,9991002,9991005,2),
+		(9991007,9991002,9991007,2),
+		(9991008,9991002,9991008,2),
+		(9991003,9991003,9991003,2),
+		(9991002,9991004,9991002,2)" >/dev/null
+
+	if [ "$(adb "SELECT COUNT(*) FROM contacts WHERE notes='ZZCFFIXTURE'")" != 8 ]; then
+		printf '  skip the conflict check checks (could not write the fixture)\n'
+	else
+		CFREP="$OCM_URL/reports/conflict/conflict.php"
+
+		# ── A real number still matches, so the checks below mean something ──
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991001" >/dev/null
+		if grep -q 'ZZCONFIVE' "$BODY"; then
+			ok "a shared social security number is still reported as a conflict"
+		else
+			bad "a shared social security number is no longer reported - the checks below prove nothing"
+		fi
+
+		# ── A placeholder in the number column is not a number ──
+		# ZZCONFOUR sits on another case carrying the same "XXX-XX-XXXX" as a
+		# party on this one. strlen($row['ssn'] > 0) is 1 for that value.
+		if grep -q 'ZZCONFOUR' "$BODY"; then
+			bad "a placeholder social security number matched an unrelated party"
+		else
+			ok "a placeholder social security number matches nobody"
+		fi
+
+		# ── An empty metaphone key is not a name ──
+		# ZZORGTWO is an organisation on another case, so it has no key, and so
+		# does the organisation on this one.
+		if grep -q 'ZZORGTWO' "$BODY"; then
+			bad "a party with no metaphone key matched every other record without one"
+		else
+			ok "a party with no metaphone key matches nobody by name"
+		fi
+
+		# ── The number column cannot carry SQL into the search ──
+		# Case C's only party holds "1' OR 1=1#" there. Interpolated, that
+		# neutralises the WHERE clause and lists every party on every other
+		# case, whatever their number or name.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991003" >/dev/null
+		if grep -q 'ZZCONFONE\|ZZCONFTRE\|ZZORGONE' "$BODY"; then
+			bad "SQL in the social security column widened the conflict search"
+		else
+			ok "SQL in the social security column is searched for, not run"
+		fi
+
+		# ── A party with no aliases row is still checked by name ──
+		# Case D's only party is the second ZZCONFONE record, which has no
+		# aliases row. The party read reached contacts through aliases, so it
+		# carried nothing to search on; and the one statement of the name pair
+		# that reads contacts was overwritten before it ran. So this case
+		# reported nothing, though the same person is a party on case A.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991004" >/dev/null
+		if grep -q 'ZZCONFONE' "$BODY"; then
+			ok "a party with no aliases row is still checked by name"
+		else
+			bad "a party with no aliases row was checked by contact id alone"
+		fi
+
+		# ── The case screen agrees with the report ──
+		# cms/app/lib/pikaCase.php holds the copy that page uses. The two
+		# cannot share one implementation, because pika_cms.php does not put
+		# app/lib on the include path, so both are checked here.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=9991001&screen=conflict" >/dev/null
+		if grep -q 'ZZCONFIVE' "$BODY" && ! grep -q 'ZZCONFOUR' "$BODY"; then
+			ok "the conflict tab on the case screen reports the same conflicts"
+		else
+			bad "the conflict tab on the case screen disagrees with the report"
+		fi
+
+		# ── The report logs nothing ──
+		# resetConflictStatus() returned the tally of the last party looked at,
+		# which is an undefined variable on a case with no parties, and the
+		# name search read the length of a null.
+		if [ "$HAVE_COMPOSE" = 1 ]; then
+			CFLOG="$(mktemp)"
+			docker compose "${COMPOSE_ARGS[@]}" logs app >"$CFLOG" 2>/dev/null
+			cf_before="$(wc -l < "$CFLOG")"
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991001" >/dev/null
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991099" >/dev/null
+			docker compose "${COMPOSE_ARGS[@]}" logs app >"$CFLOG" 2>/dev/null
+			cf_new="$(tail -n "+$((cf_before + 1))" "$CFLOG" \
+				| grep -c 'pikaCms\.php\|pika_cms\.php' || true)"
+			if [ "${cf_new:-0}" -eq 0 ]; then
+				ok "the conflict report logs no warnings, with parties and without"
+			else
+				bad "the conflict report logged ${cf_new} warnings"
+			fi
+			rm -f "$CFLOG"
+		else
+			printf '  skip the conflict report log check (needs a running docker compose stack)\n'
+		fi
+	fi
+
+	cleanup_cf
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the conflict check checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
