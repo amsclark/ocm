@@ -3540,5 +3540,233 @@ else
 fi
 
 echo
+echo "48. iCal subscription links carry a token, not the password hash"
+
+# cms/ical-subscribe.php built its "for clients without HTTP authentication"
+# URL out of base64(serialize(array($user->username, $user->password))).
+# $user->password is the stored hash, so the page printed the account's bcrypt
+# hash inside a URL and told the user to paste it into Outlook -- from where it
+# goes into the calendar client's config file on disk, into browser history,
+# and into every proxy log on the way to the server. A bcrypt hash is exactly
+# what an offline cracking run wants, and rows that predate the bcrypt
+# migration are md5.
+#
+# The link did not even work. cms/services/calendar.php fed the two halves to
+# pikaAuthDb, which compares a submitted password against the stored hash, so
+# the hash never matched itself and the URL the subscription page produced
+# answered 401 with an empty body. cms/services/calendar-4.php was worse: it
+# set PHP_AUTH_USER/PHP_AUTH_PW and then called no authenticator at all, so its
+# token block authenticated nothing.
+#
+# Both files now verify an opaque users.cal_token with hash_equals().
+if [ "$HAVE_DB" = 1 ]; then
+	IC_SERVICES="${OCM_URL}/services"
+
+	cleanup_ic() {
+		adb "DELETE FROM activities WHERE summary LIKE 'ZZIC48%'" >/dev/null
+		adb "UPDATE users SET cal_token = NULL WHERE user_id = 1" >/dev/null
+		rm -f "${BODY}.ic"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ic' EXIT
+	cleanup_ic
+
+	ic_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	ic_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# Both feeds select act_type IN ('C','K') from act_date forward, so the
+	# fixtures are appointments dated today. One belongs to the admin the token
+	# is issued for; the other belongs to a user_id nobody holds, which is what
+	# proves the feed is scoped to the token's owner rather than returning the
+	# whole calendar.
+	IC_ACT="$(ic_next_id activities act_id)"
+	adb "INSERT INTO activities (act_id, act_date, act_time, act_type, completed, user_id, summary, notes)
+		VALUES (${IC_ACT}, CURDATE(), '09:00:00', 'C', 0, 1, 'ZZIC48MINE', 'ZZIC48MINE notes')" >/dev/null
+	ic_bump_counter activities "$IC_ACT"
+
+	IC_ACT2="$(ic_next_id activities act_id)"
+	adb "INSERT INTO activities (act_id, act_date, act_time, act_type, completed, user_id, summary, notes)
+		VALUES (${IC_ACT2}, CURDATE(), '10:00:00', 'C', 0, 999999, 'ZZIC48OTHER', 'ZZIC48OTHER notes')" >/dev/null
+	ic_bump_counter activities "$IC_ACT2"
+
+	IC_AUDIT_BEFORE="$(adb "SELECT COALESCE(MAX(audit_id), 0) FROM audit_log")"
+
+	curl -s -b "$COOKIES" "${OCM_URL}/ical-subscribe.php" > "$BODY"
+
+	if grep -qF -- '$2y$' "$BODY" || grep -qF -- '$2a$' "$BODY"
+	then
+		bad "the subscription page prints a bcrypt hash"
+	else
+		ok "the subscription page prints no password hash"
+	fi
+
+	# The old credential pair was base64 encoded on its way into the URL, so
+	# grepping the page for a bcrypt prefix does not find it. Pull whatever the
+	# token link carries, decode it, and look inside.
+	IC_RAW="$(grep -oE 'calendar\.php\?[^\"'"'"' <>]*token=[A-Za-z0-9+/=]+' "$BODY" \
+		| head -1 | sed 's/.*token=//')"
+	IC_DECODED="$(printf '%s' "$IC_RAW" | base64 -d 2>/dev/null | tr -d '\0')"
+
+	if printf '%s' "$IC_DECODED" | grep -qF -- 'a:2:{i:0;s:' \
+		|| printf '%s' "$IC_DECODED" | grep -qF -- '$2y$' \
+		|| printf '%s' "$IC_DECODED" | grep -qF -- '$2a$'
+	then
+		bad "the token in the link decodes to a serialized credential pair"
+	else
+		ok "the token in the link decodes to no credential of any kind"
+	fi
+
+	IC_LINK="$(grep -oE 'calendar\.php\?user_id=[0-9]+&token=[0-9a-f]{64}' "$BODY" | head -1)"
+	IC_TOKEN="${IC_LINK##*token=}"
+	IC_UID="${IC_LINK#*user_id=}"
+	IC_UID="${IC_UID%%&*}"
+
+	if [ -n "$IC_TOKEN" ]
+	then
+		ok "the subscription page offers a 64 hex character token link"
+	else
+		bad "the subscription page offers no token link"
+	fi
+
+	IC_STORED="$(adb "SELECT COALESCE(cal_token, '') FROM users WHERE user_id = 1")"
+
+	if [ -n "$IC_TOKEN" ] && [ "$IC_STORED" = "$IC_TOKEN" ]
+	then
+		ok "the token in the link is the one stored in users.cal_token"
+	else
+		bad "users.cal_token does not match the token in the link"
+	fi
+
+	# No cookie jar on any of these: a calendar client has no session, which is
+	# the whole reason the token exists.
+	IC_CODE="$(curl -s -o "${BODY}.ic" -w '%{http_code}' \
+		"${IC_SERVICES}/calendar.php?user_id=${IC_UID}&token=${IC_TOKEN}")"
+
+	if [ "$IC_CODE" = 200 ]
+	then
+		ok "a valid token returns the feed without a session (was 401)"
+	else
+		bad "a valid token returned HTTP ${IC_CODE}"
+	fi
+
+	if grep -qF 'BEGIN:VCALENDAR' "${BODY}.ic"
+	then
+		ok "the token feed is a calendar document"
+	else
+		bad "the token feed is not a calendar document"
+	fi
+
+	if grep -qF 'ZZIC48MINE' "${BODY}.ic"
+	then
+		ok "the token feed carries the token owner's appointment"
+	else
+		bad "the token feed is missing the token owner's appointment"
+	fi
+
+	if grep -qF 'ZZIC48OTHER' "${BODY}.ic"
+	then
+		bad "the token feed carries another user's appointment"
+	else
+		ok "the token feed is scoped to the token owner"
+	fi
+
+	IC_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+		"${IC_SERVICES}/calendar.php?user_id=${IC_UID}&token=$(printf 'f%.0s' $(seq 64))")"
+
+	if [ "$IC_CODE" = 401 ]
+	then
+		ok "a wrong token is refused"
+	else
+		bad "a wrong token returned HTTP ${IC_CODE}"
+	fi
+
+	# The token is bound to the row it was issued from, so presenting it for a
+	# different account has to fail even though the token itself is genuine.
+	IC_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+		"${IC_SERVICES}/calendar.php?user_id=999999&token=${IC_TOKEN}")"
+
+	if [ "$IC_CODE" = 401 ]
+	then
+		ok "a valid token presented for another account is refused"
+	else
+		bad "a valid token for another account returned HTTP ${IC_CODE}"
+	fi
+
+	IC_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+		"${IC_SERVICES}/calendar.php?user_id=${IC_UID}&token=abc")"
+
+	if [ "$IC_CODE" = 401 ]
+	then
+		ok "a short token is refused before any comparison"
+	else
+		bad "a short token returned HTTP ${IC_CODE}"
+	fi
+
+	IC_CODE="$(curl -s -o /dev/null -w '%{http_code}' "${IC_SERVICES}/calendar.php")"
+
+	if [ "$IC_CODE" = 401 ]
+	then
+		ok "the feed still demands HTTP authentication when no token is given"
+	else
+		bad "the tokenless feed returned HTTP ${IC_CODE}"
+	fi
+
+	# calendar-4.php is the v4-era copy. Its token block used to authenticate
+	# nothing, so this URL used to be answered by the login page.
+	IC_CODE="$(curl -s -o "${BODY}.ic" -w '%{http_code}' \
+		"${IC_SERVICES}/calendar-4.php?user_id=${IC_UID}&token=${IC_TOKEN}")"
+
+	if [ "$IC_CODE" = 200 ] && grep -qF 'ZZIC48MINE' "${BODY}.ic"
+	then
+		ok "the v4 feed serves a token holder its own appointments"
+	else
+		bad "the v4 feed returned HTTP ${IC_CODE} for a valid token"
+	fi
+
+	IC_CODE="$(curl -s -o /dev/null -w '%{http_code}' \
+		"${IC_SERVICES}/calendar-4.php?user_id=${IC_UID}&token=$(printf 'f%.0s' $(seq 64))")"
+
+	if [ "$IC_CODE" = 401 ]
+	then
+		ok "the v4 feed refuses a wrong token"
+	else
+		bad "the v4 feed returned HTTP ${IC_CODE} for a wrong token"
+	fi
+
+	# Rotating the token on every visit to the subscription page would silently
+	# break a subscription already configured in a phone, so the page reissues
+	# the stored value instead of minting a new one.
+	curl -s -b "$COOKIES" -o /dev/null "${OCM_URL}/ical-subscribe.php"
+	IC_STORED2="$(adb "SELECT COALESCE(cal_token, '') FROM users WHERE user_id = 1")"
+
+	if [ -n "$IC_STORED2" ] && [ "$IC_STORED2" = "$IC_STORED" ]
+	then
+		ok "revisiting the subscription page keeps the existing token"
+	else
+		bad "the subscription page rotated the token and broke live subscriptions"
+	fi
+
+	IC_REJECTED="$(adb "SELECT COUNT(*) FROM audit_log
+		WHERE audit_id > ${IC_AUDIT_BEFORE} AND action = 'ical.token_rejected'")"
+
+	if [ "${IC_REJECTED:-0}" -ge 1 ]
+	then
+		ok "a refused token is recorded in the audit log"
+	else
+		bad "a refused token left no audit record"
+	fi
+
+	cleanup_ic
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the iCal subscription token checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

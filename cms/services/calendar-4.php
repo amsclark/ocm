@@ -5,28 +5,45 @@
 		unserialize, and this version contains the fix.
 		*/ 
 
-// Token Based Authorization - Optional
-// For clients w/o HTTP authorization built-in
-
-$auth = '';
-$auth_array = array();
-
-if(isset($_GET['token']) && $_GET['token']) {
-	$auth = base64_decode($_GET['token']);
+/*	Token based authorization - optional, for calendar clients that cannot do
+	HTTP authentication.
 	
-	$auth_array = array();
-	$x = explode("\"", $auth);
-	$auth_array[] = $x[1];
-	$auth_array[] = $x[3];
-		
-	$_SERVER['PHP_AUTH_USER'] = $auth_array[0];
-	$_SERVER['PHP_AUTH_PW'] = $auth_array[1];
-}
+	What used to be here decoded base64(serialize(array($username,
+	$password_hash))) and wrote the two halves into PHP_AUTH_USER and
+	PHP_AUTH_PW -- and then never called an authenticator. pika_init() below
+	runs with no security constant, so this file was session authenticated and
+	the whole token block did nothing at all: a calendar client hitting it with
+	a token got the login page, not a feed.
+	
+	It verifies the token now, the same way cms/services/calendar.php does, and
+	answers 401 when it does not check out. See cms/app/lib/pikaCalToken.php.
+*/
+$pl_cal_use_token = isset($_GET['token']) && $_GET['token'];
 
 // Libraries
 chdir("../");
+
+if ($pl_cal_use_token) {
+	define('PL_DISABLE_SECURITY',true);
+}
+
 require_once ('pika-danio.php');
 pika_init();
+
+if ($pl_cal_use_token) {
+	require_once ('app/lib/pikaCalToken.php');
+	
+	$auth_row = pl_cal_token_verify(
+		isset($_GET['user_id']) ? $_GET['user_id'] : null,
+		$_GET['token']);
+	
+	if (false === $auth_row) {
+		header('HTTP/1.1 401 Unauthorized');
+		header('Content-Type: text/plain; charset=utf-8');
+		exit("Invalid calendar subscription token.\n");
+	}
+}
+
 require_once ('plFlexList.php');
 // Functions
 function ical_text_mogrify($x)
@@ -51,7 +68,7 @@ if(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == TRUE) {
 	$cal_url= "https://".$_SERVER['HTTP_HOST'].$base_url;
 }else { $cal_url= "http://".$_SERVER['HTTP_HOST'].$base_url; }
 
-$user_id = $auth_row['user_id'];
+$user_id = (int) $auth_row['user_id'];
 
 pl_menu_get('act_type');
 pl_menu_get('category');

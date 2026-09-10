@@ -20,6 +20,7 @@ pl_csrf_check();
 require_once('pikaUser.php');
 require_once('pikaSettings.php');
 require_once('pikaTempLib.php');
+require_once('pikaCalToken.php');
 
 $main_html = $html = array();
 $base_url = pl_settings_get('base_url');
@@ -35,12 +36,29 @@ if(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == TRUE) {
 	$ical_url = "https://".$_SERVER['HTTP_HOST'].$base_url;
 }else { $ical_token_url = $ical_url= "http://".$_SERVER['HTTP_HOST'].$base_url; }
 
-$auth_array = array($user->username,$user->password);
-$auth_string = serialize($auth_array);
-$b64_auth = base64_encode($auth_string);
+/*	The token link used to be base64(serialize(array($user->username,
+	$user->password))). $user->password is the stored hash, so this page
+	printed the account's bcrypt hash inside a URL and told the user to paste
+	it into Outlook -- from where it goes into the calendar client's config
+	file, the browser history, and every proxy log in between.
+	
+	It is an opaque bearer token now. See cms/app/lib/pikaCalToken.php for what
+	that grants and what it deliberately does not.
+	
+	An installation that has not applied add_ical_token.sql gets no token link
+	rather than a broken one. The direct link, which uses HTTP authentication,
+	works either way.
+*/
+$cal_token = pl_cal_token_issue($auth_row['user_id']);
 
 $html['ical_direct_link'] = $ical_url . "/services/calendar.php";
-$html['ical_token_link'] = $ical_token_url . "/services/calendar.php?token={$b64_auth}";
+$html['ical_token_link'] = $html['ical_direct_link'];
+
+if ($cal_token)
+{
+	$html['ical_token_link'] = $ical_token_url . "/services/calendar.php?user_id="
+		. (int) $auth_row['user_id'] . "&token={$cal_token}";
+}
 
 $main_html['page_title'] = 'iCal Subscription';
 $main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> 
