@@ -33,6 +33,17 @@ $pause_butt = pl_grab_get('pause');
 
 $act_row = pl_clean_form_input($_GET);
 
+/*	pl_clean_form_input() copies only the keys that were submitted, so on a
+	"(No Case #)" timer - a supported path, see the default a few lines down -
+	there is no case_id key at all and both reads of it below are undefined-key
+	warnings on PHP 8. Setting the key once changes no outcome, because
+	is_numeric(null) and is_numeric(undefined) are both false.
+*/
+if (!array_key_exists('case_id',$act_row))
+{
+	$act_row['case_id'] = null;
+}
+
 if (pl_settings_get('autofill_time_funding') == 0)
 {
 	$act_row['funding'] = null;

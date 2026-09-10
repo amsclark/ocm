@@ -32,77 +32,125 @@ function transfer_cell($value)
 	return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 }
 
+/*	One line of the conflict report.
+	
+	The names come out of the contacts table, which is typed in at intake or
+	arrives on a transfer, so they are escaped on the way to the page rather
+	than trusted because they came from the database.
+*/
+function conflict_match_html($tmp_row,$base_url)
+{
+	$case_id = isset($tmp_row['case_id']) ? (string) $tmp_row['case_id'] : '';
+	
+	return	'<p>' . pl_html_escape($tmp_row['first_name']) . ' ' .
+			pl_html_escape($tmp_row['last_name']) . ' was a(n) ' .
+			pl_html_escape($tmp_row['role']) . ' on ' .
+			'<a href="' . pl_html_escape($base_url) . '/case.php?case_id=' .
+			rawurlencode($case_id) . '">' .
+			pl_html_escape($tmp_row['number']) . '</a></p>';
+}
+
+
+/*	Conflict check for one party on an incoming transfer.
+	
+	$row is one party out of the JSON a remote installation sent us - see the
+	json_decode() of pikaTransfer::json_data further down this file - so every
+	value in it is written by the sending organisation. The birth date, the
+	social security number, the relation code and the contact id all went
+	into the two statements below as text, which made the transfer holding
+	tank a way to run a statement of your choosing against the case database.
+	Bind all of them.
+	
+	The two searches are the same two as before: metaphone name (plus birth
+	date when one was sent) and social security number.
+*/
 function potential_conflicts($row, $relation_code, $description)
 {
 	$base_url = pl_settings_get('base_url');
-	$z = "<h2>Conflict Check for {$description}</h2>";
-	$row['relation_code'] = $relation_code;
-	$row['contact_id'] = '0';  // Placeholder value.
+	$z = '<h2>Conflict Check for ' . pl_html_escape($description) . '</h2>';
 	
-	/*	A peer sends only the sections it has. A transfer with no opposing
-		party arrives with an empty array here, and every read below was an
-		undefined-key warning, plus a deprecation from metaphone(null).
+	$first_name = isset($row['first_name']) ? (string) $row['first_name'] : '';
+	$last_name = isset($row['last_name']) ? (string) $row['last_name'] : '';
+	$ssn = isset($row['ssn']) ? (string) $row['ssn'] : '';
+	$birth_date = isset($row['birth_date']) ? (string) $row['birth_date'] : '';
+	
+	/*	A party with no name at all - an online intake that named no opposing
+		attorney, say - metaphones to an empty mp_last, and mp_last = ''
+		matches every alias that has no metaphone key: organisations and
+		part-filled records. That reports the whole address book as a
+		conflict, so there is nothing to check here.
 	*/
-	if (!is_array($row))
+	if (strlen(trim($first_name)) < 1 && strlen(trim($last_name)) < 1)
 	{
-		$row = array();
+		return $z . '<p>Nothing found.</p>';
 	}
 	
-	foreach (array('first_name', 'last_name', 'birth_date', 'ssn') as $conflict_field)
-	{
-		if (!isset($row[$conflict_field]) || is_array($row[$conflict_field]))
-		{
-			$row[$conflict_field] = '';
-		}
-	}
-	
-	$row['mp_first'] = substr(metaphone($row['first_name']), 0, 8);
-	$row['mp_last'] = substr(metaphone($row['last_name']), 0, 8);
+	$relation_code = (int) $relation_code;
+	$contact_id = 0;  // Placeholder value.
+	$mp_first = substr(metaphone($first_name), 0, 8);
+	$mp_last = substr(metaphone($last_name), 0, 8);
 	$lim = 10000;
 	$tmp_row = array();
 	$conflict_array = array();
 
 	// Match by metaphone name/birth date
-	if (strlen($row['mp_first']) > 0)
+	$name_clause = '';
+	$params = array($relation_code,$mp_last);
+	
+	if (strlen($mp_first) > 0)
 	{
-		$mp_first = " AND aliases.mp_first='{$row['mp_first']}'";
+		$name_clause .= ' AND aliases.mp_first = ?';
+		$params[] = $mp_first;
 	}
-
-	else
+	
+	/*	A sending organisation occasionally posts a birth date that is not a
+		date. strtotime() answers false for those, and date() on false is
+		today, which would quietly narrow the whole check to people born
+		today. Drop the clause instead of searching on a wrong date.
+	*/
+	if (strlen($birth_date) > 0)
 	{
-		$mp_first = '';
+		$birth_stamp = strtotime($birth_date);
+		
+		if (false !== $birth_stamp)
+		{
+			$name_clause .= ' AND (birth_date = ? OR birth_date IS NULL)';
+			$params[] = date('Y-m-d',$birth_stamp);
+		}
 	}
-
-	if ($row['birth_date'])
-	{
-		$mp_first .= " AND (birth_date='{$row['birth_date']}' OR birth_date IS NULL)";
-	}
-
+	
+	$params[] = $contact_id;
+	
 	$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
 			FROM aliases
 			LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
 			LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
 			LEFT JOIN cases ON conflict.case_id=cases.case_id
 			LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-			WHERE relation_code != {$row['relation_code']} AND aliases.mp_last='{$row['mp_last']}'{$mp_first}
-			AND conflict.contact_id != {$row['contact_id']}
-			LIMIT $lim";
-	$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
-
-	while($tmp_row = DBResult::fetchArray($sub_result))
+			WHERE relation_code != ? AND aliases.mp_last = ?{$name_clause}
+			AND conflict.contact_id != ?
+			LIMIT {$lim}";
+	$sub_result = DB::preparedQuery($sql,$params) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+	
+	while ($tmp_row = DBResult::fetchArray($sub_result))
 	{
 		$tmp_row['match'] = 'NAME';
 		$conflict_array[] = $tmp_row;
-
-		$z .= "<p>{$tmp_row['first_name']} {$tmp_row['last_name']} was a(n) {$tmp_row['role']} on ";
-		$z .= "<a href=\"{$base_url}/case.php?case_id={$tmp_row['case_id']}\">";
-		$z .= "{$tmp_row['number']}</a></p>";
+		$z .= conflict_match_html($tmp_row,$base_url);
 	}
-
-	// Match by SSN
-	// The closing parenthesis used to sit after the > 0, so this measured
-	// the length of a boolean rather than the length of the SSN.
-	if (strlen($row['ssn']) > 0)
+	
+	/*	Match by social security number.
+		
+		The test used to read strlen($row['ssn'] > 0). That measures the
+		comparison, not the number, so it answered 1 for very nearly every
+		value and the branch was not the check it looks like.
+		
+		Count digits rather than characters: an intake that carries
+		"XXX-XX-XXXX", "N/A" or "-" as a placeholder would otherwise match
+		every other record holding the same placeholder and report all of
+		them to the reviewing user as conflicts.
+	*/
+	if (strlen(preg_replace('/\D/','',$ssn)) > 0)
 	{
 		$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
 			FROM aliases
@@ -110,19 +158,17 @@ function potential_conflicts($row, $relation_code, $description)
 			LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
 			LEFT JOIN cases ON conflict.case_id=cases.case_id
 			LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-			WHERE relation_code != {$row['relation_code']} AND aliases.ssn='{$row['ssn']}'
-			AND conflict.contact_id != {$row['contact_id']} AND aliases.mp_last!='{$row['mp_last']}'
-			LIMIT $lim";
-		$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
-
-		while($tmp_row = DBResult::fetchArray($sub_result))
+			WHERE relation_code != ? AND aliases.ssn = ?
+			AND conflict.contact_id != ? AND aliases.mp_last != ?
+			LIMIT {$lim}";
+		$params = array($relation_code,$ssn,$contact_id,$mp_last);
+		$sub_result = DB::preparedQuery($sql,$params) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+		
+		while ($tmp_row = DBResult::fetchArray($sub_result))
 		{
 			$tmp_row['match'] = 'SSN';
 			$conflict_array[] = $tmp_row;
-
-		$z .= "<p>{$tmp_row['first_name']} {$tmp_row['last_name']} was a(n) {$tmp_row['role']} on ";
-		$z .= "<a href=\"{$base_url}/case.php?case_id={$tmp_row['case_id']}\">";
-		$z .= "{$tmp_row['number']}</a></p>";
+			$z .= conflict_match_html($tmp_row,$base_url);
 		}
 	}
 
