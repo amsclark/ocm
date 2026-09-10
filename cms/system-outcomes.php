@@ -55,6 +55,9 @@ switch ($action)
 		$outcome = DB::escapeString($outcome);
 		$main_html['content'] = "<a href=\"{$base_url}/system-outcomes.php\">Return to Outcome Goals Listing</a>";
 		$main_html['content'] .= "<form action=\"{$base_url}/system-outcomes.php?action=update&outcome={$outcome}\" method=\"POST\">";
+		// Same as transfers.php: the update POST goes back to this file, which
+		// enforces the token, so saving the goal list needs one in the body.
+		$main_html['content'] .= pl_csrf_hidden_input();
 		$main_html['content'] .= "<textarea name=\"values\" rows=\"18\" class=\"input-xxlarge\">";
 		$sql = "SELECT * FROM outcome_goals WHERE active = 1 AND problem ";
 		$sql .= " = '{$outcome}' ORDER BY outcome_goal_order ASC";
