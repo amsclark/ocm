@@ -2978,6 +2978,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	PT_LSXML_URL="$OCM_URL/services/transfer_case_lsxml.php"
 	PT_SECRET='smoke-peer-transfer-secret'
 	lsxml_case_id=''
+	xss_case_id=''
 	# judge_name is a plain varchar on cases, so a value written through the
 	# endpoint can be read straight back out and compared.
 	PT_BODY='{"judge_name":"SmokePeerTransfer","court_city":"Smokeville"}'
@@ -3085,17 +3086,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		ts="$(date +%s)"
 		good_sig="$(pt_sign newCase "$PT_BODY" "$ts")"
 
-		# Flip the last character to something it is not. Appending a fixed
-		# '0' would leave the signature unchanged one time in sixteen, and
-		# an unchanged signature is correctly accepted -- which read as this
-		# check failing at random.
-		pt_last="${good_sig#"${good_sig%?}"}"
-		if [ "$pt_last" = "0" ]; then
-			pt_wrong="${good_sig%?}1"
-		else
-			pt_wrong="${good_sig%?}0"
-		fi
-		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$pt_wrong")"
+		# Change the last character to one it is not. Flipping it to a fixed
+		# '0' passed the good signature back unchanged whenever the digest
+		# happened to end in '0', which is one run in sixteen.
+		case "$good_sig" in
+			*0) bad_sig="${good_sig%?}1" ;;
+			*)  bad_sig="${good_sig%?}0" ;;
+		esac
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$bad_sig")"
 		if [ "$code" = 403 ] && grep -q 'bad_signature' "$BODY"; then
 			ok "a packet with one flipped signature character is refused"
 		else
@@ -3241,10 +3239,38 @@ if [ "$HAVE_DB" = 1 ]; then
 			bad "the LSXML endpoint answered something unexpected: $(head -c 80 "$BODY")"
 		fi
 
+		# 27g. What the peer is allowed to write. Everything a user types
+		# reaches a column through pl_grab_var(), which rewrites < and > on
+		# the way in; this endpoint went from json_decode() straight to
+		# setValues(), so a peer installation was the one writer on the box
+		# that could put a raw < into a column. plTable draws cell values as
+		# they come out of the row, so that text ran as script on the screen
+		# of whoever searched for the record.
+		PT_XSS_BODY='{"judge_name":"<script>zzptxss()</script>","court_city":"Smokeville"}'
+		ts="$(date +%s)"
+		code="$(pt_post_json newCase "$PT_XSS_BODY" "$ts" "$(pt_sign newCase "$PT_XSS_BODY" "$ts")")"
+		xss_case_id="$(cat "$BODY")"
+		case "$xss_case_id" in
+			''|*[!0-9]*) xss_case_id='' ;;
+		esac
+		if [ "$code" != 200 ] || [ -z "$xss_case_id" ]; then
+			bad "a signed packet holding markup was refused outright (status $code) - cannot test what it stored"
+		else
+			stored="$(adb "SELECT judge_name FROM cases WHERE case_id = ${xss_case_id}")"
+			case "$stored" in
+				*'<script'*)
+					bad "a peer packet wrote a raw <script> into the case row: $stored" ;;
+				*'&lt;script'*)
+					ok "a peer packet cannot write a raw < into a column" ;;
+				*)
+					bad "the peer packet stored something unexpected in judge_name: $stored" ;;
+			esac
+		fi
+
 		pt_settings_restore
 
 		# Leave the tables as they were found.
-		for cid in $new_case_id $legacy_case_id $lsxml_case_id; do
+		for cid in $new_case_id $legacy_case_id $lsxml_case_id $xss_case_id; do
 			adb "DELETE FROM cases WHERE case_id = ${cid}" >/dev/null
 		done
 		adb "DELETE FROM cases WHERE judge_name IN ('SmokePeerTransfer','SmokeLegacy','Smoke')" >/dev/null
@@ -3547,6 +3573,664 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
 	printf '  skip the ops authorization checks (needs the database)\n'
+fi
+
+# ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
+echo
+echo "29. case tabs, the id counter and duplicate matching"
+
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_ct() {
+		adb "DELETE FROM case_tabs WHERE name LIKE 'ZZCT%' OR name LIKE '%zzctxss%'" >/dev/null
+		adb "DELETE FROM case_tabs WHERE tab_id = 120" >/dev/null
+		adb "DELETE FROM aliases WHERE last_name LIKE 'ZZCT%' OR first_name = 'ZZCTBLANK'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZCT%' OR notes = 'ZZCTFIXTURE'" >/dev/null
+	}
+	cleanup_ct
+
+	# A tab module that is actually installed, so the allowlist accepts it.
+	CTFILE="$(basename "$(ls "${REPO_DIR}"/cms/modules/case-*.php 2>/dev/null | head -1)")"
+
+	if [ -z "$CTFILE" ]; then
+		printf '  skip the case tab checks (no case-*.php modules found)\n'
+	else
+		# ── The add form must not write a row just for being looked at ──
+		# It used to: the edit branch save()d a brand new object on every GET
+		# of "Add New Case Tab", which left blank tabs in the list and failed
+		# outright wherever the counters row had fallen behind MAX(tab_id).
+		CTBEFORE="$(adb "SELECT COUNT(*) FROM case_tabs")"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=edit" >/dev/null
+		CTAFTER="$(adb "SELECT COUNT(*) FROM case_tabs")"
+		if [ "${CTBEFORE:-0}" = "${CTAFTER:-1}" ]; then
+			ok "opening the Add New Case Tab form writes no row"
+		else
+			bad "opening the Add New Case Tab form INSERTed a row (${CTBEFORE} -> ${CTAFTER})"
+		fi
+
+		if grep -qE 'name="action"[^>]*value="add"' "$BODY"; then
+			ok "the empty form submits the add action"
+		else
+			bad "the empty form does not submit action=add - the new tab has no write path"
+		fi
+
+		if grep -qE 'name="tab_id"[^>]*value=""' "$BODY"; then
+			ok "the empty form carries no tab_id"
+		else
+			bad "the empty form carries a tab_id for a row that does not exist"
+		fi
+
+		# ── The add action writes exactly one row ──
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=add&name=ZZCTTAB&file=${CTFILE}&enabled=1&tab_row=1&autosave=0" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE name='ZZCTTAB'")" = 1 ]; then
+			ok "the add action writes the new case tab once"
+		else
+			bad "the add action did not write the new case tab"
+		fi
+
+		# ── A tab file that is not installed is refused ──
+		# The value goes into a link and into a JavaScript string on every
+		# case screen, and a tab pointing at a missing module is a dead link.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=add&name=ZZCTBADFILE&file=case-zz-not-installed.php&enabled=1&tab_row=1" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE name='ZZCTBADFILE'")" = 0 ]; then
+			ok "a case tab file that is not installed is refused"
+		else
+			bad "a case tab was saved pointing at a module that is not installed"
+		fi
+
+		# ── An update naming no existing row writes nothing ──
+		# plBase reads a missing id as "new record", so this used to INSERT.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=update&tab_id=126&name=ZZCTGHOST&file=${CTFILE}&enabled=1&tab_row=1" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE name='ZZCTGHOST'")" = 0 ]; then
+			ok "an update naming a case tab that is not there writes nothing"
+		else
+			bad "an update with an unknown tab_id INSERTed a new row"
+		fi
+
+		# ── A counter behind the rows still allocates a usable id ──
+		# This is the shape a restored dump leaves behind: counters.count
+		# lower than MAX(tab_id), so every INSERT dies on a duplicate key and
+		# the page comes back empty until somebody edits counters by hand.
+		CTMAX="$(adb "SELECT MAX(tab_id) FROM case_tabs")"
+		adb "INSERT INTO counters (id,count) VALUES ('case_tabs',1) ON DUPLICATE KEY UPDATE count=1" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=add&name=ZZCTCOUNTER&file=${CTFILE}&enabled=1&tab_row=1" >/dev/null
+		CTNEW="$(adb "SELECT tab_id FROM case_tabs WHERE name='ZZCTCOUNTER'")"
+		if [ -n "$CTNEW" ] && [ "${CTNEW:-0}" -gt "${CTMAX:-0}" ]; then
+			ok "a counter behind the rows still allocates an unused id"
+		else
+			bad "a counter behind MAX(tab_id) blocked the INSERT (max ${CTMAX}, got '${CTNEW}')"
+		fi
+
+		# ── The tab name and the tab file reach the case screen escaped ──
+		# Both are written straight into the tab bar by
+		# template_plugins/case_tabs.php: the name into the link text, the
+		# file into the href and into a single-quoted JavaScript string.
+		# Write them with SQL, because the admin form escapes < and > on the
+		# way in and that would hide the defect being tested for.
+		# A case to open. Earlier sections remove their own case fixtures, so
+		# there may well be none left by the time this section runs.
+		CTCASE=9990001
+		adb "INSERT INTO cases (case_id,number,status,problem) VALUES
+			(${CTCASE},'ZZCT-0001','1','ZZ')
+			ON DUPLICATE KEY UPDATE number='ZZCT-0001'" >/dev/null
+		CTFIX=
+		if [ "$(adb "SELECT COUNT(*) FROM cases WHERE case_id=${CTCASE}")" != 1 ]; then
+			printf '  skip the case tab bar escaping checks (could not write a case)\n'
+		else
+			# case.php keys the tab list by the file name, so the fixture
+			# needs a file of its own or one of the tabs added above wins the
+			# key and this proves nothing. tab_id is a tinyint.
+			CTFIX=120
+			if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE tab_id=${CTFIX}")" != 0 ]; then
+				CTFIX=
+			fi
+		fi
+
+		if [ -z "${CTFIX:-}" ]; then
+			printf '  skip the case tab bar escaping checks (no fixture slot)\n'
+		else
+			adb "INSERT INTO case_tabs (tab_id,name,file,enabled,tab_order,autosave,tab_row)
+				VALUES (${CTFIX},'<script>zzctxss()</script>','case-zzctfixture.php',1,99,0,1)" >/dev/null
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${CTCASE}" >/dev/null
+			if grep -q 'zzctxss' "$BODY"; then
+				if grep -q '<script>zzctxss' "$BODY"; then
+					bad "a case tab name put an unescaped <script> on the case screen"
+				else
+					ok "a case tab name reaches the case screen escaped"
+				fi
+			else
+				bad "the fixture case tab did not render - the escaping check proved nothing"
+			fi
+
+			adb "UPDATE case_tabs SET name='ZZCTJS', file='case-zz\"onmouseover=zzctjs().php' WHERE tab_id=${CTFIX}" >/dev/null
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${CTCASE}" >/dev/null
+			if grep -q 'zzonmouseoverzzctjs' "$BODY"; then
+				if grep -q 'onmouseover=zzctjs' "$BODY"; then
+					bad "a case tab file name added its own attribute to the tab link"
+				else
+					ok "a case tab file name cannot add attributes to the tab link"
+				fi
+			else
+				bad "the fixture tab file did not render - the sanitiser check proved nothing"
+			fi
+		fi
+	fi
+
+	# ── ops/transfer_case.php only answers a POST ──
+	# It reads pl_grab_post(), so a GET arrived with no case_id at all and ran
+	# the whole transfer against a brand new empty case object.
+	CTCASES="$(adb "SELECT COUNT(*) FROM cases")"
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/ops/transfer_case.php")"
+	if [ "$code" = 405 ]; then
+		ok "a GET of the case transfer handler is refused with 405"
+	else
+		bad "a GET of the case transfer handler answered $code, not 405"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM cases")" = "$CTCASES" ]; then
+		ok "the refused transfer created no case row"
+	else
+		bad "the refused transfer left a new case row behind"
+	fi
+
+	# ── Duplicate matching does not key on a blank or placeholder SSN ──
+	# metaphoneContactCheck() searched aliases.ssn = '' for a contact with no
+	# name, which matches nearly every contact in the address book, and it
+	# treated "XXX-XX-XXXX" as a number, which matches every other record
+	# carrying the same placeholder. Both flooded the merge screen with
+	# unrelated people.
+	adb "INSERT INTO contacts (contact_id,first_name,last_name,ssn,notes) VALUES
+		(9990001,'','','','ZZCTFIXTURE'),
+		(9990002,'Zz','ZZCTFINDME','','ZZCTFIXTURE'),
+		(9990003,'Zz','ZZCTPLACEA','XXX-XX-XXXX','ZZCTFIXTURE'),
+		(9990004,'Zz','ZZCTPLACEB','XXX-XX-XXXX','ZZCTFIXTURE')" >/dev/null
+	adb "INSERT INTO aliases (alias_id,contact_id,primary_name,first_name,last_name,mp_first,mp_last,ssn) VALUES
+		(9990001,9990001,1,'','','','',''),
+		(9990002,9990002,1,'Zz','ZZCTFINDME','S','SKTFNTM',''),
+		(9990003,9990003,1,'Zz','ZZCTPLACEA','S','SKTPLK','XXX-XX-XXXX'),
+		(9990004,9990004,1,'Zz','ZZCTPLACEB','S','SKTPLKB','XXX-XX-XXXX')" >/dev/null
+
+	if [ "$(adb "SELECT COUNT(*) FROM contacts WHERE notes='ZZCTFIXTURE'")" = 4 ]; then
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/merge_contacts.php?contact_id=9990001" >/dev/null
+		if grep -q 'ZZCTFINDME' "$BODY"; then
+			bad "a contact with no name and no SSN was matched against the address book"
+		else
+			ok "a contact with no name and no SSN matches nothing"
+		fi
+
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/merge_contacts.php?contact_id=9990003" >/dev/null
+		if grep -q 'ZZCTPLACEB' "$BODY"; then
+			bad "a placeholder SSN matched an unrelated contact carrying the same placeholder"
+		else
+			ok "a placeholder SSN with no digits in it matches nothing"
+		fi
+
+		# Positive control: a real number still finds the other record, so
+		# the two checks above are not passing because matching is broken.
+		adb "UPDATE contacts SET ssn='555-00-9911' WHERE contact_id IN (9990003,9990004)" >/dev/null
+		adb "UPDATE aliases SET ssn='555-00-9911' WHERE contact_id IN (9990003,9990004)" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/merge_contacts.php?contact_id=9990003" >/dev/null
+		if grep -q 'ZZCTPLACEB' "$BODY"; then
+			ok "a real SSN still matches the other record with that number"
+		else
+			bad "a real SSN no longer matches - the placeholder guard is too tight"
+		fi
+	else
+		printf '  skip the duplicate matching checks (could not write the fixture)\n'
+	fi
+
+	cleanup_ct
+	adb "DELETE FROM aliases WHERE alias_id BETWEEN 9990001 AND 9990004" >/dev/null
+	adb "DELETE FROM contacts WHERE contact_id BETWEEN 9990001 AND 9990004" >/dev/null
+	adb "DELETE FROM cases WHERE case_id = 9990001" >/dev/null
+else
+	printf '  skip the case tab and duplicate matching checks (needs the database)\n'
+fi
+
+echo
+echo "30. the caseless pop-up timer"
+
+# cms/timer.php supports a timer with no case attached - it prints
+# "(No Case #)" for one. pl_clean_form_input() copies only the keys that were
+# submitted, so on that path there was no case_id key and both reads of it were
+# undefined-key warnings. Nothing about the page changed, so the only way to see
+# the fix is in the log.
+if [ "$HAVE_COMPOSE" = 1 ]; then
+	TIMERLOG="$(mktemp)"
+	docker compose "${COMPOSE_ARGS[@]}" logs app >"$TIMERLOG" 2>/dev/null
+	timer_log_before="$(wc -l < "$TIMERLOG")"
+	
+	curl -sL --max-time 30 -b "$COOKIES" -c "$COOKIES" -o "$BODY" "$OCM_URL/timer.php" >/dev/null
+	
+	if grep -q '(No Case #)' "$BODY"; then
+		ok "a timer with no case still draws, labelled (No Case #)"
+	else
+		bad "the caseless timer did not draw (size $(wc -c < "$BODY"))"
+	fi
+	
+	docker compose "${COMPOSE_ARGS[@]}" logs app >"$TIMERLOG" 2>/dev/null
+	timer_new="$(tail -n "+$((timer_log_before + 1))" "$TIMERLOG" \
+		| grep -c 'Undefined array key "case_id".*timer\.php' || true)"
+	if [ "${timer_new:-0}" -eq 0 ]; then
+		ok "the caseless timer logged no undefined case_id key"
+	else
+		bad "the caseless timer logged ${timer_new} undefined case_id warnings"
+	fi
+	
+	rm -f "$TIMERLOG"
+else
+	printf '  skip the timer check (needs a running docker compose stack)\n'
+fi
+
+echo
+echo "31. the conflict of interest check"
+
+# The check reads its values out of the tables, which is not the same thing as
+# safe: aliases.ssn is eleven characters of free text an intake user fills in,
+# and the social security block put it into two statements as text. It also
+# measured strlen($row['ssn'] > 0) instead of the length of the number, threw
+# away the statement of each pair that reads the contacts table, and searched
+# for an empty metaphone key. Every one of those made the report name people
+# who are not conflicts, or miss people who are.
+#
+# The fixture below is three cases whose parties are arranged so that each
+# check fails for exactly one reason. Both copies of the function are
+# exercised: cms/app/lib/pikaCase.php through case.php, and
+# cms/app/extralib/lib/pikaCms.php through the report under cms/reports/.
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_cf() {
+		adb "DELETE FROM conflict WHERE case_id BETWEEN 9991001 AND 9991099" >/dev/null
+		adb "DELETE FROM aliases WHERE contact_id BETWEEN 9991001 AND 9991099" >/dev/null
+		adb "DELETE FROM contacts WHERE contact_id BETWEEN 9991001 AND 9991099" >/dev/null
+		adb "DELETE FROM cases WHERE case_id BETWEEN 9991001 AND 9991099" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cf' EXIT
+	cleanup_cf
+
+	adb "INSERT INTO cases (case_id,number,user_id,office,status,problem) VALUES
+		(9991001,'ZZ-CONF-A',1,'ZZOFF','1','ZZ'),
+		(9991002,'ZZ-CONF-B',1,'ZZOFF','1','ZZ'),
+		(9991003,'ZZ-CONF-C',1,'ZZOFF','1','ZZ'),
+		(9991004,'ZZ-CONF-D',1,'ZZOFF','1','ZZ')" >/dev/null
+
+	# ZZCONFONE is two records for the same person, one on case A and one on
+	# case D. Contact 9991002, the one on D, deliberately has no aliases row:
+	# that is the shape a data migration leaves, and the party read used to
+	# reach contacts through aliases, so such a party carried no name and no
+	# number into the searches at all. It is alone on a case of its own so that
+	# nothing else on that case can report the conflict for it.
+	# ZZCONFIVE shares a real number with ZZCONFONE under a different surname,
+	# which is what a genuine social security match looks like.
+	# ZZCONFTRE and ZZCONFOUR both carry a placeholder in the number column.
+	# ZZORGONE and ZZORGTWO are organisations, so they have no metaphone key.
+	# ZZCONFTWO's number column holds SQL.
+	adb "INSERT INTO contacts (contact_id,first_name,last_name,mp_first,mp_last,ssn,notes) VALUES
+		(9991001,'Alpha','ZZCONFONE','ALF','SSKNFN','111223333','ZZCFFIXTURE'),
+		(9991002,'Alpha','ZZCONFONE','ALF','SSKNFN','111223333','ZZCFFIXTURE'),
+		(9991003,'Beta','ZZCONFTWO','BT','SSKNFT','1'' OR 1=1#','ZZCFFIXTURE'),
+		(9991004,'Gamma','ZZCONFTRE','KM','SSKNFTR','XXX-XX-XXXX','ZZCFFIXTURE'),
+		(9991005,'Delta','ZZCONFOUR','TLT','SSKNFR','XXX-XX-XXXX','ZZCFFIXTURE'),
+		(9991006,'','ZZORGONE','','',NULL,'ZZCFFIXTURE'),
+		(9991007,'','ZZORGTWO','','',NULL,'ZZCFFIXTURE'),
+		(9991008,'Echo','ZZCONFIVE','AK','SSKNF','111223333','ZZCFFIXTURE')" >/dev/null
+
+	# aliases.alias_id is NOT NULL DEFAULT 0, so a multi-row INSERT has to name
+	# every one of them or the second row is a duplicate key.
+	adb "INSERT INTO aliases (alias_id,contact_id,primary_name,first_name,last_name,mp_first,mp_last,ssn) VALUES
+		(9991001,9991001,1,'Alpha','ZZCONFONE','ALF','SSKNFN','111223333'),
+		(9991003,9991003,1,'Beta','ZZCONFTWO','BT','SSKNFT','1'' OR 1=1#'),
+		(9991004,9991004,1,'Gamma','ZZCONFTRE','KM','SSKNFTR','XXX-XX-XXXX'),
+		(9991005,9991005,1,'Delta','ZZCONFOUR','TLT','SSKNFR','XXX-XX-XXXX'),
+		(9991006,9991006,1,'','ZZORGONE','','',NULL),
+		(9991007,9991007,1,'','ZZORGTWO','','',NULL),
+		(9991008,9991008,1,'Echo','ZZCONFIVE','AK','SSKNF','111223333')" >/dev/null
+
+	# Case A holds relation code 1, cases B, C and D hold 2, so a party on one
+	# case can be a conflict with a party on another.
+	adb "INSERT INTO conflict (conflict_id,case_id,contact_id,relation_code) VALUES
+		(9991001,9991001,9991001,1),
+		(9991004,9991001,9991004,1),
+		(9991006,9991001,9991006,1),
+		(9991005,9991002,9991005,2),
+		(9991007,9991002,9991007,2),
+		(9991008,9991002,9991008,2),
+		(9991003,9991003,9991003,2),
+		(9991002,9991004,9991002,2)" >/dev/null
+
+	if [ "$(adb "SELECT COUNT(*) FROM contacts WHERE notes='ZZCFFIXTURE'")" != 8 ]; then
+		printf '  skip the conflict check checks (could not write the fixture)\n'
+	else
+		CFREP="$OCM_URL/reports/conflict/conflict.php"
+
+		# ── A real number still matches, so the checks below mean something ──
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991001" >/dev/null
+		if grep -q 'ZZCONFIVE' "$BODY"; then
+			ok "a shared social security number is still reported as a conflict"
+		else
+			bad "a shared social security number is no longer reported - the checks below prove nothing"
+		fi
+
+		# ── A placeholder in the number column is not a number ──
+		# ZZCONFOUR sits on another case carrying the same "XXX-XX-XXXX" as a
+		# party on this one. strlen($row['ssn'] > 0) is 1 for that value.
+		if grep -q 'ZZCONFOUR' "$BODY"; then
+			bad "a placeholder social security number matched an unrelated party"
+		else
+			ok "a placeholder social security number matches nobody"
+		fi
+
+		# ── An empty metaphone key is not a name ──
+		# ZZORGTWO is an organisation on another case, so it has no key, and so
+		# does the organisation on this one.
+		if grep -q 'ZZORGTWO' "$BODY"; then
+			bad "a party with no metaphone key matched every other record without one"
+		else
+			ok "a party with no metaphone key matches nobody by name"
+		fi
+
+		# ── The number column cannot carry SQL into the search ──
+		# Case C's only party holds "1' OR 1=1#" there. Interpolated, that
+		# neutralises the WHERE clause and lists every party on every other
+		# case, whatever their number or name.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991003" >/dev/null
+		if grep -q 'ZZCONFONE\|ZZCONFTRE\|ZZORGONE' "$BODY"; then
+			bad "SQL in the social security column widened the conflict search"
+		else
+			ok "SQL in the social security column is searched for, not run"
+		fi
+
+		# ── A party with no aliases row is still checked by name ──
+		# Case D's only party is the second ZZCONFONE record, which has no
+		# aliases row. The party read reached contacts through aliases, so it
+		# carried nothing to search on; and the one statement of the name pair
+		# that reads contacts was overwritten before it ran. So this case
+		# reported nothing, though the same person is a party on case A.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991004" >/dev/null
+		if grep -q 'ZZCONFONE' "$BODY"; then
+			ok "a party with no aliases row is still checked by name"
+		else
+			bad "a party with no aliases row was checked by contact id alone"
+		fi
+
+		# ── The case screen agrees with the report ──
+		# cms/app/lib/pikaCase.php holds the copy that page uses. The two
+		# cannot share one implementation, because pika_cms.php does not put
+		# app/lib on the include path, so both are checked here.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/case.php?case_id=9991001&screen=conflict" >/dev/null
+		if grep -q 'ZZCONFIVE' "$BODY" && ! grep -q 'ZZCONFOUR' "$BODY"; then
+			ok "the conflict tab on the case screen reports the same conflicts"
+		else
+			bad "the conflict tab on the case screen disagrees with the report"
+		fi
+
+		# ── The report logs nothing ──
+		# resetConflictStatus() returned the tally of the last party looked at,
+		# which is an undefined variable on a case with no parties, and the
+		# name search read the length of a null.
+		if [ "$HAVE_COMPOSE" = 1 ]; then
+			CFLOG="$(mktemp)"
+			docker compose "${COMPOSE_ARGS[@]}" logs app >"$CFLOG" 2>/dev/null
+			cf_before="$(wc -l < "$CFLOG")"
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991001" >/dev/null
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991099" >/dev/null
+			docker compose "${COMPOSE_ARGS[@]}" logs app >"$CFLOG" 2>/dev/null
+			cf_new="$(tail -n "+$((cf_before + 1))" "$CFLOG" \
+				| grep -c 'pikaCms\.php\|pika_cms\.php' || true)"
+			if [ "${cf_new:-0}" -eq 0 ]; then
+				ok "the conflict report logs no warnings, with parties and without"
+			else
+				bad "the conflict report logged ${cf_new} warnings"
+			fi
+			rm -f "$CFLOG"
+		else
+			printf '  skip the conflict report log check (needs a running docker compose stack)\n'
+		fi
+	fi
+
+	cleanup_cf
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the conflict check checks (needs the database)\n'
+fi
+
+# ── 30. Another user's calendar ────────────────────────────────────────────
+# cal_day.php, cal_week.php, cal_adv.php and services/cal-rss.php took a user
+# id off the query string and drew that user's activities, with the summary and
+# the notes, for anyone who asked. cal-rss.php did not even require a login: it
+# set PL_DISABLE_SECURITY, so an unauthenticated GET returned a week of a named
+# user's appointments and case notes as XML.
+#
+# All four pages now ask pl_can_view_user_calendar() (cms/pika-danio.php):
+# your own calendar always, another user's with a read-all group always,
+# another user's without one only while the enable_shared_calendars setting is
+# not 0. A missing setting row reads as open, which is what the application
+# always did, so an installation that has not applied
+# cms/app/sql/upgrades/add_shared_calendars.sql keeps its old behaviour.
+#
+# Three states are checked for each page, because a gate that refuses in every
+# state would pass the refusal assertion while taking colleague calendars away
+# from every office that wants them.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	CAL_GROUP='zz_cal_grp'
+	CAL_USER='zz_cal_user'
+	CAL_PASS='zz-cal-Passw0rd'
+	CAL_JAR="$(mktemp)"
+	# What this installation had before the section touched it, so the value
+	# an operator chose survives a test run.
+	CAL_SETTING_WAS="$(adb "SELECT value FROM settings WHERE label = 'enable_shared_calendars'")"
+
+	cleanup_cal() {
+		adb "DELETE FROM activities WHERE summary IN ('ZZ-CAL-PRIVATE', 'ZZ-CAL-REDACT')" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-CAL-CASE'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${CAL_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${CAL_GROUP}'" >/dev/null
+		adb "DELETE FROM settings WHERE label = 'enable_shared_calendars'" >/dev/null
+		if [ -n "${CAL_SETTING_WAS}" ]; then
+			adb "INSERT INTO settings (label, value)
+				VALUES ('enable_shared_calendars', '${CAL_SETTING_WAS}')" >/dev/null
+		fi
+		rm -f "$CAL_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cal' EXIT
+
+	adb "DELETE FROM activities WHERE summary IN ('ZZ-CAL-PRIVATE', 'ZZ-CAL-REDACT')" >/dev/null
+	adb "DELETE FROM cases WHERE number = 'ZZ-CAL-CASE'" >/dev/null
+	adb "DELETE FROM users WHERE username = '${CAL_USER}'" >/dev/null
+	adb "DELETE FROM \`groups\` WHERE group_id = '${CAL_GROUP}'" >/dev/null
+
+	# One appointment on the admin's calendar, today, with a note. Every
+	# assertion below is about whether this string comes back.
+	CAL_ACT="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, user_id, act_date, summary, notes, completed)
+		VALUES (${CAL_ACT}, 1, CURDATE(), 'ZZ-CAL-PRIVATE', 'ZZ-CAL-PRIVATE note', 0)" >/dev/null
+
+	# A second appointment on the admin's calendar, this one on a case in an
+	# office the fixture group does not have. pika_authorize('read_act') refuses
+	# it, so cal_day.php and cal_week.php draw their redacted row for it: the
+	# time and the owner, and nothing else.
+	#
+	# The appointment is scheduled an hour from now rather than at a fixed
+	# clock time. cal_day.php splits the day into a pending table
+	# (getActivitiesPending, act_time LATER than date("H:i:00")) and an overdue
+	# table (getActivitiesOverdue, which also demands act_type = 'K'). An
+	# untyped appointment earlier today is in neither, so a fixed time made
+	# this check pass or fail depending on the hour the suite ran.
+	#
+	# The clock that matters is the container's PHP clock, because that is what
+	# renders the page and what the pending query compares against. Both pages
+	# are then asked for that date explicitly.
+	CAL_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${CAL_CASE}, 'ZZ-CAL-CASE', 1, 'zzz', '1')" >/dev/null
+	CAL_WHEN="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r \
+		'$t = time() + 3600; echo date("Y-m-d", $t), "|", date("H:i:00", $t), "|", date("g:i A", $t);' \
+		</dev/null 2>/dev/null)"
+	CAL_RDATE="${CAL_WHEN%%|*}"
+	CAL_RTIME="${CAL_WHEN#*|}"
+	CAL_RTIME="${CAL_RTIME%%|*}"
+	CAL_RLABEL="${CAL_WHEN##*|}"
+
+	CAL_ACT2="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, user_id, case_id, act_date, act_time, summary, notes, completed)
+		VALUES (${CAL_ACT2}, 1, ${CAL_CASE}, '${CAL_RDATE}', '${CAL_RTIME}', 'ZZ-CAL-REDACT', 'ZZ-CAL-REDACT note', 0)" >/dev/null
+
+	# 30a. The unauthenticated feed. This one needs no fixture user: before the
+	# fix, this exact request returned the row seeded above to anybody on the
+	# network.
+	curl -s --max-time 30 -o "$BODY" "$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+	if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
+		bad "cal-rss.php SERVES A USER'S APPOINTMENTS AND NOTES WITH NO LOGIN (CWE-306)"
+	elif grep -q 'login_pass' "$BODY"; then
+		ok "cal-rss.php asks an anonymous caller to log in ($(wc -c < "$BODY") bytes)"
+	else
+		bad "cal-rss.php gave neither the feed nor a login form ($(wc -c < "$BODY") bytes)"
+	fi
+
+	# A group with no permissions at all: no read_all, no offices, no reports.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${CAL_GROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	CAL_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$CAL_PASS" </dev/null 2>/dev/null)"
+	CAL_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${CAL_UID}, '${CAL_USER}', '${CAL_HASH}', 1, '${CAL_GROUP}', 0)" >/dev/null
+
+	cal_login() {
+		: > "$CAL_JAR"
+		curl -sL --max-time 30 -c "$CAL_JAR" -b "$CAL_JAR" -o "$BODY" \
+			-X POST -d "login_user=${CAL_USER}&login_pass=${CAL_PASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+	}
+
+	# $1 label, $2 path with query string, $3 allow|deny
+	cal_probe() {
+		curl -sL --max-time 60 -b "$CAL_JAR" -o "$BODY" "$OCM_URL/$2" >/dev/null
+		size="$(wc -c < "$BODY")"
+		if [ "$size" -lt 500 ]; then
+			bad "$1: only $size bytes (PHP fatal?)"
+		elif grep -qF 'not viewable' "$BODY"; then
+			if [ "$3" = deny ]; then
+				ok "$1: refused"
+			else
+				bad "$1: REFUSED a calendar this user is allowed to see"
+			fi
+		elif [ "$3" = deny ]; then
+			bad "$1: ANOTHER USER'S CALENDAR IS READABLE BY A USER WITH NO PERMISSIONS (CWE-639)"
+		else
+			ok "$1: drawn ($size bytes)"
+		fi
+	}
+
+	if [ -z "$CAL_HASH" ] || [ -z "${CAL_UID:-}" ] || [ -z "${CAL_ACT:-}" ] \
+		|| [ -z "${CAL_CASE:-}" ] || [ -z "${CAL_ACT2:-}" ] || [ -z "${CAL_RLABEL:-}" ]; then
+		bad "could not seed the calendar fixtures (hash/user/activity)"
+	else
+		cal_login
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway calendar user could not log in - the rest of section 30 is untested"
+		else
+			ok "the throwaway no-permission calendar user can log in"
+
+			# 30b. No setting row: the 2019 behaviour, kept on purpose. An
+			# upgrade must not take colleague calendars away on its own.
+			adb "DELETE FROM settings WHERE label = 'enable_shared_calendars'" >/dev/null
+			cal_probe "cal_day with no setting row" "cal_day.php?user_id=1" allow
+			cal_probe "cal_week with no setting row" "cal_week.php?user_id=1" allow
+
+			# The row for an activity on a case this group may not read shows
+			# the time and no case text. Both pages used to print $z there,
+			# which is set inside the authorized branch, so the cell held the
+			# time of the last activity the caller WAS allowed to read; two of
+			# the four copies also printed the summary of the activity they
+			# were redacting.
+			for page in cal_day.php cal_week.php; do
+				curl -sL --max-time 60 -b "$CAL_JAR" -o "$BODY" \
+					"$OCM_URL/${page}?user_id=1&cal_date=${CAL_RDATE}" >/dev/null
+				if grep -qF 'ZZ-CAL-REDACT' "$BODY"; then
+					bad "${page} PRINTS THE SUMMARY OF AN ACTIVITY THE CALLER MAY NOT READ"
+				elif grep -qF "$CAL_RLABEL" "$BODY"; then
+					ok "${page} shows the time of an unreadable activity and no case text"
+				else
+					bad "${page} drew neither the time nor the summary of the redacted row"
+				fi
+			done
+
+			# 30c. The setting at 0: refused on all four pages.
+			adb "REPLACE INTO settings (label, value) VALUES ('enable_shared_calendars', '0')" >/dev/null
+			cal_probe "cal_day with sharing off" "cal_day.php?user_id=1" deny
+			cal_probe "cal_week with sharing off" "cal_week.php?user_id=1" deny
+			cal_probe "cal_adv with sharing off" "cal_adv.php?user_list%5B%5D=1" deny
+
+			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
+				"$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+			if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
+				bad "cal-rss.php SERVES ANOTHER USER'S FEED TO A USER WITH NO PERMISSIONS"
+			else
+				ok "cal-rss.php refuses another user's feed with sharing off"
+			fi
+
+			# The refusal is scoped to other people. Own calendar, and the feed
+			# with no user_id at all, still work with sharing off.
+			cal_probe "own cal_day with sharing off" "cal_day.php?user_id=${CAL_UID}" allow
+			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
+				"$OCM_URL/services/cal-rss.php" >/dev/null
+			if grep -q '<rss' "$BODY"; then
+				ok "cal-rss.php still serves the caller their own feed"
+			else
+				bad "cal-rss.php does not serve the caller's own feed ($(wc -c < "$BODY") bytes)"
+			fi
+
+			# The feed is XML now, not the text/html it used to claim.
+			CAL_CT="$(curl -s --max-time 30 -b "$CAL_JAR" -o /dev/null -D - \
+				"$OCM_URL/services/cal-rss.php" | tr -d '\r' \
+				| awk 'tolower($1) == "content-type:" { print tolower($2) }' | tail -n 1)"
+			case "$CAL_CT" in
+				application/rss+xml*) ok "cal-rss.php sends Content-Type: $CAL_CT" ;;
+				*) bad "cal-rss.php sends Content-Type: ${CAL_CT:-none}" ;;
+			esac
+
+			# 30d. A read-all group gets the colleague calendars back with
+			# sharing off, which is what calendar_admin resolves to.
+			adb "UPDATE \`groups\` SET read_all = 1 WHERE group_id = '${CAL_GROUP}'" >/dev/null
+			cal_login
+			cal_probe "cal_day, read_all, sharing off" "cal_day.php?user_id=1" allow
+			cal_probe "cal_week, read_all, sharing off" "cal_week.php?user_id=1" allow
+			cal_probe "cal_adv, read_all, sharing off" "cal_adv.php?user_list%5B%5D=1" allow
+
+			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
+				"$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+			if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
+				ok "cal-rss.php serves another user's feed to a read-all group"
+			else
+				bad "a read-all group did NOT get another user's feed ($(wc -c < "$BODY") bytes)"
+			fi
+
+			# 30e. The refusal is on the record either way.
+			CAL_DENIED="$(docker compose "${COMPOSE_ARGS[@]}" logs app 2>/dev/null \
+				| grep -c 'calendar refused\|calendar rss refused' || true)"
+			if [ "${CAL_DENIED:-0}" -ge 1 ]; then
+				ok "the calendar refusals are logged (${CAL_DENIED} lines)"
+			else
+				bad "no calendar refusal reached the application log"
+			fi
+		fi
+	fi
+
+	cleanup_cal
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the calendar scope checks (needs the database and docker compose)\n'
 fi
 
 echo

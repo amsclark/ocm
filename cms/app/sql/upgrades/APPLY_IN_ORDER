@@ -20,3 +20,4 @@ add_totp.sql
 add_sso.sql
 add_peer_transfer.sql
 add_password_breach_policy.sql
+add_shared_calendars.sql
