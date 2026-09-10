@@ -24,6 +24,36 @@ class pikaPbAttorney extends plBase
 		parent::__construct($id);
 	}
 	
+	/*	Escape the columns that the two pro bono attorney list screens render
+		raw. pb_attorneys.php and assign_pba.php both walk the same result set
+		into the same flex_row markup, so the escaping belongs here rather than
+		in each of them.
+		
+		atty_name is not touched: the two screens build it differently, one as
+		a link and one as a form, and each escapes the name where it builds it.
+		
+		pl_text_address() joins the address columns with newlines and emits no
+		markup of its own, so escaping the finished string is safe. The
+		text_address template plugin in html mode is a different function that
+		interleaves <br/> with the values, and escaping that result would show
+		a literal "<br/>".
+	*/
+	public static function decorateListRow($row)
+	{
+		$row['atty_address'] = pl_html_escape_label(pl_text_address($row));
+		$row['last_case'] = pl_date_unmogrify(isset($row['last_case']) ? $row['last_case'] : null);
+		
+		foreach (array('firm','phone_notes','email','county','languages','practice_areas','notes') as $col)
+		{
+			if (isset($row[$col]))
+			{
+				$row[$col] = pl_html_escape_label($row[$col]);
+			}
+		}
+		
+		return $row;
+	}
+	
 	public static function getPbAttorneyDB(){
 		$sql = "SELECT * FROM pb_attorneys WHERE 1";
 		$result = DB::query($sql) or trigger_error('SQL: ' . $sql . ' Error: ' . DB::error());

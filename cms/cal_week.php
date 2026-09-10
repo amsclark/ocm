@@ -7,7 +7,9 @@
 
 require_once ('pika_cms.php'); 
 
-$pk = new pikaCms($db);
+// pikaCms has no constructor, and there is no $db in scope here -- the
+// argument was an undefined variable on every calendar page load.
+$pk = new pikaCms();
 unset($C);
 $t = new plTable();
 $t->table_class = 'whitebg';
@@ -41,7 +43,7 @@ $screen = pl_grab_var('screen', 'one');
 // Gotta check strlen's on $cal_date, $user_it to prevent zero-length strings.
 $cal_date = pl_grab_var('cal_date', 'GET', null, 'date');
 
-if (strlen($cal_date) < 1)
+if (strlen((string) $cal_date) < 1)
 {
 	$cal_date = date('Y-m-d');
 }
@@ -58,7 +60,7 @@ $user_id = pl_grab_var('user_id');
 //
 // The office_ form has to survive the check: the private build cast this to
 // (int) and silently broke its own office calendar filter.
-if (strlen($user_id) > 0 && 'mine' != $user_id)
+if (strlen((string) $user_id) > 0 && 'mine' != $user_id)
 {
 	if ('office_' == substr($user_id, 0, 7))
 	{
@@ -76,7 +78,7 @@ if (strlen($user_id) > 0 && 'mine' != $user_id)
 	}
 }
 
-if (strlen($user_id) < 1)
+if (strlen((string) $user_id) < 1)
 {
 	$user_id = $auth_row['user_id'];
 }
@@ -179,7 +181,11 @@ function print_calendar_item($a)
    activities owned by the user_id (if user_id is NULL, all activities are 
    shown).
    */
-function draw_week($cal_date='', $user_id='', $user_list)
+// The two defaults were ahead of a required parameter, which PHP 8 warns
+// about at compile time -- so the notice fired on every include, not just
+// on a call. All seven call sites below pass three arguments, so the
+// defaults were never used.
+function draw_week($cal_date, $user_id, $user_list)
 {
 	// Variables
 	global $pk, $tbf;
@@ -407,7 +413,11 @@ $columns = array('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
 $t->assignLabels($columns);
 $t->sortable = FALSE;
 $t->show_pager = FALSE;
-$t->max_length = $pikaDefPaging;
+// $t->max_length was here. plTable has no max_length property and never
+// reads one, so the assignment did nothing except create a dynamic
+// property -- deprecated in PHP 8.2. $pikaDefPaging comes from
+// $_SESSION['paging'], which does not survive a request in this
+// application, so the value was null in any case.
 $t->nav_url = "cal_week.php?cal_mode=weekly&user_id=$user_id&";
 $t->rowa_bg = 'calrow';
 $t->rowb_bg = 'calrow';

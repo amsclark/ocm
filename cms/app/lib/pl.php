@@ -1042,6 +1042,18 @@ function pl_clean_form_input($form_str, $mode = 'nomode')
 */
 function pl_clean_html($str)
 {
+	/*	Called with null all over the tree, because the thing being cleaned is
+		usually a database column that is allowed to be NULL. Every string
+		function below is declared with a string parameter, so each null call
+		logged three deprecations on PHP 8.1 and would be a TypeError on
+		PHP 9. Cleaning null has always produced '', so this changes nothing
+		a caller can see.
+	*/
+	if (is_null($str))
+	{
+		$str = '';
+	}
+	
 	// 2013-06-27 AMW - Added version check.
 	$version = phpversion();
 	
@@ -1078,6 +1090,23 @@ function pl_clean_html($str)
 function pl_clean_html_array($a)
 {
 	$b = array();
+	
+	/*	Same null guard as pl_clean_html(): the arrays handed to this are
+		database rows, and htmlspecialchars() is declared with a string
+		parameter, so one NULL column logged one deprecation per row. It
+		returned '' for null, so nothing renders differently.
+	*/
+	if (is_array($a))
+	{
+		foreach ($a as $key => $str)
+		{
+			if (is_null($str))
+			{
+				$a[$key] = '';
+			}
+		}
+	}
+	
 	// 2013-06-27 AMW - Added version check.
 	$version = phpversion();
 
@@ -1203,7 +1232,7 @@ function pl_date_mogrify($date_str)
 	$x = '';  // The final ISO date string, returned at end of function.
 	$a = array();  // Stores the month, day and (sometimes) year.
 	
-	if (strlen($date_str) < 1)
+	if (strlen((string) $date_str) < 1)
 	{
 		return false;
 	}
@@ -1421,6 +1450,33 @@ if (!function_exists('pl_html_escape_label')) {
 		}
 		
 		return $label;
+	}
+}
+
+/**
+ * Is this installation showing error detail to the browser?
+ *
+ * There is no debug setting in the settings table, on purpose: an error page
+ * that discloses file paths and SQL is a property of how PHP is configured,
+ * so it follows php.ini. display_errors Off -- which is what a server holding
+ * client data should have, and what the shipped Docker image sets -- means
+ * error detail stays in the log. Define PL_DEBUG in settings.php to turn the
+ * detail on for one installation without touching php.ini.
+ */
+if (!function_exists('pl_is_debug_mode')) {
+	function pl_is_debug_mode()
+	{
+		if (defined('PL_DEBUG') && PL_DEBUG) {
+			return true;
+		}
+		
+		$display_errors = ini_get('display_errors');
+		if ($display_errors === false || $display_errors === '' || $display_errors === '0'
+			|| strcasecmp($display_errors, 'off') === 0) {
+			return false;
+		}
+		
+		return true;
 	}
 }
 
@@ -2029,6 +2085,12 @@ function pl_error_handler($errno = null, $errstr = null, $errfile = null, $errli
 	    	//require_once('pikaWarning.php');
 	    	$warning = pikaWarning::getInstance();
 	    	$warning->setWarning($errno, $errstr, $errfile, $errline);
+	    	/*	And to the server log. The collector above only feeds the
+	    		pika_warning template tag, which renders nothing outside debug
+	    		mode, so without this line a notice on a production server was
+	    		recorded nowhere at all.
+	    	*/
+	    	pl_log_error('php_notice',"[{$errno}] {$errstr} in {$errfile}:{$errline}");
 	 		break;
 	   
 	    case E_ERROR: // 1
@@ -3373,7 +3435,7 @@ function pl_simple_url($request_uri = null, $script_filename = null)
 	array_shift($y);
 	
 	//Often there is one at the end as well.
-	if (strlen($y[sizeof($y) - 1]) < 1)
+	if (strlen((string) $y[sizeof($y) - 1]) < 1)
 	{
 		array_pop($y);
 	}
@@ -3602,7 +3664,9 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 	}
 	
 	// Fix legacy use of argument #3
-	if (strlen($subtpl_label) < 4)
+	// Cast: the argument is optional and defaults to null, so the common call
+	// with two arguments reached strlen() with null on every render.
+	if (strlen((string) $subtpl_label) < 4)
 	{
 		$subtpl_label = null;
 	}
@@ -3920,7 +3984,7 @@ function pl_template_sub($str, $template_data)
 				case 'option':
 				$tag_mode = $a;
 				
-				if (strlen($b) > 0)
+				if (strlen((string) $b) > 0)
 				{
 					$tag_lookup = $b;
 				}
@@ -3993,6 +4057,19 @@ function pl_template_sub($str, $template_data)
 	if (array_key_exists($tag_name, $template_data))
 	{
 		$tag_value = $template_data[$tag_name];
+		
+		/*	Null becomes the empty string before it reaches an encoder. A
+			template value that is null is ordinary here -- most callers build
+			the data array out of a database row, and a NULL column arrives as
+			null -- but urlencode() and htmlentities() are declared with string
+			parameters, so each one logged a deprecation on PHP 8.1 and will be
+			a TypeError on PHP 9. Both returned '' for null, so no tag renders
+			differently.
+		*/
+		if (is_null($tag_value))
+		{
+			$tag_value = '';
+		}
 		
 		switch ($encoding_mode)
 		{
@@ -4144,7 +4221,10 @@ function pl_template_sub($str, $template_data)
 	if (array_key_exists($next_name, $template_data))
 	{
 		// we have the name, now replace the first and any additional fields
-		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $template_data[$next_name], substr($str, $pos));
+		// The null guard is the same one as above: a NULL database column is
+		// a normal template value, and str_replace() takes a string.
+		$replacement = is_null($template_data[$next_name]) ? '' : $template_data[$next_name];
+		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $replacement, substr($str, $pos));
 	}
 	
 	// Next, check the application settings.
@@ -4158,7 +4238,8 @@ function pl_template_sub($str, $template_data)
 		&& !pl_settings_template_blocked($next_name))
 	{
 		// we have the name, now replace the first and any additional fields
-		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $app_settings[$next_name], substr($str, $pos));
+		$replacement = is_null($app_settings[$next_name]) ? '' : $app_settings[$next_name];
+		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $replacement, substr($str, $pos));
 	}
 	
 	else if ('ssn_compat_mode' == $next_name)

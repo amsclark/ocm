@@ -26,7 +26,7 @@ class plBaseWithUdf extends plBase
 		parent::__construct($id);
 
 		// Load UDF values if this is an existing record with JSON data.
-		if (!is_null($id) && strlen($id) > 0 && strlen($this->getValue('udf')) > 0)
+		if (!is_null($id) && strlen((string) $id) > 0 && strlen((string) $this->getValue('udf')) > 0)
 		{
 			$udfs = json_decode($this->getValue('udf'), true);
 			$this->values = array_merge($this->values, $udfs);
@@ -60,7 +60,7 @@ class plBaseWithUdf extends plBase
 
 		// Determine whether 'udf' needs to be initialized, or whether we can
 		// use MySQL's JSON_SET() to modify variables in 'udf'.
-		if (strlen($this->getValue('udf')) == 0)
+		if (strlen((string) $this->getValue('udf')) == 0)
 		{
 			$init_udf = true;
 			$data_for_udf_init = array();

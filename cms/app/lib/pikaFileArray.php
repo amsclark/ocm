@@ -56,21 +56,31 @@ class pikaFileArray implements ArrayAccess, Iterator
         unset($this->values[$name]);
     }
 
+    /*  ArrayAccess and Iterator declare return types in PHP 8. Adding real
+        ones here would raise this file's floor to PHP 8, so each method is
+        marked instead: the attribute silences the deprecation on PHP 8 and
+        is ignored as a comment on PHP 7. Without it every page load
+        collected nine notices, and under PHP 9 the mismatch is fatal.
+    */
+    #[\ReturnTypeWillChange]
     public function offsetSet($name, $value) 
     {
         $this->__set($name,$value);
     }
     
+    #[\ReturnTypeWillChange]
     public function offsetExists($name) 
     {
         return $this->__isset($name);
     }
     
+    #[\ReturnTypeWillChange]
     public function offsetUnset($name) 
     {
         $this->__unset($name);
     }
     
+    #[\ReturnTypeWillChange]
     public function offsetGet($name) 
     {
         return $this->__get($name);
@@ -80,24 +90,29 @@ class pikaFileArray implements ArrayAccess, Iterator
     
     // Begin Iterator
     
+    #[\ReturnTypeWillChange]
     public function rewind()
     {
     	$this->position = 0;
     }
+	#[\ReturnTypeWillChange]
 	public function current()
 	{
 		$keys = array_keys($this->values);
 		return $this->values[$keys[$this->position]];
 	}
+	#[\ReturnTypeWillChange]
 	public function key()
 	{
 		$keys = array_keys($this->values);
 		return $keys[$this->position];
 	}
+	#[\ReturnTypeWillChange]
 	public function next()
 	{
 		++$this->position;
 	}
+	#[\ReturnTypeWillChange]
 	public function valid()
 	{
 		$keys = array_keys($this->values);

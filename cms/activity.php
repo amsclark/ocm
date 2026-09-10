@@ -48,7 +48,7 @@ $menu_pba = pikaMisc::fetchPbAttorneyArray();
 
 
 // Attempt to determine act_url if not already provided
-if (strlen($act_url) < 1) {
+if (strlen((string) $act_url) < 1) {
 	$act_url = 'cal_day.php';
 	
 	if (isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER']) {
@@ -241,24 +241,35 @@ if(isset($act_row['case_id']) && is_numeric($act_row['case_id'])) {
 }
 $a['nav'] .= "Edit {$type_desc}";
 
-$act_row['sms_send_time_unmog'] = date('M d Y h:i', $act_row['sms_send_time']);
-
-if(!is_null($act_row['sms_act_id']))
+/*	SMS reminder status. The three sms_ columns are not part of this schema --
+	nothing in this repository creates them -- so on a stock installation each
+	read here was an undefined array key and date() was handed null, which
+	printed the epoch. Guard on the column being present rather than assuming
+	it: an installation that has added the columns still gets the block.
+*/
+if (array_key_exists('sms_send_time', $act_row))
 {
-	$act_row['sms_status'] = '<div class="alert alert-success">Reminder sent<br>'
-		. $act_row['sms_send_time_unmog'] . '</div>';
-}
-
-else if(!is_null($act_row['sms_send_failures']))
-{
-	$act_row['sms_status'] = '<div class="alert alert-error">Reminder failed to send<br>'
-		. $act_row['sms_send_time_unmog'] . '</div>';
-}
-
-else if(!is_null($act_row['sms_send_time']))
-{
-	$act_row['sms_status'] = '<div class="alert alert-info">Reminder scheduled<br>'
-		. $act_row['sms_send_time_unmog'] . '</div>';
+	$act_row['sms_send_time_unmog'] = date('M d Y h:i', (int) $act_row['sms_send_time']);
+	
+	// isset() rather than !is_null(): it answers the same question for a
+	// column that exists and also covers one that does not.
+	if(isset($act_row['sms_act_id']))
+	{
+		$act_row['sms_status'] = '<div class="alert alert-success">Reminder sent<br>'
+			. $act_row['sms_send_time_unmog'] . '</div>';
+	}
+	
+	else if(isset($act_row['sms_send_failures']))
+	{
+		$act_row['sms_status'] = '<div class="alert alert-error">Reminder failed to send<br>'
+			. $act_row['sms_send_time_unmog'] . '</div>';
+	}
+	
+	else if(isset($act_row['sms_send_time']))
+	{
+		$act_row['sms_status'] = '<div class="alert alert-info">Reminder scheduled<br>'
+			. $act_row['sms_send_time_unmog'] . '</div>';
+	}
 }
 
 // Act lookup - check for legacy templates

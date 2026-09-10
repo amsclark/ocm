@@ -194,11 +194,11 @@ class pikaUser extends plBase
 	public function getUserPrefs()
 	{
 		$prefs_array = array();
-		if(strlen($this->session_data) > 0 && is_array(unserialize($this->session_data)))
+		if(strlen((string) $this->session_data) > 0 && is_array(unserialize($this->session_data)))
 		{
 			$prefs_array = unserialize($this->session_data);
 		}	
-		else if (strlen($this->session_data) > 0)
+		else if (strlen((string) $this->session_data) > 0)
 		{
 			// Deal with legacy values
 			$temp = explode(';',$this->session_data);

@@ -34,7 +34,9 @@ function input_hidden($field_name = null, $field_value = null, $menu_array = nul
 	$hidden_output .= "name=\"" . pl_html_escape($temp_args['name']) . "\" ";
 	$hidden_output .= "id=\"" . pl_html_escape($temp_args['id']) . "\" ";
 	// If no value supplied substitute default value if specified
-	if(!$field_value && strlen($field_value) < 1 && $temp_args['default']) {
+	// strlen() is cast because $field_value is null on every tag that supplies
+	// no value, which is the common case -- one deprecation per hidden field.
+	if(!$field_value && strlen((string) $field_value) < 1 && $temp_args['default']) {
 		$field_value = $temp_args['default'];
 	}
 	$hidden_output .= "value=\"" . pl_html_escape_label($field_value) . "\" ";

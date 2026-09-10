@@ -130,14 +130,17 @@ class pikaContact extends plBase
 	public function capitolizeNames()
 	{
 		// Automatically make the first letter of these fields uppercase.
-		$this->first_name = ucfirst($this->first_name);
-		$this->middle_name = ucfirst($this->middle_name);
-		$this->extra_name = ucfirst($this->extra_name);
-		$this->last_name = ucfirst($this->last_name);
+		$this->first_name = ucfirst((string) $this->first_name);
+		$this->middle_name = ucfirst((string) $this->middle_name);
+		$this->extra_name = ucfirst((string) $this->extra_name);
+		$this->last_name = ucfirst((string) $this->last_name);
 	}
 	
 	public function firstNameOnly($str)
 	{
+		// Normalised on the way in, so the return value is a string too.
+		// See pikaMisc::firstNameOnly().
+		$str = (string) $str;
 		$pos = strpos($str, " ");
 		
 		if (!($pos === false))
@@ -156,17 +159,17 @@ class pikaContact extends plBase
 		$first = $this->firstNameOnly($this->first_name);
 		$last = $this->last_name;
 		
-		$this->mp_first = metaphone($first, 8);
-		$this->mp_last = metaphone($last, 8);
+		$this->mp_first = metaphone((string) $first, 8);
+		$this->mp_last = metaphone((string) $last, 8);
 	}
 		
 	public function capitolizeAddress()
 	{
 		// Automatically make the first letter of these fields uppercase.
-		$this->city = ucfirst($this->city);
-		$this->county = ucfirst($this->county);
+		$this->city = ucfirst((string) $this->city);
+		$this->county = ucfirst((string) $this->county);
 		// States are always uppercase.
-		$this->state = strtoupper($this->state);
+		$this->state = strtoupper((string) $this->state);
 		return true;
 	}
 	

@@ -75,6 +75,10 @@ class pikaMisc
 	
 	public static function firstNameOnly($str)
 	{
+		// A name column that is NULL is normal. Normalised once, on the way
+		// in, so that the value RETURNED is a string too -- the caller in
+		// contactMetaphoneCheck() hands it straight to metaphone().
+		$str = (string) $str;
 		$pos = strpos($str, ' ');
 
 		if (!($pos === false))
@@ -496,7 +500,9 @@ class pikaMisc
 		mysql_query($sql) or trigger_error('');
 		*/
 
-		$mp_last = metaphone($last_name);
+		// Same reason as firstNameOnly() above: either name can be NULL in the
+		// contact row this is called with, and metaphone() takes a string.
+		$mp_last = metaphone((string) $last_name);
 		$mp_first = metaphone(pikaMisc::firstNameOnly($first_name));
 
 		if (strlen($mp_last) > 1)
@@ -963,8 +969,8 @@ class pikaMisc
 		closedir($dh);
 		
 		// AMW - 2012-11-20 - Include reports from "-custom/extensions" folder.
-		$ext_report_urls = explode(":", pl_settings_get('extensions_report_urls'));
-		$ext_report_titles = explode(":", pl_settings_get('extensions_report_titles'));
+		$ext_report_urls = explode(":", (string) pl_settings_get('extensions_report_urls'));
+		$ext_report_titles = explode(":", (string) pl_settings_get('extensions_report_titles'));
 		// 2013-08-13 AMW - These two lines eliminate the blank ghost entry at the bottom of the extensions list.
 		array_pop($ext_report_urls);
 		array_pop($ext_report_titles);
@@ -1130,7 +1136,7 @@ class pikaMisc
 		$total_records = 0;
 		$screen = pl_grab_get('screen');
 		
-		if (strlen(pl_grab_get('dmodeb')) > 0) 
+		if (strlen((string) pl_grab_get('dmodeb')) > 0) 
 		{
 			$dmode = 'browse';
 		}
@@ -1163,7 +1169,7 @@ class pikaMisc
 		//$alpha_str = '';
 		
 		// Look for contacts that match the search parameters.
-		if (strlen($filter['last_name']) > 0)
+		if (strlen((string) $filter['last_name']) > 0)
 		{
 			$search_performed = true;
 			
@@ -1387,7 +1393,7 @@ class pikaMisc
 			}
 		}
 
-		if ('search' == $dmode && strlen($filter['ssn']) > 0)
+		if ('search' == $dmode && strlen((string) $filter['ssn']) > 0)
 		{
 			$search_performed = true;
 
@@ -1434,7 +1440,7 @@ class pikaMisc
 			}
 		}
 
-		if ('search' == $dmode && strlen($filter['phone']) > 0)
+		if ('search' == $dmode && strlen((string) $filter['phone']) > 0)
 		{
 			$search_performed = true;
 

@@ -141,7 +141,7 @@ function send_mail_notification($user_id, $case_id, $case_number, $sender_name)
 	$safe_user_id = DB::escapeString($user_id);
 	
 	if (is_numeric($safe_user_id) 
-			&& strlen(pl_settings_get('sparkpost_from_address')) > 0 
+			&& strlen((string) pl_settings_get('sparkpost_from_address')) > 0 
 			&& strlen(pl_settings_get('sparkpost_api_key')) > 0)
 	{
 		$result = DB::query("SELECT email FROM users WHERE user_id = {$safe_user_id}");

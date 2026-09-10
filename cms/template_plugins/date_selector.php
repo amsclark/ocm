@@ -15,7 +15,7 @@
 function date_selector($field_name = null, $field_value = null, $container = null, $args = null)
 {
 	
-	if(strlen($field_value) < 1 || strtotime($field_value) === false) {
+	if(strlen((string) $field_value) < 1 || strtotime((string) $field_value) === false) {
 		$field_value = date('n/d/Y');
 	}if(!is_array($args)) {
 		$args = array();

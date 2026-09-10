@@ -308,7 +308,7 @@ class plFlexList
 		it'll look weird with just a header and a footer and no rows.  Otherwise,
 		display the table normally.
 		*/
-		if (strlen($this->rows_buffer) < 1)
+		if (strlen((string) $this->rows_buffer) < 1)
 		{
 			return "<p><em>No records found.</em></p>";
 		}

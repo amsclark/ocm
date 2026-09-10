@@ -61,7 +61,7 @@ else if ('closed' == $mode)
 }
 
 
-$q = explode(",", $filter['client_name'], 2);
+$q = explode(",", (string) $filter['client_name'], 2);
 $filter['last_name'] = trim($q[0]);
 
 if (isset($q[1])) 
@@ -81,11 +81,11 @@ $filter['opened_on_after'] = pl_grab_get('opened_on_after', null, 'date');
 
 $closed_on_after = pl_grab_get('closed_on_after');
 
-if ('NULL' == strtoupper($closed_on_after))
+if ('NULL' == strtoupper((string) $closed_on_after))
 {
 	$filter["closed_on_after"] = 'NULL';
 }
-else if ('NOT NULL' == strtoupper($closed_on_after))
+else if ('NOT NULL' == strtoupper((string) $closed_on_after))
 {
 	$filter["closed_on_after"] = 'NOT NULL';
 }

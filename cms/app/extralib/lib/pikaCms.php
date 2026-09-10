@@ -1907,7 +1907,9 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 			$sql .= " AND activities.user_id IN ($tmpa)";
 		}
 
-		else if ($filter['user_id'])
+		// The key is absent whenever the caller filters by anything else, so
+		// this was an undefined array key rather than a false test.
+		else if (!empty($filter['user_id']))
 		{
 			$sql .= " AND activities.user_id='" . DB::escapeString($filter['user_id']) . "'";
 		}

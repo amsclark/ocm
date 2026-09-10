@@ -279,19 +279,45 @@ else
 	
 	while ($row = DBResult::fetchRow($result))
 	{
-		$row['atty_address'] = pl_text_address($row);
-		$row['last_case'] = pl_date_unmogrify($row['last_case']);
+		// Escapes atty_address and the seven other DB-sourced columns the
+		// subtemplate renders raw. atty_name is built below and escaped
+		// there, because the two screens build it differently.
+		$row = pikaPbAttorney::decorateListRow($row);
+		
+		// The attorney name is DB-sourced and lands in a text node either
+		// way, so it is escaped once here. It used to be interpolated raw
+		// into both branches, which made this a stored-XSS sink.
+		$pba_name = pl_html_escape(trim("{$row['last_name']}, {$row['first_name']} {$row['middle_name']} {$row['extra_name']}"));
+		
 		if ('find_pb' == $screen)
 		{
-			$row['atty_name'] = "<a href='dataops.php?action=set_case_pba&case_id=$case_id&field=$field&pba_id={$row['pba_id']}'>{$row["last_name"]}, {$row["first_name"]} {$row["middle_name"]} {$row["extra_name"]}</a>";
+			/*	A POST form, not a link. dataops.php's set_case_pba assigns
+				a pro bono attorney to a case slot, and it reads its inputs
+				from POST only so that the file-level pl_csrf_check() covers
+				it. The <a href> that used to be here submitted nothing that
+				handler could act on, so this screen could not assign an
+				attorney at all.
+				
+				The flex row is rendered between the two forms in
+				subtemplates/pb_attorneys.html rather than inside either, so
+				this form does not nest.
+			*/
+			$row['atty_name'] = "<form action=\"dataops.php\" method=\"POST\" class=\"d-inline\">"
+				. pl_csrf_hidden_input()
+				. "<input type=\"hidden\" name=\"action\" value=\"set_case_pba\">"
+				. "<input type=\"hidden\" name=\"case_id\" value=\"" . (int) $case_id . "\">"
+				. "<input type=\"hidden\" name=\"field\" value=\"" . pl_html_escape((string) $field) . "\">"
+				. "<input type=\"hidden\" name=\"pba_id\" value=\"" . (int) $row['pba_id'] . "\">"
+				. "<button type=\"submit\" class=\"btn btn-link p-0 align-baseline\">{$pba_name}</button>"
+				. "</form>";
 		}
 		
 		else
 		{
-			$row['atty_name'] = "<a href=pb_attorneys.php?screen=edit_pb&pba_id={$row["pba_id"]}>{$row["last_name"]}, {$row["first_name"]} {$row["middle_name"]} {$row["extra_name"]}</a>";
+			// The href was unquoted as well, so a pba_id that was ever
+			// non-numeric would end the attribute at the first space.
+			$row['atty_name'] = "<a href=\"pb_attorneys.php?screen=edit_pb&amp;pba_id=" . (int) $row['pba_id'] . "\">{$pba_name}</a>";
 		}
-		
-		
 		
 		$pba_list->addHtmlRow($row);
 	}
