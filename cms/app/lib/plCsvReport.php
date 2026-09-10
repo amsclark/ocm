@@ -108,16 +108,15 @@ class plCsvReport
 		header("Content-type: application/force-download");
 		header("Content-Type: text/x-comma-separated-values");
 		
+		/*	strlen(), not mb_strlen(). Content-Length counts bytes; on a
+			build where mbstring's internal encoding is UTF-8, mb_strlen()
+			counts characters, so a report holding any non-ASCII text -- an
+			accented client name, a curly quote pasted out of a document --
+			declared a length shorter than the body and the browser cut the
+			download off at that many bytes.
+		*/
 		if (pl_settings_get("enable_compression") == false)
 		{
-			/*	strlen, not mb_strlen. mb_strlen counts UTF-8 code
-				points; Content-Length is bytes. A report holding any
-				multi-byte character therefore declared a body shorter
-				than it sent, and the browser stopped reading at the
-				declared length and wrote a truncated CSV to disk. Only
-				reachable with compression off, which is how several
-				installs run.
-			*/
 			header("Content-Length: " . strlen($buffer));
 		}
 

@@ -395,110 +395,217 @@ class pikaCase extends plBaseWithUdf
 	}
 
 	
-	// Return info on contacts that may be duplicates of case contactss
+	/*	Conflict of interest check for this case.
+		
+		Every value below is read out of a table rather than out of the request,
+		which is not the same thing as safe. aliases.ssn is a free-text column an
+		intake user fills in, eleven characters wide, and nothing checks its
+		shape: "1' OR 1=1#" fits. It went into the two statements in the social
+		security block as text, so one saved contact record turned this check
+		into a statement of that user's choosing. On a test install it listed
+		every contact in the database - including people with no social security
+		number at all - as an SSN conflict. Bind every value.
+		
+		Further faults in the same function, all of them under-reporting:
+		
+		The social security test read strlen($row['ssn'] > 0). That measures the
+		comparison, not the number, so it answered 1 for very nearly every value.
+		Count digits instead: an intake that carries "XXX-XX-XXXX" or "N/A" as a
+		placeholder must not match every other record holding the same
+		placeholder.
+		
+		The name block and the social security block each built two statements
+		and assigned both to $sql, so the first of each pair - the one that reads
+		the contacts table - was thrown away before it ran. A contact written by
+		a data migration or another ingest path can have no aliases row at all,
+		and a conflict with that person was never reported. Both statements now
+		run. The discarded pair also named aliases.mp_first in a statement that
+		does not join aliases, so neither could have run as written.
+		
+		An empty mp_last matches every alias that has no metaphone key, which is
+		every organisation and every part-filled record, so the name search is
+		skipped when there is no key to search on.
+		
+		cms/app/extralib/lib/pikaCms.php carries a second copy of this check, the
+		one cms/reports/conflict/conflict.php uses. The two files cannot share
+		one implementation because pika_cms.php does not put app/lib on the
+		include path, so a fix here needs the same fix there.
+	*/
 	public function fuzzyConflictCheck($lim = 10)
 	{
-		$case_id = $this->getValue('case_id');
+		$case_id = (int) $this->getValue('case_id');
+		$lim = (int) $lim;
 		$conflict_array = array();
-		$sql = "SELECT conflict.contact_id, relation_code, aliases.mp_first, aliases.mp_last, aliases.ssn, birth_date 
-							FROM conflict 
-							LEFT JOIN aliases ON conflict.contact_id=aliases.contact_id 
-							LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id 
-							WHERE case_id='{$case_id}'";
-		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+		$seen = array();
+		
+		if ($case_id < 1 || $lim < 1)
+		{
+			return $conflict_array;
+		}
+		
+		/*	contacts is joined on conflict.contact_id, not on aliases.contact_id.
+			A party with no aliases row left the aliases side of the join NULL,
+			which left aliases.contact_id NULL, which left the contacts side
+			NULL as well - so that party carried no name, no social security
+			number and no date of birth into the searches below and was checked
+			by contact ID alone. COALESCE reads the aliases values when the
+			party has an aliases row, which is the normal case, and the contacts
+			values when it does not.
+		*/
+		$sql = "SELECT conflict.contact_id, relation_code,
+					COALESCE(aliases.mp_first,contacts.mp_first) AS mp_first,
+					COALESCE(aliases.mp_last,contacts.mp_last) AS mp_last,
+					COALESCE(aliases.ssn,contacts.ssn) AS ssn,
+					contacts.birth_date
+				FROM conflict
+				LEFT JOIN aliases ON conflict.contact_id=aliases.contact_id
+				LEFT JOIN contacts ON conflict.contact_id=contacts.contact_id
+				WHERE case_id = ?";
+		$result = DB::preparedQuery($sql,array($case_id))
+			or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+		
+		/*	Read the parties out before searching. The searches below run on the
+			same connection, and starting one while this result is still open
+			loses this result.
+		*/
+		$parties = array();
 		
 		while ($row = DBResult::fetchRow($result))
 		{
+			$parties[] = $row;
+		}
+		
+		foreach ($parties as $row)
+		{
+			$relation_code = $row['relation_code'];
+			$contact_id = $row['contact_id'];
+			$mp_first = (string) $row['mp_first'];
+			$mp_last = (string) $row['mp_last'];
+			$ssn = (string) $row['ssn'];
+			$birth_date = $row['birth_date'];
+			
 			// Match by contact ID
 			$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
 					FROM conflict
 					LEFT JOIN contacts ON conflict.contact_id=contacts.contact_id
 					LEFT JOIN cases ON conflict.case_id=cases.case_id
 					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']}
-					AND conflict.contact_id = {$row['contact_id']}
-					LIMIT $lim";
-			$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+					WHERE relation_code != ?
+					AND conflict.contact_id = ?
+					LIMIT {$lim}";
+			self::collectConflicts($sql,array($relation_code,$contact_id),'ID',
+				$conflict_array,$seen);
 			
-			while($tmp_row = DBResult::fetchRow($sub_result))
+			// Match by metaphone name and birth date
+			if (strlen($mp_last) > 0)
 			{
-				$tmp_row['match'] = 'ID';
-				$conflict_array[] = $tmp_row;
-			}
-			
-			
-			// Match by metaphone name/birth date
-			if (strlen((string) $row['mp_first']) > 0)
-			{
-				$mp_first = " AND aliases.mp_first='{$row['mp_first']}'";
-			}
-			
-			else
-			{
-				$mp_first = '';
-			}
-			
-			if ($row['birth_date'])
-			{
-				$mp_first .= " AND (birth_date='{$row['birth_date']}' OR birth_date IS NULL)";
-			}
-			
-			$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
-					FROM contacts
-					LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND mp_last='{$row['mp_last']}'{$mp_first}
-					AND conflict.contact_id != {$row['contact_id']}
-					LIMIT $lim";
-			$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
-					FROM aliases
-					LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-					LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND aliases.mp_last='{$row['mp_last']}'{$mp_first}
-					AND conflict.contact_id != {$row['contact_id']}
-					LIMIT $lim";
-			$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
-			
-			while($tmp_row = DBResult::fetchRow($sub_result))
-			{
-				$tmp_row['match'] = 'NAME';
-				$conflict_array[] = $tmp_row;
-			}
-			
-			// Match by SSN
-			if (strlen($row['ssn'] > 0))
-			{
-				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
-					FROM contacts
-					LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND ssn='{$row['ssn']}'
-					AND conflict.contact_id != {$row['contact_id']} AND mp_last!='{$row['mp_last']}'
-					LIMIT $lim";
-				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
-					FROM aliases
-					LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-					LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND aliases.ssn='{$row['ssn']}'
-					AND conflict.contact_id != {$row['contact_id']} AND aliases.mp_last!='{$row['mp_last']}'
-					LIMIT $lim";
-				$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+				$contacts_clause = '';
+				$aliases_clause = '';
+				$contacts_params = array($relation_code,$mp_last);
+				$aliases_params = array($relation_code,$mp_last);
 				
-				while($tmp_row = DBResult::fetchRow($sub_result))
+				if (strlen($mp_first) > 0)
 				{
-					$tmp_row['match'] = 'SSN';
-					$conflict_array[] = $tmp_row;
+					$contacts_clause .= ' AND contacts.mp_first = ?';
+					$aliases_clause .= ' AND aliases.mp_first = ?';
+					$contacts_params[] = $mp_first;
+					$aliases_params[] = $mp_first;
 				}
+				
+				if ($birth_date)
+				{
+					$contacts_clause .= ' AND (contacts.birth_date = ? OR contacts.birth_date IS NULL)';
+					$aliases_clause .= ' AND (contacts.birth_date = ? OR contacts.birth_date IS NULL)';
+					$contacts_params[] = $birth_date;
+					$aliases_params[] = $birth_date;
+				}
+				
+				$contacts_params[] = $contact_id;
+				$aliases_params[] = $contact_id;
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
+						FROM contacts
+						LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND contacts.mp_last = ?{$contacts_clause}
+						AND conflict.contact_id != ?
+						LIMIT {$lim}";
+				self::collectConflicts($sql,$contacts_params,'NAME',$conflict_array,$seen);
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
+						FROM aliases
+						LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
+						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND aliases.mp_last = ?{$aliases_clause}
+						AND conflict.contact_id != ?
+						LIMIT {$lim}";
+				self::collectConflicts($sql,$aliases_params,'NAME',$conflict_array,$seen);
+			}
+			
+			// Match by social security number
+			if (strlen(preg_replace('/\D/','',$ssn)) > 0)
+			{
+				$ssn_params = array($relation_code,$ssn,$contact_id,$mp_last);
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
+						FROM contacts
+						LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND contacts.ssn = ?
+						AND conflict.contact_id != ? AND contacts.mp_last != ?
+						LIMIT {$lim}";
+				self::collectConflicts($sql,$ssn_params,'SSN',$conflict_array,$seen);
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
+						FROM aliases
+						LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
+						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND aliases.ssn = ?
+						AND conflict.contact_id != ? AND aliases.mp_last != ?
+						LIMIT {$lim}";
+				self::collectConflicts($sql,$ssn_params,'SSN',$conflict_array,$seen);
 			}
 		}
 		
 		return $conflict_array;
+	}
+	
+	
+	/*	Run one conflict search and add what it returns to $conflict_array.
+		
+		A person can be reached through more than one party on this case, and now
+		through more than one statement per search, so each match type is listed
+		once per person per case.
+		
+		Public because pikaLSXML_V2::fuzzyConflictCheck() runs the same searches
+		against a case that has not been saved yet. Both files are under
+		cms/app/lib, so that one can require this one.
+	*/
+	public static function collectConflicts($sql, $params, $match, &$conflict_array, &$seen)
+	{
+		$result = DB::preparedQuery($sql,$params)
+			or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+		
+		while ($tmp_row = DBResult::fetchRow($result))
+		{
+			$key = $match . ':' . (string) $tmp_row['contact_id'] . ':'
+				. (string) $tmp_row['case_id'];
+			
+			if (isset($seen[$key]))
+			{
+				continue;
+			}
+			
+			$seen[$key] = true;
+			$tmp_row['match'] = $match;
+			$conflict_array[] = $tmp_row;
+		}
 	}
 	
 	

@@ -50,6 +50,44 @@ if (sizeof($user_list) == 0 && sizeof($pba_list) == 0){
 	$user_list[] = $auth_row['user_id'];
 }
 
+/*	Whose activities this listing may show. The filters below went into the
+	query as submitted, so any user could list any colleague's activities -
+	summary, notes, case number and hours - from this page. See
+	pl_can_view_user_calendar() in cms/pika-danio.php.
+	
+	An unfiltered run is the caller's own activities, set just above, and stays
+	allowed. A run that names somebody else - another user, a pro bono
+	attorney, or a whole office - needs the permission.
+*/
+$calendar_asked_for_others = false;
+
+foreach ((array) $user_list as $calendar_asked_user)
+{
+	if ((string) $calendar_asked_user !== (string) $auth_row['user_id'])
+	{
+		$calendar_asked_for_others = true;
+	}
+}
+
+if (count((array) $pba_list) > 0 || strlen((string) $office) > 0)
+{
+	$calendar_asked_for_others = true;
+}
+
+if ($calendar_asked_for_others && !pl_can_view_user_calendar(''))
+{
+	pl_log_error('activity listing refused',
+		'user ' . $auth_row['user_id'] . ' asked for other users');
+	$deny = array();
+	$deny['page_title'] = 'Activity Listing';
+	$deny['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; Activity Listing";
+	$deny['content'] = 'That listing is not viewable. Only a group with'
+		. ' read-all permission may list another user&rsquo;s activities while'
+		. ' shared calendars are switched off.';
+	$deny_template = new pikaTempLib('templates/default.html',$deny);
+	pika_exit($deny_template->draw());
+}
+
 
 
 //$tpl['cal_date'] = $cal_date;
