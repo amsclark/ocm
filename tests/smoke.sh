@@ -3540,5 +3540,253 @@ else
 fi
 
 echo
+echo "49. the output encoding helpers in pl.php"
+
+# Every menu, every address block and every widget rendered by a %%[tag]%%
+# wrote database text straight into markup. pl_html_menu() interpolated the
+# option keys, the option labels and the field name into a <select> unescaped;
+# pl_html_address() interpolated the six address components; pl_template_sub()
+# escaped nothing in its radio, vradio, option and text modes; and
+# pl_clean_html_array(), which is what plFlexList::addRow() runs, encoded its
+# values differently from pl_clean_html(), so the same stored bracket read
+# correctly on a detail screen and as a literal "&lt;" in the list beside it.
+#
+# The fixtures below put hostile text where each of those helpers reads from:
+# a funding menu label, an office menu label, a case-status menu *value*, a
+# staff surname, a contact's address components, a gender menu label, and a
+# case number holding the "&lt;" that pl_clean_form_input() writes on input.
+if [ "$HAVE_DB" = 1 ]; then
+	OE_BODY="${BODY}.oe"
+	
+	cleanup_oe() {
+		adb "DELETE FROM conflict WHERE contact_id IN (SELECT contact_id FROM contacts WHERE last_name = 'ZZ49CONTACT')" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = 'ZZ49CONTACT'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ49&lt;A'" >/dev/null
+		adb "DELETE FROM users WHERE username = 'zz49user'" >/dev/null
+		adb "DELETE FROM menu_funding WHERE value = 'Z9'" >/dev/null
+		adb "DELETE FROM menu_office WHERE value = 'Z8'" >/dev/null
+		adb "DELETE FROM menu_case_status WHERE label = 'ZZ49quotevalue'" >/dev/null
+		adb "DELETE FROM menu_gender WHERE value = 'Z'" >/dev/null
+		rm -f "$OE_BODY"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_oe' EXIT
+	cleanup_oe
+	
+	oe_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	oe_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+	
+	# A label carrying a tag, a label that is already an entity on purpose, and
+	# a menu *value* holding the quote that would end the value="" attribute.
+	adb "INSERT INTO menu_funding (value, label, menu_order)
+		VALUES ('Z9', 'ZZ49<img src=x onerror=alert(1)>', 99)" >/dev/null
+	adb "INSERT INTO menu_office (value, label, menu_order)
+		VALUES ('Z8', 'ZZ49&gt;preencoded', 99)" >/dev/null
+	adb "INSERT INTO menu_case_status (value, label, menu_order)
+		VALUES ('\"', 'ZZ49quotevalue', 99)" >/dev/null
+	adb "INSERT INTO menu_gender (value, label, menu_order)
+		VALUES ('Z', 'ZZ49<b>genderlabel</b>', 99)" >/dev/null
+	
+	# pikaMisc::fetchStaffArray() builds the staff menu labels out of the name
+	# columns, so a surname is a menu label too. Login disabled: this row only
+	# has to appear in the menu.
+	OEUID="$(oe_next_id users user_id)"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, last_name, first_name, password_expire)
+		VALUES (${OEUID}, 'zz49user', 'x', 0, 'system', 'ZZ49\"><svg onload=alert(2)>', 'T', 0)" >/dev/null
+	oe_bump_counter users "$OEUID"
+	
+	OECON="$(oe_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name, org, address, address2, city, state, zip, gender)
+		VALUES (${OECON}, 'Zz', 'ZZ49CONTACT', 'ZZ49ORG\"><i>', 'ZZ49ADDR\"><img src=y>', 'ZZ49A2', 'ZZ49CITY<u>', 'ZZ49ST', '12345', 'Z')" >/dev/null
+	oe_bump_counter contacts "$OECON"
+	
+	# The case number holds a literal "&lt;", which is what a submitted "<"
+	# becomes: pl_clean_form_input() converts it on the way in. Whether the
+	# list shows "&lt;" or "&amp;lt;" is the pl_clean_html_array() question.
+	OECASE="$(oe_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${OECASE}, 'ZZ49&lt;A', 1, 'ZZO', '1', 1)" >/dev/null
+	oe_bump_counter cases "$OECASE"
+	
+	OECF="$(oe_next_id conflict conflict_id)"
+	adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
+		VALUES (${OECF}, ${OECON}, ${OECASE}, 1)" >/dev/null
+	oe_bump_counter conflict "$OECF"
+	
+	# 49a. pl_html_menu() - the advanced case list form draws four menus.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$OE_BODY" \
+		"$OCM_URL/case_list.php?mode=advanced" >/dev/null
+	
+	if grep -qF -- 'onerror=alert(1)>' "$OE_BODY"; then
+		bad "a funding menu label reaches the case list form as live markup"
+	else
+		ok "a funding menu label cannot put a tag in the case list form"
+	fi
+	
+	if grep -qF -- 'ZZ49&lt;img src=x onerror=alert(1)&gt;' "$OE_BODY"; then
+		ok "the funding menu label is still readable, escaped"
+	else
+		bad "the funding menu label is missing from the case list form"
+	fi
+	
+	if grep -qF -- 'svg onload=alert(2)>' "$OE_BODY"; then
+		bad "a staff surname reaches the case list form as live markup"
+	else
+		ok "a staff surname cannot put a tag in the case list form"
+	fi
+	
+	if grep -qF -- 'ZZ49&quot;&gt;&lt;svg onload=alert(2)&gt;' "$OE_BODY"; then
+		ok "the staff surname is still readable, escaped"
+	else
+		bad "the staff surname is missing from the case list form"
+	fi
+	
+	# The menu key lands in value="", so a quote in it used to end the
+	# attribute and let the rest of the key become attributes of its own.
+	if grep -qF -- '<option value="&quot;">ZZ49quotevalue' "$OE_BODY"; then
+		ok "a quote in a menu value is escaped inside the value attribute"
+	else
+		bad "a quote in a menu value is not escaped inside the value attribute"
+	fi
+	
+	if grep -qE '<option value="""' "$OE_BODY"; then
+		bad "a menu value with a quote breaks out of the value attribute"
+	else
+		ok "no option tag has a value attribute ended by its own contents"
+	fi
+	
+	# The other half of the decision: a label is allowed to arrive already
+	# encoded. menu_comparison_sql ships labels that are literally "&lt;" and
+	# "&gt;", and an author who needs a comma in a label has to write "&#44;"
+	# because the %%[tag]%% parser splits on commas. Escaping those again would
+	# show the user "&amp;gt;". pl_html_escape_label() is what keeps them.
+	if grep -qF -- 'ZZ49&gt;preencoded' "$OE_BODY" \
+		&& ! grep -qF -- 'ZZ49&amp;gt;preencoded' "$OE_BODY"; then
+		ok "a menu label that is already an entity is not encoded twice"
+	else
+		bad "a pre-encoded menu label is double-encoded and shows its own entity"
+	fi
+	
+	# pl_template_sub()'s vradio mode wrote tabindex with no quotes around it
+	# in the multiselect sibling; check the radio widget renders a quoted one.
+	if grep -qF -- 'class="plradio" tabindex="1"' "$OE_BODY"; then
+		ok "the radio widget writes a quoted tabindex attribute"
+	else
+		bad "the radio widget does not write a quoted tabindex attribute"
+	fi
+	
+	# 49b. pl_html_address(), pl_template_sub() text mode, and the
+	# pl_clean_html_array() path that plFlexList::addRow() runs.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$OE_BODY" \
+		"$OCM_URL/contact_pop_up.php?contact_id=${OECON}" >/dev/null
+	
+	if grep -qF -- 'img src=y>' "$OE_BODY"; then
+		bad "a contact address line reaches the page as live markup"
+	else
+		ok "a contact address line cannot put a tag on the page"
+	fi
+	
+	if grep -qF -- 'ZZ49ADDR&quot;&gt;&lt;img src=y&gt;' "$OE_BODY"; then
+		ok "the address line is still readable, escaped"
+	else
+		bad "the address line is missing from the contact screen"
+	fi
+	
+	if grep -qF -- 'ZZ49CITY&lt;u&gt;, ZZ49ST 12345' "$OE_BODY"; then
+		ok "the city, state and zip components are escaped individually"
+	else
+		bad "the city/state/zip line is not escaped as separate components"
+	fi
+	
+	# The escaping goes on the components, not the finished string: this
+	# function interleaves <br> tags with the data, so escaping the result
+	# would print the tags instead of applying them.
+	if grep -qF -- 'ZZ49ORG&quot;&gt;&lt;i&gt;<br>' "$OE_BODY"; then
+		ok "the line breaks between address components are still tags"
+	else
+		bad "pl_html_address escaped its own <br> separators"
+	fi
+	
+	if grep -qF -- '<b>genderlabel</b>' "$OE_BODY"; then
+		bad "a menu label in text mode reaches the page as live markup"
+	else
+		ok "a menu label in text mode cannot put a tag on the page"
+	fi
+	
+	if grep -qF -- 'ZZ49&lt;b&gt;genderlabel&lt;/b&gt;' "$OE_BODY"; then
+		ok "the text-mode menu label is still readable, escaped"
+	else
+		bad "the text-mode menu label is missing from the contact screen"
+	fi
+	
+	# plFlexList::addRow() runs pl_clean_html_array(). It used to skip the
+	# step that turns a stored "&lt;" back into "<" before escaping, so the
+	# list printed "&amp;lt;" where the detail screen printed "&lt;" -- the
+	# same value, shown two ways on two screens.
+	if grep -qF -- 'ZZ49&lt;A' "$OE_BODY" \
+		&& ! grep -qF -- 'ZZ49&amp;lt;A' "$OE_BODY"; then
+		ok "a list row encodes a stored bracket the same way a detail screen does"
+	else
+		bad "a list row double-encodes a stored bracket the detail screen shows once"
+	fi
+	
+	# 49c. Two helpers no template reaches over HTTP. pl_js_escape() is new,
+	# and pl_template_sub()'s option mode had "$x .- " where the append
+	# operator belongs, which is a fatal TypeError on PHP 8 -- so any template
+	# using that mode white-screened. Both are exercised in the container.
+	if [ "$HAVE_COMPOSE" = 1 ]; then
+		OE_PHP="$(docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-w /var/www/html/cms app php -r '
+			define("PL_DISABLE_SECURITY", true);
+			require_once("pika-danio.php");
+			pika_init();
+			echo "JS:", (function_exists("pl_js_escape")
+				? pl_js_escape("</script><a href=\"x\">&|") : "missing"), "\n";
+			echo "OPT:[", pl_template_sub("%%[gender option]%%",
+				array("gender" => "Z")), "]\n";
+			' </dev/null 2>/dev/null)"
+		
+		# json_encode with the four HEX flags. None of < > & " or | survives as
+		# itself, so the value cannot close the script element, cannot close a
+		# quoted attribute and cannot end the JavaScript string it sits in.
+		if printf '%s' "$OE_PHP" | grep -qF -- 'JS:"\u003C\/script\u003E'; then
+			ok "pl_js_escape hex-encodes a closing script tag"
+		else
+			bad "pl_js_escape does not hex-encode a closing script tag: ${OE_PHP}"
+		fi
+		
+		if printf '%s' "$OE_PHP" | grep -qE 'JS:.*\\u0022.*\\u0026'; then
+			ok "pl_js_escape hex-encodes the quote and the ampersand"
+		else
+			bad "pl_js_escape leaves a quote or an ampersand as itself"
+		fi
+		
+		if printf '%s' "$OE_PHP" | grep -qF -- 'OPT:[<option value="F">'; then
+			ok "the option tag mode emits its options instead of throwing"
+		else
+			bad "the option tag mode emits nothing: ${OE_PHP}"
+		fi
+		
+		if printf '%s' "$OE_PHP" | grep -qF -- '<option value="Z">ZZ49&lt;b&gt;genderlabel&lt;/b&gt;</option>'; then
+			ok "the option tag mode escapes its key and its label"
+		else
+			bad "the option tag mode does not escape its label"
+		fi
+	else
+		printf '  skip the pl_js_escape and option-mode checks (needs compose)\n'
+	fi
+	
+	cleanup_oe
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the output encoding checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

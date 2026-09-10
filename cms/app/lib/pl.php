@@ -113,29 +113,39 @@ function pl_array_to_php_sub($array_data)
 	
 	$x .= "array (\n";
 	
+	/*	var_export() writes the literal, rather than wrapping the value in
+		quotes by hand. The old code quoted the key with no escaping at all, so
+		a key holding an apostrophe closed its own string and the rest of the
+		key became PHP source; a null was emitted as the string '' instead of
+		null, and a bool or a float lost its type on the way through.
+		stripslashes() is kept because the values can still come from
+		magic-quoted legacy data.
+	*/
 	foreach ($array_data as $key => $val)
 	{
 		if (is_string($key))
 		{
-			$key = "'$key'";
+			$key = var_export(stripslashes($key), true);
 		}
 		
-		if (is_string($val))
+		else
 		{
-			$val = stripslashes($val);
-			$val = str_replace("'", "\'", $val);
-			
-			$val = "'$val'";
+			$key = var_export($key, true);
 		}
 		
-		elseif (is_array($val))
+		if (is_array($val))
 		{
 			$val = pl_array_to_php_sub($val);
 		}
 		
-		else if (is_null($val))
+		elseif (is_string($val))
 		{
-			$val = "'$val'";
+			$val = var_export(stripslashes($val), true);
+		}
+		
+		else
+		{
+			$val = var_export($val, true);
 		}
 		
 		$x .= "$key => $val,\n";
@@ -1054,9 +1064,6 @@ function pl_clean_html($str)
 		$str = '';
 	}
 	
-	// 2013-06-27 AMW - Added version check.
-	$version = phpversion();
-	
 	/*	Greater Than and Less Than characters are no longer allowed to be stored
 		in the database.  The are filtered out when submitted via GET or POST.
 		Restore them here, so htmlspecialchar (below) doesn't double encode
@@ -1065,20 +1072,20 @@ function pl_clean_html($str)
 	$str = str_replace('&lt;', '<', $str);
 	$str = str_replace('&gt;', '>', $str);
 	
-	if ($version[0] > 4 && $version[1] > 3)
-	{
-		// AMW - 2012-5-29 - Turned on quote encoding.
-		// 2013-06-27 AMW - Changed to ENT_HTML5 for Bootstrap conversion.
-		$clean_str = htmlspecialchars($str, ENT_QUOTES | ENT_HTML5);
-	}
-	
-	else
-	{
-		// 2013-06-27 AMW - Removed ENT_HTML... for PHP versions prior to 5.4.
-		$clean_str = htmlspecialchars($str, ENT_QUOTES);
-	}
-	
-	return $clean_str;
+	/*	The version check that used to stand here never chose the branch it was
+		written for. It read
+		
+			$version = phpversion();
+			if ($version[0] > 4 && $version[1] > 3)
+		
+		and $version[1] is the dot in "5.4.0", not the minor number, so the
+		test was false on every PHP release ever shipped and ENT_HTML5 was
+		never applied. pl_html_escape() applies it, along with ENT_SUBSTITUTE,
+		which matters more: without it htmlspecialchars() returns the empty
+		string for input that is not valid UTF-8, so one bad byte in a stored
+		field silently blanked the whole value.
+	*/
+	return pl_html_escape($str);
 }
 
 
@@ -1091,46 +1098,25 @@ function pl_clean_html_array($a)
 {
 	$b = array();
 	
-	/*	Same null guard as pl_clean_html(): the arrays handed to this are
-		database rows, and htmlspecialchars() is declared with a string
-		parameter, so one NULL column logged one deprecation per row. It
-		returned '' for null, so nothing renders differently.
+	if (!is_array($a))
+	{
+		return $b;
+	}
+	
+	/*	Now one call to pl_clean_html() per element, which also restores the
+		&lt; and &gt; that pl_clean_form_input() wrote when the value was
+		submitted. This function used to skip that step, so the two cleaners
+		disagreed: a stored "&lt;" came out of pl_clean_html() as "&lt;" and
+		displayed as "<", but came out of here as "&amp;lt;" and displayed as
+		the literal "&lt;". Lists built with plFlexList::addRow() go through
+		this one, so a bracket in a case number or a note read correctly on
+		the detail screen and wrongly in the list beside it. Both paths still
+		end in htmlspecialchars(), so neither was ever unsafe.
 	*/
-	if (is_array($a))
+	foreach ($a as $key => $str)
 	{
-		foreach ($a as $key => $str)
-		{
-			if (is_null($str))
-			{
-				$a[$key] = '';
-			}
-		}
+		$b[$key] = pl_clean_html($str);
 	}
-	
-	// 2013-06-27 AMW - Added version check.
-	$version = phpversion();
-
-	if ($version[0] > 4 && $version[1] > 3)
-	{
-		foreach ($a as $key => $str)
-		{
-			// AMW - 2012-5-29 - Turned on quote encoding.
-			// 2013-06-27 AMW - Changed to ENT_HTML5 for Bootstrap conversion.
-			$b[$key] = htmlspecialchars($str, ENT_QUOTES | ENT_HTML5);
-		}
-	}
-	
-	else
-	{
-		foreach ($a as $key => $str)
-		{
-			// AMW - 2012-5-29 - Turned on quote encoding.
-			// 2013-06-27 AMW - Removed ENT_HTML... for PHP versions prior to 5.4.
-			$b[$key] = htmlspecialchars($str, ENT_QUOTES);
-		}
-	}
-	
-
 	
 	return $b;
 }
@@ -1418,6 +1404,54 @@ if (!function_exists('pl_html_escape')) {
 			return '';
 		}
 		return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+	}
+}
+
+/**
+ * Escape a value for insertion inside a <script> block or a JavaScript event
+ * attribute.
+ *
+ * json_encode() with the four HEX flags turns < > & ' and " into \uXXXX
+ * escapes, so the result cannot close the script element, cannot close a
+ * quoted HTML attribute, and cannot terminate the JavaScript string literal
+ * it sits inside. That last part is why htmlentities() is not a substitute:
+ * inside a <script> block the HTML parser does not decode entities, so
+ * escaping a quote to &quot; corrupts the value instead of protecting it,
+ * and inside an event attribute the parser decodes &#039; back to a real
+ * quote before JavaScript ever sees it, which closes the string early.
+ *
+ * The return value keeps its surrounding double quotes, because a JSON
+ * string literal is what a JavaScript parser wants. JSON_UNESCAPED_UNICODE
+ * only keeps accented characters legible; the HEX flags are what make the
+ * output safe.
+ */
+if (!function_exists('pl_js_escape')) {
+	function pl_js_escape($value)
+	{
+		if (is_array($value) || (is_object($value) && !method_exists($value, '__toString')))
+		{
+			return '""';
+		}
+		
+		if (is_null($value))
+		{
+			$value = '';
+		}
+		
+		$encoded = json_encode(
+			(string) $value,
+			JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE);
+		
+		/*	json_encode() returns false for a string that is not valid UTF-8.
+			An empty JSON string keeps the surrounding JavaScript parseable;
+			letting false through would print the word "false" into it.
+		*/
+		if (false === $encoded)
+		{
+			return '""';
+		}
+		
+		return $encoded;
 	}
 }
 
@@ -2259,28 +2293,36 @@ function pl_html_address($data)
 {
 	$C = "";
 	
+	/*	Every component is escaped on its way in, never the finished string:
+		this function interleaves <br> tags with the data, so escaping the
+		result would print the tags instead of applying them. The address
+		fields are free text a user typed, so a quote or an angle bracket in
+		one of them used to reach the page as markup.
+	*/
 	if (isset($data["org"]) && $data["org"])
 	{
-		$C .= "{$data["org"]}<br>\n";
+		$C .= pl_html_escape($data["org"]) . "<br>\n";
 	}
 	
 	if (isset($data["address"]) && $data["address"])
-	$C .= "{$data["address"]}<br>\n";
+	$C .= pl_html_escape($data["address"]) . "<br>\n";
 	
 	if (isset($data["address2"]) && $data["address2"])
-	$C .= "{$data["address2"]}<br>\n";
+	$C .= pl_html_escape($data["address2"]) . "<br>\n";
 	
 	if (isset($data["city"]) && (isset($data["state"]) || isset($data["zip"])))
 	{
-		$C .= "{$data["city"]}, {$data["state"]} {$data["zip"]}\n";
+		$C .= pl_html_escape($data["city"]) . ', '
+			. pl_html_escape(isset($data["state"]) ? $data["state"] : '') . ' '
+			. pl_html_escape(isset($data["zip"]) ? $data["zip"] : '') . "\n";
 	}
 	
 	else
 	{
 		// no comma
-		$C .= pl_array_lookup('city', $data) . ' '
-			. pl_array_lookup('state', $data) . ' '
-			. pl_array_lookup('zip', $data) . "\n";
+		$C .= pl_html_escape(pl_array_lookup('city', $data)) . ' '
+			. pl_html_escape(pl_array_lookup('state', $data)) . ' '
+			. pl_html_escape(pl_array_lookup('zip', $data)) . "\n";
 	}
 	
 	return $C;
@@ -2300,9 +2342,13 @@ function pl_html_checkbox($name, $val)
 		$checked = '';
 	}
 	
+	// The name reaches this from a template tag, so it goes into three
+	// quoted attributes escaped.
+	$safe_name = pl_html_escape($name);
+	
 	// Assigning two fields the same name may not be compatible with all browsers.  May not be compliant with W3C standards, either.
-	$C .= "<input type=\"hidden\" name=\"$name\" value=\"0\"/>";
-	$C .= "<input type=\"checkbox\" name=\"$name\" id=\"$name\" value=\"1\" class=\"plcheck\" tabindex=\"1\"{$checked}/>\n";
+	$C .= "<input type=\"hidden\" name=\"{$safe_name}\" value=\"0\"/>";
+	$C .= "<input type=\"checkbox\" name=\"{$safe_name}\" id=\"{$safe_name}\" value=\"1\" class=\"plcheck\" tabindex=\"1\"{$checked}/>\n";
 	return $C;
 }
 
@@ -2335,7 +2381,19 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 		$a = array();
 	}
 	
-	$o .= "<select name=\"$field_name\" id=\"$field_name\" class=\"plmenu\" tabindex=\"$ti\">\n";
+	/*	Menu keys and the field name go into quoted attributes, so they run
+		through pl_html_escape(). Labels run through pl_html_escape_label()
+		instead, because a label is allowed to arrive already encoded: the
+		%%[tag]%% parser splits on commas, so an author who needs a comma in a
+		label writes &#44;, and menu_comparison_sql ships labels that are
+		literally "&lt;" and "&gt;". Escaping those again would show the user
+		"&amp;lt;". Anything that could break out of an attribute or start a
+		tag is escaped either way -- see pl_html_escape_label().
+	*/
+	$safe_field_name = pl_html_escape($field_name);
+	$safe_ti = pl_html_escape($ti);
+	
+	$o .= "<select name=\"{$safe_field_name}\" id=\"{$safe_field_name}\" class=\"plmenu\" tabindex=\"{$safe_ti}\">\n";
 	
 	/*	Add a blank/NULL option if requested
 	
@@ -2370,6 +2428,9 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 	
 	foreach ($a as $key => $label)
 	{
+		$safe_key = pl_html_escape($key);
+		$safe_label = pl_html_escape_label($label);
+		
 		/*
 		Don't eval. fields with string values with this test; strings
 		always return true.  Weed out strings here with is_numeric() and use
@@ -2379,26 +2440,35 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 		*/
 		if (($field_value == $key) && is_numeric($field_value) && !$field_value_selected)
 		{
-			$o .= "<option selected value=\"$key\">$label</option>\n";
+			$o .= "<option selected value=\"{$safe_key}\">{$safe_label}</option>\n";
 			$field_value_selected = TRUE;
 		}
 		
 		// if not a string, must be a string.  use strcmp
 		else if ((strcmp($field_value,$key) == 0) && !$field_value_selected)
 		{
-			$o .= "<option selected value=\"$key\">$label</option>\n";
+			$o .= "<option selected value=\"{$safe_key}\">{$safe_label}</option>\n";
 			$field_value_selected = TRUE;
 		}
 		
 		else
 		{
-			$o .= "<option value=\"$key\">$label</option>\n";
+			$o .= "<option value=\"{$safe_key}\">{$safe_label}</option>\n";
 		}
 	}
 	
 	if ($field_value_selected == FALSE)
 	{
-		$o .= '<option selected value="' . $field_value . '">' . $field_value . '</option>
+		/*	The stored value is not in the menu, so it is shown as its own
+			option to keep the form from silently changing it on save. It came
+			off a request or out of the database, so it is escaped for both the
+			attribute and the visible text. pl_html_escape(), not the label
+			variant: this is a value that has to round-trip on submit, and
+			guessing that it is pre-encoded would change what the form sends
+			back.
+		*/
+		$safe_value = pl_html_escape($field_value);
+		$o .= '<option selected value="' . $safe_value . '">' . $safe_value . '</option>
 		';
 	}
 	
@@ -2433,8 +2503,16 @@ function pl_html_multiselect($a, $field_name, $field_values, $ti='1', $size = '1
 	}
 	reset($field_values);
 	
+	/*	Same split as pl_html_menu(): keys and the field name are escaped for
+		an attribute, labels go through the label-aware escaper. tabindex was
+		also being written without quotes around it.
+	*/
+	$safe_field_name = pl_html_escape($field_name);
+	$safe_size = pl_html_escape($size);
+	$safe_ti = pl_html_escape($ti);
+	
 	// Save menu HTML code as $o
-	$o .= "<select name=\"{$field_name}[]\" id=\"{$field_name}\" multiple size=\"{$size}\" tabindex=$ti>\n";
+	$o .= "<select name=\"{$safe_field_name}[]\" id=\"{$safe_field_name}\" multiple size=\"{$safe_size}\" tabindex=\"{$safe_ti}\">\n";
 	
 	// catch any cases where no menu data is available
 	if (sizeof($a) < 1)
@@ -2462,14 +2540,17 @@ function pl_html_multiselect($a, $field_name, $field_values, $ti='1', $size = '1
 		$o .= "<option selected value=\"$key\">$label</option>\n";
 		}*/
 		
+		$safe_key = pl_html_escape($key);
+		$safe_label = pl_html_escape_label($label);
+		
 		if (in_array($key, $field_values))
 		{
-			$o .= "<option selected value=\"$key\">$label</option>\n";
+			$o .= "<option selected value=\"{$safe_key}\">{$safe_label}</option>\n";
 		}
 		
 		else
 		{
-			$o .= "<option value=\"$key\">$label</option>\n";
+			$o .= "<option value=\"{$safe_key}\">{$safe_label}</option>\n";
 		}
 	}
 	
@@ -4112,10 +4193,44 @@ function pl_template_sub($str, $template_data)
 			$tag_value = urlencode($tag_value);
 			break;
 			
-			case 'html':
 			case 'js':
+			/*	encode=js used to run htmlentities(), which is the wrong
+				encoder in both places a JS value lands. Inside a <script>
+				block the HTML parser does not decode entities, so a quote
+				turned into &quot; corrupts the string instead of protecting
+				it. Inside an event attribute the parser decodes &#039; back
+				to a real quote before JavaScript sees it, which closes the
+				string literal early and lets the rest of the value run as
+				code.
+				
+				pl_js_escape() emits a JSON string with < > & ' and "
+				hex-escaped, which is safe in both. The outer quotes are
+				stripped because the templates using this tag already write
+				their own quotes around it.
+			*/
+			$encoded = pl_js_escape((string) $tag_value);
+			
+			if (strlen($encoded) >= 2 && '"' === $encoded[0] && '"' === substr($encoded, -1))
+			{
+				$tag_value = substr($encoded, 1, -1);
+			}
+			
+			else
+			{
+				$tag_value = $encoded;
+			}
+			
+			break;
+			
+			case 'html':
 			default:
-			$tag_value = htmlentities($tag_value);
+			/*	htmlspecialchars() by way of pl_html_escape(), not
+				htmlentities(). htmlentities() also converts every accented
+				character to a named entity, which mangles names and addresses
+				for no benefit, and it returned the empty string for input
+				that is not valid UTF-8 -- one bad byte blanked the tag.
+			*/
+			$tag_value = pl_html_escape($tag_value);
 			break;
 		}
 	}
@@ -4141,13 +4256,21 @@ function pl_template_sub($str, $template_data)
 		{
 			case 'text':
 			
-			$x = pl_array_lookup($tag_value, $menu_array);
+			/*	The looked-up label is written straight into the page, so it
+				is escaped here. The label-aware escaper, for the same reason
+				as in pl_html_menu(): some menu labels are stored as entities
+				on purpose.
+			*/
+			$x = pl_html_escape_label(pl_array_lookup($tag_value, $menu_array));
 			
 			break;
 			
 			
 			case 'radio':
 			
+			$safe_tag_name = pl_html_escape($tag_name);
+			$safe_tabindex = pl_html_escape($tag_tabindex);
+			
 			foreach ($menu_array as $key => $val)
 			{
 				if ($key == $tag_value)
@@ -4160,13 +4283,19 @@ function pl_template_sub($str, $template_data)
 					$checked = '';
 				}
 				
-				$x .= "<input type=\"radio\" name=\"$tag_name\" value=\"$key\" class=\"plradio\" tabindex=\"{$tag_tabindex}\"{$checked}/>{$val} &nbsp; ";
+				$safe_key = pl_html_escape($key);
+				$safe_val = pl_html_escape_label($val);
+				
+				$x .= "<input type=\"radio\" name=\"{$safe_tag_name}\" value=\"{$safe_key}\" class=\"plradio\" tabindex=\"{$safe_tabindex}\"{$checked}/>{$safe_val} &nbsp; ";
 			}
 			
 			break;
 			
 			case 'vradio':
 			
+			$safe_tag_name = pl_html_escape($tag_name);
+			$safe_tabindex = pl_html_escape($tag_tabindex);
+			
 			foreach ($menu_array as $key => $val)
 			{
 				if ($key == $tag_value)
@@ -4179,7 +4308,10 @@ function pl_template_sub($str, $template_data)
 					$checked = '';
 				}
 				
-				$x .= "<input type=\"radio\" name=\"$tag_name\" value=\"$key\" class=\"plradio\" tabindex=\"{$tag_tabindex}\"{$checked}/>{$val}<br/>\n";
+				$safe_key = pl_html_escape($key);
+				$safe_val = pl_html_escape_label($val);
+				
+				$x .= "<input type=\"radio\" name=\"{$safe_tag_name}\" value=\"{$safe_key}\" class=\"plradio\" tabindex=\"{$safe_tabindex}\"{$checked}/>{$safe_val}<br/>\n";
 			}
 			
 			break;
@@ -4228,11 +4360,15 @@ function pl_template_sub($str, $template_data)
 			case 'option':
 			$x = "";
 			
+			/*	This was "$x .- ..." , a minus sign where the append operator
+				belongs. It threw the option away on PHP 5 and 7, and on PHP 8
+				it is a fatal TypeError ("Unsupported operand types: string -
+				string"), so every template using mode=option white-screened.
+			*/
 			foreach ($menu_array as $key => $val)
 			{
-				$clean_key = $key;
-				$clean_val = $val;
-				$x .- "<option value=\"{$clean_key}\">{$clean_val}</option>\n";
+				$x .= "<option value=\"" . pl_html_escape($key) . "\">"
+					. pl_html_escape_label($val) . "</option>\n";
 			}
 			
 			break;
