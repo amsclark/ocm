@@ -4058,12 +4058,31 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	# office the fixture group does not have. pika_authorize('read_act') refuses
 	# it, so cal_day.php and cal_week.php draw their redacted row for it: the
 	# time and the owner, and nothing else.
+	#
+	# The appointment is scheduled an hour from now rather than at a fixed
+	# clock time. cal_day.php splits the day into a pending table
+	# (getActivitiesPending, act_time LATER than date("H:i:00")) and an overdue
+	# table (getActivitiesOverdue, which also demands act_type = 'K'). An
+	# untyped appointment earlier today is in neither, so a fixed time made
+	# this check pass or fail depending on the hour the suite ran.
+	#
+	# The clock that matters is the container's PHP clock, because that is what
+	# renders the page and what the pending query compares against. Both pages
+	# are then asked for that date explicitly.
 	CAL_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
 	adb "INSERT INTO cases (case_id, number, user_id, office, status)
 		VALUES (${CAL_CASE}, 'ZZ-CAL-CASE', 1, 'zzz', '1')" >/dev/null
+	CAL_WHEN="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r \
+		'$t = time() + 3600; echo date("Y-m-d", $t), "|", date("H:i:00", $t), "|", date("g:i A", $t);' \
+		</dev/null 2>/dev/null)"
+	CAL_RDATE="${CAL_WHEN%%|*}"
+	CAL_RTIME="${CAL_WHEN#*|}"
+	CAL_RTIME="${CAL_RTIME%%|*}"
+	CAL_RLABEL="${CAL_WHEN##*|}"
+
 	CAL_ACT2="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
 	adb "INSERT INTO activities (act_id, user_id, case_id, act_date, act_time, summary, notes, completed)
-		VALUES (${CAL_ACT2}, 1, ${CAL_CASE}, CURDATE(), '09:30:00', 'ZZ-CAL-REDACT', 'ZZ-CAL-REDACT note', 0)" >/dev/null
+		VALUES (${CAL_ACT2}, 1, ${CAL_CASE}, '${CAL_RDATE}', '${CAL_RTIME}', 'ZZ-CAL-REDACT', 'ZZ-CAL-REDACT note', 0)" >/dev/null
 
 	# 30a. The unauthenticated feed. This one needs no fixture user: before the
 	# fix, this exact request returned the row seeded above to anybody on the
@@ -4114,7 +4133,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	}
 
 	if [ -z "$CAL_HASH" ] || [ -z "${CAL_UID:-}" ] || [ -z "${CAL_ACT:-}" ] \
-		|| [ -z "${CAL_CASE:-}" ] || [ -z "${CAL_ACT2:-}" ]; then
+		|| [ -z "${CAL_CASE:-}" ] || [ -z "${CAL_ACT2:-}" ] || [ -z "${CAL_RLABEL:-}" ]; then
 		bad "could not seed the calendar fixtures (hash/user/activity)"
 	else
 		cal_login
@@ -4137,10 +4156,10 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			# were redacting.
 			for page in cal_day.php cal_week.php; do
 				curl -sL --max-time 60 -b "$CAL_JAR" -o "$BODY" \
-					"$OCM_URL/${page}?user_id=1" >/dev/null
+					"$OCM_URL/${page}?user_id=1&cal_date=${CAL_RDATE}" >/dev/null
 				if grep -qF 'ZZ-CAL-REDACT' "$BODY"; then
 					bad "${page} PRINTS THE SUMMARY OF AN ACTIVITY THE CALLER MAY NOT READ"
-				elif grep -qF '9:30' "$BODY"; then
+				elif grep -qF "$CAL_RLABEL" "$BODY"; then
 					ok "${page} shows the time of an unreadable activity and no case text"
 				else
 					bad "${page} drew neither the time nor the summary of the redacted row"
