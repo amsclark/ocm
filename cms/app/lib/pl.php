@@ -1380,6 +1380,32 @@ function pl_db_column_type($table, $column)
  * caller never emits the word "Array" into a page. ENT_SUBSTITUTE keeps
  * invalid UTF-8 from collapsing the whole string to ''.
  */
+/**
+ * Keep only the named keys of an array and drop everything else.
+ *
+ * For guarding a setValues() call that is fed data from outside: the ORM
+ * writes every column the array names, so an allowed list of field names
+ * is what stops a caller writing columns the form never offered.
+ *
+ * Returns an empty array when the input is not an array, so a caller can
+ * hand it a json_decode() result without checking first.
+ *
+ * @param array $data
+ * @param array $allowed_keys
+ * @return array
+ */
+if (!function_exists('pl_array_only')) {
+	function pl_array_only($data, $allowed_keys)
+	{
+		if (!is_array($data) || !is_array($allowed_keys))
+		{
+			return array();
+		}
+		
+		return array_intersect_key($data, array_flip($allowed_keys));
+	}
+}
+
 if (!function_exists('pl_html_escape')) {
 	function pl_html_escape($value)
 	{

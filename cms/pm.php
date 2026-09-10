@@ -41,20 +41,42 @@ if (sizeof($uri) == 3)
 	var_dump($uri);
 }
 */
-// This section could use a whitelist mechanism to improve security, by discarding any
-// requests for files not on the whitelist.
+/*	The three require() calls in this file build their target out of the
+	request path. The only filter above is a str_replace('..',''), which a
+	path like '.../...//' walks straight through. Two rules close that:
+	the extension directory must appear in the 'extensions' setting, and
+	the included file must end in .php. That is CWE-98 (PHP file
+	inclusion) on all three call sites.
+*/
 else if ($uri[1] == 'reports')
 {
-	if (sizeof($uri) == 4)
-	{
-		$x = pl_custom_directory() . "/extensions/" . $uri[2] . '/' . $uri[3];
-		chdir('app/lib');
-		require($x);
-	}
+	$enabled_extensions = array_map('trim', explode(',', (string) pl_settings_get('extensions')));
 	
-	else if (sizeof($uri) == 5)
+	if (sizeof($uri) == 4 || sizeof($uri) == 5)
 	{
-		$x = pl_custom_directory() . "/extensions/" . $uri[2] . '/' . $uri[3] . '/' . $uri[4];
+		$ext_name = $uri[2];
+		
+		if (!in_array($ext_name, $enabled_extensions, true))
+		{
+			trigger_error("Extension '{$ext_name}' is either not enabled or not installed.");
+		}
+		
+		if (sizeof($uri) == 4)
+		{
+			$x = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3];
+		}
+		
+		else
+		{
+			$x = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3] . '/' . $uri[4];
+		}
+		
+		// Only a .php file may be included, whatever the path segments say.
+		if (substr($x, -4) !== '.php')
+		{
+			trigger_error("Report target must be a .php file.");
+		}
+		
 		chdir('app/lib');
 		require($x);
 	}
@@ -70,6 +92,12 @@ else
 	if (strpos(pl_settings_get('extensions'), $filepath) === false)
 	{
 		trigger_error("Extension '{$filepath}':'{$filename}' is either not enabled or not installed.");
+	}
+	
+	// Only a .php file may be included, whatever the path segments say.
+	if (substr($filename, -4) !== '.php')
+	{
+		trigger_error("Extension target must be a .php file.");
 	}
 	
 	require(pl_custom_directory() . "/extensions/{$filepath}/{$filename}");

@@ -506,7 +506,15 @@ class pikaLSXML
 		
 
 		// Notes Information
+		/*	getXMLValue() answers with a list of node locations when the
+			query matches, and with a plain string - the node's text, or ''
+			for no match - when it does not. An intake with no Notes block
+			therefore fed '' to foreach, which on PHP 8 is a warning on
+			every import. Same shape as the Assets, Income and Expenses
+			blocks above, which already check.
+		*/
 		$notes = $this->getXMLValue('/ClientIntake/Notes/Note');
+		if (!is_array($notes)) { $notes = array(); }
 		foreach ($notes as $note) {
 			$activity_row = array();
 			$note_summary = $this->getXMLValue($note . "/NoteSummary");
@@ -526,6 +534,7 @@ class pikaLSXML
 		// Contacts Information
 		
 		$contacts = $this->getXMLValue('/ClientIntake/Contacts/Contact');
+		if (!is_array($contacts)) { $contacts = array(); }
 		foreach ($contacts as $contact) {
 			$contact_row = array();
 			$contact_id = $this->getXMLValue($contact . "/@ContactID");

@@ -79,10 +79,16 @@ $html['prefs_form'] = $prefs_template->draw();
 $template = new pikaTempLib('subtemplates/prefs.html',$html,'edit');
 $main_html['content'] = $template->draw();
 
-$main_html["page_title"] = "User Settings for {$auth_row['username']}";
+/*	The user administration screen decides what a username may contain, so
+	an administrator who creates an account with markup in the name plants
+	script in this page for the person who signs in as it. Escape it here.
+*/
+$username_safe = pl_html_escape($auth_row['username']);
+
+$main_html["page_title"] = "User Settings for {$username_safe}";
 $main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a>
  					&gt; <a href=\"{$base_url}/prefs.php\">Account Preferences</a> 
- 					&gt; {$auth_row['username']}";
+ 					&gt; {$username_safe}";
 
 $default_template = new pikaTempLib('templates/default.html',$main_html);
 $buffer = $default_template->draw();

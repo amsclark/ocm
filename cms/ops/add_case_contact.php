@@ -41,6 +41,17 @@ if (is_null($relation_code))
 }
 
 $case1 = new pikaCase($case_id);
+
+/*	Adding a contact to a case is a change to the case, so ask the same
+	question the case screen asks before saving anything. Without it any
+	signed-in user could attach a contact to any case by posting its id.
+*/
+if (!pika_authorize('edit_case',$case1->getValues()))
+{
+	header("Location: {$base_url}/case.php?case_id={$case_id}");
+	exit();
+}
+
 $case1->addContact($contact_id, $relation_code);
 header("Location: {$base_url}/case.php?case_id={$case_id}&screen={$screen}");
 

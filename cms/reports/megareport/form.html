@@ -84,7 +84,11 @@
 	
 	%%[saved_reports,file_list,mode=edit_select,doc_type=R,folder_field=parent_folder,doc_field=form_id]%%
 	<br/>
-	<form name='docgen' id='docgen'>
+	<!-- The token this page needs in the DOM. save_report.js reads it out of
+	     here and sends it as an X-CSRF-Token header, because its request body
+	     is raw XML rather than a form encoding, so there is no _csrf field for
+	     ops/upload_report.php to read out of $_POST. -->
+	<form name='docgen' id='docgen'>%%[csrf_field]%%
 	<button onclick="load_report('mega',document.docgen.form_id.value);return false;">Load Saved Report</button><br/>
 	
 	</td>
@@ -94,7 +98,7 @@
 	<input type="text" id="doc_name" name="doc_name" value="Megareport Saved: %%[current_date]%%" size="25" tabindex="1"/>
 	<button onclick="save_report('mega','doc_name');setTimeout('reload(\'saved_reports\')',500);return false;">Save Report</button>
 	</form>
-	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">
+	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">%%[csrf_field]%%
 	New Folder Name:<br/>
 	<input type="text" value="" name="folder_name"/>
 	<input type="submit" name="add_folder" value="Add Folder"/>

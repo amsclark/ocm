@@ -29,6 +29,18 @@ $case1 = new pikaCase($case_id);
 $base_url = pl_settings_get('base_url');
 
 // BEGIN MAIN CODE...
+
+/*	Duplicating a case copies the whole record - client, eligibility,
+	notes - into a new one the caller then owns. It ran on a case id out of
+	the query string with no check at all, so any signed-in user could take
+	a copy of any case in the system. Ask edit_case on the original.
+*/
+if (!pika_authorize('edit_case',$case1->getValues()))
+{
+	header("Location: {$base_url}/case.php?case_id={$case_id}");
+	exit();
+}
+
 $dup = $case1->duplicate();
 $dup_case_id = $dup->getValue('case_id');
 header("Location: {$base_url}/case.php?case_id={$dup_case_id}&screen=info");

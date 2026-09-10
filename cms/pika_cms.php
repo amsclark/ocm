@@ -1075,28 +1075,45 @@ function pika_error_notice($title, $message)
 	
 	$d = '';
 	
-	$d .= '<p>REQUEST_URI:  ' . $_SERVER['REQUEST_URI'] . '</p>';
-	
-	if (isset($_REQUEST["screen"]))
+	/*	Every field below went into the page raw. Two problems with that.
+		REQUEST_URI, the Referer and the User-Agent are attacker-controlled,
+		so the error screen was a reflected-XSS sink. And the whole block is
+		server detail - paths, software version, the caller's address, the
+		signed-in username - that a visitor has no business reading. So:
+		escape every field, and only build the block at all when the site is
+		in debug mode, the same rule pika_error.php follows.
+	*/
+	$debug_mode = pl_is_debug_mode();
+	$esc = function ($v)
 	{
-		$d .= "<p>SCREEN:  {$_POST["screen"]}</p>";
-	}
+		return pl_html_escape((string) $v);
+	};
 	
-	if (isset($_REQUEST["action"]))
+	if ($debug_mode)
 	{
-		$d .= "<p>ACTION:  {$_POST["action"]}</p>";
+		$d .= '<p>REQUEST_URI:  ' . $esc($_SERVER['REQUEST_URI']) . '</p>';
+		
+		if (isset($_REQUEST["screen"]))
+		{
+			$d .= '<p>SCREEN:  ' . $esc(isset($_POST['screen']) ? $_POST['screen'] : '') . '</p>';
+		}
+		
+		if (isset($_REQUEST["action"]))
+		{
+			$d .= '<p>ACTION:  ' . $esc(isset($_POST['action']) ? $_POST['action'] : '') . '</p>';
+		}
+		
+		$d .= '<p>HTTP_REFERER:  ' . $esc($HTTP_REFERER) . '</p>';
+		$d .= '<p>REQUEST_METHOD:  ' . $esc($_SERVER['REQUEST_METHOD']) . '</p>';
+		$d .= '<p>REMOTE_ADDR:  ' . $esc($_SERVER['REMOTE_ADDR']) . '</p>';
+		$d .= '<p>HTTP_USER_AGENT:  ' . $esc(isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '') . '</p>';
+		$d .= '<p>SERVER_NAME:  ' . $esc(isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '') . '</p>';
+		$d .= '<p>SERVER_SOFTWARE:  ' . $esc($SERVER_SOFTWARE) . '</p>';
+		$d .= "<p>DB DSN:  {$plSettings['db_type']}://{$plSettings['db_user']}:********@{$plSettings['db_host']}/{$plSettings['db_name']}</p>";
+		
+		$d .= '<p>Username:  ' . $esc(isset($auth_row['username']) ? $auth_row['username'] : '') . '</p>';
+		$d .= '<p>User ID:  ' . $esc(isset($auth_row['user_id']) ? $auth_row['user_id'] : '') . '</p>';
 	}
-	
-	$d .= '<p>HTTP_REFERER:  ' . $HTTP_REFERER . '</p>';
-	$d .= '<p>REQUEST_METHOD:  ' . $_SERVER['REQUEST_METHOD'] . '</p>';
-	$d .= '<p>REMOTE_ADDR:  ' . $_SERVER['REMOTE_ADDR'] . '</p>';
-	$d .= '<p>HTTP_USER_AGENT:  ' . $_SERVER['HTTP_USER_AGENT'] . '</p>';
-	$d .= '<p>SERVER_NAME:  ' . $_SERVER['SERVER_NAME'] . '</p>';
-	$d .= '<p>SERVER_SOFTWARE:  ' . $SERVER_SOFTWARE . '</p>';
-	$d .= "<p>DB DSN:  {$plSettings['db_type']}://{$plSettings['db_user']}:********@{$plSettings['db_host']}/{$plSettings['db_name']}</p>";
-	
-	$d .= '<p>Username:  ' . $auth_row['username'] . '</p>';
-	$d .= '<p>User ID:  ' . $auth_row['user_id'] . '</p>';
 	
 	// if the "unavail" template file is missing, this will avoid an inifinite loop
 	if (file_exists('templates/unavailable.html'))
@@ -1114,7 +1131,10 @@ function pika_error_notice($title, $message)
 	
 	else
 	{
-		echo "$title : $message <br> $d";
+		// $d is escaped field by field above. $title and $message come from
+		// callers inside the application, but escape them too - a caller can
+		// pass a value that started life in a request.
+		echo $esc($title) . ' : ' . $esc($message) . ' <br> ' . $d;
 	}
 	
 	return;
