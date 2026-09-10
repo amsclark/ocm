@@ -582,8 +582,12 @@ class pikaCase extends plBaseWithUdf
 		A person can be reached through more than one party on this case, and now
 		through more than one statement per search, so each match type is listed
 		once per person per case.
+		
+		Public because pikaLSXML_V2::fuzzyConflictCheck() runs the same searches
+		against a case that has not been saved yet. Both files are under
+		cms/app/lib, so that one can require this one.
 	*/
-	private static function collectConflicts($sql, $params, $match, &$conflict_array, &$seen)
+	public static function collectConflicts($sql, $params, $match, &$conflict_array, &$seen)
 	{
 		$result = DB::preparedQuery($sql,$params)
 			or trigger_error("SQL: " . $sql . " Error: " . DB::error());
