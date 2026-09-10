@@ -3540,5 +3540,124 @@ else
 fi
 
 echo
+echo "54. the extension loader"
+
+# cms/pm.php turns a request path into a require(). Two rules decide what may
+# be loaded: the directory has to be named in the 'extensions' setting, and the
+# file has to end in .php.
+#
+# The first rule was asked with strpos(), which only wants the requested name to
+# appear ANYWHERE in the setting. With 'extensions' set to 'billing', a request
+# for the directory 'bill' passed; with two entries, the whole string
+# 'billing,intake' passed as one name. Any directory under cms-custom/extensions
+# whose name is a substring of the setting could be loaded. The check now
+# compares against the parsed list, exactly.
+#
+# Separately, every extension that DID load ended the request with HTTP 500:
+# the trailing pika_exit() was called with no argument and pika_exit() takes
+# one, so the page printed its output and then died on ArgumentCountError.
+#
+# Needs the database for the setting row, and the container to write the
+# extension directory - cms-custom is a named volume, not a bind mount.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	# Keep whatever this deployment already had in the setting.
+	PMPREV="$(adb "SELECT value FROM settings WHERE label = 'extensions'")"
+
+	cleanup_pm() {
+		adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
+		if [ -n "${PMPREV:-}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMPREV}')" >/dev/null
+		fi
+		# Only the three fixture directories, never the whole extensions tree.
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app rm -rf \
+			/var/www/html/cms-custom/extensions/zzextra \
+			/var/www/html/cms-custom/extensions/zzext \
+			"/var/www/html/cms-custom/extensions/zzextra,zzother" </dev/null >/dev/null 2>&1
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
+	cleanup_pm
+
+	# Two entries, so the comma fixture below can carry the whole setting
+	# string as one directory name.
+	adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('extensions', 'zzextra,zzother')" >/dev/null
+
+	# zzextra is enabled. zzext is a prefix of it and is NOT enabled.
+	# 'zzextra,zzother' is the entire setting string as one directory name.
+	docker compose "${COMPOSE_ARGS[@]}" exec -T app sh -s >/dev/null 2>&1 <<'PMSEED'
+D=/var/www/html/cms-custom/extensions
+mkdir -p "$D/zzextra" "$D/zzext" "$D/zzextra,zzother"
+printf '<?php echo "ZZPM-ENABLED-OK";\n' > "$D/zzextra/zzhello.php"
+printf '<?php echo "ZZPM-SUBSTRING-OK";\n' > "$D/zzext/zzhello.php"
+printf '<?php echo "ZZPM-COMMA-OK";\n' > "$D/zzextra,zzother/zzhello.php"
+printf 'ZZPM-SECRET-TXT\n' > "$D/zzextra/zzsecret.txt"
+PMSEED
+
+	# --path-as-is: the fixture paths are the point, curl must not normalise
+	# them.
+	pm_get() {
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			--path-as-is "$OCM_URL/pm.php/$1"
+	}
+
+	if [ -z "$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		sh -c 'ls /var/www/html/cms-custom/extensions/zzextra/zzhello.php' </dev/null 2>/dev/null)" ]; then
+		bad "could not seed the extension fixtures"
+	else
+		# Positive control, and the 500 the trailing pika_exit() used to raise.
+		code="$(pm_get 'zzextra/zzhello.php')"
+		if [ "$code" = 200 ] && grep -q 'ZZPM-ENABLED-OK' "$BODY"; then
+			ok "an enabled extension loads and answers 200"
+		else
+			bad "an enabled extension answers ${code}"
+		fi
+
+		# A directory whose name is a prefix of the setting is not enabled.
+		code="$(pm_get 'zzext/zzhello.php')"
+		if ! grep -q 'ZZPM-SUBSTRING-OK' "$BODY"; then
+			ok "a directory named as a substring of the setting is refused"
+		else
+			bad "a directory named as a substring of the setting was loaded"
+		fi
+
+		# Nor is the whole comma-separated setting string one directory name.
+		code="$(pm_get 'zzextra,zzother/zzhello.php')"
+		if ! grep -q 'ZZPM-COMMA-OK' "$BODY"; then
+			ok "the whole extensions setting is not one directory name"
+		else
+			bad "a directory named after the whole setting string was loaded"
+		fi
+
+		# The .php rule still holds inside an enabled extension.
+		code="$(pm_get 'zzextra/zzsecret.txt')"
+		if ! grep -q 'ZZPM-SECRET-TXT' "$BODY"; then
+			ok "a non-.php file in an enabled extension is refused"
+		else
+			bad "a non-.php file in an enabled extension was served"
+		fi
+
+		# The reports branch takes the same two rules and the same exit.
+		code="$(pm_get 'reports/zzextra/zzhello.php')"
+		if [ "$code" = 200 ] && grep -q 'ZZPM-ENABLED-OK' "$BODY"; then
+			ok "an enabled extension report loads and answers 200"
+		else
+			bad "an enabled extension report answers ${code}"
+		fi
+
+		code="$(pm_get 'reports/zzext/zzhello.php')"
+		if ! grep -q 'ZZPM-SUBSTRING-OK' "$BODY"; then
+			ok "a substring directory is refused on the reports path too"
+		else
+			bad "a substring directory was loaded on the reports path"
+		fi
+	fi
+
+	cleanup_pm
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the extension loader checks (needs the database and the container)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
