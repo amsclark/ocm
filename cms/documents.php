@@ -162,7 +162,7 @@ switch($action) {
 			(see bug id 1083090.) */
 		//if (pl_settings_get("enable_compression") == false)
 		//{
-		//	header("Content-Length: " . mb_strlen($doc_data));
+		//	header("Content-Length: " . strlen($doc_data));
 		//}
 		
 		echo $doc_data;
