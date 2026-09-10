@@ -28,6 +28,13 @@
 	<h2>&nbsp;</h2>
 		Session Timeout in Minutes<br/>
 		%%[session_timeout,input_text,default=120]%%<br/>
+		Keep a Session on the Address it Started From<br/>
+		%%[session_ip_pin,session_ip_pin]%%<br/>
+		<em>A signed-in session is also tied to the browser it started in.
+		Turn the address check off only if this office reaches the internet
+		through a connection whose public address keeps changing, which
+		signs people out for no apparent reason.</em><br/>
+		<br/>
 		Password Strength Restrictions:<br/>
 		%%[pass_min_strength,pass_min_strength]%%<br/>
 		Password Minimum Length:<br/>

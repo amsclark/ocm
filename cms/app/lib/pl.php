@@ -3106,6 +3106,147 @@ function pl_session_set_default($name, $value)
 	}
 }
 
+
+/*	Does a stored session's client address still match the current
+	request?
+	
+	pikaAuth::authenticate() pins a session to the address it was created
+	from. An exact match is the wrong test for a real client address: a
+	caseworker on cellular data, on a VPN, or behind a NAT pool that
+	rotates gets a new address mid-session through no fault of their own,
+	and an exact pin signs them out each time. So:
+	
+	  - Same address: match, the ordinary case.
+	  - Stored address is private but the current one is not: match. That
+		row was written while the application sat behind a reverse proxy
+		with no forwarded-address handling, so every client recorded as
+		the proxy's own address on the container network. Without this,
+		the first request after a deployment turns that handling on signs
+		out every user at once. It expires by itself: sessions re-pin to a
+		real address at the next sign-in.
+	  - Otherwise compare the network, not the host: /24 for IPv4, /64 for
+		IPv6. Someone replaying a stolen cookie still has to be on the
+		user's network, which is what the control was for.
+	
+	@param string $stored  ip_address recorded on the user_sessions row
+	@param string $current REMOTE_ADDR for the request being authenticated
+	@return bool true when the session may continue
+*/
+function pl_session_ip_matches($stored, $current)
+{
+	$stored  = (string) $stored;
+	$current = (string) $current;
+	
+	if ('' === $stored || '' === $current)
+	{
+		/*	Nothing to compare. This has always passed, and refusing here
+			would lock out anyone whose row predates the column being
+			filled in.
+		*/
+		return true;
+	}
+	
+	if ($stored === $current)
+	{
+		return true;
+	}
+	
+	/*	Establish that both values are addresses before asking anything
+		about them. filter_var with the range flags returns false for "is
+		private" and for "is not an address at all" alike, so testing for
+		privacy first would grandfather any junk value straight past the
+		pin.
+	*/
+	if (false === filter_var($stored, FILTER_VALIDATE_IP)
+		|| false === filter_var($current, FILTER_VALIDATE_IP))
+	{
+		return false;
+	}
+	
+	$private = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+	$stored_is_private  = (false === filter_var($stored, FILTER_VALIDATE_IP, $private));
+	$current_is_private = (false === filter_var($current, FILTER_VALIDATE_IP, $private));
+	
+	if ($stored_is_private && !$current_is_private)
+	{
+		// Session pinned behind a proxy. Grandfathered; see above.
+		return true;
+	}
+	
+	$stored_v4  = filter_var($stored, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+	$current_v4 = filter_var($current, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+	
+	if ($stored_v4 && $current_v4)
+	{
+		$a = explode('.', $stored);
+		$b = explode('.', $current);
+		
+		return ($a[0] === $b[0] && $a[1] === $b[1] && $a[2] === $b[2]);
+	}
+	
+	$stored_v6  = filter_var($stored, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+	$current_v6 = filter_var($current, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+	
+	if ($stored_v6 && $current_v6)
+	{
+		// inet_pton gives 16 bytes; the first 8 are the /64 prefix.
+		$a = @inet_pton($stored);
+		$b = @inet_pton($current);
+		
+		if (false === $a || false === $b)
+		{
+			return false;
+		}
+		
+		return (substr($a, 0, 8) === substr($b, 0, 8));
+	}
+	
+	// Mixed families, or something that is not an address at all.
+	return false;
+}
+
+
+/*	The session address pin, honouring the session_ip_pin setting.
+	
+	pl_session_ip_matches() is the policy; this is the switch in front of
+	it. Some offices sit behind an internet connection whose public
+	address is not stable: a dual-WAN firewall balancing across two
+	carriers, a carrier-grade NAT that re-homes the office every few
+	minutes, a satellite link. Staff there are returned to the sign-in
+	page every time it moves, which reads as "the idle timeout is fifteen
+	minutes" no matter what the timeout is set to. Nothing on the org's
+	side can be asked to hold still, so the org has to be able to turn the
+	address half of the pin off.
+	
+	  'network' (the default, and what an unset value means)
+			pl_session_ip_matches(): same /24 for IPv4, same /64 for IPv6.
+	  'off'
+			never compare addresses. The user-agent pin in pikaAuth still
+			applies, as do both timeouts.
+	
+	@param string      $stored  ip_address recorded on the user_sessions row
+	@param string      $current REMOTE_ADDR for the request being authenticated
+	@param string|null $mode    override for tests; null reads the setting
+	@return bool true when the session may continue
+*/
+function pl_session_ip_pin_allows($stored, $current, $mode = null)
+{
+	if (is_null($mode))
+	{
+		$mode = function_exists('pl_settings_get')
+			? pl_settings_get('session_ip_pin')
+			: null;
+	}
+	
+	if ('off' === (string) $mode)
+	{
+		return true;
+	}
+	
+	return pl_session_ip_matches($stored, $current);
+}
+
+
 // End SESSION Functions
 
 
