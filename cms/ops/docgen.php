@@ -183,7 +183,7 @@ if (is_numeric($recipient))
 }
 
 // If the recipient is a PB attorney
-elseif (substr($recipient,0,3) == 'pba')
+elseif (substr((string) $recipient,0,3) == 'pba')
 {
 	// import the class
 	require_once('pikaPbAttorney.php');
@@ -233,7 +233,12 @@ if (sizeof($pba_row) > 0)
         $a['vol_attorney_email'] = $pba_row['email'];
 }
 
-$a['recipient_salutation'] = pikaTempLib::plugin('text_name','',array('last_name' => $recipient_row['last_name'],'gender'=>$recipient_row['gender']),'',array('salutation'));
+// The recipient row is not always a contact row: for a pro bono attorney or
+// a staff recipient it has neither of these columns, so both reads were
+// undefined keys.
+$a['recipient_salutation'] = pikaTempLib::plugin('text_name','',array(
+	'last_name' => isset($recipient_row['last_name']) ? $recipient_row['last_name'] : '',
+	'gender' => isset($recipient_row['gender']) ? $recipient_row['gender'] : ''),'',array('salutation'));
 $a['recipient'] = $a['recipient_name']= pikaTempLib::plugin('text_name','',$recipient_row);
 $a['client'] = $a['client_name'] = pikaTempLib::plugin('text_name','',$client_row);
 

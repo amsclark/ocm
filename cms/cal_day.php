@@ -5,7 +5,10 @@ require_once ('pika_cms.php');
 
 // VARIABLES
 
-$pk = new pikaCms($db);
+// See cal_week.php: no constructor, and no $db in scope. The four
+// ->max_length = 1000 assignments that used to be further down went with
+// it: plTable has no such property and never read one.
+$pk = new pikaCms();
 $C = '';
 $t = new plTable();  // completed calendar items
 $p = new plTable();  // pending calendar items
@@ -23,7 +26,7 @@ pl_menu_init('act_type');
 // Gotta check strlen's on $cal_date, $user_it to prevent zero-length strings.
 $cal_date = pl_grab_var('cal_date', 'GET', null, 'date');
 
-if (strlen($cal_date) < 1)
+if (strlen((string) $cal_date) < 1)
 {
 	$cal_date = date('Y-m-d');
 }
@@ -35,7 +38,7 @@ $user_id = pl_grab_var('user_id');
 // 'mine' keyword either, so a user id is the only valid shape and everything
 // else -- 'mine' included -- falls back to the current user below, which is
 // what 'mine' was asking for. See the longer note in cal_week.php.
-if (strlen($user_id) > 0 && !ctype_digit((string) $user_id))
+if (strlen((string) $user_id) > 0 && !ctype_digit((string) $user_id))
 {
 	if ('mine' != $user_id)
 	{
@@ -45,7 +48,7 @@ if (strlen($user_id) > 0 && !ctype_digit((string) $user_id))
 	$user_id = '';
 }
 
-if (strlen($user_id) < 1)
+if (strlen((string) $user_id) < 1)
 {
 	$user_id = $auth_row['user_id'];
 }
@@ -64,7 +67,6 @@ $columns = array('Type', 'Time', 'Description', 'Case Info.', 'Cmplt, Hrs');
 
 $t->assignLabels(array('Type', 'Time', 'Description', 'Case Info.', 'Hours'));
 $t->sortable = FALSE;
-$t->max_length = 1000;
 $t->rowa_bg = 'row1';
 $t->rowb_bg = 'row2';
 $t->show_pager = FALSE;
@@ -72,7 +74,6 @@ $t->show_pager = FALSE;
 
 $p->assignLabels($columns);
 $p->sortable = FALSE;
-$p->max_length = 1000;
 $p->rowa_bg = 'row1';
 $p->rowb_bg = 'row2';
 $p->show_pager = FALSE;
@@ -80,7 +81,6 @@ $p->show_pager = FALSE;
 
 $overdue->assignLabels($columns);
 $overdue->sortable = FALSE;
-$overdue->max_length = 1000;
 $overdue->rowa_bg = 'row1';
 $overdue->rowb_bg = 'row2';
 $overdue->show_pager = FALSE;
@@ -88,7 +88,6 @@ $overdue->show_pager = FALSE;
 
 $todo->assignLabels(array('Type', 'Description', 'Case Info.', 'Cmplt, Hrs'));
 $todo->sortable = FALSE;
-$todo->max_length = 1000;
 $todo->rowa_bg = 'row1';
 $todo->rowb_bg = 'row2';
 $todo->show_pager = FALSE;

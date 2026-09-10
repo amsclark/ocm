@@ -18,6 +18,24 @@ function pika_warning($field_name = null, $field_value = null, $menu_array = nul
 	$warnings = $warning->getWarnings();
 	
 	$warning_output = '';
+	
+	/*	Answering the TODO below: yes, this is tied to display_errors.
+		
+		The collected notices name absolute server paths and line numbers, and
+		they were rendered into the page body for every authenticated user --
+		which php.ini's display_errors setting does not stop, because the
+		notices come back out of this application's own collector rather than
+		PHP's output. So on a correctly configured server holding client data,
+		the one place error detail was still on show was here.
+		
+		The notices are on the page or not on the page; nothing is lost by
+		leaving them out, because pl_error_handler() has already written each
+		one to the server log where an operator can read it.
+	*/
+	if (!pl_is_debug_mode()) {
+		return $warning_output;
+	}
+	
 	// Check to see if warnings were generated - otherwise nothing to display
 	if(!is_array($warnings) || (is_array($warnings) &&  count($warnings) < 1)) {
 		return $warning_output;
@@ -48,7 +66,14 @@ function pika_warning($field_name = null, $field_value = null, $menu_array = nul
 				$warning_level = 'E_RECOVERABLE_ERROR [4096]';
 	    		break;	
 		}
-		$warning_output .= $i++ . "/{$num_warnings} " . $warning_level . ": " . $val[1] . " - File: " . $val[2] . " - Line: " . $val[3] . "<br/>";
+		/*	The message carries the offending value: "Undefined array key
+			<name>" quotes the key, and a key can come from the query string.
+			Escaped, because this block is markup and the template engine
+			escapes nothing.
+		*/
+		$warning_output .= $i++ . "/{$num_warnings} " . pl_html_escape($warning_level) . ": "
+			. pl_html_escape($val[1]) . " - File: " . pl_html_escape($val[2])
+			. " - Line: " . pl_html_escape($val[3]) . "<br/>";
 	}
 	$warning_output .= "</div>\n";
 	$warning_output .= pikaTempLib::plugin('javascript','toggleDiv.js');

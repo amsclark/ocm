@@ -39,12 +39,12 @@ class pikaCase extends plBaseWithUdf
 			$this->setValue('office', $_SESSION['def_office']);
 			$this->setValue('intake_user_id', $auth_row['user_id']);
 			
-			if (strlen($this->getValue('open_date')) < 1)
+			if (strlen((string) $this->getValue('open_date')) < 1)
 			{
 				$this->setValue('open_date', date('Y-m-d'));
 			}
 			
-			if (strlen($this->getValue('intake_type')) < 1)
+			if (strlen((string) $this->getValue('intake_type')) < 1)
 			{
 				$this->setValue('intake_type', $_SESSION['def_intake_type']);
 			}
@@ -428,7 +428,7 @@ class pikaCase extends plBaseWithUdf
 			
 			
 			// Match by metaphone name/birth date
-			if (strlen($row['mp_first']) > 0)
+			if (strlen((string) $row['mp_first']) > 0)
 			{
 				$mp_first = " AND aliases.mp_first='{$row['mp_first']}'";
 			}

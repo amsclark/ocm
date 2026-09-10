@@ -108,17 +108,33 @@ class pikaFlags extends plBase
 			foreach ($rules as $current_rule) {
 				// Determine if all necessary fields exist for comparison
 				if(isset($current_rule['field_name']) && isset($current_rule['comparison'])) {
+					/*	The rule names a column, and a column that is NULL --
+						or absent from $values altogether -- is the ordinary
+						case for the two blankness tests below. Resolve it once
+						here rather than indexing $values in each branch: a
+						NULL column reached strlen() directly and logged a
+						deprecation for every rule on every record.
+						
+						pl_array_lookup() is deliberately not used: it returns
+						the key name when the key is missing, which is not
+						blank, so 'is blank' would answer false for a column
+						that is not there at all.
+					*/
+					$rule_value = isset($values[$current_rule['field_name']])
+						? $values[$current_rule['field_name']]
+						: null;
+					
 					//echo "i ran!";
 					switch ($current_rule['comparison']) {
 						case 1: // is blank
-							if (strlen($values[$current_rule['field_name']]) > 0) 
+							if (strlen((string) $rule_value) > 0) 
 							{
 								$comparison = false;
 							}
 							break;
 							
 						case 2: // is not blank
-							if (strlen($values[$current_rule['field_name']]) < 1) 
+							if (strlen((string) $rule_value) < 1) 
 							{
 								$comparison = false;
 							}

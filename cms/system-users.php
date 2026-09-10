@@ -141,7 +141,7 @@ switch ($action)
 		
 		$a['username'] = pl_grab_post('username');
 		$password = pl_grab_post('password');
-		if(strlen($password) > 0) {
+		if(strlen((string) $password) > 0) {
 			// bcrypt, not md5. Writing md5 here would downgrade an
 			// already-bcrypt hash every time an admin sets a password.
 			$a['password'] = password_hash($password, PASSWORD_DEFAULT);
@@ -226,7 +226,7 @@ switch ($action)
 				$evt = ($a['enabled']) ? 'user.enable' : 'user.disable';
 				pl_audit($evt, 'user', $target_user_id, array('username' => $target_username));
 			}
-			if (strlen($password) > 0)
+			if (strlen((string) $password) > 0)
 			{
 				// An admin set this user's password; self-service changes
 				// land in password.php as password.self_change.

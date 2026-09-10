@@ -292,6 +292,15 @@ else
 		if(strlen($search_value) < 4) { break; }
 		$result = pikaMisc::getActivitiesByText($search_value, $row_count, $order_field, $order, $offset, 100);
 		
+		/*	Every other branch in this switch sets $j from its own row count,
+			and the test further down reads $j. This branch did not, so in
+			plain 'A' mode $j was undefined, and when control fell through from
+			the contacts branch $j still held the CONTACT count -- activity
+			results rendered or vanished according to how many contacts
+			matched.
+		*/
+		$j = DBResult::numRows($result);
+		
 
 		if (DBResult::numRows($result) > 0)
 		{

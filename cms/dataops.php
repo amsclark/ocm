@@ -1097,7 +1097,9 @@ switch($action)
 	
 	case 'not_allowed':
 	
-	die(pika_error_notice("$window_title", 'Editing of this case is not allowed'));
+	// $window_title was never assigned in this file, so the title was empty
+	// and every hit logged an undefined-variable warning.
+	die(pika_error_notice('Case', 'Editing of this case is not allowed'));
 	break;
 	
 	
@@ -1427,7 +1429,8 @@ switch($action)
 	
 	default:
 	
-	die(pika_error_notice("$window_title", "Error:  invalid action was specified."));
+	// Same undefined $window_title as the not_allowed case above.
+	die(pika_error_notice('Error', "Error:  invalid action was specified."));
 	
 	break;
 }

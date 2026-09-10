@@ -103,7 +103,7 @@ $transfer_id = pl_grab_get('transfer_id', 0);
 $z = '';
 $base_url = pl_settings_get('base_url');
 
-if (strlen(pl_grab_post('accept')) > 0)
+if (strlen((string) pl_grab_post('accept')) > 0)
 {
 	$safe_transfer_id = DB::escapeString(pl_grab_post('transfer_id'));
 	require_once('pikaTransfer.php');
@@ -164,7 +164,7 @@ if (strlen(pl_grab_post('accept')) > 0)
 	exit();
 }
 
-else if (strlen(pl_grab_post('reject')) > 0)
+else if (strlen((string) pl_grab_post('reject')) > 0)
 {
 	$safe_transfer_id = DB::escapeString(pl_grab_post('transfer_id'));
 	require_once('pikaTransfer.php');

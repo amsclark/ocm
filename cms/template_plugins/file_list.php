@@ -2,7 +2,10 @@
 
 function file_list($field_name = null, $field_value = null, $menu_array = null, $args = null, $data_array = null)
 {
-    $server_name_and_port = 'https://dev0.pikasoftware.com:4430';
+	// $server_name_and_port was assigned here, hard-coded to a Pika Software
+	// development host. The only thing that read it was the ActiveX upload
+	// block, which is gone, so it was left naming a third-party server in
+	// every installation's source.
 	
 	if(!is_numeric($field_value))
 	{

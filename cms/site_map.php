@@ -16,8 +16,8 @@ $main_html['reportlist'] = pikaMisc::htmlReportList();
 $main_html['page_title'] = "Site Map";
 
 // AMW 2012-11-20 
-$ext_urls = explode(":", pl_settings_get('extensions_site_map_urls'));
-$ext_titles = explode(":", pl_settings_get('extensions_site_map_titles'));
+$ext_urls = explode(":", (string) pl_settings_get('extensions_site_map_urls'));
+$ext_titles = explode(":", (string) pl_settings_get('extensions_site_map_titles'));
 // 2013-08-13 AMW - These two lines eliminate the blank ghost entry at the bottom of the extensions list.
 array_pop($ext_urls);
 array_pop($ext_titles);

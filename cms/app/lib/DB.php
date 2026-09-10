@@ -32,8 +32,19 @@ class DB
 
 	}
 
+	/*	Null is escaped as the empty string rather than being handed to the
+		driver. Callers all over the tree escape a filter value that is simply
+		absent, and passing null to a string parameter is a deprecation on
+		PHP 8.1 and a TypeError on PHP 9 -- a fatal on any page with an
+		unset filter. The value the driver returned for null was the empty
+		string anyway, so behaviour is unchanged.
+	*/
 	public static function escapeString($str)
 	{
+		if (is_null($str)) {
+			$str = '';
+		}
+		
 		if (self::$mysqli_mode) {
 			return mysqli_real_escape_string(self::$link, $str);
 		}

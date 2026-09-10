@@ -73,7 +73,13 @@ $reports = pikaMisc::reportList(true);
 $y = "";
 foreach ($reports as $report)
 {
-  $y .= "<li>${z}</li>";
+  /*	This said ${z}. There is no $z, so every report rendered as an empty
+  	bullet: the home page listed the right NUMBER of reports and none of
+  	their names or links. It also logged one "Undefined variable" warning
+  	per report per page load. reportList(true) returns finished, escaped
+  	<a href> markup, so $report goes in as-is.
+  */
+  $y .= "<li>{$report}</li>";
 }
 $main_html['report_list'] = $y;
 
