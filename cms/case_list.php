@@ -244,6 +244,26 @@ while ($row = DBResult::fetchRow($result))
 		$row['client_name'] = pl_text_last_name($row, 'contacts.');
 	}
 	
+	/*	This list is rendered with addHtmlRow(), which -- unlike addRow()
+		in the same class -- does NOT escape. That is on purpose: cells
+		below this point carry real markup (the unread_sms badge, the
+		link_target attribute). It also means escaping the row's *data*
+		fields is this file's job, and it was not being done.
+		
+		subtemplates/case_list.html writes %%[number]%% as element text
+		inside the case link, and again inside href="...&number=%%[number]%%"
+		on the log-time button. %%[client_name]%% goes into a <td>. A case
+		number has no format validation and is not on update_case.php's
+		denylist, and pl_text_last_name() only concatenates name parts, so
+		any user who could edit a case could store `<svg onload=...>` in
+		one and have it run for every user whose case list showed it.
+		
+		Escape here, at the boundary between row data and row markup:
+		everything above this line came out of the database, everything
+		below builds HTML. cms/search.php uses the same ordering.
+	*/
+	$row = pl_clean_html_array($row);
+	
 	if ($_SESSION['popup'] == true)
 	{
 		$row['link_target'] = " target=\"_blank\"";

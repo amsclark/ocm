@@ -184,10 +184,6 @@ else
 			$row['number']= 'No Case #';
 		} 
 		
-		if ($_SESSION['popup'] == true){
-			$row['link_target'] = " target=\"_blank\"";
-		}
-		
 		$row['client_name'] = pl_text_name($row,'contacts.');
 		$row['user_id'] = pl_array_lookup($row['user_id'],$staff_array);
 		
@@ -199,6 +195,23 @@ else
 		
 		$row['open_date'] = pl_date_unmogrify($row['open_date']);
 		$row['close_date'] = pl_date_unmogrify($row['close_date']);
+		
+		/*	Same addHtmlRow() escaping boundary as cms/case_list.php.
+			subtemplates/pb_attorneys.html writes %%[number]%% as element
+			text and again inside href="...&number=%%[number]%%", and puts
+			%%[client_name]%% in a <td>, all without escaping, so a case
+			number holding markup ran on this page too.
+			
+			The link_target block used to sit above the data assignments. It
+			moved below this line because it is markup (` target="_blank"`)
+			and would come out as ` target=&quot;_blank&quot;` if it were
+			still set before the escape. Nothing reads it in between.
+		*/
+		$row = pl_clean_html_array($row);
+		
+		if ($_SESSION['popup'] == true){
+			$row['link_target'] = " target=\"_blank\"";
+		}
 		
 		if ($row['unread_sms'] > 0)
 		{

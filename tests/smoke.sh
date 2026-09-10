@@ -3540,5 +3540,216 @@ else
 fi
 
 echo
+echo "45. the stored and reflected XSS batch"
+
+# plFlexList has two row entry points. addRow() escapes its cells with
+# pl_clean_html_array(); addHtmlRow() deliberately does not, so that a caller
+# can put real markup in a cell. Four list pages used addHtmlRow() and never
+# escaped their own data columns, so a case number, a contact address or a
+# red-flag name holding markup ran in the session of whoever opened the page.
+#
+# htmlContactList() is the reflected half. pl_clean_form_input() rewrites < and
+# > on every request value but leaves quotes alone, and the contact-search
+# subtemplates write the filter values into value="%%[field]%%" attributes, so
+# one double quote closed the attribute and added an event handler to the
+# search box.
+#
+# These are behavioural checks: seed a row through the database, fetch the
+# page as the admin, and count live markup against escaped markup in what came
+# back. A grep of the source would pass on a file that had the call and never
+# reached it.
+XSSPAY='<svg onload=alert(1)>'
+XSSREF='zz" autofocus onfocus="alert(1)'
+XSSREFQ='zz%22%20autofocus%20onfocus=%22alert(1)'
+
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_xss() {
+		adb "DELETE FROM aliases WHERE last_name = 'ZZXSSDUPE'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = 'ZZXSSDUPE'" >/dev/null
+		adb "DELETE FROM cases WHERE judge_name = 'ZZXSS'" >/dev/null
+		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZXSSATTY'" >/dev/null
+		adb "DELETE FROM flags WHERE name = 'zzxssflag'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_xss' EXIT
+	cleanup_xss
+
+	# plBase::getNextID allocates from the counters table, not from MAX() of
+	# the table, so a fixture placed at MAX()+1 alone can sit on an id the
+	# application is about to hand out. Take the higher of the two and push
+	# the counter up behind the row.
+	xss_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	xss_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# cases.number is varchar(24) and the CI database runs a non-strict
+	# sql_mode, so an over-length payload would be truncated on the way in
+	# without an error and the check would pass on a value that never held
+	# the markup. The payload is 21 characters.
+	XSSATTY="$(xss_next_id pb_attorneys pba_id)"
+	adb "INSERT INTO pb_attorneys (pba_id, first_name, last_name, enabled)
+		VALUES (${XSSATTY}, 'Zz', 'ZZXSSATTY', 1)" >/dev/null
+	xss_bump_counter pb_attorneys "$XSSATTY"
+
+	XSSCASE="$(xss_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id, judge_name, pba_id1)
+		VALUES (${XSSCASE}, '${XSSPAY}', 1, 'ZZO', '1', 1, 'ZZXSS', ${XSSATTY})" >/dev/null
+	xss_bump_counter cases "$XSSCASE"
+
+	XSSNUM="$(adb "SELECT number FROM cases WHERE case_id = ${XSSCASE}")"
+	if [ "$XSSNUM" = "$XSSPAY" ]; then
+		ok "the case fixture kept the whole payload in cases.number"
+	else
+		bad "cases.number truncated the payload to '${XSSNUM}' - the case checks below prove nothing"
+	fi
+
+	# --- 45a. cms/case_list.php ---------------------------------------------
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
+	if grep -qF "case_id=${XSSCASE}" "$BODY"; then
+		if grep -qF "$XSSPAY" "$BODY"; then
+			bad "case_list.php renders a case number as live markup"
+		else
+			ok "case_list.php escapes a case number that holds markup"
+		fi
+		if grep -qF '%%[' "$BODY"; then
+			bad "case_list.php left an unresolved %%[ template tag - the escape broke the render"
+		else
+			ok "case_list.php still resolves every template tag"
+		fi
+	else
+		bad "the fixture case is not on case_list.php - 45a proves nothing"
+	fi
+
+	# --- 45b. cms/pb_attorneys.php ------------------------------------------
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/pb_attorneys.php?screen=edit_pb&pba_id=${XSSATTY}" >/dev/null
+	if grep -qF "&lt;svg onload=alert(1)&gt;" "$BODY"; then
+		ok "pb_attorneys.php escapes a case number that holds markup"
+	else
+		bad "pb_attorneys.php does not show the escaped fixture case - 45b proves nothing"
+	fi
+	if grep -qF "$XSSPAY" "$BODY"; then
+		bad "pb_attorneys.php renders a case number as live markup"
+	else
+		ok "pb_attorneys.php has no live markup from the case number"
+	fi
+	# The link_target cell is assembled markup and has to survive the escape:
+	# it moved below the pl_clean_html_array() call for exactly this reason.
+	if grep -qF '%%[' "$BODY"; then
+		bad "pb_attorneys.php left an unresolved %%[ template tag"
+	else
+		ok "pb_attorneys.php still resolves every template tag"
+	fi
+
+	# --- 45c. cms/merge_contacts.php ----------------------------------------
+	# metaphoneContactCheck() selects from aliases and requires BOTH mp_last
+	# and mp_first to match exactly - no wildcards - so the two fixture
+	# aliases have to carry the same pair of metaphone codes or the page
+	# renders "No records" and the check passes on an empty table.
+	XSSC1="$(xss_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name, mp_first, mp_last, address, city, state, zip, area_code, phone)
+		VALUES (${XSSC1}, 'Ada', 'ZZXSSDUPE', 'AT', 'SKSSTP', '${XSSPAY}', '<b>Zc</b>', 'NE', '68101', '402', '5550101')" >/dev/null
+	xss_bump_counter contacts "$XSSC1"
+	XSSC2="$(xss_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name, mp_first, mp_last, state)
+		VALUES (${XSSC2}, 'Ada', 'ZZXSSDUPE', 'AT', 'SKSSTP', 'NE')" >/dev/null
+	xss_bump_counter contacts "$XSSC2"
+
+	XSSA1="$(xss_next_id aliases alias_id)"
+	adb "INSERT INTO aliases (alias_id, contact_id, primary_name, first_name, last_name, mp_first, mp_last)
+		VALUES (${XSSA1}, ${XSSC1}, 1, 'Ada', 'ZZXSSDUPE', 'AT', 'SKSSTP')" >/dev/null
+	xss_bump_counter aliases "$XSSA1"
+	XSSA2="$(xss_next_id aliases alias_id)"
+	adb "INSERT INTO aliases (alias_id, contact_id, primary_name, first_name, last_name, mp_first, mp_last)
+		VALUES (${XSSA2}, ${XSSC2}, 1, 'Ada', 'ZZXSSDUPE', 'AT', 'SKSSTP')" >/dev/null
+	xss_bump_counter aliases "$XSSA2"
+
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/merge_contacts.php?contact_id=${XSSC2}" >/dev/null
+	if grep -qF 'ZZXSSDUPE' "$BODY" && grep -qF 'merge_these[]' "$BODY"; then
+		if grep -qF "$XSSPAY" "$BODY" || grep -qF '<b>Zc</b>' "$BODY"; then
+			bad "merge_contacts.php renders a contact address as live markup"
+		else
+			ok "merge_contacts.php escapes a contact address that holds markup"
+		fi
+		# text_address in output=html mode interleaves <br/> between the
+		# address lines. Escaping the finished string instead of its parts
+		# would show that as a literal &lt;br/&gt;, so check the break is
+		# still a break.
+		if grep -qF '&lt;br/&gt;' "$BODY"; then
+			bad "merge_contacts.php escaped the address line breaks - the whole string was escaped, not its parts"
+		else
+			ok "merge_contacts.php keeps the address line breaks as markup"
+		fi
+	else
+		bad "the duplicate fixture is not on merge_contacts.php - 45c proves nothing"
+	fi
+
+	# --- 45d. cms/system-red_flags.php ---------------------------------------
+	XSSFLAG="$(xss_next_id flags flag_id)"
+	adb "INSERT INTO flags (flag_id, name, description, rules, enabled)
+		VALUES (${XSSFLAG}, 'zzxssflag', '${XSSPAY}', '', 0)" >/dev/null
+	xss_bump_counter flags "$XSSFLAG"
+
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-red_flags.php" >/dev/null
+	if grep -qF 'zzxssflag' "$BODY"; then
+		if grep -qF "$XSSPAY" "$BODY"; then
+			bad "system-red_flags.php renders a flag description as live markup"
+		else
+			ok "system-red_flags.php escapes a flag description that holds markup"
+		fi
+	else
+		bad "the fixture flag is not on system-red_flags.php - 45d proves nothing"
+	fi
+
+	# --- 45e. htmlContactList(), reflected ----------------------------------
+	# One page per caller of htmlContactList(): the address book, the intake
+	# search and the case contact search. Every filter field is rendered into
+	# a quoted attribute by all three subtemplates.
+	for xss_page in "addressbook.php?first_name=${XSSREFQ}" \
+		"intake2.php?last_name=${XSSREFQ}" \
+		"case_contact.php?case_id=${XSSCASE}&last_name=${XSSREFQ}"; do
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/$xss_page" >/dev/null
+		if grep -qF "$XSSREF" "$BODY"; then
+			bad "${xss_page%%\?*} lets a search value close its value= attribute"
+		else
+			ok "${xss_page%%\?*} escapes a quote in a search value"
+		fi
+	done
+
+	# The escape is quotes only, on purpose. pl_clean_form_input() has already
+	# written < and > as entities and leaves a bare & alone, so running the
+	# value through htmlspecialchars() as well would turn &lt; into &amp;lt;
+	# and show a user who typed a<b & c their own text back double encoded.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/addressbook.php?first_name=a%3Cb%20%26%20c" >/dev/null
+	if grep -qF 'value="a&lt;b &amp; c"' "$BODY"; then
+		bad "addressbook.php double encodes a search value that holds & and <"
+	elif grep -qF 'value="a&lt;b & c"' "$BODY"; then
+		ok "addressbook.php echoes a search value without double encoding it"
+	else
+		bad "addressbook.php did not echo the search value back at all"
+	fi
+
+	# And an apostrophe still searches, rather than searching for &#039;.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/addressbook.php?last_name=O%27Brian" >/dev/null
+	if grep -qF "value=\"O&#039;Brian\"" "$BODY"; then
+		ok "addressbook.php escapes an apostrophe in the rendered search box"
+	else
+		bad "addressbook.php does not escape an apostrophe in the search box"
+	fi
+
+	cleanup_xss
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the XSS checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
