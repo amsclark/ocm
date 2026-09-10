@@ -59,8 +59,15 @@ require_once('lib/pikaCms.php');
 // GLOBAL
 global $plSettings;
 
-// GZIP compression
-if ($plSettings['enable_compression'] && !defined('PIKA_NO_COMPRESSION'))
+/*	GZIP compression. $plSettings is filled in by pika_init(), and this entry
+	point never calls it (see the include_path at the top of this file), so the
+	global is still null here and the read was a warning on every request that
+	came through pika_cms.php. Nothing else changes: null holds no
+	enable_compression, so the branch was never taken either way.
+*/
+if (!is_null($plSettings)
+&& $plSettings['enable_compression']
+&& !defined('PIKA_NO_COMPRESSION'))
 {
 	ob_start("ob_gzhandler");
 }
@@ -532,7 +539,12 @@ function pika_case_note($contact)
 
 /*	Display the tabbed calendar controls, in HTML
 */
-function pika_calendar_tabs($current_tab='day', $cal_date, $user_id)
+/*	The default sat ahead of two required parameters, which PHP 8 reports at
+	compile time - so the notice fired on every include of this file, not on a
+	call. All four call sites in cal_day.php, cal_week.php and cal_adv.php pass
+	three arguments, so the default was never used.
+*/
+function pika_calendar_tabs($current_tab, $cal_date, $user_id)
 {
 	$C = '';
 	
@@ -583,7 +595,12 @@ function pika_calendar_tabs($current_tab='day', $cal_date, $user_id)
 	return $C;
 }
 
-function table_pika_calendar_tabs($current_tab='day', $cal_date, $user_id)
+/*	The default sat ahead of two required parameters, which PHP 8 reports at
+	compile time - so the notice fired on every include of this file, not on a
+	call. All four call sites in cal_day.php, cal_week.php and cal_adv.php pass
+	three arguments, so the default was never used.
+*/
+function table_pika_calendar_tabs($current_tab, $cal_date, $user_id)
 {
 	$C = '';
 	
@@ -642,7 +659,12 @@ function table_pika_calendar_tabs($current_tab='day', $cal_date, $user_id)
 }
 
 
-function old_pika_calendar_tabs($current_tab='day', $cal_date, $user_id)
+/*	The default sat ahead of two required parameters, which PHP 8 reports at
+	compile time - so the notice fired on every include of this file, not on a
+	call. All four call sites in cal_day.php, cal_week.php and cal_adv.php pass
+	three arguments, so the default was never used.
+*/
+function old_pika_calendar_tabs($current_tab, $cal_date, $user_id)
 {
 	$C = '';
 	

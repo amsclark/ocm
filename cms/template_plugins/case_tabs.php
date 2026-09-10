@@ -45,7 +45,12 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 			if ($tab['file'] == "case-{$field_name}.php"){
 				$current = ' class="active"';
 			}
-			$screen_name = $tab['file'];
+			/*	The file column is nullable and the New Tab button writes a
+				row without one, so an administrator who adds a tab and does
+				not fill the file in used to get two deprecation notices per
+				tab per case page.
+			*/
+			$screen_name = (string) $tab['file'];
 			if(substr($screen_name,0,5) == 'case-') {
 				$screen_name = substr($screen_name,5);
 			}
