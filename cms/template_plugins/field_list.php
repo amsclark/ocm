@@ -49,7 +49,11 @@ function field_list($field_name = null, $field_value = null, $menu_array = null,
 		} else {
 			$label = $field;
 		}
-		$field_list_output .= pikaTempLib::plugin('checkbox',"{$field_name}.{$field}",0,array(),array("onclick=update('$field_name.$field','$label');","label=$label"));	
+		// $label comes out of the annotate_<table> menu, which administrators
+		// edit, and it lands inside an onclick attribute and a label arg.
+		$safe_pair = pl_html_escape("{$field_name}.{$field}");
+		$safe_label = pl_html_escape($label);
+		$field_list_output .= pikaTempLib::plugin('checkbox',"{$field_name}.{$field}",0,array(),array("onclick=update('{$safe_pair}','{$safe_label}');","label={$safe_label}"));	
 	}
 	
 	return $field_list_output;

@@ -219,25 +219,31 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 	
 	
 	if($temp_args['div']) { // checklist contained in DIV
+		// Both are pixel counts, so intval() is the whole check: it keeps a
+		// caller from writing anything else into the style attribute.
 		$width = '';
 		if($temp_args['width']) 
 		{
-			$width = 'width:' . $temp_args['width'] . 'px;';
+			$width = 'width:' . intval($temp_args['width']) . 'px;';
 		}
 		$height = '';
 		if($temp_args['height']) 
 		{
-			$height = 'height:' . $temp_args['height'] . 'px;';
+			$height = 'height:' . intval($temp_args['height']) . 'px;';
 		}
 		$class = '';
 		if($temp_args['class']) 
 		{
-			$class = " class=\"{$temp_args['class']}\"";
+			$class = ' class="' . pl_html_escape($temp_args['class']) . '"';
 		}
 		
+		// $div_id was only ever assigned inside the if, so a caller that
+		// passed no id reached the interpolation below with the variable
+		// undefined -- a warning in the page body on PHP 8.
+		$div_id = '';
 		if($temp_args['id'])
 		{
-			$div_id = " id=\"{$temp_args['id']}\"";
+			$div_id = ' id="' . pl_html_escape($temp_args['id']) . '"';
 		}
 		
 		$file_list_output = "<div{$class}{$div_id} style=\"background-color:#FFFFFF;{$width}{$height}border:1px black solid;overflow:auto;\">"

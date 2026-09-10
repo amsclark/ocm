@@ -77,7 +77,11 @@ function checkbox($field_name = null, $field_value = null, $menu_array = null, $
 	if(isset($temp_args['label']) && strlen($temp_args['label']) > 0) 
 	{
 		// 2013-08-08 AMW - Checkbox is now wrapped inside <label> for better HTML5/Bootstrap compatibility.
-		$checkbox_output = "<label class=\"checkbox\">{$checkbox_output}&nbsp;{$temp_args['label']}</label>";
+		// The label is content, not structure: checkbox_list.php passes it
+		// straight from the menu table as label=$val, so it is whatever an
+		// admin or a per-org overlay typed. Some labels are stored already
+		// entity-encoded, so escape through the label helper.
+		$checkbox_output = "<label class=\"checkbox\">{$checkbox_output}&nbsp;" . pl_html_escape_label($temp_args['label']) . "</label>";
 	}
 	
 	return $checkbox_output;

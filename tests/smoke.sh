@@ -1592,5 +1592,81 @@ else
 fi
 
 echo
+echo "20. the template plugin layer escapes what it renders"
+
+# The plugins in cms/template_plugins draw nearly every field in the app and
+# most of them interpolated straight into the markup. input_text.php escaped
+# nothing at all, so any value carrying a double quote closed value=" and
+# grafted its own attributes onto the input. input_textarea.php wrote the body
+# raw, so a value carrying "</textarea" closed the field early.
+#
+# Both checks carry a positive control, because an escaping check passes
+# vacuously if the value never reaches the page at all.
+
+# A. Reflected filter value in an attribute. No fixture needed: the pro bono
+# directory reflects the county filter back into an input_text.
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/assign_pba.php?county=zz%22+onmouseover%3D%22zzXSS%28%29" >/dev/null
+if grep -qF 'onmouseover="zzXSS()' "$BODY"; then
+	bad "A FILTER VALUE BREAKS OUT OF AN ATTRIBUTE AND ADDS AN EVENT HANDLER"
+elif grep -qF 'value="zz&quot;' "$BODY"; then
+	ok "a double quote in a text field is encoded inside the attribute"
+else
+	bad "the county filter never reached the page - check A is untested"
+fi
+
+curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/assign_pba.php?county=Lancaster" >/dev/null
+if grep -qF 'value="Lancaster"' "$BODY"; then
+	ok "an ordinary filter value still round-trips unchanged"
+else
+	bad "an ordinary filter value no longer round-trips - the escaping is wrong"
+fi
+
+# B. Stored activity notes in a textarea body. activities.notes is the widest
+# writable text field in the app.
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_ta() {
+		adb "DELETE FROM activities WHERE summary = 'ZZTA activity'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-TA-CASE'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ta' EXIT
+	cleanup_ta
+
+	TCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${TCASE}, 'ZZ-TA-CASE', 1, 'ZZOFF', '1')" >/dev/null
+	TACT="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, case_id, user_id, act_date, act_type, completed, summary, notes)
+		VALUES (${TACT}, ${TCASE}, 1, CURDATE(), 'C', 0, 'ZZTA activity',
+			'ZZTA-START</textarea><zzxss>ZZTA-END and ZZTA & PLAIN')" >/dev/null
+
+	if [ -z "${TACT:-}" ]; then
+		bad "could not seed the textarea fixture"
+	else
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/activity.php?act_id=${TACT}" >/dev/null
+		if grep -qF '</textarea><zzxss>' "$BODY"; then
+			bad "A STORED NOTE CLOSES THE TEXTAREA AND ADDS MARKUP TO THE PAGE"
+		elif grep -qF '&lt;/textarea&gt;' "$BODY"; then
+			ok "a note carrying </textarea is encoded inside the textarea body"
+		else
+			bad "the seeded note never reached the page - check B is untested"
+		fi
+
+		if grep -qF 'ZZTA &amp; PLAIN' "$BODY"; then
+			ok "ordinary note text still reaches the textarea"
+		else
+			bad "ordinary note text no longer reaches the textarea"
+		fi
+	fi
+
+	cleanup_ta
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the stored textarea check (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

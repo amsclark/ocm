@@ -97,7 +97,7 @@ function menu_groups($field_name = null, $field_value = null, $menu_array = null
 			if($key == $field_value) {
 				$selected = 'selected';
 			}
-			$menu_output .= "\t<option {$selected} value=\"" . pl_html_escape($key) . "\">" . pl_html_escape($label) . "</option>\n";
+			$menu_output .= "\t<option {$selected} value=\"" . pl_html_escape($key) . "\">" . pl_html_escape_label($label) . "</option>\n";
 		}
 		$menu_output .= "</optgroup>\n";
 	}

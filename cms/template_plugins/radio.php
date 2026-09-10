@@ -70,7 +70,7 @@ function radio($field_name = null, $field_value = null, $menu_array = null, $arg
 		if ($temp_args['disabled']) {
 			$radio_output .= "disabled ";
 		}
-		$radio_output .= "{$checked} />" . pl_html_escape($label) . "</label> ";
+		$radio_output .= "{$checked} />" . pl_html_escape_label($label) . "</label> ";
 		if ($temp_args['vertical']) {
 			$radio_output .= "<br/>\n";
 		} else { $radio_output .= "&nbsp; "; }

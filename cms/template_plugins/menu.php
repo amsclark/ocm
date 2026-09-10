@@ -114,7 +114,12 @@ function menu($field_name = null, $field_value = null, $menu_array = null, $args
 		// show users the raw entity text. Labels are admin-curated reference
 		// data, not request input. Escaping them properly means first cleaning
 		// the stored data, which is a data migration, not a code change.
-		$menu_output .= "<option {$selected} value=\"" . pl_html_escape($key) . "\">{$label}</option>\n";
+		// The option text was the one thing left raw here. Labels use the
+		// label helper, not pl_html_escape(): some menu labels are stored
+		// already entity-encoded because the %%[tag]%% parser splits on
+		// commas and quotes, and escaping those again would show the user a
+		// literal "&#44;".
+		$menu_output .= "<option {$selected} value=\"" . pl_html_escape($key) . "\">" . pl_html_escape_label($label) . "</option>\n";
 	}
 	
 	

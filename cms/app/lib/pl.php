@@ -881,6 +881,64 @@ if (!function_exists('pl_html_escape')) {
 }
 
 /**
+ * Escape a label for a quoted attribute, leaving an already-encoded label
+ * alone.
+ *
+ * The template plugins receive two different kinds of string in the same
+ * argument. Some are plain text out of the database. Others are written as
+ * entities on purpose, because the %%[tag]%% parser splits on commas and
+ * quotes, so a template author who wants a comma in a label has to write
+ * &#44; instead. Running pl_html_escape() over the second kind shows the
+ * user a literal "&amp;#44;".
+ *
+ * A value is treated as pre-encoded only when it contains no < > " or '
+ * at all and every & in it opens a character reference. That covers every
+ * string that could break out of an attribute, so anything dangerous is
+ * escaped and only genuinely-encoded labels pass through.
+ */
+if (!function_exists('pl_html_escape_label')) {
+	function pl_html_escape_label($value)
+	{
+		if (is_null($value))
+		{
+			return '';
+		}
+		if (is_array($value) || (is_object($value) && !method_exists($value, '__toString')))
+		{
+			return '';
+		}
+		
+		$label = (string)$value;
+		
+		// Any of these can start markup or close a quoted attribute, so
+		// their presence means the value is not pre-encoded.
+		if (strpbrk($label, '<>"\'') !== false)
+		{
+			return pl_html_escape($label);
+		}
+		
+		// Every ampersand must open a named, decimal or hex reference. A
+		// bare '&', or '&notanentity', means the author wrote literal
+		// text, so escape the whole label rather than guessing.
+		if (strpos($label, '&') !== false)
+		{
+			$amp_count = substr_count($label, '&');
+			$ref_count = preg_match_all(
+				'/&(?:[A-Za-z][A-Za-z0-9]{1,31}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});/',
+				$label
+			);
+			
+			if ($ref_count !== $amp_count)
+			{
+				return pl_html_escape($label);
+			}
+		}
+		
+		return $label;
+	}
+}
+
+/**
  * Record a developer-facing error detail to the server log without sending
  * it to the client. Use this anywhere we would otherwise leak paths, SQL
  * fragments, raw user input, or stack detail through trigger_error or

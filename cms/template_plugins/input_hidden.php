@@ -27,13 +27,17 @@ function input_hidden($field_name = null, $field_value = null, $menu_array = nul
 	$hidden_output .= "<input type=\"hidden\" ";
 
 
-	$hidden_output .= "name=\"{$temp_args['name']}\" ";
-	$hidden_output .= "id=\"{$temp_args['id']}\" ";
+	// Nothing here was escaped. Hidden fields carry ids and filter values
+	// straight off the query string on several screens, so a value with a
+	// double quote closed value="..." and added its own attributes to the
+	// <input>. See input_text.php for why value uses the label helper.
+	$hidden_output .= "name=\"" . pl_html_escape($temp_args['name']) . "\" ";
+	$hidden_output .= "id=\"" . pl_html_escape($temp_args['id']) . "\" ";
 	// If no value supplied substitute default value if specified
 	if(!$field_value && strlen($field_value) < 1 && $temp_args['default']) {
 		$field_value = $temp_args['default'];
 	}
-	$hidden_output .= "value=\"{$field_value}\" ";
+	$hidden_output .= "value=\"" . pl_html_escape_label($field_value) . "\" ";
 	$hidden_output .= "/>";
 
 	return $hidden_output;
