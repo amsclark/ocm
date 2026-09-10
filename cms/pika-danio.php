@@ -589,6 +589,63 @@ function pika_ssn_mode()
 
 
 /**
+ * Is this activity date inside the backdating lock?
+ *
+ * The rule is the one activity.php has always drawn the greyed-out form
+ * from: activity_lock_max_days days after the activity date, a non-system
+ * user may no longer touch the record. The setting is off when it is 0 or
+ * unset, which is the shipped default.
+ *
+ * It lives here because two places need the same answer. activity.php asks
+ * so it can grey the form out; ops/update_activity.php asks so it can
+ * refuse the save. Before this, only activity.php asked, and the lock was
+ * a disabled attribute in the markup with nothing behind it -- a request
+ * that did not come from that form saved whatever date it liked.
+ *
+ * @param string $act_date_str the activity date, 'YYYY-MM-DD'
+ * @return boolean
+*/
+function pika_activity_date_locked($act_date_str)
+{
+	global $auth_row;
+	
+	$lock_max_days = (int) pl_settings_get('activity_lock_max_days');
+	
+	if ($lock_max_days <= 0)
+	{
+		return false;
+	}
+	
+	if (isset($auth_row['group_id']) && $auth_row['group_id'] == 'system')
+	{
+		return false;
+	}
+	
+	$act_date_str = trim((string) $act_date_str);
+	
+	if ($act_date_str === '' || $act_date_str === '0000-00-00')
+	{
+		return false;
+	}
+	
+	$act_timestamp = strtotime($act_date_str);
+	
+	/*	An unreadable date is not a locked date. Refusing here would block
+		the save on a value the rest of the file is about to reject anyway,
+		and with a message about the wrong thing.
+	*/
+	if ($act_timestamp === false)
+	{
+		return false;
+	}
+	
+	$days_old = (time() - $act_timestamp) / (60 * 60 * 24);
+	
+	return $days_old > $lock_max_days;
+}
+
+
+/**
  * Initializes the Pika CMS "danio" framework.
  * This function should be called at the beginning of every "danio"-based 
  * script.  If the user is not authenticated, it will display the login

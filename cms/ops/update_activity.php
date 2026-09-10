@@ -20,6 +20,74 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 
 require_once('pikaActivity.php');
 
+/**
+ * Fill in hours from a start/end time range when no hours were entered.
+ *
+ * The Calendar entry form (act_type 'C', subtemplates/activityC.html)
+ * captures Start Time and End Time and has no hours field at all, and this
+ * handler reads hours straight out of the POST -- so every calendar time
+ * entry saved as 0 hours. It stayed on the calendar and was invisible to
+ * the Time Codes report and to every timekeeping total.
+ *
+ * An hours value the user actually typed always wins; this only fills an
+ * empty or zero one. The range is measured against a fixed date so a span
+ * that would cross midnight derives nothing and is left for explicit
+ * entry.
+ *
+ * A future-dated entry is a scheduled appointment, not work that has been
+ * done, so it is left alone. Today and earlier derive.
+ *
+ * @param pikaActivity $activity
+ * @return void
+*/
+function pika_derive_hours_from_timerange($activity)
+{
+	/*	Read through getValues() rather than $activity->hours. plBase has
+		__get but no __isset, so isset() on one of these is always false and
+		a guard written that way would silently overwrite an hours value the
+		user did type.
+	*/
+	$values = $activity->getValues();
+	
+	$current_hours = isset($values['hours']) ? (float) $values['hours'] : 0.0;
+	
+	if ($current_hours > 0)
+	{
+		return;
+	}
+	
+	$act_date = isset($values['act_date']) ? trim((string) $values['act_date']) : '';
+	
+	if ($act_date !== '')
+	{
+		$act_timestamp = strtotime($act_date);
+		
+		if ($act_timestamp !== false && date('Y-m-d', $act_timestamp) > date('Y-m-d'))
+		{
+			return;
+		}
+	}
+	
+	$start = isset($values['act_time']) ? trim((string) $values['act_time']) : '';
+	$end = isset($values['act_end_time']) ? trim((string) $values['act_end_time']) : '';
+	
+	if ($start === '' || $end === '' || $start === '00:00:00' || $end === '00:00:00')
+	{
+		return;
+	}
+	
+	$start_timestamp = strtotime('1970-01-01 ' . $start);
+	$end_timestamp = strtotime('1970-01-01 ' . $end);
+	
+	if ($start_timestamp === false || $end_timestamp === false || $end_timestamp <= $start_timestamp)
+	{
+		return;
+	}
+	
+	$activity->hours = round(($end_timestamp - $start_timestamp) / 3600.0, 4);
+}
+
+
 // VARIABLES
 $base_url = pl_settings_get('base_url');
 $act_interval = pl_settings_get('act_interval');
@@ -53,6 +121,48 @@ if ("case.php" == $act_url)
 */
 
 
+/*	The backdating lock. activity.php greys the date, funding and hours
+	fields out once an activity is more than activity_lock_max_days old,
+	but that is a disabled attribute in the markup and nothing more: any
+	POST that did not come from that form ignored it, and the setting was
+	advice rather than a rule.
+	
+	Both dates are checked. The submitted one stops a new record being
+	backdated into the locked window; on an edit the stored one stops a
+	locked record being dragged forward to a date that is not locked.
+	
+	A refusal returns to the form rather than dying, because the common
+	case is an honest user with a stale page open.
+*/
+if (!$cancel)
+{
+	$locked_date = $act_date;
+	
+	if ($act_id && is_numeric($act_id))
+	{
+		$existing = new pikaActivity($act_id);
+		$existing_values = $existing->getValues();
+		$existing_date = isset($existing_values['act_date']) ? $existing_values['act_date'] : '';
+		
+		if (pika_activity_date_locked($existing_date))
+		{
+			$locked_date = $existing_date;
+		}
+	}
+	
+	if (pika_activity_date_locked($locked_date))
+	{
+		$lock_return = "{$base_url}/activity.php?date_lock_error=1"
+			. '&act_id=' . urlencode((string) $act_id)
+			. '&case_id=' . urlencode((string) $case_id)
+			. '&act_type=' . urlencode((string) $act_type)
+			. '&act_date=' . urlencode((string) $locked_date);
+		
+		header("Location: {$lock_return}");
+		exit();
+	}
+}
+
 // The user is saving the activity record.
 if($act_id && is_numeric($act_id)) {
 	$activity = new pikaActivity($act_id);
@@ -60,6 +170,7 @@ if($act_id && is_numeric($act_id)) {
 	if (pika_authorize('edit_act', $act_row)) 
 	{	
 		$activity->setValues($a);
+		pika_derive_hours_from_timerange($activity);
 		$activity->hours = pikaActivity::roundHoursByInterval($activity->hours,$act_interval);
 		$activity->save();
 	}
@@ -67,6 +178,7 @@ if($act_id && is_numeric($act_id)) {
 	$activity = new pikaActivity();
 	unset($a['act_id']);
 	$activity->setValues($a);
+	pika_derive_hours_from_timerange($activity);
 	$activity->hours = pikaActivity::roundHoursByInterval($activity->hours,$act_interval);
 	
 	if ($activity->act_type == 'K' && file_exists(pl_custom_directory() . '/extensions/create_tickler/create_tickler.php'))
