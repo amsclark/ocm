@@ -89,6 +89,33 @@ if [ -z "${OCM_PASSWORD:-}" ]; then
 	exit 2
 fi
 
+# ── Re-authentication helper ───────────────────────────────────────────────
+# A password change, a user edit and a settings change all ask the signed-in
+# administrator for the password again before the change takes effect. See
+# section 39. A test that drives one of those forms has to answer the
+# challenge the way a person does. The challenge carries the in-flight fields
+# forward, so replaying the same body with the scope and the password added
+# finishes the original request. The grant lasts five minutes per scope, so
+# only the first post in a section meets the challenge.
+#
+# Usage: sm_reauth_post <scope> <url> [curl -d args ...]
+# The reply body is left in $BODY, exactly as a plain curl would leave it.
+sm_reauth_post() {
+	sm_ra_scope="$1"
+	sm_ra_url="$2"
+	shift 2
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$@" "$sm_ra_url" >/dev/null
+	if grep -q 'name="_reauth_scope"' "$BODY"; then
+		sm_ra_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$@" \
+			-d "_reauth_scope=${sm_ra_scope}" \
+			-d "_csrf=${sm_ra_tok}" \
+			--data-urlencode "_reauth_password=${OCM_PASSWORD}" \
+			"$sm_ra_url" >/dev/null
+	fi
+}
+
 echo "smoke: $OCM_URL as $OCM_USER"
 
 # ── 1. The login page is served ────────────────────────────────────────────
@@ -2298,11 +2325,10 @@ MFAPY
 		mfa_admin_edit
 		mfa_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
-		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		sm_reauth_post user_admin "$OCM_URL/system-users.php" \
 			-d "action=update&user_id=${MFA_UID}&_csrf=${mfa_tok}" \
 			-d "username=${MFA_USER}&enabled=1&group_id=${MFA_GROUP}" \
-			-d "totp_enabled=$1" \
-			"$OCM_URL/system-users.php" >/dev/null
+			-d "totp_enabled=$1"
 	}
 	mfa_login() {
 		: > "$MFA_JAR"
@@ -2945,10 +2971,9 @@ SSOCFG2
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
 		sso_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
-		curl -sL --max-time 30 -b "$COOKIES" -o /dev/null \
+		sm_reauth_post settings "$OCM_URL/system-settings.php" \
 			-d "action=update&_csrf=${sso_tok}" \
-			-d "sso_client_secret=" \
-			"$OCM_URL/system-settings.php" >/dev/null
+			-d "sso_client_secret="
 		if [ "$(adb "SELECT value FROM settings WHERE label = 'sso_client_secret'")" = "$SSO_SECRET" ]; then
 			ok "saving the form with the secret field blank keeps the stored secret"
 		else
@@ -3085,7 +3110,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		ts="$(date +%s)"
 		good_sig="$(pt_sign newCase "$PT_BODY" "$ts")"
 
-		code="$(pt_post_json newCase "$PT_BODY" "$ts" "${good_sig%?}0")"
+		# Replace the last character of the signature with one that is not
+		# already there. A fixed replacement character matches the original
+		# one time in sixteen, and the packet is then correctly signed.
+		case "$good_sig" in
+			*0) bad_sig="${good_sig%?}1" ;;
+			*)  bad_sig="${good_sig%?}0" ;;
+		esac
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$bad_sig")"
 		if [ "$code" = 403 ] && grep -q 'bad_signature' "$BODY"; then
 			ok "a packet with one flipped signature character is refused"
 		else
@@ -3537,6 +3569,185 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
 	printf '  skip the ops authorization checks (needs the database)\n'
+fi
+
+echo
+echo "39. re-authentication in front of the sensitive changes"
+
+# A signed-in session is a bearer token. Someone who walks up to an
+# unlocked workstation, or who holds a stolen cookie, could reset the
+# account holder's password, edit accounts, or rewrite the security
+# settings without ever proving they knew the password. pl_reauth_required()
+# puts a fresh password check in front of those three, and holds the
+# result for PL_REAUTH_WINDOW_SECONDS so a normal multi-step edit is not
+# interrupted twice.
+#
+# password.php is the awkward one. Its challenge form deliberately does
+# not carry password fields forward, so the POST that comes back out of
+# the challenge has an action and no passwords. Falling through there
+# would report "New password cannot be blank" forever, so that route
+# redirects instead. That loop is what assertions 8 and 9 pin down.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	RAGROUP='zz_ra_grp'
+	RAUSER='zz_ra_user'
+	RAPASS='zz-ra-Passw0rd'
+	RANEW='zz-ra-N3wPassw0rd'
+	RAJAR="$(mktemp)"
+
+	cleanup_ra() {
+		adb "DELETE FROM reauth_grants WHERE action_scope IN ('user_admin','password_change','settings')" >/dev/null
+		adb "DELETE FROM audit_log WHERE action LIKE 'reauth.%'" >/dev/null
+		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username = '${RAUSER}')" >/dev/null
+		adb "DELETE FROM users WHERE username = '${RAUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${RAGROUP}'" >/dev/null
+		rm -f "$RAJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ra' EXIT
+	cleanup_ra
+
+	# The users flag is the one that matters: it is what lets this account
+	# reach system-users.php at all, so the re-auth gate is the only thing
+	# left between it and an account edit.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${RAGROUP}', NULL, 0, NULL, 0, 1, 0, 0, 0, NULL)" >/dev/null
+
+	RAHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$RAPASS" </dev/null 2>/dev/null)"
+	RAUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${RAUID}, '${RAUSER}', '${RAHASH}', 1, '${RAGROUP}', 0)" >/dev/null
+
+	ra_token() {
+		curl -sL --max-time 30 -c "$1" -b "$1" "$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	: > "$RAJAR"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o /dev/null \
+		-d "login_user=${RAUSER}&login_pass=${RAPASS}&auth_id=1" "$OCM_URL/" >/dev/null
+
+	# 39a. An account edit raises the challenge instead of being written.
+	RATOK="$(ra_token "$RAJAR")"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -X POST \
+		-d "_csrf=${RATOK}&action=update&user_id=${RAUID}&username=${RAUSER}&group_id=${RAGROUP}&enabled=1" \
+		"$OCM_URL/system-users.php" >/dev/null
+	if grep -q 'name="_reauth_scope" value="user_admin"' "$BODY"; then
+		ok "an account edit raises the re-auth challenge"
+	else
+		bad "an account edit was accepted without a re-auth challenge"
+	fi
+
+	# 39b. The work in flight survives the challenge.
+	if grep -q 'name="username" value="'"${RAUSER}"'"' "$BODY" \
+		&& grep -q 'name="action" value="update"' "$BODY"; then
+		ok "the challenge carries the in-flight form fields forward"
+	else
+		bad "the challenge drops the in-flight form fields - the edit is lost"
+	fi
+
+	# 39c. ...but not the fields that would put a secret in the markup.
+	if grep -q 'name="password"' "$BODY" || grep -q 'name="newpass' "$BODY"; then
+		bad "the challenge echoes a password field back as a hidden input"
+	else
+		ok "the challenge does not carry password fields forward"
+	fi
+
+	# 39d. A wrong answer buys nothing.
+	RATOK="$(ra_token "$RAJAR")"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -X POST \
+		-d "_csrf=${RATOK}&_reauth_scope=user_admin&_reauth_password=not-the-password&action=update&user_id=${RAUID}" \
+		"$OCM_URL/system-users.php" >/dev/null
+	RAGRANTS="$(adb "SELECT COUNT(*) FROM reauth_grants WHERE action_scope = 'user_admin'")"
+	if [ "${RAGRANTS:-0}" = 0 ] && grep -q 'Credentials did not match' "$BODY"; then
+		ok "a wrong password is refused and writes no grant"
+	else
+		bad "a wrong password was not refused, or it left a grant behind (${RAGRANTS:-?})"
+	fi
+
+	# 39e. And it is on the record.
+	if [ "$(adb "SELECT COUNT(*) FROM audit_log WHERE action = 'reauth.denied'")" -gt 0 ]; then
+		ok "the refused challenge is recorded in the audit log"
+	else
+		bad "the refused challenge left no audit row"
+	fi
+
+	# 39f. The right answer issues the grant.
+	RATOK="$(ra_token "$RAJAR")"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -X POST \
+		-d "_csrf=${RATOK}&_reauth_scope=user_admin&_reauth_password=${RAPASS}&action=update&user_id=${RAUID}&username=${RAUSER}&group_id=${RAGROUP}&enabled=1" \
+		"$OCM_URL/system-users.php" >/dev/null
+	RAGRANTS="$(adb "SELECT COUNT(*) FROM reauth_grants WHERE action_scope = 'user_admin' AND granted_until > NOW()")"
+	RAAUDIT="$(adb "SELECT COUNT(*) FROM audit_log WHERE action = 'reauth.granted'")"
+	if [ "${RAGRANTS:-0}" -ge 1 ] && [ "${RAAUDIT:-0}" -ge 1 ]; then
+		ok "the right password issues a grant and records it"
+	else
+		bad "the right password issued no grant (grants ${RAGRANTS:-?}, audit ${RAAUDIT:-?})"
+	fi
+
+	# 39g. One grant is not a pass for everything. A borrowed session that
+	# talked its way past one gate must still be stopped at the next.
+	RATOK="$(ra_token "$RAJAR")"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -X POST \
+		-d "_csrf=${RATOK}&action=update&oldpass=${RAPASS}&newpass1=${RANEW}&newpass2=${RANEW}" \
+		"$OCM_URL/password.php" >/dev/null
+	if grep -q 'name="_reauth_scope" value="password_change"' "$BODY"; then
+		ok "a grant for one scope does not satisfy another"
+	else
+		bad "a grant for one scope let a different scope through"
+	fi
+
+	# 39h. Answering the password-change challenge redirects rather than
+	# running the handler with the body the challenge just emptied.
+	RATOK="$(ra_token "$RAJAR")"
+	RAHDRS="$(curl -s --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -D - -X POST \
+		-d "_csrf=${RATOK}&_reauth_scope=password_change&_reauth_password=${RAPASS}&action=update" \
+		"$OCM_URL/password.php")"
+	if printf '%s' "$RAHDRS" | grep -q '303' \
+		&& printf '%s' "$RAHDRS" | grep -qi 'Location:.*password.php?reauth=1'; then
+		ok "the password-change challenge redirects instead of looping on an empty body"
+	else
+		bad "the password-change challenge fell through to the handler - the empty-body loop is back"
+	fi
+
+	# 39i. And says so, in the colour a confirmation should be.
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" "$OCM_URL/password.php?reauth=1" >/dev/null
+	if sed 's/&nbsp;/ /g' "$BODY" | grep -q 'Identity verified'; then
+		ok "the page confirms the identity check before asking for the new password"
+	else
+		bad "the page gives no sign the identity check succeeded"
+	fi
+
+	# 39j. With the grant in hand the change actually goes through.
+	RAWAS="$(adb "SELECT password FROM users WHERE user_id = ${RAUID}")"
+	RATOK="$(ra_token "$RAJAR")"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -X POST \
+		-d "_csrf=${RATOK}&action=update&oldpass=${RAPASS}&newpass1=${RANEW}&newpass2=${RANEW}" \
+		"$OCM_URL/password.php" >/dev/null
+	RANOW="$(adb "SELECT password FROM users WHERE user_id = ${RAUID}")"
+	if [ -n "$RANOW" ] && [ "$RANOW" != "$RAWAS" ]; then
+		ok "the grant lets the password change through"
+	else
+		bad "the password change did not take effect with a grant in hand"
+	fi
+
+	# 39k. The window is what makes the grant safe to hold at all. An
+	# expired row must read the same as no row.
+	adb "UPDATE reauth_grants SET granted_until = DATE_SUB(NOW(), INTERVAL 1 MINUTE)" >/dev/null
+	RATOK="$(ra_token "$RAJAR")"
+	curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -X POST \
+		-d "_csrf=${RATOK}&action=update&user_id=${RAUID}&username=${RAUSER}&group_id=${RAGROUP}&enabled=1" \
+		"$OCM_URL/system-users.php" >/dev/null
+	if grep -q 'name="_reauth_scope" value="user_admin"' "$BODY"; then
+		ok "an expired grant challenges again"
+	else
+		bad "an expired grant still let the change through"
+	fi
+
+	cleanup_ra
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the re-authentication checks (needs the database and compose)\n'
 fi
 
 echo

@@ -1,0 +1,83 @@
+/*	Styles for the re-authentication challenge page.
+
+	The challenge is rendered by pl_reauth_required() in cms/app/lib/pl.php,
+	which is reached from ordinary mutation routes (system-users.php,
+	system-settings.php, password.php). Those routes render the challenge
+	instead of their own page, so the application's normal chrome and its
+	stylesheet are not on the path. This file is linked absolutely from
+	base_url so the page looks the same wherever it is raised from, and so
+	the markup needs no inline style attribute.
+*/
+
+body {
+	margin: 0;
+	padding: 2rem 1rem;
+	background: #f4f4f4;
+	color: #222;
+	font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+main {
+	max-width: 30rem;
+	margin: 0 auto;
+	padding: 1.5rem;
+	background: #ffffff;
+	border: 1px solid #d0d0d0;
+	border-radius: 4px;
+}
+
+h1 {
+	margin: 0 0 1rem;
+	font-size: 1.4rem;
+}
+
+p {
+	margin: 0 0 1rem;
+}
+
+label {
+	display: block;
+	margin: 0.75rem 0 0.25rem;
+	font-weight: bold;
+}
+
+input[type="password"],
+input[type="text"] {
+	box-sizing: border-box;
+	width: 100%;
+	padding: 0.5rem;
+	border: 1px solid #b0b0b0;
+	border-radius: 3px;
+	font-size: 1rem;
+}
+
+button {
+	margin-top: 1rem;
+	padding: 0.5rem 1.25rem;
+	border: 1px solid #2b5f8f;
+	border-radius: 3px;
+	background: #37729f;
+	color: #ffffff;
+	font-size: 1rem;
+	cursor: pointer;
+}
+
+button:hover {
+	background: #2b5f8f;
+}
+
+.ocm-reauth-error {
+	margin: 0 0 1rem;
+	padding: 0.5rem 0.75rem;
+	border: 1px solid #c0392b;
+	border-radius: 3px;
+	background: #fdecea;
+	color: #8b1a10;
+}
+
+.ocm-reauth-cancel {
+	margin: 1rem 0 0;
+	font-size: 0.9rem;
+}

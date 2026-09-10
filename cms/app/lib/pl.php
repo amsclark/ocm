@@ -3661,6 +3661,458 @@ function pl_template_section_handler()
 
 // function pl_template($template_data, $template_file='templates/default.html', $retmode='no')
 /**
+ * @desc How long one successful re-auth challenge covers later requests
+ * for the same action scope. Five minutes is short enough that someone
+ * who walks up to an unlocked, signed-in terminal cannot chain sensitive
+ * changes, and long enough that an administrator can finish a normal
+ * multi-step edit without being asked twice.
+ */
+if (!defined('PL_REAUTH_WINDOW_SECONDS'))
+{
+	define('PL_REAUTH_WINDOW_SECONDS', 300);
+}
+
+/**
+ * @return array
+ * @desc The re-auth scopes this application uses. Kept in one place
+ * because services/sso/login.php has to validate a scope that arrived
+ * over the wire before it starts an identity-provider round trip, and
+ * both ends have to agree on the list.
+ */
+function pl_reauth_scopes()
+{
+	return array('password_change', 'user_admin', 'settings');
+}
+
+/**
+ * @return bool
+ * @desc True when the signed-in user authenticates at an identity
+ * provider instead of against a local password hash. Reads the
+ * request-local auth row first, because pikaUserSession::getSessions()
+ * carries auth_method, and falls back to a direct lookup for callers
+ * that got here without the global populated.
+ */
+function pl_reauth_user_is_sso()
+{
+	global $auth_row;
+	
+	if (is_array($auth_row) && isset($auth_row['auth_method']))
+	{
+		return ('sso' === $auth_row['auth_method']);
+	}
+	
+	$user_id = (is_array($auth_row) && isset($auth_row['user_id'])) ? (int) $auth_row['user_id'] : 0;
+	
+	if ($user_id < 1)
+	{
+		return false;
+	}
+	
+	$result = DB::preparedQuery('SELECT auth_method FROM users WHERE user_id = ? LIMIT 1', array($user_id));
+	
+	if (!$result || DBResult::numRows($result) !== 1)
+	{
+		return false;
+	}
+	
+	$row = DBResult::fetchRow($result);
+	
+	return (is_array($row) && isset($row['auth_method']) && 'sso' === $row['auth_method']);
+}
+
+/**
+ * @return bool
+ * @desc True when single sign-on is switched on for this site. The
+ * shape of the check matches pikaSsoOidc.php so a site that has never
+ * written the setting reads as off.
+ */
+function pl_reauth_sso_enabled()
+{
+	return ('1' === (string) pl_settings_get('sso_enabled'));
+}
+
+/**
+ * @return string
+ * @desc Where the browser should land after an SSO re-auth round trip,
+ * for example '/system-settings.php?tab=sso'. The path is relative to
+ * base_url and is validated again in services/sso/login.php before it
+ * is stored, so a tampered value can only ever redirect inside this
+ * deployment.
+ */
+function pl_reauth_return_path()
+{
+	$script = isset($_SERVER['SCRIPT_NAME']) ? basename((string) $_SERVER['SCRIPT_NAME']) : '';
+	
+	if ('' === $script)
+	{
+		return '/';
+	}
+	
+	$path = '/' . $script;
+	
+	if (isset($_SERVER['QUERY_STRING']) && strlen((string) $_SERVER['QUERY_STRING']) > 0)
+	{
+		$path .= '?' . (string) $_SERVER['QUERY_STRING'];
+	}
+	
+	return $path;
+}
+
+/**
+ * @return string
+ * @desc The URL the challenge form posts back to: the exact path that
+ * is executing now. SCRIPT_NAME already carries base_url and any
+ * subdirectory, which a basename()-based action would drop. The query
+ * string is kept for handlers that read it.
+ */
+function pl_reauth_self_action()
+{
+	$path = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+	$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string) $_SERVER['QUERY_STRING']) > 0)
+		? '?' . (string) $_SERVER['QUERY_STRING'] : '';
+	
+	return htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
+/**
+ * @return void
+ * @param string $action_scope the scope being challenged
+ * @param string $error_msg text to show above the button, or ''
+ * @desc Render the single sign-on version of the re-auth challenge.
+ * Unlike pl_reauth_render_form() this cannot carry the in-flight POST
+ * body: the browser leaves this application for the identity provider
+ * and comes back on a GET. The user lands on the page they started
+ * from with a grant in hand and submits once more.
+ */
+function pl_reauth_render_sso_form($action_scope, $error_msg = '')
+{
+	$safe_base   = htmlspecialchars((string) pl_settings_get('base_url'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_owner  = htmlspecialchars((string) pl_settings_get('owner_name'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_scope  = htmlspecialchars((string) $action_scope, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_error  = htmlspecialchars((string) $error_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_return = htmlspecialchars(pl_reauth_return_path(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	
+	$provider = (string) pl_settings_get('sso_provider');
+	$safe_provider = htmlspecialchars(('google' === $provider) ? 'Google' : 'Microsoft Entra ID', ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	
+	$err_block = '';
+	
+	if (strlen($safe_error) > 0)
+	{
+		$err_block = '<div class="ocm-reauth-error"><strong>' . $safe_error . '</strong></div>';
+	}
+	
+	header('Content-Type: text/html; charset=utf-8');
+	
+	echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+	   . '<meta name="robots" content="noindex, nofollow">'
+	   . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+	   . '<title>Confirm your identity - ' . $safe_owner . '</title>'
+	   . '<link rel="stylesheet" href="' . $safe_base . '/css/reauth.css">'
+	   . '</head><body><main id="main-content">';
+	echo '<h1>Confirm your identity</h1>';
+	echo $err_block;
+	
+	/*	If single sign-on has been switched off since this user was
+		linked, they cannot complete the round trip. Say so plainly
+		instead of drawing a button that dead-ends on a 404.
+	*/
+	if (pl_reauth_sso_enabled())
+	{
+		echo '<p>For your security, ' . $safe_owner . ' asks you to confirm who you are '
+		   . 'before this change takes effect. Your account signs in through '
+		   . $safe_provider . ', so confirmation happens there.</p>';
+		echo '<p>You will be returned to this page afterwards. Anything you had already '
+		   . 'filled in will need to be entered again.</p>';
+		echo '<form method="POST" action="' . $safe_base . '/services/sso/login.php">'
+		   . pl_csrf_hidden_input()
+		   . '<input type="hidden" name="reauth_scope" value="' . $safe_scope . '">'
+		   . '<input type="hidden" name="reauth_return" value="' . $safe_return . '">'
+		   . '<button type="submit">Confirm with ' . $safe_provider . '</button>'
+		   . '</form>';
+	}
+	else
+	{
+		echo '<p>Your account signs in through an identity provider, but single sign-on '
+		   . 'is currently switched off for this site. A system administrator has to '
+		   . 'switch it back on, or move your account back to password sign-in, before '
+		   . 'you can make this change.</p>';
+	}
+	
+	echo '<p class="ocm-reauth-cancel"><a href="' . $safe_base . '/">Cancel</a></p>';
+	echo '</main></body></html>';
+}
+
+/**
+ * @return void
+ * @param string $action_scope the scope being challenged
+ * @param string $error_msg text to show above the fields, or ''
+ * @desc Render the password re-auth challenge and exit. The in-flight
+ * POST body is carried forward as hidden fields, nested arrays
+ * included, so the user does not retype the change they were making.
+ * Password fields are dropped by pl_csrf_carry_hidden_inputs() rather
+ * than echoed back into the markup.
+ */
+function pl_reauth_render_form($action_scope, $error_msg = '')
+{
+	$safe_base  = htmlspecialchars((string) pl_settings_get('base_url'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_owner = htmlspecialchars((string) pl_settings_get('owner_name'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_scope = htmlspecialchars((string) $action_scope, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_error = htmlspecialchars((string) $error_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$action     = pl_reauth_self_action();
+	
+	/*	Carry the caller's POST body. Our own challenge fields go, and
+		_csrf goes because a fresh token is emitted below.
+	*/
+	$carry = '';
+	$skip  = array('_reauth_scope', '_reauth_password', '_reauth_totp', '_csrf');
+	
+	if (is_array($_POST))
+	{
+		foreach ($_POST as $name => $value)
+		{
+			if (!is_scalar($name) || in_array($name, $skip, true))
+			{
+				continue;
+			}
+			
+			$carry .= pl_csrf_carry_hidden_inputs((string) $name, $value);
+		}
+	}
+	
+	$err_block = '';
+	
+	if (strlen($safe_error) > 0)
+	{
+		$err_block = '<div class="ocm-reauth-error"><strong>' . $safe_error . '</strong></div>';
+	}
+	
+	header('Content-Type: text/html; charset=utf-8');
+	
+	/*	The challenge is raised from ordinary mutation routes, which are
+		not on the path of the application's own chrome or stylesheet, so
+		the page links its own stylesheet from base_url. The <main>
+		landmark is there because this page owns its whole body.
+	*/
+	echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+	   . '<meta name="robots" content="noindex, nofollow">'
+	   . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+	   . '<title>Confirm your identity - ' . $safe_owner . '</title>'
+	   . '<link rel="stylesheet" href="' . $safe_base . '/css/reauth.css">'
+	   . '</head><body><main id="main-content">';
+	echo '<h1>Confirm your identity</h1>';
+	echo '<p>For your security, ' . $safe_owner . ' asks you to enter your current '
+	   . 'password again before this change takes effect. If your account uses an '
+	   . 'authenticator app, enter the current 6-digit code as well.</p>';
+	echo $err_block;
+	echo '<form method="POST" action="' . $action . '" autocomplete="off">'
+	   . pl_csrf_hidden_input()
+	   . '<input type="hidden" name="_reauth_scope" value="' . $safe_scope . '">'
+	   . $carry
+	   . '<label for="_reauth_password">Current password</label>'
+	   . '<input type="password" id="_reauth_password" name="_reauth_password" autocomplete="current-password" required>'
+	   . '<label for="_reauth_totp">Authenticator code (if enabled)</label>'
+	   . '<input type="text" id="_reauth_totp" name="_reauth_totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*">'
+	   . '<button type="submit">Confirm</button>'
+	   . '</form>';
+	echo '<p class="ocm-reauth-cancel"><a href="' . $safe_base . '/">Cancel</a></p>';
+	echo '</main></body></html>';
+}
+
+/**
+ * @return bool
+ * @param string $action_scope one of pl_reauth_scopes()
+ * @desc Put a sensitive change behind a recent password check. Call it
+ * at the top of a handler, before any mutation runs. If the session
+ * already holds an unexpired grant for this scope the call returns true
+ * and the handler carries on. Otherwise it renders a challenge and
+ * exits; when the user answers the challenge correctly the grant is
+ * recorded, the challenge fields are removed from $_POST, and the call
+ * returns true so the handler runs with the body it was given.
+ *
+ * A borrowed session is the threat this closes: someone at an unlocked
+ * workstation, or holding a stolen cookie, can otherwise change the
+ * password, edit accounts, or rewrite settings without ever proving
+ * they know the password.
+ */
+function pl_reauth_required($action_scope)
+{
+	$sid = pl_csrf_session_id();
+	
+	if (is_null($sid))
+	{
+		/*	No session means no row to attach a grant to. Let the
+			request through so the caller's own auth gate rejects it.
+		*/
+		return true;
+	}
+	
+	$result = DB::preparedQuery(
+		'SELECT granted_until FROM reauth_grants WHERE session_id = ? AND action_scope = ? AND granted_until > NOW() LIMIT 1',
+		array($sid, (string) $action_scope));
+	
+	if ($result && DBResult::numRows($result) === 1)
+	{
+		return true;
+	}
+	
+	/*	An SSO user has no local password hash: the link path retires it
+		deliberately. For them the password challenge below can never
+		succeed, so every settings save and user edit would be refused
+		for good, with no error they could act on. Send them back to the
+		identity provider instead, which re-runs whatever conditional
+		access and MFA policy the tenant enforces.
+	*/
+	if (pl_reauth_user_is_sso())
+	{
+		pl_reauth_render_sso_form($action_scope);
+		exit();
+	}
+	
+	// Roughly one challenge in a hundred clears out the expired rows.
+	if (mt_rand(1, 100) === 1)
+	{
+		DB::preparedQuery('DELETE FROM reauth_grants WHERE granted_until < NOW()', array());
+	}
+	
+	$is_reauth_post = isset($_SERVER['REQUEST_METHOD'])
+		&& 'POST' === $_SERVER['REQUEST_METHOD']
+		&& isset($_POST['_reauth_scope'])
+		&& $_POST['_reauth_scope'] === $action_scope;
+	
+	if (!$is_reauth_post)
+	{
+		pl_reauth_render_form($action_scope, '');
+		exit();
+	}
+	
+	global $auth_row;
+	$user_id = (is_array($auth_row) && isset($auth_row['user_id'])) ? (int) $auth_row['user_id'] : 0;
+	
+	/*	Throttle the challenge the way the login form is throttled.
+		Without this the form is an unlimited oracle against the session
+		owner's password and 6-digit code: a TOTP code space of 10^6
+		falls in minutes at full speed. The key carries the scope and
+		the user so a lockout on one scope does not lock the user out of
+		an unrelated one, and pl_auth_rate_limit_keys() adds the per-IP
+		key that catches address rotation.
+	*/
+	$rl_keys = pl_auth_rate_limit_keys('reauth:' . $action_scope . ':' . $user_id);
+	
+	if (!is_null(pl_auth_rate_limit_first_locked($rl_keys)))
+	{
+		pl_audit('reauth.locked', 'user', $user_id, array(
+			'scope' => $action_scope,
+		));
+		pl_reauth_render_form($action_scope, 'Too many failed attempts. Please wait a few minutes and try again.');
+		exit();
+	}
+	
+	$ok = false;
+	$totp_window = null;
+	
+	if ($user_id > 0)
+	{
+		$result = DB::preparedQuery('SELECT password, totp_enabled, totp_secret FROM users WHERE user_id = ? LIMIT 1', array($user_id));
+		
+		if ($result && DBResult::numRows($result) === 1)
+		{
+			$user = DBResult::fetchRow($result);
+			$submitted_pw   = isset($_POST['_reauth_password']) ? (string) $_POST['_reauth_password'] : '';
+			$submitted_totp = isset($_POST['_reauth_totp']) ? (string) $_POST['_reauth_totp'] : '';
+			$stored_pw      = isset($user['password']) ? (string) $user['password'] : '';
+			
+			$pw_ok = false;
+			
+			if (strlen($submitted_pw) > 0 && strlen($stored_pw) > 0)
+			{
+				$pw_ok = password_verify($submitted_pw, $stored_pw) || hash_equals($stored_pw, md5($submitted_pw));
+			}
+			
+			/*	The code's window index is held back and only burned once
+				the password has also checked out, which matches the
+				login path: a wrong password must not consume the user's
+				current code.
+			*/
+			$totp_ok = true;
+			
+			if (!empty($user['totp_enabled']) && !empty($user['totp_secret']))
+			{
+				$totp_ok = false;
+				
+				if (strlen($submitted_totp) > 0)
+				{
+					try
+					{
+						require_once(__DIR__ . '/pikaCrypto.php');
+						
+						/*	The stored secret is ciphertext at rest.
+							pl_totp_decrypt() also reads the older
+							cleartext rows. If it fails for an enrolled
+							user, for example because the key is missing,
+							fail closed: no grant without the real second
+							factor.
+						*/
+						$secret = pl_totp_decrypt((string) $user['totp_secret']);
+						
+						if (false !== $secret && strlen($secret) > 0)
+						{
+							$totp_window = pl_totp_verify_once($user_id, $secret, $submitted_totp);
+							$totp_ok = (false !== $totp_window);
+						}
+					}
+					catch (Throwable $e)
+					{
+						$totp_ok = false;
+					}
+				}
+			}
+			
+			$ok = ($pw_ok && $totp_ok);
+		}
+	}
+	
+	if (!$ok)
+	{
+		pl_auth_rate_limit_record_failure_all($rl_keys);
+		pl_audit('reauth.denied', 'user', $user_id, array(
+			'scope' => $action_scope,
+		));
+		pl_reauth_render_form($action_scope, 'Credentials did not match. Please try again.');
+		exit();
+	}
+	
+	pl_auth_rate_limit_reset_all($rl_keys);
+	
+	if (!is_null($totp_window) && false !== $totp_window)
+	{
+		pl_totp_mark_used($user_id, $totp_window);
+	}
+	
+	$window = (int) PL_REAUTH_WINDOW_SECONDS;
+	
+	DB::preparedQuery(
+		'INSERT INTO reauth_grants (session_id, action_scope, granted_until) '
+		. 'VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND)) '
+		. 'ON DUPLICATE KEY UPDATE granted_until = VALUES(granted_until)',
+		array($sid, (string) $action_scope, $window));
+	
+	pl_audit('reauth.granted', 'user', $user_id, array(
+		'scope'  => $action_scope,
+		'window' => $window,
+	));
+	
+	/*	Take the challenge fields back out of $_POST so the handler
+		downstream sees only its own form data.
+	*/
+	unset($_POST['_reauth_scope']);
+	unset($_POST['_reauth_password']);
+	unset($_POST['_reauth_totp']);
+	
+	return true;
+}
+
+/**
 * @return string
 * @param template_file string
 * @param template_data array
