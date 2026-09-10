@@ -85,6 +85,25 @@ switch ($action)
 		$a = $user->getValues();
 		$a['user_id'] = $user_id;
 		
+		/*	Nothing that authenticates the account goes into the form. The
+			shared template renders %%[password,input_password]%% from this
+			array, so the stored hash would otherwise be handed to the
+			browser as a field value, and the TOTP secret is ciphertext this
+			page has no reason to carry either.
+		*/
+		unset($a['password']);
+		unset($a['totp_secret']);
+		unset($a['totp_last_used']);
+		
+		/*	The same two controls the desktop form builds. Without them the
+			shared template resolves the tags to nothing, so this page would
+			silently show neither the MFA requirement nor the sign-in method
+			for an account that has them set.
+		*/
+		require_once('app/lib/pikaUserAdminControls.php');
+		$a['mfa_control'] = pl_mfa_admin_control($user->getValues());
+		$a['sso_control'] = pl_sso_admin_control($a);
+		
 		if($a['last_active']){
 			$a['last_active'] = date('n/d/y g:i A',$a['last_active']);
 		} else {

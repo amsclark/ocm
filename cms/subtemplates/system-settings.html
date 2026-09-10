@@ -63,6 +63,47 @@
 		<br/>
 		<em>Caution: These Are Dangerous!</em><br/>
 	</div>
+	<div style="clear:both;padding:5px" id="form_sso" class="de">
+		<h2>Single Sign-On</h2>
+		<p><em>%%[sso_status]%%</em></p>
+		%%[sso_enabled,yes_no,checkbox,label=Offer Single Sign-On on the Login Page]%%<br/>
+		<br/>
+		Identity Provider<br/>
+		%%[sso_provider,sso_provider]%%<br/>
+		Client ID<br/>
+		%%[sso_client_id,input_text]%%<br/>
+		Client Secret<br/>
+		<input type="password" name="sso_client_secret" id="sso_client_secret" value="" autocomplete="new-password" size="48"><br/>
+		<em>%%[sso_secret_status]%%</em><br/>
+		<br/>
+		Microsoft Entra ID Directory (Tenant) ID<br/>
+		%%[sso_tenant_id,input_text]%%<br/>
+		<em>Entra only. Leave blank for other providers.</em><br/>
+		<br/>
+		Google Workspace Domain<br/>
+		%%[sso_hosted_domain,input_text]%%<br/>
+		<em>Google only. Restricts the sign-in to one Workspace domain.</em><br/>
+		<br/>
+		Issuer URL<br/>
+		%%[sso_issuer_url,input_text]%%<br/>
+		<em>Other providers only. For example https://sso.example.org/realms/staff</em><br/>
+		<br/>
+		Discovery URL<br/>
+		%%[sso_discovery_url,input_text]%%<br/>
+		<em>Optional. Only needed when the provider does not publish its
+		configuration at the standard path under the issuer.</em><br/>
+		<br/>
+		<strong>Redirect URI to register at the provider:</strong><br/>
+		<input type="text" name="dont_use_sso_redirect_uri" value="%%[sso_redirect_uri]%%" size="72" readonly><br/>
+		<br/>
+		%%[sso_autobind_by_email,yes_no,checkbox,label=Bind an Account Automatically on First Sign-In]%%<br/>
+		Email Domains Allowed to Bind<br/>
+		%%[sso_autobind_domains,input_text]%%<br/>
+		<em>Space or comma separated. Automatic binding is refused while this
+		is blank. A user signing in for the first time is matched to an
+		existing enabled account with the same verified email address; no
+		account is ever created.</em><br/>
+	</div>
 	<div style="clear:both;" id="form_footer">
 		<br/>
 		%%[action,input_hidden,default=update]%%

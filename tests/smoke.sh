@@ -16,8 +16,53 @@
 #   COMPOSE_PROJECT default: docker compose's own default
 set -uo pipefail
 
+# Fixtures live beside this script, which may be run from anywhere.
+SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "${SMOKE_DIR}/.." && pwd)"
+
+# ── .env ───────────────────────────────────────────────────────────────────
+# The database checks need the same credentials compose was started with, and
+# for a Docker install those live in .env next to docker-compose.yml. Read them
+# from there rather than making the caller export them again, so that a plain
+# `docker compose up -d && tests/smoke.sh` runs the whole suite instead of
+# skipping every section that needs a query.
+#
+# Only these names are read, and only when not already set in the environment,
+# so an explicit export still wins. The file is parsed, never sourced: a .env is
+# data for compose, not a shell script, and sourcing one would execute whatever
+# it happens to contain.
+if [ -f "${REPO_DIR}/.env" ]; then
+	while IFS='=' read -r env_key env_val; do
+		case "$env_key" in
+			DB_NAME|DB_USER|DB_PASSWORD|DB_ROOT_PASSWORD|ADMIN_USER|ADMIN_PASSWORD)
+				;;
+			*) continue ;;
+		esac
+		
+		# Strip one layer of matching quotes, the way compose does.
+		case "$env_val" in
+			\"*\") env_val="${env_val#\"}"; env_val="${env_val%\"}" ;;
+			"'"*"'") env_val="${env_val#\'}"; env_val="${env_val%\'}" ;;
+		esac
+		
+		if [ -z "$(eval "printf '%s' \"\${${env_key}:-}\"")" ]; then
+			eval "${env_key}=\$env_val"
+		fi
+	done < <(sed -E 's/\r$//; s/^[[:space:]]*(export[[:space:]]+)?//' "${REPO_DIR}/.env" \
+		| grep -E '^[A-Za-z_][A-Za-z0-9_]*=')
+	unset env_key env_val
+fi
+
+# Compose defaults, mirrored here so the fallbacks match what the stack was
+# actually built with. docker-compose.yml uses DB_PASSWORD for the root password
+# when DB_ROOT_PASSWORD is unset.
+DB_NAME="${DB_NAME:-cms}"
+DB_USER="${DB_USER:-ocm}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-$DB_PASSWORD}"
+
 OCM_URL="${OCM_URL:-http://127.0.0.1:8080/cms}"
-OCM_USER="${OCM_USER:-admin}"
+OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 COOKIES="$(mktemp)"
 BODY="$(mktemp)"
 trap 'rm -f "$COOKIES" "$BODY"' EXIT
@@ -29,6 +74,10 @@ ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
 
 # ── Password ───────────────────────────────────────────────────────────────
+# ADMIN_PASSWORD in .env is the same credential under compose's name for it.
+if [ -z "${OCM_PASSWORD:-}" ] && [ -n "${ADMIN_PASSWORD:-}" ]; then
+	OCM_PASSWORD="$ADMIN_PASSWORD"
+fi
 if [ -z "${OCM_PASSWORD:-}" ]; then
 	compose_args=()
 	[ -n "${COMPOSE_PROJECT:-}" ] && compose_args=(-p "$COMPOSE_PROJECT")
@@ -166,9 +215,36 @@ done
 # is checked in the database rather than through the viewer page so a broken
 # viewer and a broken writer are distinguishable failures.
 #
-# Needs a compose project to reach the db container; skipped when the suite is
+# Needs the db container to reach the database; skipped when the suite is
 # pointed at a host it cannot query.
-if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
+#
+# COMPOSE_PROJECT is only needed when the stack was started under a name other
+# than compose's own default. Unset, COMPOSE_ARGS is empty and docker compose uses
+# the project it would use for this directory, which is what an ordinary
+# `docker compose up -d && tests/smoke.sh` produces.
+COMPOSE_ARGS=()
+[ -n "${COMPOSE_PROJECT:-}" ] && COMPOSE_ARGS=(-p "$COMPOSE_PROJECT")
+
+# Whether there is a stack here at all. The sections that reach into the
+# container are gated on this rather than on COMPOSE_PROJECT being set, so the
+# suite runs in full for a plain `docker compose up -d && tests/smoke.sh`.
+# Collected without a pipe into grep -q: under `set -o pipefail`, grep exiting
+# on its first match closes the pipe, and the whole pipeline then reports the
+# failure of the writer rather than the success of the match.
+HAVE_COMPOSE=0
+if command -v docker >/dev/null 2>&1; then
+	COMPOSE_SERVICES="$(docker compose "${COMPOSE_ARGS[@]}" ps --services 2>/dev/null)"
+	
+	case "
+${COMPOSE_SERVICES}
+" in
+		*"
+app
+"*) HAVE_COMPOSE=1 ;;
+	esac
+fi
+
+if [ "$HAVE_COMPOSE" = 1 ]; then
 	# The password goes in MYSQL_PWD, never in a -p argument. `mariadb -p`
 	# with an empty value does not mean "no password" -- it means "prompt for
 	# one", and under `exec -T` there is no terminal to answer, so the client
@@ -178,18 +254,18 @@ if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
 	# `< /dev/null` for the same reason: nothing here should ever be able to
 	# wait on stdin.
 	adb() {
-		docker compose -p "$COMPOSE_PROJECT" exec -T \
-			-e MYSQL_PWD="${DB_PASSWORD:-}" db \
-			mariadb -u"${DB_USER:-cms}" -N -B \
-			-e "$1" "${DB_NAME:-cms}" </dev/null 2>/dev/null
+		docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-e MYSQL_PWD="$DB_PASSWORD" db \
+			mariadb -u"$DB_USER" -N -B \
+			-e "$1" "$DB_NAME" </dev/null 2>/dev/null
 	}
 	if [ -z "$(adb 'SELECT 1')" ]; then
 		# Fall back to root, which the compose file always sets.
 		adb() {
-			docker compose -p "$COMPOSE_PROJECT" exec -T \
-				-e MYSQL_PWD="${DB_ROOT_PASSWORD:-}" db \
+			docker compose "${COMPOSE_ARGS[@]}" exec -T \
+				-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
 				mariadb -uroot -N -B \
-				-e "$1" "${DB_NAME:-cms}" </dev/null 2>/dev/null
+				-e "$1" "$DB_NAME" </dev/null 2>/dev/null
 		}
 	fi
 
@@ -243,7 +319,7 @@ if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
 		fi
 	fi
 else
-	printf '  skip audit log checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip audit log checks (needs a running docker compose stack)\n'
 fi
 
 # ── 7. CSRF ────────────────────────────────────────────────────────────────
@@ -411,7 +487,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		bad "audit_log has no csrf.cross_site_get row"
 	fi
 else
-	printf '  skip CSRF database checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip CSRF database checks (needs a running docker compose stack)\n'
 fi
 
 
@@ -538,7 +614,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 	done
 else
-	printf '  skip upload-gate database checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip upload-gate database checks (needs a running docker compose stack)\n'
 fi
 
 
@@ -584,7 +660,7 @@ if [ "$HAVE_DB" = 1 ]; then
 
 	# The hash is generated by the application's own PHP so it matches whatever
 	# algorithm password_hash() defaults to in this image.
-	SMOKE_HASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	SMOKE_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SMOKE_PASS" </dev/null 2>/dev/null)"
 	SMOKE_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -655,7 +731,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_intake
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip intake permission checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip intake permission checks (needs a running docker compose stack)\n'
 fi
 
 
@@ -713,14 +789,14 @@ sqli_probe "a legitimate dotted sort column still renders the case list" \
 
 # The allowlist logs every rejection. Without this the probes above would also
 # pass on a build where the payload simply happened not to break anything.
-if [ -n "${COMPOSE_PROJECT:-}" ]; then
+if [ "$HAVE_COMPOSE" = 1 ]; then
 	# Collect the log first, then search it. Piping straight into `grep -q`
 	# makes this check flaky: grep exits on the first match, `docker compose
 	# logs` then dies of SIGPIPE with 141, and `set -o pipefail` reports the
 	# whole pipeline as failed even though the pattern WAS found. It only
 	# shows up once the log is long enough for grep to win the race.
 	APPLOG="$(mktemp)"
-	docker compose -p "$COMPOSE_PROJECT" logs app >"$APPLOG" 2>/dev/null
+	docker compose "${COMPOSE_ARGS[@]}" logs app >"$APPLOG" 2>/dev/null
 	
 	if grep -q 'invalid SQL identifier rejected by allowlist' "$APPLOG"; then
 		ok "the identifier allowlist logged the rejected sort columns"
@@ -741,7 +817,7 @@ if [ -n "${COMPOSE_PROJECT:-}" ]; then
 	
 	rm -f "$APPLOG"
 else
-	printf '  skip allowlist log check (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip allowlist log check (needs a running docker compose stack)\n'
 fi
 
 
@@ -777,7 +853,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${SGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
 
-	SHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	SHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SPASS" </dev/null 2>/dev/null)"
 	SUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -846,7 +922,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_search
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip search scoping checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip search scoping checks (needs a running docker compose stack)\n'
 fi
 
 
@@ -1086,8 +1162,11 @@ if [ "$HAVE_DB" = 1 ] && [ "${#MASS_TOKEN}" -eq 64 ]; then
 
 	cleanup_mass
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+elif [ "$HAVE_DB" = 1 ]; then
+	# The database is reachable, so the missing piece is the token itself.
+	bad "section 14 could not run: the admin session rendered no CSRF token"
 else
-	bad "section 14 skipped: no database access or no CSRF token"
+	printf '  skip section 14 (needs a running stack and the database)\n'
 fi
 
 # ── 15. A template tag typed into a form does not resolve into a secret ────
@@ -1155,7 +1234,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM settings WHERE label = '$label'" >/dev/null
 	done
 else
-	bad "section 15 credential checks skipped: no database access"
+	printf '  skip section 15 the credential checks (needs a running stack and the database)\n'
 fi
 
 # Positive control on the fallback itself. base_url is resolved through
@@ -1190,7 +1269,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 	adb "DELETE FROM settings WHERE label = 'twilio_account_sid'" >/dev/null
 else
-	bad "section 15 admin-page control skipped: no database access"
+	printf '  skip section 15 the admin-page control (needs a running stack and the database)\n'
 fi
 
 # The template plugin loader only accepts a PHP identifier, so a
@@ -1235,7 +1314,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${AGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
 
-	AHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	AHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$APASS" </dev/null 2>/dev/null)"
 	AUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -1318,7 +1397,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_act
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip activity authorization checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip activity authorization checks (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -1387,7 +1466,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${DGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
 
-	DHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	DHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$DPASS" </dev/null 2>/dev/null)"
 	DUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -1406,15 +1485,15 @@ if [ "$HAVE_DB" = 1 ]; then
 	# doc_data is gzcompress()ed binary, so PHP inside the container writes the
 	# UPDATE and mariadb reads it back rather than passing it through a shell.
 	seed_doc_body() {
-		docker compose -p "$COMPOSE_PROJECT" exec -T app php -r '
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
 			file_put_contents("/tmp/zzsmokedoc.sql",
 				"UPDATE doc_storage SET doc_data=\x27"
 				. addslashes(gzcompress($argv[2]))
 				. "\x27 WHERE doc_id=" . $argv[1] . ";");
 		' "$1" "$2" </dev/null
-		docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			sh -c 'cat /tmp/zzsmokedoc.sql' </dev/null > "$BODY"
-		docker compose -p "$COMPOSE_PROJECT" exec -T \
+		docker compose "${COMPOSE_ARGS[@]}" exec -T \
 			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
 			mariadb -uroot "$DB_NAME" < "$BODY"
 	}
@@ -1493,7 +1572,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_dg
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip document generation checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip document generation checks (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -1523,7 +1602,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${PGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
 
-	PHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	PHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$PPASS" </dev/null 2>/dev/null)"
 	PUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -1608,7 +1687,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_pba
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip pro bono assignment checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip pro bono assignment checks (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -1684,7 +1763,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_ta
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip the stored textarea check (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip the stored textarea check (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -1756,7 +1835,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 
 		# A signature over the right body but computed with the wrong token.
-		WBAD="$(docker compose -p "$COMPOSE_PROJECT" exec -T app php -r \
+		WBAD="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r \
 			'echo base64_encode(hash_hmac("sha1", $argv[1] . "Body" . $argv[2] . "From" . $argv[3], "wrong_token", true));' \
 			"$TW_URL" 'ZZTW-BADSIG' '+15551234567' </dev/null 2>/dev/null)"
 		curl -s --max-time 30 -o "$BODY" -X POST -H "X-Twilio-Signature: ${WBAD}" \
@@ -1770,7 +1849,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		# Positive control: a correctly signed webhook must still work, or the
 		# three checks above only prove the endpoint is broken. Twilio signs
 		# the full URL followed by each POST name and value in name order.
-		WSIG="$(docker compose -p "$COMPOSE_PROJECT" exec -T app php -r \
+		WSIG="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r \
 			'echo base64_encode(hash_hmac("sha1", $argv[1] . "Body" . $argv[2] . "From" . $argv[3], $argv[4], true));' \
 			"$TW_URL" 'ZZTW-SIGNED' '+15551234567' "$TW_TOKEN" </dev/null 2>/dev/null)"
 		curl -s --max-time 30 -o "$BODY" -H "X-Twilio-Signature: ${WSIG}" -X POST \
@@ -1785,7 +1864,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_tw
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip the Twilio webhook checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip the Twilio webhook checks (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -1869,7 +1948,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 	rm -f "$FH_HDR"
 else
-	printf '  skip the force_https checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip the force_https checks (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -1905,7 +1984,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${DGROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
 
-	DHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	DHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$DPASS" </dev/null 2>/dev/null)"
 	DUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -2035,7 +2114,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_dops
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip the dataops handler checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip the dataops handler checks (needs a running docker compose stack)\n'
 fi
 
 # ── 24. Repeated failed logins are locked out ──────────────────────────────
@@ -2045,7 +2124,7 @@ fi
 # needs a compose project to be able to clear them.
 echo
 echo "24. repeated failed logins are locked out"
-if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
+if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 	RLJAR="$(mktemp)"
 	trap 'rm -f "$COOKIES" "$BODY" "$RLJAR"' EXIT
 
@@ -2053,7 +2132,7 @@ if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
 	# leaves this IP locked out, and then every assertion below would pass
 	# for the wrong reason.
 	rl_clear() {
-		docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
 	}
 	rl_try() {
@@ -2134,7 +2213,7 @@ if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
 	rm -f "$RLJAR"
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip the login lockout checks (set COMPOSE_PROJECT to enable)\n'
+	printf '  skip the login lockout checks (needs a running docker compose stack)\n'
 fi
 
 echo
@@ -2145,7 +2224,7 @@ echo "25. multi-factor authentication"
 # and the administrator can reset or turn it off again. The codes are generated
 # here by an independent RFC 6238 implementation in python, so this section
 # fails if the application's own generator drifts.
-if [ "$HAVE_DB" = 1 ] && [ -n "${COMPOSE_PROJECT:-}" ] && command -v python3 >/dev/null 2>&1; then
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/null 2>&1; then
 	if [ -n "$(adb "SHOW COLUMNS FROM users LIKE 'totp_secret'")" ]; then
 		ok "users.totp_secret column exists"
 	else
@@ -2170,7 +2249,7 @@ if [ "$HAVE_DB" = 1 ] && [ -n "${COMPOSE_PROJECT:-}" ] && command -v python3 >/d
 	# deliberate failures, so clear the counters between steps or a later
 	# assertion passes because everything is locked out.
 	mfa_rl_clear() {
-		docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
 	}
 
@@ -2203,7 +2282,7 @@ MFAPY
 	# tell apart from the enrollment page.
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${MFA_GROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
-	MFA_HASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+	MFA_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$MFA_PASS" </dev/null 2>/dev/null)"
 	MFA_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
@@ -2454,7 +2533,7 @@ MFAPY
 		fi
 		# The value looked for is the key this stack actually runs on, so the
 		# check cannot pass against a placeholder.
-		MFA_KEY="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		MFA_KEY="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			cat /var/www/html/cms-custom/config/totp_encryption_key 2>/dev/null \
 			| tr -d '\r\n')"
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
@@ -2471,7 +2550,416 @@ MFAPY
 	cleanup_mfa
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
-	printf '  skip the MFA checks (needs COMPOSE_PROJECT, the database and python3)\n'
+	printf '  skip the MFA checks (needs a running stack, the database and python3)\n'
+fi
+
+echo
+echo "26. single sign-on"
+# The whole authorization-code flow, driven end to end against a fake OpenID
+# Connect provider this section installs into the container and deletes again.
+# There is no browser: curl follows the two redirects, which is all a browser
+# contributes to this flow.
+#
+# The point of a fake provider rather than a mock inside the application is
+# that every check the application makes is exercised against a real signature
+# over a real JWT: the provider signs with an RSA key it generates, publishes
+# the matching JWKS, and enforces PKCE. It can also be told to misbehave, one
+# word per behaviour in a flags file, so the section proves the application
+# refuses a bad token as well as accepting a good one.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	if [ -n "$(adb "SHOW COLUMNS FROM users LIKE 'sso_subject'")" ]; then
+		ok "users.sso_subject column exists"
+	else
+		bad "users.sso_subject column is MISSING (add_sso.sql did not run)"
+	fi
+	if [ -n "$(adb "SHOW COLUMNS FROM users LIKE 'auth_method'")" ]; then
+		ok "users.auth_method column exists"
+	else
+		bad "users.auth_method column is MISSING (add_sso.sql did not run)"
+	fi
+	if [ -n "$(adb "SHOW TABLES LIKE 'pika_sso_oidc_state'")" ]; then
+		ok "pika_sso_oidc_state table exists"
+	else
+		bad "pika_sso_oidc_state table is MISSING (add_sso.sql did not run)"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM settings WHERE label LIKE 'sso\\_%'")" -ge 11 ]; then
+		ok "the sso_ settings rows are seeded"
+	else
+		bad "add_sso.sql did not seed the sso_ settings rows"
+	fi
+
+	SSO_GROUP='zz_sso_grp'
+	SSO_USER='zz_sso_user'
+	SSO_PASS='zz-sso-Passw0rd'
+	SSO_SUB='zz-idp-subject-0001'
+	SSO_MAIL='zz_sso_user@zz-sso.example'
+	SSO_BIND_USER='zz_sso_bind'
+	SSO_BIND_SUB='zz-idp-subject-0002'
+	SSO_BIND_MAIL='zz_sso_bind@zz-sso.example'
+	SSO_CLIENT='zz-ocm-ci-client'
+	SSO_SECRET='zz-ocm-ci-secret'
+	SSO_JAR="$(mktemp)"
+	SSO_IDP='/var/www/html/cms/zz_test_idp.php'
+	SSO_DIR='/tmp/zz_test_idp'
+	# The container reaches itself on port 80; the test reaches it on the
+	# published port. The provider's discovery document hands each side the
+	# base it can actually use, which is why it needs both.
+	SSO_PATH="$(printf '%s' "$OCM_URL" | sed -E 's#^[a-z]+://[^/]*##')"
+	SSO_BROWSER="${OCM_URL}/zz_test_idp.php"
+	SSO_SERVER="http://localhost${SSO_PATH}/zz_test_idp.php"
+	SSO_ISSUER="http://localhost${SSO_PATH}/zz_test_idp"
+
+	dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+	sso_set() { adb "UPDATE settings SET value = '$2' WHERE label = '$1'" >/dev/null; }
+	# One word per requested misbehaviour, or nothing for a well-behaved
+	# provider. Written on every call so a flag cannot leak into a later step.
+	sso_flags() { printf '%s' "${1:-}" | dex sh -c "cat > ${SSO_DIR}/flags"; }
+
+	cleanup_sso() {
+		adb "DELETE FROM users WHERE username IN ('${SSO_USER}', '${SSO_BIND_USER}')" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SSO_GROUP}'" >/dev/null
+		adb "DELETE FROM pika_sso_oidc_state" >/dev/null
+		adb "UPDATE settings SET value = '' WHERE label LIKE 'sso\\_%'" >/dev/null
+		adb "UPDATE settings SET value = '0' WHERE label IN
+			('sso_enabled', 'sso_autobind_by_email', 'sso_allow_insecure_transport')" >/dev/null
+		dex rm -rf "$SSO_IDP" "$SSO_DIR" >/dev/null 2>&1 || true
+		rm -f "$SSO_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sso' EXIT
+
+	cleanup_sso
+	# Created by docker exec, which is root; written by the provider, which runs
+	# as the web server user. The directory holds nothing but throwaway
+	# authorization codes inside a test container.
+	dex mkdir -p "$SSO_DIR" >/dev/null 2>&1
+	dex chmod 0777 "$SSO_DIR" >/dev/null 2>&1
+
+	# 26a. Nothing is offered and nothing is reachable before it is set up.
+	curl -s --max-time 30 -o "$BODY" "$OCM_URL/" >/dev/null
+	if grep -q 'id="sso_login"' "$BODY"; then
+		bad "the login page offers single sign-on while it is switched off"
+	else
+		ok "the login page offers no SSO button while SSO is off"
+	fi
+	code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$OCM_URL/services/sso/login.php")"
+	if [ "$code" = 404 ]; then
+		ok "services/sso/login.php is a 404 while SSO is not configured"
+	else
+		bad "services/sso/login.php answered $code with SSO unconfigured - it must look like a build without the feature"
+	fi
+
+	# Install the provider and point the application at it.
+	dex sh -c "cat > ${SSO_IDP}" < "${SMOKE_DIR}/fixtures/zz_test_idp.php"
+	dex sh -c "cat > ${SSO_DIR}/config.json" <<SSOCFG
+{
+	"issuer": "${SSO_ISSUER}",
+	"browser_base": "${SSO_BROWSER}",
+	"server_base": "${SSO_SERVER}",
+	"client_id": "${SSO_CLIENT}",
+	"client_secret": "${SSO_SECRET}",
+	"sub": "${SSO_SUB}",
+	"email": "${SSO_MAIL}"
+}
+SSOCFG
+	sso_flags ''
+
+	sso_set sso_provider generic
+	sso_set sso_issuer_url "$SSO_ISSUER"
+	sso_set sso_discovery_url "${SSO_SERVER}?ep=discovery"
+	sso_set sso_client_id "$SSO_CLIENT"
+	sso_set sso_client_secret "$SSO_SECRET"
+	# http endpoints, for this harness only. There is no field for this on any
+	# admin screen; see cms/app/sql/upgrades/add_sso.sql.
+	sso_set sso_allow_insecure_transport 1
+	sso_set sso_enabled 1
+
+	# read_all so a signed-in session lands on a page with content in it.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SSO_GROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	SSO_HASH="$(dex php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SSO_PASS" </dev/null 2>/dev/null)"
+	SSO_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire,
+			email, auth_method, sso_subject)
+		VALUES (${SSO_UID}, '${SSO_USER}', '${SSO_HASH}', 1, '${SSO_GROUP}', 0,
+			'${SSO_MAIL}', 'sso', '${SSO_SUB}')" >/dev/null
+
+	# The provider is only useful if it is actually serving. Check that before
+	# blaming the application for anything below.
+	curl -s --max-time 30 -o "$BODY" "${SSO_BROWSER}?ep=discovery" >/dev/null
+	if grep -q '"authorization_endpoint"' "$BODY"; then
+		ok "the test identity provider serves its discovery document"
+	else
+		bad "the test identity provider did not serve a discovery document - the rest of this section cannot be trusted"
+	fi
+
+	# Drive the whole flow: login.php -> authorize -> callback -> home page.
+	# $1 is the flags string handed to the provider.
+	sso_flow() {
+		sso_flags "${1:-}"
+		: > "$SSO_JAR"
+		curl -sL --max-time 30 -c "$SSO_JAR" -b "$SSO_JAR" -o "$BODY" \
+			-w '%{http_code}' "$OCM_URL/services/sso/login.php"
+	}
+
+	if [ -z "${SSO_UID:-}" ] || [ -z "$SSO_HASH" ]; then
+		bad "could not seed the SSO fixtures (user/hash)"
+	else
+		# 26b. The login page now offers it, and the redirect carries the
+		# three values that make the round trip safe.
+		curl -s --max-time 30 -o "$BODY" "$OCM_URL/" >/dev/null
+		if grep -q 'id="sso_login"' "$BODY" && grep -q 'services/sso/login.php' "$BODY"; then
+			ok "the login page offers single sign-on once it is configured"
+		else
+			bad "the login page offers no SSO button with SSO configured"
+		fi
+
+		: > "$SSO_JAR"
+		SSO_REDIRECT="$(curl -s --max-time 30 -c "$SSO_JAR" -b "$SSO_JAR" \
+			-o /dev/null -w '%{redirect_url}' "$OCM_URL/services/sso/login.php")"
+		case "$SSO_REDIRECT" in
+			*ep=authorize*state=*) ok "login.php redirects to the provider with a state" ;;
+			*) bad "login.php did not redirect to the authorize endpoint with a state: ${SSO_REDIRECT}" ;;
+		esac
+		case "$SSO_REDIRECT" in
+			*code_challenge_method=S256*) ok "the redirect carries a PKCE S256 challenge" ;;
+			*) bad "the redirect carries no PKCE challenge - an intercepted code would be enough on its own" ;;
+		esac
+		case "$SSO_REDIRECT" in
+			*nonce=*) ok "the redirect carries a nonce" ;;
+			*) bad "the redirect carries no nonce - an ID token from an earlier sign-in could be replayed" ;;
+		esac
+		case "$SSO_REDIRECT" in
+			*client_secret*) bad "the redirect leaks the client secret into the browser" ;;
+			*) ok "the redirect carries no client secret" ;;
+		esac
+		if [ "$(adb "SELECT COUNT(*) FROM pika_sso_oidc_state")" = 3 ]; then
+			ok "the handshake stored a state, a nonce and a verifier"
+		else
+			bad "pika_sso_oidc_state holds $(adb "SELECT COUNT(*) FROM pika_sso_oidc_state") rows, expected 3"
+		fi
+
+		# 26c. The happy path signs the account in.
+		# The step above started a handshake and walked away from it, in a
+		# session of its own. Clear it, so that what is left in the table after
+		# the flow below is only what that flow left.
+		adb "DELETE FROM pika_sso_oidc_state" >/dev/null
+		code="$(sso_flow '')"
+		if [ "$code" = 200 ] && ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			ok "a well-formed SSO sign-in lands on the application"
+		else
+			bad "the SSO sign-in did not reach the application (status $code)"
+		fi
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'sso.login.success' LIMIT 1")" ]; then
+			ok "audit_log recorded sso.login.success"
+		else
+			bad "audit_log has no sso.login.success row"
+		fi
+		# The session must survive the redirect, not just render one page.
+		curl -sL --max-time 30 -b "$SSO_JAR" -c "$SSO_JAR" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
+		if ! grep -q 'login_pass' "$BODY"; then
+			ok "the SSO session is still valid on the next request"
+		else
+			bad "the SSO session did not survive one further request"
+		fi
+		if [ "$(adb "SELECT COUNT(*) FROM pika_sso_oidc_state")" = 0 ]; then
+			ok "the handshake rows are deleted once the callback has read them"
+		else
+			bad "pika_sso_oidc_state still holds rows after a completed sign-in - a code could be replayed"
+		fi
+
+		# 26d. Every way the provider can misbehave is refused.
+		sso_refused() {
+			code="$(sso_flow "$2")"
+			if [ "$code" != 200 ] && ! grep -qi 'logout' "$BODY"; then
+				ok "$1"
+			else
+				bad "$1 - the sign-in was accepted (status $code)"
+			fi
+		}
+		sso_refused "a token signed with an unpublished key is refused" wrongkey
+		sso_refused "a token with an unknown kid is refused" badkid
+		sso_refused "a token signed with HS256 is refused" badalg
+		sso_refused "a token with the wrong nonce is refused" badnonce
+		sso_refused "a token with the wrong issuer is refused" badissuer
+		sso_refused "a token with the wrong audience is refused" badaudience
+		sso_refused "an expired token is refused" expired
+		sso_refused "a token with no subject claim is refused" nosub
+		sso_refused "a callback whose state does not match is refused" badstate
+
+		# The reasons are in the log, not in the response.
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'sso.login.failure' LIMIT 1")" ]; then
+			ok "audit_log recorded the refusals as sso.login.failure"
+		else
+			bad "audit_log has no sso.login.failure row - the reasons went nowhere"
+		fi
+		if grep -qE 'bad_signature|bad_nonce|bad_issuer|unknown_signing_key' "$BODY"; then
+			bad "the refusal page names the specific reason - that belongs in the log only"
+		else
+			ok "the refusal page does not name the specific reason"
+		fi
+
+		# 26e. A callback with no handshake behind it is refused, and a
+		# replayed code is exactly that case.
+		sso_flags ''
+		code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/services/sso/callback.php?code=zzfake&state=zzfake")"
+		if [ "$code" = 400 ]; then
+			ok "a callback with no stored handshake is refused"
+		else
+			bad "a callback with no stored handshake answered $code"
+		fi
+
+		# 26f. The password form will not take this account.
+		mfa_rl_clear 2>/dev/null || dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+		: > "$SSO_JAR"
+		curl -sL --max-time 30 -c "$SSO_JAR" -b "$SSO_JAR" -o "$BODY" \
+			-d "login_user=${SSO_USER}&login_pass=${SSO_PASS}&auth_id=1" "$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			ok "the password form refuses an account whose method is SSO"
+		else
+			bad "the password form signed in an account whose method is SSO - a second way in"
+		fi
+		# The refusal must be the same page a name that is not a user at all
+		# gets. Anything that differs -- wording, a hint, a different length --
+		# tells whoever is asking that this name is an account here and that it
+		# has been moved to single sign-on.
+		SSO_REFUSAL="$(mktemp)"
+		sed -E 's/[0-9a-f]{64}//g' "$BODY" > "$SSO_REFUSAL"
+		mfa_rl_clear 2>/dev/null || dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+		: > "$SSO_JAR"
+		curl -sL --max-time 30 -c "$SSO_JAR" -b "$SSO_JAR" -o "$BODY" \
+			-d "login_user=zz_no_such_account&login_pass=${SSO_PASS}&auth_id=1" "$OCM_URL/" >/dev/null
+		if sed -E 's/[0-9a-f]{64}//g' "$BODY" | diff -q - "$SSO_REFUSAL" >/dev/null; then
+			ok "the refusal is the same page an unknown username gets"
+		else
+			bad "the SSO account's refusal page differs from an unknown username's - that is an enumeration oracle"
+		fi
+		rm -f "$SSO_REFUSAL"
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'login.failure'
+			AND details LIKE '%auth_method_sso%' LIMIT 1")" ]; then
+			ok "audit_log recorded the refusal with reason auth_method_sso"
+		else
+			bad "audit_log has no login.failure row with reason auth_method_sso"
+		fi
+
+		# 26g. Automatic binding, which is off by default and refuses
+		# everything while the domain list is empty.
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id,
+				password_expire, email, auth_method)
+			VALUES (${SSO_UID} + 1, '${SSO_BIND_USER}', '${SSO_HASH}', 1, '${SSO_GROUP}', 0,
+				'${SSO_BIND_MAIL}', 'password')" >/dev/null
+		SSO_BIND_UID="$(adb "SELECT user_id FROM users WHERE username = '${SSO_BIND_USER}'")"
+		dex sh -c "cat > ${SSO_DIR}/config.json" <<SSOCFG2
+{
+	"issuer": "${SSO_ISSUER}",
+	"browser_base": "${SSO_BROWSER}",
+	"server_base": "${SSO_SERVER}",
+	"client_id": "${SSO_CLIENT}",
+	"client_secret": "${SSO_SECRET}",
+	"sub": "${SSO_BIND_SUB}",
+	"email": "${SSO_BIND_MAIL}"
+}
+SSOCFG2
+
+		code="$(sso_flow '')"
+		if [ "$code" != 200 ] || grep -q 'login_pass' "$BODY"; then
+			ok "an unknown subject is refused while automatic binding is off"
+		else
+			bad "an unknown subject was signed in with automatic binding off"
+		fi
+
+		sso_set sso_autobind_by_email 1
+		code="$(sso_flow '')"
+		if [ "$code" != 200 ] || grep -q 'login_pass' "$BODY"; then
+			ok "automatic binding is refused while the domain list is empty"
+		else
+			bad "automatic binding accepted a domain with an empty allowlist - the empty list must refuse everything"
+		fi
+
+		sso_set sso_autobind_domains 'zz-somewhere-else.example'
+		code="$(sso_flow '')"
+		if [ "$code" != 200 ] || grep -q 'login_pass' "$BODY"; then
+			ok "automatic binding is refused for a domain not on the list"
+		else
+			bad "automatic binding accepted a domain that is not on the allowlist"
+		fi
+
+		sso_set sso_autobind_domains 'zz-sso.example'
+		code="$(sso_flow '')"
+		if [ "$code" = 200 ] && ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			ok "automatic binding signs in a matching account on the allowed domain"
+		else
+			bad "automatic binding did not sign in a matching account (status $code)"
+		fi
+		if [ "$(adb "SELECT sso_subject FROM users WHERE user_id = ${SSO_BIND_UID}")" = "$SSO_BIND_SUB" ]; then
+			ok "the bound account carries the provider's subject"
+		else
+			bad "the bound account did not record the subject"
+		fi
+		if [ "$(adb "SELECT auth_method FROM users WHERE user_id = ${SSO_BIND_UID}")" = 'sso' ]; then
+			ok "the bound account's method is now SSO"
+		else
+			bad "the bound account still signs in with a password"
+		fi
+		if [ -z "$(adb "SELECT password FROM users WHERE user_id = ${SSO_BIND_UID}")" ]; then
+			ok "binding removed the account's password"
+		else
+			bad "binding left the password hash in place - a second way in that nobody is watching"
+		fi
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'sso.autobind' LIMIT 1")" ]; then
+			ok "audit_log recorded sso.autobind"
+		else
+			bad "audit_log has no sso.autobind row"
+		fi
+
+		# A disabled account is refused even with a subject already on it.
+		adb "UPDATE users SET enabled = 0 WHERE user_id = ${SSO_BIND_UID}" >/dev/null
+		code="$(sso_flow '')"
+		if [ "$code" != 200 ] || grep -q 'login_pass' "$BODY"; then
+			ok "a disabled account is refused at the callback"
+		else
+			bad "a disabled account was signed in through SSO"
+		fi
+		adb "UPDATE users SET enabled = 1 WHERE user_id = ${SSO_BIND_UID}" >/dev/null
+
+		# 26h. The client secret does not leave the server.
+		# Sections above have logged other accounts in and out; take a fresh
+		# admin session rather than trusting the one from section 3.
+		: > "$COOKIES"
+		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+			-d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" "$OCM_URL/" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
+		if grep -qF "$SSO_SECRET" "$BODY"; then
+			bad "system-settings.php renders the SSO client secret"
+		else
+			ok "system-settings.php does not render the SSO client secret"
+		fi
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/search.php?s=%25%25%5Bsso_client_secret%5D%25%25" >/dev/null
+		if grep -q 'name="s" size="48" value=""' "$BODY" && ! grep -qF "$SSO_SECRET" "$BODY"; then
+			ok "an sso_client_secret tag in the search box resolves to nothing"
+		else
+			bad "search.php resolved the sso_client_secret setting"
+		fi
+		# Saving the settings form without retyping the secret must keep it.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
+		sso_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+		curl -sL --max-time 30 -b "$COOKIES" -o /dev/null \
+			-d "action=update&_csrf=${sso_tok}" \
+			-d "sso_client_secret=" \
+			"$OCM_URL/system-settings.php" >/dev/null
+		if [ "$(adb "SELECT value FROM settings WHERE label = 'sso_client_secret'")" = "$SSO_SECRET" ]; then
+			ok "saving the form with the secret field blank keeps the stored secret"
+		else
+			bad "an empty secret field erased the stored client secret"
+		fi
+	fi
+
+	cleanup_sso
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the SSO checks (needs a running stack and the database)\n'
 fi
 
 echo

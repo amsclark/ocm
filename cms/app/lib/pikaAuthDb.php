@@ -131,8 +131,17 @@ class pikaAuthDb
 				$totp_columns = ', users.totp_enabled, users.totp_secret';
 			}
 			
+			/*	Same guard, same reason, for the single sign-on column.
+				add_sso.sql may not have been applied.
+			*/
+			$sso_columns = '';
+			if(self::columnExists($this->table_name,'auth_method'))
+			{
+				$sso_columns = ', users.auth_method';
+			}
+			
 			$sql  = "SELECT user_id, username, enabled, password_expire, 
-					users.group_id AS group_name, `groups`.*, password{$totp_columns}
+					users.group_id AS group_name, `groups`.*, password{$totp_columns}{$sso_columns}
 					FROM {$this->table_name}
 					LEFT JOIN `groups` ON users.group_id=groups.group_id
 					WHERE enabled = '1'
@@ -148,6 +157,36 @@ class pikaAuthDb
 				}
 				
 				$row = DBResult::fetchRow($result);
+				
+				/*	An account that signs in through the identity provider
+					does not sign in here, even if a password hash is still
+					on the row. pikaAuthSso::autobind() blanks the password
+					when it binds an account, and the SELECT above requires a
+					non-empty password, so a bound account never reaches this
+					point -- but an administrator can also set the sign-in
+					method by hand on the account form, and that account must
+					be refused too rather than keeping a second way in.
+					
+					Refused behind the same generic message as a wrong
+					password: which accounts an organisation has moved to
+					single sign-on is not something the login page should
+					answer.
+				*/
+				$row_auth_method = isset($row['auth_method']) ? (string) $row['auth_method'] : 'password';
+				
+				if ('sso' === $row_auth_method)
+				{
+					/*	Spend the bcrypt round anyway, and discard it, so
+						that response time does not say which accounts have
+						been moved to single sign-on (CWE-208).
+					*/
+					@password_verify((string) $credential, self::DUMMY_PASSWORD_HASH);
+					
+					pl_audit('login.failure', 'user', $row['user_id'], array('reason' => 'auth_method_sso'), $row['user_id'], $row['username']);
+					$this->setMessage('0100',self::GENERIC_LOGIN_FAILURE,__FILE__,__LINE__);
+					
+					return $this->is_authorized;
+				}
 				
 				/*	The second factor. The stored secret is ciphertext at
 					rest, so decrypt it first; pl_totp_decrypt() returns a

@@ -106,7 +106,16 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	'owner_name', 'admin_email', 'act_interval',
 	'time_zone', 'time_zone_offset', 'session_timeout', 'pass_min_strength',
 	'pass_min_length', 'password_expire', 'force_https', 'autofill_time_funding',
-	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes');
+	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
+	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
+		it is handled on its own below so that a blank field leaves the
+		stored secret alone. sso_allow_insecure_transport is not here either
+		and has no field on this form -- it exists for a test harness and is
+		set by direct SQL only.
+	*/
+	'sso_enabled', 'sso_provider', 'sso_tenant_id', 'sso_hosted_domain',
+	'sso_issuer_url', 'sso_discovery_url', 'sso_client_id',
+	'sso_autobind_by_email', 'sso_autobind_domains');
 
 switch ($action)
 {
@@ -151,6 +160,32 @@ switch ($action)
 			}
 		}
 		
+		/*	The client secret is write-only from this form. The field is
+			rendered empty, so an administrator who saves the page without
+			retyping it must not thereby erase it -- pl_settings_save() is a
+			DELETE-all followed by a re-INSERT of the whole merged array, so
+			a value that is not set is a value that is gone.
+			
+			Clearing it on purpose is done by turning SSO off, or with direct
+			SQL. A form that can blank a credential by being submitted is a
+			form that blanks credentials by accident.
+		*/
+		if (isset($_POST['sso_client_secret']))
+		{
+			$posted_secret = (string) $_POST['sso_client_secret'];
+			
+			if ('' !== $posted_secret)
+			{
+				$old_secret = (string) pl_settings_get('sso_client_secret');
+				pl_settings_set('sso_client_secret', $posted_secret);
+				
+				if ($old_secret !== $posted_secret)
+				{
+					$changed['sso_client_secret'] = array('redacted' => true);
+				}
+			}
+		}
+		
 		pl_settings_save();
 		
 		if (!empty($changed))
@@ -165,6 +200,45 @@ switch ($action)
 		// AMW - do not transmit the database password, that field stays blank.
 		$html['db_password'] = '';
 		
+		/*	Same rule for the OIDC client secret: the browser is told whether
+			one is stored, never what it is.
+		*/
+		$sso_secret_stored = (strlen((string) pl_settings_get('sso_client_secret')) > 0);
+		$html['sso_client_secret'] = '';
+		$html['sso_secret_status'] = $sso_secret_stored
+			? 'A client secret is stored. Leave this blank to keep it.'
+			: 'No client secret is stored yet.';
+		
+		/*	The exact string to register at the identity provider. Providers
+			compare the redirect URI byte for byte, and a mismatch is the
+			single most common reason a first SSO setup does not work, so the
+			value this application will actually send is shown here rather
+			than described in prose.
+		*/
+		require_once('app/lib/pikaSsoOidc.php');
+		$html['sso_redirect_uri'] = pl_sso_redirect_uri();
+		
+		$sso_ready_reason = '';
+		
+		if (!pl_sso_schema_ready())
+		{
+			$html['sso_status'] = 'The database is missing the single sign-on columns. '
+				. 'Apply cms/app/sql/upgrades/add_sso.sql, or restart the container, '
+				. 'before turning this on.';
+		}
+		
+		elseif (pl_sso_ready(null, $sso_ready_reason))
+		{
+			$html['sso_status'] = 'Single sign-on is configured and the sign-in page '
+				. 'offers it.';
+		}
+		
+		else
+		{
+			$html['sso_status'] = 'Single sign-on is not in use. Reason: '
+				. $sso_ready_reason;
+		}
+		
 		// AMW - convert session timeout limit from seconds (internal)to 
 		// minutes (user-space).
 		$html['session_timeout'] = $html['session_timeout'] / 60;
@@ -176,6 +250,12 @@ switch ($action)
 		$template->addMenu('pass_min_strength',$pass_min_strength);
 		$template->addMenu('pass_min_length',$pass_min_length);
 		$template->addMenu('password_expire', $expire);
+		$template->addMenu('sso_provider', array(
+			''        => 'None',
+			'google'  => 'Google Workspace',
+			'entra'   => 'Microsoft Entra ID',
+			'generic' => 'Other OpenID Connect provider'
+		));
 		$main_html['content'] = $template->draw();
 		
 		break;

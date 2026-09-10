@@ -82,6 +82,21 @@ if (!function_exists('pl_mfa_user_must_enroll'))
 			return false;
 		}
 		
+		/*	An account that signs in through the identity provider does not
+			enroll a second factor here: the provider is what asked for it,
+			and this application never sees that exchange. Sending such a user
+			to the enrollment page would ask them to add a factor to a
+			password they do not use.
+			
+			Checked after totp_enabled, so an ordinary account costs nothing.
+		*/
+		require_once(dirname(__FILE__) . '/pikaSsoOidc.php');
+		
+		if (pl_sso_user_is_sso($user_id))
+		{
+			return false;
+		}
+		
 		$stored = (string) $row['totp_secret'];
 		
 		if (0 === strlen($stored))

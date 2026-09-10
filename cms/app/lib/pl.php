@@ -214,7 +214,31 @@ function authenticate()
 	{
 		pl_auth_rate_limit_reset_all($rl_keys);
 		$auth_row = $auth->getAuthRow();
-		if ($auth_row['password_expire'] != 0 && $auth_row['password_expire'] < time())
+		
+		/*	Password expiry does not apply to an account whose password is
+			not what signs it in. pikaAuthSso::autobind() zeroes
+			password_expire when it binds an account, but an account bound by
+			hand may still carry an old expiry date, and an expired date on a
+			single sign-on account would lock the user out of a password they
+			no longer use and cannot change here.
+		*/
+		$password_expired = ($auth_row['password_expire'] != 0 && $auth_row['password_expire'] < time());
+		
+		/*	Asked only when the answer changes something. This block runs on
+			every authenticated request, and pl_sso_user_is_sso() costs a
+			schema check and a query the first time it is called.
+		*/
+		if ($password_expired && isset($auth_row['user_id']))
+		{
+			require_once(dirname(__FILE__) . '/pikaSsoOidc.php');
+			
+			if (pl_sso_user_is_sso($auth_row['user_id']))
+			{
+				$password_expired = false;
+			}
+		}
+		
+		if ($password_expired)
 		{
 			$auth->setMessage('105','Your password has expired, please contact your administrator to reset your password',__FILE__,__LINE__);
 			$display_login = true;
@@ -265,6 +289,16 @@ function authenticate()
 		// before echoing it into the form anyway, and default it, because an
 		// unset key here is a PHP 8 warning on the login page.
 		$html['auth_id'] = isset($_SESSION['auth_id']) ? (int) $_SESSION['auth_id'] : 1;
+		
+		/*	The single sign-on button, or an empty string when SSO is not
+			configured. pl_sso_login_button_html() builds the whole control
+			and returns nothing at all unless the configuration is complete,
+			so a deployment that has not set SSO up renders the same login
+			page it rendered before the feature existed.
+		*/
+		require_once(dirname(__FILE__) . '/pikaSsoOidc.php');
+		$html['sso_button'] = pl_sso_login_button_html();
+		
 		$default_template = new pikaTempLib('templates/login-form.html',$html);
 		if(browser_is_mobile())
 		{
@@ -3105,6 +3139,35 @@ if (!function_exists('pl_canonical_origin'))
 			return '';
 		}
 		
+		/*	Apache fills SERVER_NAME from ServerName or the Host header, and
+			either way it usually carries no port, so a deployment listening
+			on something other than 80 or 443 produced an origin that points
+			at the wrong port. That is a broken link in a notification email,
+			and a redirect URI the identity provider rejects.
+			
+			SERVER_PORT comes from the same place SERVER_NAME does: the
+			configured ServerName under UseCanonicalName On, the request's
+			Host header under Off. So the port is exactly as trustworthy as
+			the host beside it, and the answer for a deployment that cannot
+			trust the Host header is the same either way -- set canonical_url.
+			
+			Skipped when the scheme was forced, because the caller that
+			forces it -- the force_https redirect -- is asking for the origin
+			of a scheme this request is NOT using, and the port this request
+			arrived on is not that scheme's port. A deployment behind a
+			TLS-terminating proxy should set canonical_url.
+		*/
+		if (is_null($force_scheme) && false === strpos($host, ':') && isset($_SERVER['SERVER_PORT']))
+		{
+			$port = (string) $_SERVER['SERVER_PORT'];
+			$default_port = ('https' === $scheme) ? '443' : '80';
+			
+			if (preg_match('/^[0-9]{1,5}$/', $port) && $port !== $default_port)
+			{
+				$host .= ':' . $port;
+			}
+		}
+		
 		return $scheme . '://' . $host;
 	}
 }
@@ -3178,6 +3241,11 @@ if (!function_exists('pl_settings_template_blocked'))
 				'twilio_account_sid',
 				'twilio_auth_token',
 				'sparkpost_api_key',
+				// The OpenID Connect client secret. Holding it lets anybody
+				// exchange an authorization code for tokens as this
+				// application, which is the whole of the trust the identity
+				// provider places in the deployment.
+				'sso_client_secret',
 			));
 		}
 		

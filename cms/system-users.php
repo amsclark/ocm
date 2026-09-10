@@ -23,6 +23,8 @@ require_once('pikaUser.php');
 require_once('pikaUserSession.php');
 require_once('pikaGroup.php');
 require_once('app/lib/pikaCrypto.php');
+require_once('app/lib/pikaSsoOidc.php');
+require_once('app/lib/pikaUserAdminControls.php');
 
 // Menus
 
@@ -83,85 +85,6 @@ while ($row = DBResult::fetchRow($result)) {
 	$groups[$row['group_id']] = $row['group_id'];
 }
 
-/*	Build the MFA control for one user account.
-
-	The public build never lets an administrator see or create a shared
-	secret. The admin only turns the requirement on; the account holder
-	then enrols an authenticator on enroll_mfa.php the next time they
-	sign in (see pl_mfa_enroll_gate() in cms/app/lib/pikaMfaEnroll.php).
-	"Reset" keeps the requirement and drops the enrolled device, so the
-	same page asks them to enrol again.
-
-	Returns '' on a database that has not had cms/app/sql/upgrades/add_totp.sql
-	applied yet, which leaves the form exactly as it was before MFA.
-*/
-function pl_mfa_admin_control($values)
-{
-	if (!pl_totp_schema_ready())
-	{
-		return '';
-	}
-	
-	$flag = isset($values['totp_enabled']) ? (string) $values['totp_enabled'] : '0';
-	
-	// 2 is the "Reset" request, not a stored state. If one was written to
-	// the column anyway, it means the requirement is on.
-	if ('2' === $flag)
-	{
-		$flag = '1';
-	}
-	
-	$secret = isset($values['totp_secret']) ? (string) $values['totp_secret'] : '';
-	$enrolled = (strlen($secret) > 0 && false !== pl_totp_decrypt($secret));
-	
-	if ('1' !== $flag)
-	{
-		$status = 'Off. This account signs in with a password only.';
-	}
-	
-	elseif ($enrolled)
-	{
-		$status = 'On. An authenticator is enrolled.';
-	}
-	
-	else
-	{
-		$status = 'On. The next sign-in asks this user to enrol an authenticator.';
-	}
-	
-	$options = pikaMenu::getMenu('totp_enabled');
-	
-	if (!is_array($options) || 0 === count($options))
-	{
-		$options = array('1' => 'Yes', '0' => 'No');
-	}
-	
-	// Resetting a device that does not exist would do nothing, so only
-	// offer it once there is one to drop.
-	if (!$enrolled)
-	{
-		unset($options['2']);
-		unset($options[2]);
-	}
-	
-	/*	The label is part of the returned markup so that a database
-		without add_totp.sql shows no orphaned caption.
-	*/
-	$html = 'Multi-Factor Authentication:<br/>'
-			. '<select name="totp_enabled" id="totp_enabled">';
-	
-	foreach ($options as $value => $label)
-	{
-		$selected = ((string) $value === $flag) ? ' selected="selected"' : '';
-		$html .= '<option value="' . pl_html_escape($value) . '"' . $selected . '>'
-				. pl_html_escape_label($label) . '</option>';
-	}
-	
-	$html .= '</select><br/><em>' . pl_html_escape($status) . '</em>';
-	
-	return $html;
-}
-
 switch ($action)
 {
 	case 'edit':
@@ -172,6 +95,7 @@ switch ($action)
 			$a = $user->getValues();
 			unset($a['password']);
 			$a['mfa_control'] = pl_mfa_admin_control($a);
+			$a['sso_control'] = pl_sso_admin_control($a);
 			/*	The shared secret and the replay counter never go to a
 				browser. The form carries the requirement flag only.
 			*/
@@ -183,6 +107,7 @@ switch ($action)
 		{
 			$a = array();
 			$a['mfa_control'] = pl_mfa_admin_control($a);
+			$a['sso_control'] = pl_sso_admin_control($a);
 		}
 		
 		$a['p_len'] = '10';
@@ -261,6 +186,12 @@ switch ($action)
 		{
 			$prev_mfa = '0';
 		}
+		$prev_method  = (string) $user->getValue('auth_method');
+		if ('sso' !== $prev_method)
+		{
+			$prev_method = 'password';
+		}
+		$prev_subject = (string) $user->getValue('sso_subject');
 		$is_create    = !is_numeric($user_id) || strlen($user_id) === 0;
 		$user->setValues($a);
 		$user->save();
@@ -355,6 +286,103 @@ switch ($action)
 				error_log('system-users.php: could not write the MFA flag: ' . $e->getMessage());
 			}
 		}
+		
+		/*	Single sign-on. Written with its own statement for the same two
+			reasons the MFA flag is: a database without add_sso.sql applied
+			keeps working, and the columns that decide how an account
+			authenticates are not reachable through pikaUser::setValues()
+			from a posted field name.
+		*/
+		if (pl_sso_schema_ready() && isset($_POST['auth_method']))
+		{
+			$posted_method  = ('sso' === (string) pl_grab_post('auth_method')) ? 'sso' : 'password';
+			$posted_subject = trim((string) pl_grab_post('sso_subject'));
+			
+			try
+			{
+				/*	Two accounts with the same subject is a state neither
+					account can sign in from: pikaAuthSso refuses an
+					ambiguous subject rather than guessing. Refusing the
+					write here means the administrator finds out now, on the
+					form, instead of when the user cannot sign in.
+				*/
+				$collision = false;
+				
+				if (strlen($posted_subject) > 0)
+				{
+					$rs = DB::preparedQuery(
+						'SELECT user_id FROM users WHERE sso_subject = ? AND user_id <> ? LIMIT 1',
+						array($posted_subject, $target_user_id)
+					);
+					$collision = ($rs && DBResult::numRows($rs) == 1);
+				}
+				
+				if ($collision)
+				{
+					pl_audit('user.sso_subject_rejected', 'user', $target_user_id, array(
+						'username' => $target_username,
+						'reason'   => 'duplicate_sso_subject',
+					));
+					error_log('system-users.php: refused a duplicate sso_subject for user '
+						. $target_user_id);
+				}
+				
+				else
+				{
+					$new_subject = (strlen($posted_subject) > 0) ? $posted_subject : null;
+					
+					DB::preparedQuery(
+						'UPDATE users SET auth_method = ?, sso_subject = ? WHERE user_id = ? LIMIT 1',
+						array($posted_method, $new_subject, $target_user_id)
+					);
+					
+					/*	An account moved to single sign-on keeps no password.
+						Leaving the hash in place leaves a second way in that
+						nobody is watching, and password expiry no longer
+						means anything for an account that does not sign in
+						with one. This mirrors what pikaAuthSso::autobind()
+						does when an account binds itself.
+					*/
+					if ('sso' === $posted_method)
+					{
+						DB::preparedQuery(
+							"UPDATE users SET password = '', password_expire = 0 WHERE user_id = ? LIMIT 1",
+							array($target_user_id)
+						);
+					}
+					
+					if ($posted_method !== $prev_method)
+					{
+						pl_audit('user.auth_method_change', 'user', $target_user_id, array(
+							'username' => $target_username,
+							'old'      => $prev_method,
+							'new'      => $posted_method,
+						));
+					}
+					
+					if ((string) $new_subject !== $prev_subject)
+					{
+						/*	The values themselves, not just that something
+							changed: a subject is what decides which identity
+							the account answers to, and an operator reading
+							the log afterwards needs to see what it was moved
+							from and to.
+						*/
+						pl_audit('user.sso_subject_change', 'user', $target_user_id, array(
+							'username' => $target_username,
+							'old'      => $prev_subject,
+							'new'      => (string) $new_subject,
+						));
+					}
+				}
+			}
+			
+			catch (Exception $e)
+			{
+				error_log('system-users.php: could not write the SSO fields: ' . $e->getMessage());
+			}
+		}
+		
 		header("Location:{$base_url}/system-users.php");
 		break;
 
