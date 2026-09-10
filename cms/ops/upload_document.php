@@ -185,9 +185,16 @@ else {
 		foreach ($file_array['name'] as $key => $value)
 		{
 			$doc = new pikaDocument();
+			/*	'size' was missing from this rebuilt array, so every
+				document uploaded through the multi-file form was stored
+				with an empty doc_size while the same file uploaded one at
+				a time got the right one. The document list shows that
+				column.
+			*/
 			$x = array('name' => $value,
 					   'type' => $file_array['type'][$key],
 					   'tmp_name' => $file_array['tmp_name'][$key],
+					   'size' => isset($file_array['size'][$key]) ? $file_array['size'][$key] : 0,
 					   'error' => $file_array['error'][$key]);
 			$doc->uploadDoc($x, $description, $parent_folder, $doc_type, $case_id);
 		}

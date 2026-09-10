@@ -3540,5 +3540,209 @@ else
 fi
 
 echo
+echo "47. document downloads cannot be rendered as active content"
+
+# A case document is served back to the reader by cms/documents.php, and the
+# Content-Type it is served with used to be whatever the uploading client
+# claimed in the multipart part. Upload a file declaring text/html and the
+# download came back as text/html with "Content-Disposition: inline", so the
+# file ran as a page on this application's own origin, in the session of
+# whoever opened it. Uploading a case document is a routine right; reading one
+# is done by supervisors and administrators.
+#
+# Behavioural throughout: every check drives the real upload handler and the
+# real download handler and reads the response headers off the wire. Nothing
+# here greps a source file.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	MDCASE=""
+	MDDOCS=""
+	
+	cleanup_md() {
+		if [ -n "${MDCASE:-}" ]; then
+			adb "DELETE FROM doc_storage WHERE case_id = ${MDCASE}" >/dev/null
+			adb "DELETE FROM cases WHERE case_id = ${MDCASE}" >/dev/null
+		fi
+		rm -f "${SMOKE_DIR}/zzmd.html" "${SMOKE_DIR}/zzmd.svg" \
+			"${SMOKE_DIR}/zzmd.pdf" "${SMOKE_DIR}/zzmd1.txt" "${SMOKE_DIR}/zzmd2.txt" \
+			"${BODY}.dl"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_md' EXIT
+	
+	# Ids come from the `counters` row as well as from MAX(), for the reason
+	# spelled out in section 28: plBase::getNextID allocates from counters.
+	md_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	md_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+	
+	MDCASE="$(md_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${MDCASE}, 'ZZ-MD-DOCS', 1, 'ZZM', '1', 1)" >/dev/null
+	md_bump_counter cases "$MDCASE"
+	
+	# The upload form's token. ops/upload_document.php checks it on every POST.
+	curl -sL --max-time 30 -b "$COOKIES" -c "$COOKIES" -o "$BODY" \
+		"$OCM_URL/case.php?case_id=${MDCASE}&screen=docs" >/dev/null
+	MDTOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+	
+	printf '<script>alert(1)</script>ZZMDMARKER\n' > "${SMOKE_DIR}/zzmd.html"
+	printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n' > "${SMOKE_DIR}/zzmd.svg"
+	printf '%%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%%%EOF\n' > "${SMOKE_DIR}/zzmd.pdf"
+	printf 'ZZMDONE\n' > "${SMOKE_DIR}/zzmd1.txt"
+	printf 'ZZMDTWO longer body so the two sizes differ\n' > "${SMOKE_DIR}/zzmd2.txt"
+	
+	md_upload() {
+		# $1 local file, $2 declared MIME type
+		curl -sL --max-time 60 -b "$COOKIES" -c "$COOKIES" -o "$BODY" \
+			-F "_csrf=${MDTOK}" -F "case_id=${MDCASE}" -F "doc_type=C" \
+			-F "description=ZZMD fixture" \
+			-F "doc_upload=@${1};type=${2}" \
+			"$OCM_URL/ops/upload_document.php" >/dev/null
+	}
+	
+	md_stored_type() {
+		adb "SELECT mime_type FROM doc_storage WHERE case_id = ${MDCASE} AND doc_name = '${1}'"
+	}
+	md_doc_id() {
+		adb "SELECT doc_id FROM doc_storage WHERE case_id = ${MDCASE} AND doc_name = '${1}'"
+	}
+	
+	if [ -z "${MDTOK:-}" ] || [ -z "${MDCASE:-}" ]; then
+		bad "could not seed the document download fixtures"
+	else
+		md_upload "${SMOKE_DIR}/zzmd.html" "text/html"
+		md_upload "${SMOKE_DIR}/zzmd.svg" "image/svg+xml"
+		md_upload "${SMOKE_DIR}/zzmd.pdf" "application/pdf"
+		
+		MDHTML="$(md_doc_id zzmd.html)"
+		MDSVG="$(md_doc_id zzmd.svg)"
+		MDPDF="$(md_doc_id zzmd.pdf)"
+		
+		if [ -n "$MDHTML" ] && [ -n "$MDSVG" ] && [ -n "$MDPDF" ]; then
+			ok "the three fixture documents uploaded"
+		else
+			bad "the fixture documents did not upload - the rest of this section proves nothing"
+		fi
+		
+		# --- what the upload stores -------------------------------------
+		
+		# image/svg+xml is not on pikaDocument::allowedMimeTypes(). An SVG is
+		# a script host, and a stored type this application does not file
+		# should not survive into a response header.
+		if [ "$(md_stored_type zzmd.svg)" = "application/octet-stream" ]; then
+			ok "an SVG upload is stored as application/octet-stream, not as its declared type"
+		else
+			bad "an SVG upload kept its declared type: $(md_stored_type zzmd.svg)"
+		fi
+		
+		# A type that IS on the allowlist is kept, so the document list and
+		# any later export still say what the file is.
+		if [ "$(md_stored_type zzmd.pdf)" = "application/pdf" ]; then
+			ok "a PDF upload keeps application/pdf"
+		else
+			bad "a PDF upload lost its type: $(md_stored_type zzmd.pdf)"
+		fi
+		
+		# --- what the download sends ------------------------------------
+		
+		# The one that matters. text/html is an allowed thing to file, so it
+		# is still stored as text/html; the download is where it is refused.
+		curl -s --max-time 30 -b "$COOKIES" -c "$COOKIES" -D "$BODY" -o "${BODY}.dl" \
+			"$OCM_URL/documents.php?action=download&doc_id=${MDHTML}" >/dev/null
+		if grep -qiE '^content-type:[[:space:]]*application/octet-stream' "$BODY"; then
+			ok "a document uploaded as HTML is served as application/octet-stream"
+		else
+			bad "a document uploaded as HTML is still served as HTML: $(grep -i '^content-type:' "$BODY" | tr -d '\r')"
+		fi
+		
+		if grep -qiE '^content-disposition:[[:space:]]*attachment' "$BODY"; then
+			ok "a document uploaded as HTML is served as an attachment, not inline"
+		else
+			bad "a document uploaded as HTML is still served inline - it renders on this origin"
+		fi
+		
+		if grep -qiE '^x-content-type-options:[[:space:]]*nosniff' "$BODY"; then
+			ok "the download carries X-Content-Type-Options: nosniff"
+		else
+			bad "the download has no nosniff header - the browser may sniff the body as HTML anyway"
+		fi
+		
+		# Refusing to render it must not mean refusing to hand it over.
+		if grep -qF 'ZZMDMARKER' "${BODY}.dl"; then
+			ok "the document body is still delivered intact"
+		else
+			bad "the document body was altered or lost by the download headers"
+		fi
+		
+		# A PDF still previews in the browser. This is the line the fix is not
+		# allowed to cross: forcing every download to an attachment would
+		# close the hole and break the way staff read court papers.
+		curl -s --max-time 30 -b "$COOKIES" -c "$COOKIES" -D "$BODY" -o /dev/null \
+			"$OCM_URL/documents.php?action=download&doc_id=${MDPDF}" >/dev/null
+		if grep -qiE '^content-type:[[:space:]]*application/pdf' "$BODY" \
+			&& grep -qiE '^content-disposition:[[:space:]]*inline' "$BODY"; then
+			ok "a PDF is still served inline as application/pdf"
+		else
+			bad "a PDF is no longer previewable - the download gate is too tight"
+		fi
+		
+		# The SVG follows its stored type into the attachment branch.
+		curl -s --max-time 30 -b "$COOKIES" -c "$COOKIES" -D "$BODY" -o /dev/null \
+			"$OCM_URL/documents.php?action=download&doc_id=${MDSVG}" >/dev/null
+		if grep -qiE '^content-disposition:[[:space:]]*attachment' "$BODY"; then
+			ok "an SVG is served as an attachment"
+		else
+			bad "an SVG is served inline - it can script on this origin"
+		fi
+		
+		# --- header injection through the file name ---------------------
+		
+		# The uploader names the file. A name carrying a carriage return ends
+		# the header block, and everything after it is a header the uploader
+		# wrote into another user's download. curl will not send such a name
+		# in a multipart part, so this row is written straight to the table.
+		adb "UPDATE doc_storage SET doc_name = 'zzmd.html\r\nZZMD-Injected: yes'
+			WHERE doc_id = ${MDHTML}" >/dev/null
+		curl -s --max-time 30 -b "$COOKIES" -c "$COOKIES" -D "$BODY" -o /dev/null \
+			"$OCM_URL/documents.php?action=download&doc_id=${MDHTML}" >/dev/null
+		if grep -qi '^ZZMD-Injected:' "$BODY"; then
+			bad "a document file name can write a header into the download response"
+		else
+			ok "a line break in a document file name does not split the response headers"
+		fi
+		adb "UPDATE doc_storage SET doc_name = 'zzmd.html' WHERE doc_id = ${MDHTML}" >/dev/null
+		
+		# --- the multi-file upload path ---------------------------------
+		
+		# Uploading several files at once rebuilt the $_FILES entry by hand
+		# and left 'size' out of it, so every document that came in through
+		# the multi-file form was stored with an empty size while the same
+		# file uploaded on its own got the right one.
+		curl -sL --max-time 60 -b "$COOKIES" -c "$COOKIES" -o "$BODY" \
+			-F "_csrf=${MDTOK}" -F "case_id=${MDCASE}" -F "doc_type=C" \
+			-F "description=ZZMD multi" \
+			-F "doc_upload[]=@${SMOKE_DIR}/zzmd1.txt;type=text/plain" \
+			-F "doc_upload[]=@${SMOKE_DIR}/zzmd2.txt;type=text/plain" \
+			"$OCM_URL/ops/upload_document.php" >/dev/null
+		MDSIZES="$(adb "SELECT COUNT(*) FROM doc_storage
+			WHERE case_id = ${MDCASE} AND doc_name IN ('zzmd1.txt','zzmd2.txt') AND doc_size > 0")"
+		if [ "$MDSIZES" = "2" ]; then
+			ok "a multi-file upload records the size of each document"
+		else
+			bad "a multi-file upload stored ${MDSIZES}/2 documents with a size"
+		fi
+	fi
+	
+	cleanup_md
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the document download checks (needs the database and compose)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

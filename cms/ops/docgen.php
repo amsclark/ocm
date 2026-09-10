@@ -393,11 +393,15 @@ if ($autosave)
 }
 
 
-header("Pragma: public");
-header("Cache-Control: cache, must-revalidate");
-header("Content-type: application/force-download");
-header("Content-Type: {$doc->mime_type}");
-header("Content-Disposition: inline; filename=\"{$doc->doc_name}\"");
+/*	Same shared header writer cms/documents.php uses.
+	
+	This branch had neither of the two protections that file had grown: the
+	template's stored MIME type went out as-is, so a form template filed as
+	text/html was rendered rather than downloaded, and neither the type nor
+	the file name had its line breaks stripped, so either could split the
+	header block. See sendDownloadHeaders() in cms/app/lib/pikaDocument.php.
+*/
+pikaDocument::sendDownloadHeaders($doc->mime_type,$doc->doc_name);
 
 echo $contents;
 
