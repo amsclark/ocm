@@ -104,6 +104,19 @@
 		existing enabled account with the same verified email address; no
 		account is ever created.</em><br/>
 	</div>
+	<div style="clear:both;padding:5px" id="form_peer_transfer" class="de">
+		<h2>Peer Case Transfer</h2>
+		<p><em>Only needed if you hand cases to another OCM installation.
+		Both installations must hold the same shared secret.</em></p>
+		Shared Secret<br/>
+		<input type="password" name="peer_transfer_shared_secret" id="peer_transfer_shared_secret" value="" autocomplete="new-password" size="48"><br/>
+		<em>%%[peer_transfer_secret_status]%%</em><br/>
+		<br/>
+		%%[peer_transfer_allow_legacy_unserialize,yes_no,checkbox,label=Accept the Old Unsigned Transfer Format]%%<br/>
+		<em>Leave this off. It exists only to drain transfers already queued by
+		a partner installation that has not been upgraded yet. The old format
+		carries no signature.</em><br/>
+	</div>
 	<div style="clear:both;" id="form_footer">
 		<br/>
 		%%[action,input_hidden,default=update]%%

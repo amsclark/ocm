@@ -1,0 +1,37 @@
+-- add_peer_transfer.sql -- settings for the peer case transfer endpoint.
+--
+-- cms/services/transfer_case.php accepts a case, a contact or an activity
+-- pushed in by another OCM installation. It authenticates the peer with HTTP
+-- Basic, and until now it read the body with unserialize(). unserialize() on
+-- input from the network is an object-injection vector (CWE-502): the string
+-- names the classes to build, and building them runs whatever their
+-- constructors and destructors do. HTTP Basic proves which account sent the
+-- request, not that the body is safe to deserialize.
+--
+-- So the endpoint now has two body formats:
+--
+--   * format=json. A JSON body, signed with HMAC-SHA256 over
+--     action + "\n" + payload + "\n" + ts, keyed on the shared secret below.
+--     The timestamp must be within 300 seconds of the receiver's clock, which
+--     bounds how long a captured request can be replayed for. This is the
+--     format both ends should use.
+--
+--   * The historical serialize() body. Refused unless an operator turns it
+--     back on, and even then it is decoded with allowed_classes => false, so
+--     no object of any class can be built from it.
+--
+-- Both settings default to a state that accepts nothing: no secret means the
+-- JSON path refuses, and the legacy path is off. That is deliberate. An
+-- operator who wants peer transfer configures it; an operator who does not
+-- know the feature exists is not running an unauthenticated deserializer.
+--
+--   peer_transfer_shared_secret            The HMAC key. Both installations
+--                                          hold the same value. Blank refuses
+--                                          every signed request.
+--   peer_transfer_allow_legacy_unserialize 0/1. Accept the old serialize()
+--                                          body. Only for draining pushes
+--                                          from a peer that has not been
+--                                          upgraded yet.
+INSERT IGNORE INTO settings (label, value) VALUES
+	('peer_transfer_shared_secret',            ''),
+	('peer_transfer_allow_legacy_unserialize', '0');

@@ -115,7 +115,12 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	*/
 	'sso_enabled', 'sso_provider', 'sso_tenant_id', 'sso_hosted_domain',
 	'sso_issuer_url', 'sso_discovery_url', 'sso_client_id',
-	'sso_autobind_by_email', 'sso_autobind_domains');
+	'sso_autobind_by_email', 'sso_autobind_domains',
+	/*	Peer case transfer. peer_transfer_shared_secret is deliberately NOT in
+		this list, for the same reason as the SSO client secret: it is handled
+		on its own below so that a blank field keeps the stored value.
+	*/
+	'peer_transfer_allow_legacy_unserialize');
 
 switch ($action)
 {
@@ -186,6 +191,25 @@ switch ($action)
 			}
 		}
 		
+		/*	Write-only, on the same reasoning as the client secret above.
+			Clearing it deliberately is done with direct SQL.
+		*/
+		if (isset($_POST['peer_transfer_shared_secret']))
+		{
+			$posted_secret = (string) $_POST['peer_transfer_shared_secret'];
+			
+			if ('' !== $posted_secret)
+			{
+				$old_secret = (string) pl_settings_get('peer_transfer_shared_secret');
+				pl_settings_set('peer_transfer_shared_secret', $posted_secret);
+				
+				if ($old_secret !== $posted_secret)
+				{
+					$changed['peer_transfer_shared_secret'] = array('redacted' => true);
+				}
+			}
+		}
+		
 		pl_settings_save();
 		
 		if (!empty($changed))
@@ -217,6 +241,15 @@ switch ($action)
 		*/
 		require_once('app/lib/pikaSsoOidc.php');
 		$html['sso_redirect_uri'] = pl_sso_redirect_uri();
+		
+		/*	And the peer transfer shared secret. Anybody holding it can sign a
+			case of their choosing into this installation, so the browser is
+			told whether one is stored and nothing more.
+		*/
+		$html['peer_transfer_shared_secret'] = '';
+		$html['peer_transfer_secret_status'] = (strlen((string) pl_settings_get('peer_transfer_shared_secret')) > 0)
+			? 'A shared secret is stored. Leave this blank to keep it.'
+			: 'No shared secret is stored. Incoming transfers are refused until one is set.';
 		
 		$sso_ready_reason = '';
 		

@@ -33,7 +33,7 @@ Check it worked:
 tests/smoke.sh
 ```
 
-That should end with `241 passed, 0 failed`.
+That should end with `261 passed, 0 failed`.
 
 ## Documentation
 

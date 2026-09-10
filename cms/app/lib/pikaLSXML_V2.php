@@ -61,7 +61,28 @@ class pikaLSXML
 		$doc->formatOutput = true;
 
 		if (!is_null($xml_text)){
-			$doc->loadXML($xml_text);
+			/*	LIBXML_NONET refuses every network fetch the parser would
+				otherwise make while resolving an external entity, so a
+				document that names http:// or file:// in a DOCTYPE cannot
+				turn this server into a reader of its choosing. That is XXE
+				(CWE-611): the XML arrives from another organisation over
+				cms/services/transfer_case_lsxml.php, and a case transfer is
+				not a reason to read /etc/passwd or an internal URL.
+				
+				Entity substitution is off by default in libxml2 2.9 and
+				later, but only by default. Passing the flag says so in the
+				code, and the DOCTYPE check below means we do not depend on
+				which libxml2 the host happens to ship: a legal-aid case
+				export has no legitimate reason to carry a document type
+				declaration at all, so refuse the whole document if it does
+				rather than trying to decide which entities are safe.
+			*/
+			if (preg_match('/<!DOCTYPE/i',$xml_text))
+			{
+				throw new Exception('pikaLSXML: refusing an XML document with a DOCTYPE declaration.');
+			}
+			
+			$doc->loadXML($xml_text,LIBXML_NONET);
 		}
 		
 		$this->lookupXMLValue_settings_file = getcwd() . '-custom/config/caseq_settings.php';
@@ -337,7 +358,12 @@ class pikaLSXML
 		// Eligibility
 		$case_row['adults'] = $this->getXMLValue('/ClientIntake/Eligibility/Adults');
 		$case_row['children'] = $this->getXMLValue('/ClientIntake/Eligibility/Children');
-		$case_row['persons_helped'] = $case_row['adults'] + $case_row['children'];
+		/*	getXMLValue() answers '' for an element the document does not
+			carry, and under PHP 8 '' + '' is a TypeError rather than 0, so a
+			document with no Adults or Children element used to abort the whole
+			import. Cast both to int: an absent count is nought people.
+		*/
+		$case_row['persons_helped'] = (int) $case_row['adults'] + (int) $case_row['children'];
 		$case_row['elig_notes'] = $this->getXMLValue('/ClientIntake/Eligibility/EligibilityNotes');
 
 		

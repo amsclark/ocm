@@ -21,8 +21,105 @@ $auth_row = pikaAuthHttp::getInstance()->getAuthRow();
 $user_id = $auth_row['user_id'];
 
 $action = pl_grab_post('action');
-$payload_serialized = pl_grab_post('payload');
-$payload = unserialize($payload_serialized);
+$format = pl_grab_post('format');
+$raw = pl_grab_post('payload');
+
+/*	How the body is read.
+	
+	This endpoint accepts a case, a contact or an activity pushed in by
+	another OCM installation. HTTP Basic, checked above, proves which peer
+	account sent the request. It does not prove that the body is safe to
+	deserialize, and the body used to be read with unserialize(): a
+	serialized string names the classes to build, and building them runs
+	whatever their constructors and destructors do. That is object
+	injection (CWE-502), and an account with peer-transfer rights is not
+	the same thing as permission to run code.
+	
+	So there are two formats:
+	
+	  format=json  A JSON body with an HMAC-SHA256 signature over
+	               action + "\n" + payload + "\n" + ts, keyed on the
+	               peer_transfer_shared_secret setting. ts must be within
+	               300 seconds of this server's clock, which bounds how
+	               long a captured request stays replayable. Use this.
+	
+	  anything     The historical serialize() body. Refused unless an
+	  else         operator sets
+	               peer_transfer_allow_legacy_unserialize, and even then
+	               decoded with allowed_classes => false, so that no
+	               object of any class can come out of it. It exists only
+	               to drain pushes queued by a peer that has not upgraded.
+	
+	Both settings ship blank/0, so a deployment that has not configured
+	peer transfer accepts nothing here.
+	
+	Every request is audited, accepted or rejected, with a reason.
+*/
+$peer_user = isset($auth_row['username']) ? (string) $auth_row['username'] : null;
+
+$payload = null;
+if ('json' === $format)
+{
+	$secret = pl_settings_get('peer_transfer_shared_secret');
+	if (!is_string($secret) || 0 === strlen($secret))
+	{
+		peer_transfer_reject('shared_secret_not_configured',$action,$peer_user);
+	}
+	
+	$ts = pl_grab_post('ts');
+	$signature = pl_grab_post('signature');
+	if (!is_string($raw) || !is_string($ts) || !is_string($signature))
+	{
+		peer_transfer_reject('missing_signature_or_ts',$action,$peer_user);
+	}
+	if (!ctype_digit($ts))
+	{
+		peer_transfer_reject('invalid_ts',$action,$peer_user);
+	}
+	if (abs(time() - (int) $ts) > 300)
+	{
+		peer_transfer_reject('ts_out_of_window',$action,$peer_user);
+	}
+	
+	/*	hash_equals, not ==, so that a wrong signature always costs the
+		same time to reject and cannot be guessed one byte at a time.
+	*/
+	$expected = hash_hmac('sha256',$action . "\n" . $raw . "\n" . $ts,$secret);
+	if (!hash_equals($expected,$signature))
+	{
+		peer_transfer_reject('bad_signature',$action,$peer_user);
+	}
+	
+	$decoded = json_decode($raw,true);
+	if (!is_array($decoded))
+	{
+		peer_transfer_reject('bad_json_payload',$action,$peer_user);
+	}
+	$payload = $decoded;
+}
+else
+{
+	if ('1' !== (string) pl_settings_get('peer_transfer_allow_legacy_unserialize'))
+	{
+		peer_transfer_reject('legacy_unserialize_disabled',$action,$peer_user);
+	}
+	
+	/*	allowed_classes => false turns every serialized object into an
+		__PHP_Incomplete_Class, so no constructor or destructor from this
+		string runs. The handlers below want an array anyway.
+	*/
+	$payload = @unserialize((string) $raw,array('allowed_classes' => false));
+	if (!is_array($payload))
+	{
+		peer_transfer_reject('bad_serialized_payload',$action,$peer_user);
+	}
+}
+
+pl_audit('peer_transfer.accepted','peer_transfer',null,array(
+	'action' => (string) $action,
+	'format' => ('json' === $format) ? 'json' : 'legacy',
+	'peer_user' => $peer_user
+	));
 
 $buffer = '';
 switch ($action)
@@ -91,5 +188,22 @@ function if_unset(&$data,$key)
 	{
 		unset($data[$key]);
 	}
+}
+
+/*	Refuse the request, and leave a record of why. Called before anything
+	has been written, so there is nothing to roll back.
+*/
+function peer_transfer_reject($reason,$action,$peer_user)
+{
+	pl_audit('peer_transfer.rejected','peer_transfer',null,array(
+		'reason' => $reason,
+		'action' => (string) $action,
+		'peer_user' => $peer_user,
+		'remote_ip' => isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null
+		));
+	header('HTTP/1.1 403 Forbidden');
+	header('Content-Type: text/plain; charset=utf-8');
+	echo "Peer transfer rejected: {$reason}\n";
+	exit();
 }
 
