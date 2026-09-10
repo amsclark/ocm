@@ -37,6 +37,9 @@ class pikaScreen extends plBase
 		$buffer = '';
 
 		$buffer .= '<form action="%%[base_url]%%/ops/update_case.php" method="post" name="ws">';
+		// This buffer is spliced into a template and then drawn, so the tag
+		// resolves the same way it does in the .html form templates.
+		$buffer .= '%%[csrf_field]%%';
 
 		if (strlen($this->screen_fields) == 0)
 		{

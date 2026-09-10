@@ -48,7 +48,7 @@ h1{
 		
 		<!-- img src="%%[base_url]%%/images/lady-justice.png" width="107" height="107" -->
 		
-		<form class="form-horizontal" method="POST" name="form2">
+		<form class="form-horizontal" method="POST" name="form2">%%[csrf_field]%%
 		%%[form_data]%%
   <div class="control-group">
     <label class="control-label" for="login_user">Username</label>
@@ -64,10 +64,18 @@ h1{
     </div>
   </div>
   <div class="control-group">
+    <label class="control-label" for="totp">MFA code</label>
+    <div class="controls">
+      <input type="text" name="totp" id="totp" placeholder="6-digit code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+      <span class="help-block">Leave blank unless two-factor authentication is set up on your account.</span>
+    </div>
+  </div>
+  <div class="control-group">
     <div class="controls">
       <button type="submit" class="btn">Sign In</button>
     </div>
   </div>
+  %%[sso_button]%%
 </form>
 
 		<div style="clear:both;">

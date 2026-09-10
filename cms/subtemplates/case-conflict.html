@@ -15,7 +15,7 @@
 		        	<strong><a href="%%[base_url]%%/contact.php?contact_id=%%[contact_id]%%">%%[conflict_name]%%</a></strong> 
 		        	was a(n) %%[role]%%<br/>
 					DoB: <strong>%%[birth_date]%%</strong><br/>
-					SSN: <strong>%%[ssn']%%</strong><br/>
+					SSN: <strong>%%[ssn]%%</strong><br/>
 					Address:  <strong>%%[address]%%</strong>
 				</td>
 		        <td><a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%">%%[number]%%</a></td>
@@ -29,7 +29,7 @@
 %%[end:flex_footer]%%
 
 
-<form action="%%[base_url]%%/ops/update_case.php" method=POST name=ws>
+<form action="%%[base_url]%%/ops/update_case.php" method=POST name=ws>%%[csrf_field]%%
 <p class="de">Does this case have conflicts?<br/> %%[conflicts,yes_no]%% <br/>
 
 <input type="hidden" name="case_id" value="%%[case_id]%%">

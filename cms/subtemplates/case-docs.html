@@ -2,7 +2,7 @@
 	<tr valign="top">
 		<td width="50%">
 			<h2 class="hdt">Case Intake Report</h2>
-			<form action="%%[base_url]%%/legacy_report.php?report=case_print&dummy=dummy.pdf" method="post" name='case_intake' target='_blank'>
+			<form action="%%[base_url]%%/legacy_report.php?report=case_print&dummy=dummy.pdf" method="post" name='case_intake' target='_blank'>%%[csrf_field]%%
 			<p>
 				<input type="hidden" name="report" value="case_print"/>
 				<input type="hidden" name="case_id" value="%%[case_id]%%"/>
@@ -12,7 +12,7 @@
 			</p>
 			</form>
 			
-			<form action="%%[base_url]%%/ops/docgen.php" method="post" name="docgen">
+			<form action="%%[base_url]%%/ops/docgen.php" method="post" name="docgen">%%[csrf_field]%%
 			<h2 class="hdt">Document Assembly</h2>
 			%%[forms,file_list,doc_type=F,mode=select,doc_field=form_id]%%
 			%%[form_id,input_hidden]%%
@@ -51,7 +51,7 @@
 			%%[case_files,file_list,doc_type=C,folder_field=parent_folder]%%
 			
 						
-			<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">
+			<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">%%[csrf_field]%%
 			%%[folder_name,input_text]%%
 			<input type="submit" name="add_folder" value="Add Folder"/>
 			%%[folder,input_hidden,default=1]%%
@@ -60,7 +60,7 @@
 			%%[case_id,input_hidden]%%
 			</form>
 			<h2 class="hdt">Add a Document</h2>
-			<form id="upload_form" action="%%[base_url]%%/ops/upload_document.php" name="add_document" enctype="multipart/form-data" method="post">
+			<form id="upload_form" action="%%[base_url]%%/ops/upload_document.php" name="add_document" enctype="multipart/form-data" method="post">%%[csrf_field]%%
 			<div class="upload_div btn btn-large btn-block btn-success">
 				<span><i class="icon-plus icon-white"></i> Select Files</span>
 				<input type="file" id="doc_upload" name="doc_upload[]" class="upload_control" tabindex="1" data-multiple-caption="{count} files selected" multiple>

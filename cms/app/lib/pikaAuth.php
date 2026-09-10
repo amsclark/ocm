@@ -57,7 +57,11 @@ class pikaAuth
 		return self::$instance;
 	}
 	
-	public function authenticate($user,$pass,$authAdapterObj) {
+	/*	$totp is the submitted second factor, or null. Optional so that every
+		existing caller keeps working; the adapter decides whether the account
+		it found actually needs one.
+	*/
+	public function authenticate($user,$pass,$authAdapterObj,$totp = null) {
 		$this->is_authorized = false;
 		// Clear messages
 		$this->messages = array();
@@ -110,7 +114,7 @@ class pikaAuth
 			{
 				$authAdapterObj = new pikaAuthDb('users','username','password');
 			}
-			if($authAdapterObj->authenticate($user,$pass))
+			if($authAdapterObj->authenticate($user,$pass,$totp))
 			{
 				// Check to see that the login is not a back/refresh of submission form
 				$auth_id = $_SESSION['auth_id'];
@@ -131,6 +135,16 @@ class pikaAuth
 					$new_session->logout = 0;
 					$new_session->user_id = $this->auth_row['user_id'];
 					$new_session->save();
+					
+					// Rotate the CSRF token on every successful login so a
+					// token handed out before authentication cannot be reused
+					// in the authenticated session. This must come AFTER
+					// session_regenerate_id() above, because pl_csrf_rotate
+					// keys the new token by the session id.
+					if(function_exists('pl_csrf_rotate'))
+					{
+						pl_csrf_rotate();
+					}
 				}
 				else 
 				{
@@ -181,16 +195,34 @@ class pikaAuth
 	
 	public function logout()
 	{
+		// The actor comes from the session row, not from $this->auth_row.
+		// cms/services/logout.php defines PL_DISABLE_SECURITY, so pika_init()
+		// never authenticates and auth_row is still empty by the time we get
+		// here; the row the query below returns is the only place the actor's
+		// identity is available on this code path.
+		$user_id  = isset($this->auth_row['user_id'])  ? $this->auth_row['user_id']  : null;
+		$username = isset($this->auth_row['username']) ? $this->auth_row['username'] : null;
+		
 		$result = pikaUserSession::getSessions(array('session_id' => $this->session_id));
 		if(DBResult::numRows($result) == 1)
 		{
 			$row = DBResult::fetchRow($result);
+			if(!is_numeric($user_id))
+			{
+				$user_id  = $row['user_id'];
+				$username = $row['username'];
+			}
 			$user_session = new pikaUserSession($row['user_session_id']);
 			$user_session->logout = 1;
 			$user_session->save();
 		}
 		
 		$this->is_authorized = false;
+		
+		if(is_numeric($user_id))
+		{
+			pl_audit('logout', 'user', $user_id, null, $user_id, $username);
+		}
 		
 		return true;
 	}

@@ -10,6 +10,14 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// This page performs its state changes on a GET: the action is dispatched
+// out of the query string and the links that trigger it are plain <a href>
+// markup, so a hidden token field is not available as a defence here.
+// On a non-POST request pl_csrf_check() falls through to the same-site
+// check, which refuses a mutation that a foreign page initiated and needs
+// nothing from the markup. See pl_request_cross_site_verdict() in pl.php.
+pl_csrf_check();
+
 
 // LIBRARIES
 require_once('pikaCase.php');
@@ -29,7 +37,9 @@ $screen = pl_grab_get('screen', $next_tab);
 
 // BEGIN MAIN CODE
 
-$case1->setValues(pl_clean_form_input($_GET));
+// pl_strip_protected_columns() so a crafted query string cannot hand this
+// insert a chosen case_id. See app/lib/pl.php.
+$case1->setValues(pl_strip_protected_columns(pl_clean_form_input($_GET)));
 /*	Since no client is added, and no conflict check will be performed, poten_conflicts
 	will still be set to its default value of 1.  Fix this.
 	

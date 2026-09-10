@@ -11,6 +11,13 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 require_once('pikaActivity.php');
 
 // VARIABLES
@@ -97,20 +104,26 @@ if($act_id && is_numeric($act_id)) {
 				$z['client_name'] .= $client->extra_name;
 			}
 			
-			$z['case_link'] = $_SERVER['REQUEST_SCHEME'];
+			/*	This built the link from $_SERVER['REQUEST_SCHEME'] and
+				$_SERVER['SERVER_NAME']. The link goes into a tickler
+				notification email, and Apache fills SERVER_NAME from the
+				request's Host header unless UseCanonicalName is On, which it
+				is not by default -- so a request carrying
+				"Host: attacker.example" produced a notification whose link
+				pointed at the attacker. REQUEST_SCHEME is also not always
+				set, which is an undefined-index warning of its own.
 			
-			/* AMW 2015-02-10 - I am using SERVER_NAME instead of HTTP_HOST
-				here.  I believe SERVER_NAME may be less reliable if the
-				server is misconfigured, or (possibly) when using VirtualHosts.
-				But since HTTP_HOST is user-provided, close attention would need
-				to be paid to security.  The only "secret" information provided 
-				by case_link is the $base_url, so that part doesn't appear to be
-				particularly dangerous in it's current state.  SQL injection
-				or XSS are probably not a concern at first glance, either.
-				But SERVER_NAME provides no additional attack surface so I'm 
-				going with that method for now.
+				pl_canonical_origin() prefers the canonical_url setting and
+				validates the fallback. It returns '' when it cannot work out
+				an origin; a relative link is still usable from inside the
+				application, and a wrong absolute one is not.
+			
+				The 2015 note that used to sit here reasoned that case_link
+				exposes nothing secret, so neither source was dangerous. That
+				is true of what the link discloses and beside the point: the
+				risk is what the link sends the reader to.
 			*/
-			$z['case_link'] .= '://' . $_SERVER['SERVER_NAME'];
+			$z['case_link'] = pl_canonical_origin();
 			$z['case_link'] .= pl_settings_get('base_url');
 			$z['case_link'] .= '/case.php?case_id=' . $case0->case_id;
 

@@ -10,6 +10,13 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 require_once('pikaCase.php');
 require_once('pikaContact.php');
 
@@ -31,7 +38,14 @@ if (is_null($case_id) || is_null($relation_code))
 
 $case1 = new pikaCase($case_id);
 $contact = new pikaContact();
-$contact->setValues($_POST);
+// Two changes on this line:
+//   - pl_clean_form_input(), which every other handler already ran and
+//     this one did not, so the POST reached the row unfiltered.
+//   - pl_strip_protected_columns(), so the request cannot hand this insert
+//     a chosen contact_id. $case_id was read with pl_grab_post() above,
+//     before the strip, so the case link is unaffected.
+// See app/lib/pl.php.
+$contact->setValues(pl_strip_protected_columns(pl_clean_form_input($_POST)));
 
 // take care of those nasty "masked" fields
 /*

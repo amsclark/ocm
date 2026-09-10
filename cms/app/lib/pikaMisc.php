@@ -36,7 +36,7 @@ class pikaMisc
 
 		while ($row = DBResult::fetchArray($result))
 		{
-			$a[$row['pba_id']] = "{$row['last_name']}, {$row['first_name']} {$row['middle_name']} {$row['extra_name']}";
+			$a[$row['pba_id']] = "{$row['last_name']}, {$row['first_name']} {$row['middle_name']} {$row['extra_name']} <a href=\"tel:{$row['phone_notes']}\">{$row['phone_notes']}</a>";
 		}
 
 		return $a;
@@ -110,22 +110,18 @@ class pikaMisc
 				LEFT JOIN cases on activities.case_id = cases.case_id
 				WHERE summary LIKE '%{$clean_text_str}%'
 				OR notes LIKE '%{$clean_text_str}%'";
-		if($order == 'DESC') {
-			$safe_order = 'DESC';
-		} else { $safe_order = 'ASC'; }
-		if($order_field) {
-			$safe_order_field = DB::escapeString($order_field);
-			$sql .= " ORDER BY {$safe_order_field} {$safe_order}";
-		}
+		// $order_field comes from search.php?order_field=... DB::escapeString()
+		// was not enough here: an ORDER BY does not need a quote to be
+		// injectable, and a comma, a paren and a subquery all pass an escape
+		// untouched. Check the name against an allowlist instead.
+		$sql .= pl_safe_order_by($order_field, $order, 'activity search sort column');
 		if(!$first_row || !is_numeric($first_row)) {
 			$first_row = 0;
 		}
-		$safe_first_row = DB::escapeString($first_row);
 		if(!$list_length || !is_numeric($list_length)) {
 			$list_length = 50;
 		}
-		$safe_list_length = DB::escapeString($list_length);
-		$sql .= " LIMIT $safe_first_row, $safe_list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;
 	}
@@ -400,24 +396,28 @@ class pikaMisc
 				contacts.first_name AS client_first_name, unread_sms ' . $sql;
 		}
 		
+		// case_list.php passes ?order_field= and ?order= straight through.
+		// Neither was checked, so both were injectable.
 		if ($order_field && $order)
 		{
 			if ('client_name' == $order_field)
 			{
-				$full_sql .= ' ORDER BY client_last_name ' . $order . ', client_first_name ' . $order;
+				$direction = pl_safe_sort_direction($order);
+				$full_sql .= ' ORDER BY client_last_name ' . $direction
+					. ', client_first_name ' . $direction;
 			}
 
 			else
 			{
-				$full_sql .= " ORDER BY {$order_field} {$order}";
+				$full_sql .= pl_safe_order_by($order_field, $order, 'case list sort column');
 			}
 		}
 		
 		
 		if ($first_row && $list_length){
-			$full_sql .= " LIMIT $first_row, $list_length";
+			$full_sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$full_sql .= " LIMIT $list_length";
+			$full_sql .= " LIMIT " . (int) $list_length;
 		}
 		$result = DB::query($full_sql) or trigger_error("SQL: " . $full_sql . " Error: " . DB::error());
 		return $result;
@@ -1040,7 +1040,7 @@ class pikaMisc
 			LEFT JOIN users ON cases.user_id=users.user_id
 			WHERE matter = '1' AND active_matter = '1'";
 
-		$sql .= " LIMIT {$list_length}";
+		$sql .= " LIMIT " . (int) $list_length;
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;
 	}

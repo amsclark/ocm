@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<!--
+  OCM branded 500. Served by Apache via `ErrorDocument 500` (see
+  docker/apache.conf).
+
+  This is the page that justifies the whole set being static. A 500 means
+  PHP, the database, or both are already unhappy; anything here that needed
+  a bootstrap, a session, or a query would fail a second time and hand the
+  user Apache's stock page anyway. Plain HTML plus one stylesheet, nothing
+  else.
+
+  No exception text, no stack trace, no file path — display_errors is off
+  in docker/php.ini for the same reason, and the detail belongs in the
+  container log (`docker compose logs app`) where an operator can read it.
+
+  Note that PHP fatals in this application are answered with HTTP 200 and a
+  short or empty body, not a 500, so this page covers the server-level
+  failures rather than every application error.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Something went wrong — OCM</title>
+    <link rel="stylesheet" href="/errors/error.css">
+  </head>
+  <body>
+    <main class="ocm-err-wrap">
+      <header class="ocm-err-brand">
+        <p class="ocm-err-brand-name">OCM</p>
+      </header>
+
+      <div class="ocm-err-card">
+        <span class="ocm-err-code">Error 500</span>
+        <h1>Something went wrong on our end</h1>
+        <p>
+          OCM hit an unexpected error while building this page. This is a
+          problem with the server, not with anything you did.
+        </p>
+        <p>
+          The error has been written to the server log. If you were part way
+          through saving work, check the record before re-entering it — the
+          save may have gone through.
+        </p>
+        <div class="ocm-err-actions">
+          <a class="ocm-err-btn" href="/cms/">Return to OCM</a>
+        </div>
+      </div>
+
+      <p class="ocm-err-foot">
+        If this keeps happening, tell your administrator what you were doing
+        and roughly when.
+      </p>
+    </main>
+  </body>
+</html>

@@ -10,6 +10,13 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 require_once('pikaActivity.php');
 require_once('pikaTempLib.php');
 
@@ -33,6 +40,10 @@ if(is_numeric($act_id) && !$cancel) {
 	if ((pl_settings_get('db_name') == 'legalaidnebraska' && pika_authorize('edit_act', $act_row))
 			|| pika_authorize('delete_act', array()))
 	{
+		pl_audit('activity.delete', 'activity', $act_id, array(
+			'case_id'          => $case_id,
+			'activity_user_id' => $activity->user_id,
+		));
 		$activity->delete();
 	}
 	

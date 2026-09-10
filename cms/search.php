@@ -298,6 +298,19 @@ else
 			$i = 1;
 			while ($row = DBResult::fetchRow($result))
 			{
+				// getActivitiesByText() searches every activity row on the
+				// box -- the query has no office or ownership predicate -- so
+				// each hit has to be scoped to a case the caller may read.
+				// Without this the search box hands an office-restricted user
+				// the case notes of every other office. $row_count below is
+				// the pre-filter total, so the count can exceed the rows
+				// shown; that is better than reporting the exact number of
+				// matches the user is not allowed to see.
+				if (!pl_case_readable($row['case_id']))
+				{
+					continue;
+				}
+				
 				$row['row_class'] = $i;
 				if ($i > 1)
 				{
@@ -345,6 +358,15 @@ else
 
 			while ($row = DBResult::fetchRow($result))
 			{
+				// Same gap as the activity search above: getDocumentsByText()
+				// has no office or ownership predicate, so document names and
+				// descriptions from every case were visible to anyone who
+				// could log in.
+				if (!pl_case_readable($row['case_id']))
+				{
+					continue;
+				}
+				
 				$doc_table->addRow($row);
 			}
 		}

@@ -67,14 +67,17 @@
           %%[warning]%%
 		<h2>Welcome to Pika CMS!</h2>
 		
-		<form method="POST" name="form2">
+		<form method="POST" name="form2">%%[csrf_field]%%
 		Username:<br/>
 		%%[login_user,input_text]%%<br/>
 		Password:<br/>
 		%%[login_pass,input_password]%%<br/>
+		MFA code (blank if not set up):<br/>
+		%%[totp,input_text]%%<br/>
 		%%[auth_id,input_hidden]%%
 		<br/>
 		<input type="submit" name="signin" value="Sign In" style="font-weight: bold;">
+		%%[sso_button]%%
 		</form>
 		<br/>
 		<div style="color:red;text-align:left;clear:both;">

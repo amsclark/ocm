@@ -6,30 +6,38 @@ function pika_error($errno = null, $errstr = null, $errfile = null, $errline = n
 	
 	$error_output = '';
 	//print_r($_SERVER);
+	// Every value below is attacker-influenced -- request headers, the query
+	// string, the POST body -- and templates/unavailable.html renders them
+	// raw, so the error page reflected whatever the request carried. The
+	// template engine does not escape anything by default.
+	$esc = function ($v) {
+		return pl_html_escape($v);
+	};
+	
 	$a = array('action' => 'NONE', 'screen' => 'NONE', 'HTTP_REFERER' => 'NOT SET', 'QUERY_STRING' => 'NONE');
-	$a['message'] = $errstr;
-	$a['file'] = $errfile;
-	$a['line'] = $errline;
+	$a['message'] = $esc($errstr);
+	$a['file'] = $esc($errfile);
+	$a['line'] = $esc($errline);
 	if(isset($_REQUEST['action'])) {
-		$a['action'] = $_REQUEST['action'];
+		$a['action'] = $esc($_REQUEST['action']);
 	}if(isset($_REQUEST['screen'])) {
-		$a['screen'] = $_REQUEST['screen'];
-	}if(isset($_SERVER['HTTP_RERERER'])) {
-		$a['HTTP_RERERER'] = $_SERVER['HTTP_RERERER'];
+		$a['screen'] = $esc($_REQUEST['screen']);
+	}if(isset($_SERVER['HTTP_REFERER'])) {
+		$a['HTTP_REFERER'] = $esc($_SERVER['HTTP_REFERER']);
 	}if(isset($_SERVER['REQUEST_METHOD'])) {
-		$a['REQUEST_METHOD'] = $_SERVER['REQUEST_METHOD'];
+		$a['REQUEST_METHOD'] = $esc($_SERVER['REQUEST_METHOD']);
 	}if(isset($_SERVER['REMOTE_ADDR'])) {
-		$a['REMOTE_ADDR'] = $_SERVER['REMOTE_ADDR'];
+		$a['REMOTE_ADDR'] = $esc($_SERVER['REMOTE_ADDR']);
 	}if(isset($_SERVER['HTTP_USER_AGENT'])) {
-		$a['HTTP_USER_AGENT'] = $_SERVER['HTTP_USER_AGENT'];
+		$a['HTTP_USER_AGENT'] = $esc($_SERVER['HTTP_USER_AGENT']);
 	}if(isset($_SERVER['SERVER_NAME'])) {
-		$a['SERVER_NAME'] = $_SERVER['SERVER_NAME'];
+		$a['SERVER_NAME'] = $esc($_SERVER['SERVER_NAME']);
 	}if(isset($_SERVER['SERVER_SOFTWARE'])) {
-		$a['SERVER_SOFTWARE'] = $_SERVER['SERVER_SOFTWARE'];
+		$a['SERVER_SOFTWARE'] = $esc($_SERVER['SERVER_SOFTWARE']);
 	}if(isset($_SERVER['REQUEST_URI'])) {
-		$a['REQUEST_URI'] = $_SERVER['REQUEST_URI'];
+		$a['REQUEST_URI'] = $esc($_SERVER['REQUEST_URI']);
 	}if(isset($_SERVER['QUERY_STRING']) && $_SERVER['QUERY_STRING']) {
-		$a['QUERY_STRING'] = $_SERVER['QUERY_STRING'];
+		$a['QUERY_STRING'] = $esc($_SERVER['QUERY_STRING']);
 	}
 
 	require_once('pikaSettings.php');
@@ -58,7 +66,7 @@ function pika_error($errno = null, $errstr = null, $errfile = null, $errline = n
 	}
 	else 
 	{
-		$html['messages'] = $errno . ': ' . $errstr;
+		$html['messages'] = pl_html_escape($errno . ': ' . $errstr);
 		$html['auth_id'] = $_SESSION['auth_id'];
 		$default_template = new pikaTempLib('templates/login-form.html',$html);
 		if(browser_is_mobile())

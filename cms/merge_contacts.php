@@ -7,6 +7,14 @@
 
 require_once('pika-danio.php');
 pika_init(); 
+
+// This page merges contacts on a GET: the action is dispatched out of the
+// query string and the trigger is plain <a href> / method=get markup, so a
+// hidden token field is not available as a defence here. On a non-POST
+// request pl_csrf_check() falls through to the same-site check, which
+// refuses a mutation that a foreign page initiated and needs nothing from
+// the markup. See pl_request_cross_site_verdict() in cms/app/lib/pl.php.
+pl_csrf_check();
 require_once('pikaContact.php');
 require_once('plFlexList.php');
 require_once('pikaTempLib.php');

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<!--
+  OCM branded 404. Served by Apache via `ErrorDocument 404` (see
+  docker/apache.conf).
+
+  Static HTML on purpose: no PHP, no session, no database. The 403 and 500
+  siblings have to render when the application itself is failing, and it
+  would be daft for the 404 to be the one page in the set with a different
+  failure mode.
+
+  Note what is NOT here: no Apache version, no server signature, and no echo
+  of the requested URL. Reflecting the path is how a custom error page turns
+  into reflected XSS on Apache builds that don't escape %{REQUEST_URI}, and
+  the user already knows what they typed.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Page not found — OCM</title>
+    <!-- Root-absolute: ErrorDocument is an internal redirect, so the
+         browser's address bar still shows the original (arbitrarily deep)
+         URL and a relative href would resolve against that. -->
+    <link rel="stylesheet" href="/errors/error.css">
+  </head>
+  <body>
+    <main class="ocm-err-wrap">
+      <header class="ocm-err-brand">
+        <p class="ocm-err-brand-name">OCM</p>
+      </header>
+
+      <div class="ocm-err-card">
+        <span class="ocm-err-code">Error 404</span>
+        <h1>We can't find that page</h1>
+        <p>
+          The page you asked for doesn't exist. It may have been renamed or
+          removed, or the link or bookmark that brought you here may be out
+          of date.
+        </p>
+        <p>
+          Nothing you were working on has been lost. Go back to the
+          application and try again from there.
+        </p>
+        <!-- One action only. A "go back" control would need either a
+             javascript: href or a script, and this page's whole selling
+             point is that it has no dependencies and nothing to execute. -->
+        <div class="ocm-err-actions">
+          <a class="ocm-err-btn" href="/cms/">Return to OCM</a>
+        </div>
+      </div>
+
+      <p class="ocm-err-foot">
+        If a link inside OCM sent you here, please tell your administrator.
+      </p>
+    </main>
+  </body>
+</html>

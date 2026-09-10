@@ -170,22 +170,23 @@ class pikaActivity extends plBase
 				LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
 				WHERE 1' . $filter_sql;
 		
-		$safe_order_field = DB::escapeString($order_field);
-		$safe_order = DB::escapeString($order);
+		// An escape does not make an identifier safe: no quote is needed to
+		// inject into an ORDER BY. Use the allowlist.
+		$safe_order = pl_safe_sort_direction($order);
 		
 		if ($order_field == 'last_name' && $order){
 			$sql .= " ORDER BY last_name, first_name {$safe_order}";
 		} else if ($order_field == 'date-user-time' && $order){
 			$sql .= " ORDER BY act_date {$safe_order}, user_id {$safe_order}, act_time {$safe_order}";
 		} else if ($order_field && $order){
-			$sql .= " ORDER BY {$safe_order_field} {$safe_order}";
+			$sql .= pl_safe_order_by($order_field, $order, 'activity sort column');
 		}
 		
 		
 		if ($first_row && $list_length){
-			$sql .= " LIMIT $first_row, $list_length";
+			$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$sql .= " LIMIT $list_length";
+			$sql .= " LIMIT " . (int) $list_length;
 		}
 		
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());

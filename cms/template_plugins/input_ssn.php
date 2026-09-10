@@ -1,6 +1,10 @@
 <?php
 function input_ssn($field_name = null, $field_value = null, $menu_array = null, $args = null) 
 {
+
+	if (is_array($field_value)) {
+                   $field_value = $field_value[0];
+    }
 	$C = '';
 	$ssn_type = null;
 	if (is_array($field_value))

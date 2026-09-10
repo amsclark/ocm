@@ -152,6 +152,45 @@ $i = 1;
 $result = pikaMisc::getCases($filter, $row_count, $order_field, $order, $offset, $page_size);
 while ($row = DBResult::fetchRow($result))
 {
+	// Determine whether the user is authorized to view this case's information.
+	$censored = true;
+	
+	if (pika_authorize('read_case', $row))
+	{
+		$censored = false;
+	}
+	
+	// Unauthorized rows are dropped, not rendered as a censored placeholder.
+	//
+	// The placeholder below blanks every field EXCEPT `number` and
+	// `case_id`, and subtemplates/case_list.html wraps both in a live link
+	// (`case.php?case_id=%%[case_id]%%` labelled `%%[number]%%`, plus the
+	// "Log time" button carrying case_id and number in its query string).
+	// So a user with zero case permissions still got a paged, sortable,
+	// searchable index of every case number in the org and its internal
+	// case_id -- enough to enumerate the whole caseload, and to size it
+	// from the "N cases found" banner, which counted these rows too.
+	//
+	// pika_authorize('read_case') failing here is the same check case.php
+	// makes before it will render the case, so every one of those links
+	// was a guaranteed refusal anyway.
+	//
+	// Decrementing $row_count only adjusts the total by what this page
+	// sees -- pikaMisc::getCases() counts in SQL and knows nothing about
+	// per-row authorization -- so the banner is a close estimate rather
+	// than an exact figure on a multi-page result set. That tradeoff is
+	// deliberate: undercounting a page is better than publishing the true
+	// org-wide case total to someone with no read permission.
+	if ($censored)
+	{
+		if (is_numeric($row_count) && $row_count > 0)
+		{
+			$row_count--;
+		}
+		
+		continue;
+	}
+	
 	$row['row_class'] = $i;
 	
 	if ($i > 1)
@@ -168,14 +207,10 @@ while ($row = DBResult::fetchRow($result))
 		$row['number'] = "No Case #";
 	}
 	
-	// Determine whether the user is authorized to view this case's information.
-	$censored = true;
-
-	if (pika_authorize('read_case', $row))
-	{
-		$censored = false;
-	}
-	
+	// Retained as a fail-safe: $censored is always false by the time we
+	// reach here, because the block at the top of the loop `continue`s on
+	// it. Left in place so that if a future change reinstates placeholder
+	// rendering, the blanking logic it needs is still here.
 	if ($censored == true)
 	{
 		foreach ($row as $key => $val)

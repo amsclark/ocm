@@ -10,6 +10,15 @@ chdir('..');
 require_once('pika-danio.php');
 pika_init();
 
+// This page performs its state changes on a GET: the user record is saved out
+// of pl_grab_get() values, which read $_GET only, and the links that trigger
+// the action are plain <a href> markup, so a hidden token field is not
+// available as a defence here. On a non-POST request pl_csrf_check() falls
+// through to the same-site check, which refuses a mutation that a foreign page
+// initiated and needs nothing from the markup. See
+// pl_request_cross_site_verdict() in cms/app/lib/pl.php.
+pl_csrf_check();
+
 require_once('pikaTempLib.php');
 require_once('plFlexList.php');
 require_once('pikaUser.php');
@@ -76,6 +85,25 @@ switch ($action)
 		$a = $user->getValues();
 		$a['user_id'] = $user_id;
 		
+		/*	Nothing that authenticates the account goes into the form. The
+			shared template renders %%[password,input_password]%% from this
+			array, so the stored hash would otherwise be handed to the
+			browser as a field value, and the TOTP secret is ciphertext this
+			page has no reason to carry either.
+		*/
+		unset($a['password']);
+		unset($a['totp_secret']);
+		unset($a['totp_last_used']);
+		
+		/*	The same two controls the desktop form builds. Without them the
+			shared template resolves the tags to nothing, so this page would
+			silently show neither the MFA requirement nor the sign-in method
+			for an account that has them set.
+		*/
+		require_once('app/lib/pikaUserAdminControls.php');
+		$a['mfa_control'] = pl_mfa_admin_control($user->getValues());
+		$a['sso_control'] = pl_sso_admin_control($a);
+		
 		if($a['last_active']){
 			$a['last_active'] = date('n/d/y g:i A',$a['last_active']);
 		} else {
@@ -98,7 +126,8 @@ switch ($action)
 		$a['username'] = pl_grab_get('username');
 		$password = pl_grab_get('password');
 		if(strlen($password) > 0) {
-			$a['password'] = md5($password);
+			// bcrypt, not md5. Same fix as system-users.php.
+			$a['password'] = password_hash($password, PASSWORD_DEFAULT);
 		}
 		$a['first_name'] = pl_grab_get('first_name');
 		$a['middle_name'] = pl_grab_get('middle_name');

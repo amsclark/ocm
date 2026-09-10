@@ -1,5 +1,5 @@
 <h2 class="hdt">Hotline Information</h2>
-<form action="dataops.php" method=POST name=ws>
+<form action="dataops.php" method=POST name=ws>%%[csrf_field]%%
 
 <p>Documents Provided to Client:<br/>
 %%[doc1,client_docs]%%<br/>
@@ -18,7 +18,7 @@
 
 <h2 class="hdt">Referal Agencies</h2>
 
-<form action="dataops.php" method=POST name=blahblah>
+<form action="dataops.php" method=POST name=blahblah>%%[csrf_field]%%
 <p>Refer to an Agency:<br/>
 %%[thiscon menu source=ref_agency]%%
 <input type="hidden" name="case_id" value="%%[case_id]%%">

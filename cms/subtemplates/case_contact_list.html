@@ -68,7 +68,7 @@
 %%[begin:flex_row]%%
 			    <tr class="row%%[row_class]%%" valign="top">
 			        <td>
-						<form action="%%[base_url]%%/ops/add_case_contact.php" method="post">
+						<form action="%%[base_url]%%/ops/add_case_contact.php" method="post">%%[csrf_field]%%
 							<input type="hidden" name="thiscon" value="%%[contact_id]%%">
 							<input type="hidden" name="case_id" value="%%[case_id]%%">
 							<!--<input type="hidden" name="screen" value="%%[screen]%%"/>-->
@@ -103,7 +103,7 @@
 			for the person you are adding to this case.
 			</p>
 
-			<form action="%%[base_url]%%/ops/add_case_new_contact.php" method="post" autocomplete="off">
+			<form action="%%[base_url]%%/ops/add_case_new_contact.php" method="post" autocomplete="off">%%[csrf_field]%%
 			<p>
 				<input type="hidden" name="case_id" value="%%[case_id]%%">
 				<input type="hidden" name="relation_code" value="%%[relation_code]%%">

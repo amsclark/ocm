@@ -6,5 +6,18 @@ $plSettings = array(
 'db_user' => "root",
 'db_password' => '',
 'base_url' => "/cms",
-'base_directory' => "/mnt/hgfs/cms"
+'base_directory' => "/mnt/hgfs/cms",
+
+/*	Encrypts staff TOTP (two-factor) secrets at rest. base64 of 32 random
+	bytes. Generate one with:
+		php -r 'echo base64_encode(random_bytes(32)), "\n";'
+	It belongs in THIS file and not in the `settings` table: the ciphertext
+	lives in the database, so a key stored beside it would let a leaked dump
+	decrypt itself. The application refuses to save this key to the table and
+	refuses to resolve it through a template tag.
+	Leave it out and MFA enrollment is turned off; existing secrets stay
+	unreadable until the key is restored, so keep a backup of it with your
+	other credentials. Changing it forces every user to enrol again.
+*/
+'totp_encryption_key' => ''
 );

@@ -39,7 +39,7 @@ Label:%%[label_db_type]%%<br/>
 %%[begin:edit_classic]%%
 <h2>Editing: %%[menu_name]%%</h2>
 <a href="%%[base_url]%%/system-menus.php?action=edit_menu&menu_name=%%[menu_name]%%">Exit Classic Mode</a>
-<form method="POST" action="%%[base_url]%%/system-menus.php?action=update_classic&menu_name=%%[menu_name]%%">
+<form method="POST" action="%%[base_url]%%/system-menus.php?action=update_classic&menu_name=%%[menu_name]%%">%%[csrf_field]%%
 %%[values,input_textarea,rows=20,cols=80]%%
 <br/>
 <input type="submit" name="save" value="Save" class="save" tabindex="1" />

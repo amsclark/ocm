@@ -156,30 +156,89 @@ function pl_array_to_php_sub($array_data)
  */
 function authenticate()
 {
+	/*	POST only. These read $_REQUEST, so a login could be driven entirely
+		from a query string, and a query string ends up in the Apache access
+		log, in the Referer header of every asset the resulting page loads,
+		in browser history, and in any proxy in front of the box. The login
+		form has always been method="post", so nothing legitimate is lost.
+		What this removes is the ability to hand somebody a link that logs
+		them in as another user, and the steady trickle of real passwords
+		into logs when a person or an integration builds the URL by hand.
+	*/
 	$user = $pass = null;
-	if(isset($_REQUEST['login_user']))
+	if(isset($_POST['login_user']))
 	{
-		$user = $_REQUEST['login_user'];
+		$user = $_POST['login_user'];
 	}
-	if(isset($_REQUEST['login_pass']))
+	if(isset($_POST['login_pass']))
 	{
-		$pass = $_REQUEST['login_pass'];
+		$pass = $_POST['login_pass'];
 	}
 	
+	/*	The second factor, when the account has one. Read here and handed
+		straight to the adapter, which decides whether the account needs it.
+		Absent for every account with MFA off, and absent on the automatic
+		call that every authenticated page load makes to pick the session up.
+	*/
+	$totp = isset($_POST['totp']) ? $_POST['totp'] : null;
 	
 	require_once('app/lib/pikaAuthDb.php');
 	$auth = pikaAuth::getInstance();
 	$authdb = new pikaAuthDb('users','username','password','md5');
 	
+	/*	Count the attempt and refuse it once the counter passes its
+		threshold. Only an attempt that actually submitted something is
+		counted: every authenticated page load calls authenticate() with
+		both values null so the existing session is picked up, and counting
+		those would lock a working session out of the application.
+	*/
+	$submitted_credentials = (!is_null($user) && '' !== $user)
+		|| (!is_null($pass) && '' !== $pass);
+	$rl_keys = $submitted_credentials ? pl_auth_rate_limit_keys($user) : array();
+	$locked_key = pl_auth_rate_limit_first_locked($rl_keys);
+	
 	$display_login = false;
-	if(!$auth->authenticate($user,$pass,$authdb)) 
+	if(!is_null($locked_key))
 	{
+		error_log('Auth rate limit triggered for key=' . $locked_key);
+		$msgstr = 'Too many recent failed login attempts. Please wait a few minutes and try again.';
+		$auth->setMessage('0429',$msgstr,__FILE__,__LINE__);
+		$display_login = true;
+	}
+	elseif(!$auth->authenticate($user,$pass,$authdb,$totp)) 
+	{
+		pl_auth_rate_limit_record_failure_all($rl_keys);
 		$display_login = true;
 	}
 	else 
 	{
+		pl_auth_rate_limit_reset_all($rl_keys);
 		$auth_row = $auth->getAuthRow();
-		if ($auth_row['password_expire'] != 0 && $auth_row['password_expire'] < time())
+		
+		/*	Password expiry does not apply to an account whose password is
+			not what signs it in. pikaAuthSso::autobind() zeroes
+			password_expire when it binds an account, but an account bound by
+			hand may still carry an old expiry date, and an expired date on a
+			single sign-on account would lock the user out of a password they
+			no longer use and cannot change here.
+		*/
+		$password_expired = ($auth_row['password_expire'] != 0 && $auth_row['password_expire'] < time());
+		
+		/*	Asked only when the answer changes something. This block runs on
+			every authenticated request, and pl_sso_user_is_sso() costs a
+			schema check and a query the first time it is called.
+		*/
+		if ($password_expired && isset($auth_row['user_id']))
+		{
+			require_once(dirname(__FILE__) . '/pikaSsoOidc.php');
+			
+			if (pl_sso_user_is_sso($auth_row['user_id']))
+			{
+				$password_expired = false;
+			}
+		}
+		
+		if ($password_expired)
 		{
 			$auth->setMessage('105','Your password has expired, please contact your administrator to reset your password',__FILE__,__LINE__);
 			$display_login = true;
@@ -203,10 +262,17 @@ function authenticate()
 			$form_data = $_POST;
 		}
 		$html['form_data'] = '';
-		$reserved_names = array('login_user','login_pass','auth_id','signin');
+		$reserved_names = array('login_user','login_pass','auth_id','signin','totp');
 		foreach ($form_data as $name => $value)
 		{
-			if(!in_array($name,$reserved_names))
+			/*	Only scalars. An array in the POST body reached
+				input_hidden(), which nulls an array value but still puts the
+				array itself in the name position, so the field name rendered
+				as the word "Array" and the real request was silently
+				rewritten. The name and the value are escaped inside
+				input_hidden(), so they are not escaped again here.
+			*/
+			if(!in_array($name,$reserved_names,true) && is_scalar($name) && is_scalar($value))
 			{
 				$html['form_data'] .= pikaTempLib::plugin('input_hidden',$name,$value);
 			}
@@ -214,9 +280,25 @@ function authenticate()
 		$html['messages'] = '';
 		foreach ($auth->getMessages() as $auth_message)
 		{
-			$html['messages'] .= $auth_message[1] . "<br/>\n"; 
+			// Operator-controlled strings today. Escaped anyway, so a future
+			// caller that puts a submitted value in a login message cannot
+			// turn the unauthenticated page into a reflected XSS sink.
+			$html['messages'] .= pl_html_escape_label($auth_message[1]) . "<br/>\n"; 
 		}
-		$html['auth_id'] = $_SESSION['auth_id'];
+		// Written as an integer by pikaAuth and only incremented there. Cast
+		// before echoing it into the form anyway, and default it, because an
+		// unset key here is a PHP 8 warning on the login page.
+		$html['auth_id'] = isset($_SESSION['auth_id']) ? (int) $_SESSION['auth_id'] : 1;
+		
+		/*	The single sign-on button, or an empty string when SSO is not
+			configured. pl_sso_login_button_html() builds the whole control
+			and returns nothing at all unless the configuration is complete,
+			so a deployment that has not set SSO up renders the same login
+			page it rendered before the feature existed.
+		*/
+		require_once(dirname(__FILE__) . '/pikaSsoOidc.php');
+		$html['sso_button'] = pl_sso_login_button_html();
+		
 		$default_template = new pikaTempLib('templates/login-form.html',$html);
 		if(browser_is_mobile())
 		{
@@ -241,9 +323,413 @@ function authenticate_http()
 {
 	require_once('app/lib/pikaAuthHttp.php');
 	require_once('app/lib/pikaAuthDb.php');
+	
+	$http_user = isset($_SERVER['PHP_AUTH_USER']) ? $_SERVER['PHP_AUTH_USER'] : null;
+	$rl_keys = pl_auth_rate_limit_keys($http_user);
+	$locked_key = pl_auth_rate_limit_first_locked($rl_keys);
+	
+	if(!is_null($locked_key))
+	{
+		error_log('Auth rate limit triggered for key=' . $locked_key);
+		header('HTTP/1.0 429 Too Many Requests');
+		header('Retry-After: 60');
+		exit();
+	}
+	
 	$auth = pikaAuthHttp::getInstance();
 	$authdb = new pikaAuthDb('users','username','password','md5');
-	$auth->authenticate($authdb);
+	
+	if(!$auth->authenticate($authdb))
+	{
+		/*	pikaAuthHttp::authenticate() exits on failure as it stands, so
+			this line does not run today. Record the failure anyway: a later
+			change that stops it exiting must not silently drop the counter.
+		*/
+		pl_auth_rate_limit_record_failure_all($rl_keys);
+	}
+	
+	else
+	{
+		pl_auth_rate_limit_reset_all($rl_keys);
+	}
+}
+
+/*	AUTHENTICATION RATE LIMITING
+	
+	The login form was an unlimited password oracle. Nothing anywhere in the
+	request path counted attempts, so a script could work through a wordlist
+	against every username in the organisation as fast as the box would
+	answer, and the only trace was a growing pile of login.failure rows that
+	nobody watches in real time.
+	
+	These functions keep a small failure counter per attempt, on disk, and
+	refuse further attempts once it passes a threshold. Two keys are counted
+	for every attempt:
+	
+	  account  hash(ip | username)  repeated attempts against one account
+	  ip       hash(ip | '')        credential stuffing that rotates the
+	                               username from one source
+	
+	The per-IP key is the one that can lock a whole office out after one
+	person fumbles their password ten times, because a NAT presents every
+	member of staff as the same address. Its threshold is therefore
+	configurable through the auth_ip_lockout_threshold setting, and setting
+	that to 0 turns the per-IP lockout off without touching the per-account
+	one.
+	
+	Storage is the system temp directory, not the database. A lockout has to
+	work when the database is the thing being attacked, the counters are
+	worthless after a few minutes, and a file write is cheaper than a row.
+	Everything here fails open: if there is nowhere writable, the counters
+	are skipped and login behaves as it did before. This is defence in
+	depth, not an authorisation gate, and it must never be the reason
+	nobody can log in.
+	*/
+
+if (!function_exists('pl_auth_rate_limit_key'))
+{
+	/**
+	 * Derive a rate-limit key from the caller's IP and, optionally, the
+	 * submitted username. The key is hashed so the filenames on disk never
+	 * reveal an attempted username.
+	 *
+	 * @param string|null $username
+	 * @return string
+	 */
+	function pl_auth_rate_limit_key($username = null)
+	{
+		$ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown';
+		$name = is_string($username) ? strtolower(trim($username)) : '';
+		
+		return hash('sha256', $ip . '|' . $name);
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_keys'))
+{
+	/**
+	 * The set of keys checked on every authentication attempt, each carrying
+	 * the policy scope that governs it.
+	 *
+	 * @param string|null $username
+	 * @return array
+	 */
+	function pl_auth_rate_limit_keys($username)
+	{
+		return array(
+			array('key' => pl_auth_rate_limit_key($username), 'scope' => 'account'),
+			array('key' => pl_auth_rate_limit_key(null), 'scope' => 'ip'),
+		);
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_entry'))
+{
+	/**
+	 * Normalise an entry to array(key, scope). A bare string is accepted and
+	 * treated as the stricter 'account' scope, so a caller holding plain keys
+	 * keeps working.
+	 *
+	 * @param array|string $entry
+	 * @return array
+	 */
+	function pl_auth_rate_limit_entry($entry)
+	{
+		if (is_array($entry) && isset($entry['key']))
+		{
+			$scope = (isset($entry['scope']) && 'ip' === $entry['scope']) ? 'ip' : 'account';
+			
+			return array((string) $entry['key'], $scope);
+		}
+		
+		return array((string) $entry, 'account');
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_first_locked'))
+{
+	/**
+	 * The first key in $rl_keys that is currently locked out, or null.
+	 *
+	 * @param array $rl_keys
+	 * @return string|null
+	 */
+	function pl_auth_rate_limit_first_locked(array $rl_keys)
+	{
+		foreach ($rl_keys as $candidate)
+		{
+			list($key, $scope) = pl_auth_rate_limit_entry($candidate);
+			
+			if (pl_auth_rate_limit_locked($key, $scope))
+			{
+				return $key;
+			}
+		}
+		
+		return null;
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_record_failure_all'))
+{
+	/**
+	 * Record a failed attempt against every key in $rl_keys.
+	 *
+	 * @param array $rl_keys
+	 * @return void
+	 */
+	function pl_auth_rate_limit_record_failure_all(array $rl_keys)
+	{
+		foreach ($rl_keys as $candidate)
+		{
+			list($key, $scope) = pl_auth_rate_limit_entry($candidate);
+			pl_auth_rate_limit_record_failure($key, $scope);
+		}
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_reset_all'))
+{
+	/**
+	 * Clear the failure counter for every key in $rl_keys.
+	 *
+	 * @param array $rl_keys
+	 * @return void
+	 */
+	function pl_auth_rate_limit_reset_all(array $rl_keys)
+	{
+		foreach ($rl_keys as $candidate)
+		{
+			list($key, ) = pl_auth_rate_limit_entry($candidate);
+			pl_auth_rate_limit_reset($key);
+		}
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_dir'))
+{
+	/**
+	 * The directory the failure counters live in, created 0700 on first use.
+	 * Returns null when there is nowhere writable, which makes every other
+	 * function here a no-op.
+	 *
+	 * @return string|null
+	 */
+	function pl_auth_rate_limit_dir()
+	{
+		$base = sys_get_temp_dir();
+		
+		if (!is_string($base) || 0 === strlen($base))
+		{
+			return null;
+		}
+		
+		$dir = rtrim($base, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'ocm_auth_rl';
+		
+		if (!is_dir($dir))
+		{
+			@mkdir($dir, 0700, true);
+		}
+		
+		if (!is_dir($dir) || !is_writable($dir))
+		{
+			return null;
+		}
+		
+		return $dir;
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_policy'))
+{
+	/**
+	 * Lock out after fail_threshold failures inside window_secs, then refuse
+	 * further attempts for lockout_secs.
+	 *
+	 * The 'account' scope keeps a fixed 10 in 5 minutes. The 'ip' scope reads
+	 * its threshold from auth_ip_lockout_threshold so an organisation behind
+	 * one office address can raise it, or set it to 0 to switch that key off.
+	 * Blank or absent means the default of 10.
+	 *
+	 * @param string $scope 'account' or 'ip'
+	 * @return array
+	 */
+	function pl_auth_rate_limit_policy($scope = 'account')
+	{
+		$policy = array(
+			'fail_threshold' => 10,
+			'window_secs' => 300,
+			'lockout_secs' => 300,
+		);
+		
+		if ('ip' === $scope && function_exists('pl_settings_get'))
+		{
+			$raw = pl_settings_get('auth_ip_lockout_threshold');
+			
+			if (!is_null($raw) && '' !== $raw && is_numeric($raw) && (int) $raw >= 0)
+			{
+				$policy['fail_threshold'] = (int) $raw;
+			}
+		}
+		
+		return $policy;
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_locked'))
+{
+	/**
+	 * Whether this key has passed its threshold and is still inside the
+	 * lockout period. Fails open.
+	 *
+	 * @param string $rl_key
+	 * @param string $scope
+	 * @return bool
+	 */
+	function pl_auth_rate_limit_locked($rl_key, $scope = 'account')
+	{
+		$policy = pl_auth_rate_limit_policy($scope);
+		
+		// Threshold 0 means this scope's lockout is switched off by policy.
+		if ((int) $policy['fail_threshold'] <= 0)
+		{
+			return false;
+		}
+		
+		$dir = pl_auth_rate_limit_dir();
+		
+		if (is_null($dir))
+		{
+			return false;
+		}
+		
+		$file = $dir . DIRECTORY_SEPARATOR . $rl_key;
+		
+		if (!is_file($file))
+		{
+			return false;
+		}
+		
+		$raw = @file_get_contents($file);
+		
+		if (!is_string($raw) || 0 === strlen($raw))
+		{
+			return false;
+		}
+		
+		$state = @json_decode($raw, true);
+		
+		if (!is_array($state) || !isset($state['count'], $state['first_ts']))
+		{
+			return false;
+		}
+		
+		$now = time();
+		
+		// Window and lockout both elapsed: a stale counter, not a lockout.
+		if (($now - (int) $state['first_ts']) > ($policy['window_secs'] + $policy['lockout_secs']))
+		{
+			return false;
+		}
+		
+		if ((int) $state['count'] < $policy['fail_threshold'])
+		{
+			return false;
+		}
+		
+		// The lockout runs for lockout_secs from the most recent failure, so
+		// hammering the form during a lockout extends it.
+		$last = isset($state['last_ts']) ? (int) $state['last_ts'] : (int) $state['first_ts'];
+		
+		return ($now - $last) < $policy['lockout_secs'];
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_record_failure'))
+{
+	/**
+	 * Count one failed attempt against a key.
+	 *
+	 * @param string $rl_key
+	 * @param string $scope
+	 * @return void
+	 */
+	function pl_auth_rate_limit_record_failure($rl_key, $scope = 'account')
+	{
+		$dir = pl_auth_rate_limit_dir();
+		
+		if (is_null($dir))
+		{
+			return;
+		}
+		
+		$file = $dir . DIRECTORY_SEPARATOR . $rl_key;
+		$policy = pl_auth_rate_limit_policy($scope);
+		$now = time();
+		
+		/*	Counters keep accruing even at threshold 0, so switching the
+			setting back on part way through an attack does not hand the
+			attacker a clean slate.
+			*/
+		$state = array('count' => 0, 'first_ts' => $now, 'last_ts' => $now);
+		
+		if (is_file($file))
+		{
+			$raw = @file_get_contents($file);
+			$decoded = is_string($raw) ? @json_decode($raw, true) : null;
+			
+			if (is_array($decoded) && isset($decoded['count'], $decoded['first_ts']))
+			{
+				// Start again if the counting window has elapsed.
+				if (($now - (int) $decoded['first_ts']) <= $policy['window_secs'])
+				{
+					$state = $decoded;
+				}
+			}
+		}
+		
+		$state['count'] = (int) $state['count'] + 1;
+		$state['last_ts'] = $now;
+		@file_put_contents($file, json_encode($state), LOCK_EX);
+		@chmod($file, 0600);
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_reset'))
+{
+	/**
+	 * Clear a key's failure counter, called after a successful login so the
+	 * next attempt is not penalised.
+	 *
+	 * @param string $rl_key
+	 * @return void
+	 */
+	function pl_auth_rate_limit_reset($rl_key)
+	{
+		$dir = pl_auth_rate_limit_dir();
+		
+		if (is_null($dir))
+		{
+			return;
+		}
+		
+		$file = $dir . DIRECTORY_SEPARATOR . $rl_key;
+		
+		if (is_file($file))
+		{
+			@unlink($file);
+		}
+	}
 }
 
 
@@ -856,6 +1342,653 @@ function pl_db_column_type($table, $column)
 	return $row['Type'];
 }
 
+
+
+/**
+ * Escape a value for interpolation into HTML text or a quoted attribute.
+ *
+ * Returns '' for null and for values that cannot be stringified, so a
+ * caller never emits the word "Array" into a page. ENT_SUBSTITUTE keeps
+ * invalid UTF-8 from collapsing the whole string to ''.
+ */
+if (!function_exists('pl_html_escape')) {
+	function pl_html_escape($value)
+	{
+		if (is_null($value))
+		{
+			return '';
+		}
+		if (is_array($value) || (is_object($value) && !method_exists($value, '__toString')))
+		{
+			return '';
+		}
+		return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+	}
+}
+
+/**
+ * Escape a label for a quoted attribute, leaving an already-encoded label
+ * alone.
+ *
+ * The template plugins receive two different kinds of string in the same
+ * argument. Some are plain text out of the database. Others are written as
+ * entities on purpose, because the %%[tag]%% parser splits on commas and
+ * quotes, so a template author who wants a comma in a label has to write
+ * &#44; instead. Running pl_html_escape() over the second kind shows the
+ * user a literal "&amp;#44;".
+ *
+ * A value is treated as pre-encoded only when it contains no < > " or '
+ * at all and every & in it opens a character reference. That covers every
+ * string that could break out of an attribute, so anything dangerous is
+ * escaped and only genuinely-encoded labels pass through.
+ */
+if (!function_exists('pl_html_escape_label')) {
+	function pl_html_escape_label($value)
+	{
+		if (is_null($value))
+		{
+			return '';
+		}
+		if (is_array($value) || (is_object($value) && !method_exists($value, '__toString')))
+		{
+			return '';
+		}
+		
+		$label = (string)$value;
+		
+		// Any of these can start markup or close a quoted attribute, so
+		// their presence means the value is not pre-encoded.
+		if (strpbrk($label, '<>"\'') !== false)
+		{
+			return pl_html_escape($label);
+		}
+		
+		// Every ampersand must open a named, decimal or hex reference. A
+		// bare '&', or '&notanentity', means the author wrote literal
+		// text, so escape the whole label rather than guessing.
+		if (strpos($label, '&') !== false)
+		{
+			$amp_count = substr_count($label, '&');
+			$ref_count = preg_match_all(
+				'/&(?:[A-Za-z][A-Za-z0-9]{1,31}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});/',
+				$label
+			);
+			
+			if ($ref_count !== $amp_count)
+			{
+				return pl_html_escape($label);
+			}
+		}
+		
+		return $label;
+	}
+}
+
+/**
+ * Record a developer-facing error detail to the server log without sending
+ * it to the client. Use this anywhere we would otherwise leak paths, SQL
+ * fragments, raw user input, or stack detail through trigger_error or
+ * direct output.
+ */
+if (!function_exists('pl_log_error')) {
+	function pl_log_error($context, $detail = '')
+	{
+		$message = '[pl] ' . $context;
+		if (strlen((string)$detail) > 0) {
+			$message .= ': ' . $detail;
+		}
+		error_log($message);
+	}
+}
+
+/**
+ * ── CSRF token framework ────────────────────────────────────────────
+ *
+ * One token per session, persisted in the `csrf_tokens` table keyed by
+ * the PHP session id — NOT in $_SESSION. OCM's session save-handler in
+ * this file (pl_session_read / pl_session_write) is a deliberate no-op:
+ * $_SESSION does not survive across requests, only $_SESSION['SID'] is
+ * restored from the serialized stub pl_session_read returns. A token
+ * kept in $_SESSION would be regenerated on every request and could
+ * never match across the render-then-submit boundary. Every other piece
+ * of cross-request state in OCM lives in a DB table and is reloaded on
+ * each request; CSRF tokens follow the same pattern.
+ *
+ * The token is emitted into forms as a hidden <input name="_csrf"> via
+ * the csrf_field template tag, and verified on every POST by
+ * pl_csrf_check(). It is rotated on successful login so a token handed
+ * out before authentication cannot be replayed afterwards.
+ *
+ * Within a single request the token is cached in a global so a page
+ * that renders many forms does not round-trip to the DB for each one.
+ *
+ * Endpoints that receive posts from third parties must NOT call
+ * pl_csrf_check — they have no session and have to be authenticated
+ * some other way. In this tree that is cms/services/twilio.php,
+ * cms/services/transfer_case.php (HTTP Basic), cms/services/login.php
+ * (pre-session) and cms/services/calendar.php (per-user cal_token).
+ */
+
+/**
+ * Resolve the session id to key csrf_tokens by. Prefers
+ * $_SESSION['SID'], which pl_session_read populates at request start
+ * and pikaAuth rewrites after session_regenerate_id() on login; falls
+ * back to PHP's own session_id().
+ *
+ * Returns null when there is no session at all. Callers then fall back
+ * to a transient token that cannot verify, which is correct: an
+ * endpoint reached without session bootstrap is not CSRF-gated either.
+ */
+if (!function_exists('pl_csrf_session_id')) {
+	function pl_csrf_session_id()
+	{
+		if (isset($_SESSION['SID']) && is_string($_SESSION['SID']) && strlen($_SESSION['SID']) > 0) {
+			return $_SESSION['SID'];
+		}
+		$sid = session_id();
+		if (is_string($sid) && strlen($sid) > 0) {
+			return $sid;
+		}
+		return null;
+	}
+}
+
+if (!function_exists('pl_csrf_token')) {
+	function pl_csrf_token()
+	{
+		// Cache for the rest of this request. Cleared by pl_csrf_rotate().
+		global $_pl_csrf_cache;
+		if (isset($_pl_csrf_cache) && is_string($_pl_csrf_cache) && strlen($_pl_csrf_cache) === 64) {
+			return $_pl_csrf_cache;
+		}
+
+		$sid = pl_csrf_session_id();
+		if ($sid === null) {
+			$_pl_csrf_cache = bin2hex(random_bytes(32));
+			return $_pl_csrf_cache;
+		}
+
+		// Any DB failure here has to degrade to a transient token rather
+		// than fatal: DB::preparedQuery throws when the legacy non-mysqli
+		// driver is in use, and csrf_tokens is absent until a deployment
+		// runs cms/app/sql/upgrades/add_csrf_tokens_table.sql.
+		try {
+			$result = DB::preparedQuery(
+				"SELECT token FROM csrf_tokens WHERE session_id = ? LIMIT 1",
+				array($sid)
+			);
+			if ($result && DBResult::numRows($result) === 1) {
+				$row = DBResult::fetchRow($result);
+				if (is_array($row) && isset($row['token'])
+						&& is_string($row['token']) && strlen($row['token']) === 64) {
+					$_pl_csrf_cache = $row['token'];
+					return $_pl_csrf_cache;
+				}
+			}
+
+			// No row yet. ON DUPLICATE KEY UPDATE covers the race where two
+			// requests for the same session id both try to insert.
+			$token = bin2hex(random_bytes(32));
+			DB::preparedQuery(
+				"INSERT INTO csrf_tokens (session_id, token) VALUES (?, ?) "
+				. "ON DUPLICATE KEY UPDATE token = VALUES(token)",
+				array($sid, $token)
+			);
+			$_pl_csrf_cache = $token;
+			return $_pl_csrf_cache;
+		} catch (Exception $e) {
+			pl_log_error('pl_csrf_token storage unavailable', $e->getMessage());
+		} catch (Throwable $e) {
+			pl_log_error('pl_csrf_token storage unavailable', $e->getMessage());
+		}
+
+		$_pl_csrf_cache = bin2hex(random_bytes(32));
+		return $_pl_csrf_cache;
+	}
+}
+
+if (!function_exists('pl_csrf_rotate')) {
+	function pl_csrf_rotate()
+	{
+		global $_pl_csrf_cache;
+		$_pl_csrf_cache = null;
+
+		$sid = pl_csrf_session_id();
+		if ($sid === null) {
+			return;
+		}
+
+		$token = bin2hex(random_bytes(32));
+		try {
+			DB::preparedQuery(
+				"INSERT INTO csrf_tokens (session_id, token) VALUES (?, ?) "
+				. "ON DUPLICATE KEY UPDATE token = VALUES(token)",
+				array($sid, $token)
+			);
+			$_pl_csrf_cache = $token;
+
+			// Opportunistic GC on roughly 1 login in 100: drop rows not
+			// touched in a week. Rare enough to cost nothing, frequent
+			// enough that the table does not grow without bound.
+			if (mt_rand(1, 100) === 1) {
+				DB::preparedQuery(
+					"DELETE FROM csrf_tokens WHERE last_used < DATE_SUB(NOW(), INTERVAL 7 DAY)",
+					array()
+				);
+			}
+		} catch (Exception $e) {
+			pl_log_error('pl_csrf_rotate failed', $e->getMessage());
+		} catch (Throwable $e) {
+			pl_log_error('pl_csrf_rotate failed', $e->getMessage());
+		}
+	}
+}
+
+/**
+ * Return a hidden <input> carrying the CSRF token, for PHP that emits a
+ * form directly instead of going through the template system. Templates
+ * use the %%[csrf_field]%% tag, which resolves to this.
+ */
+if (!function_exists('pl_csrf_hidden_input')) {
+	function pl_csrf_hidden_input()
+	{
+		$token = pl_csrf_token();
+		$escaped = htmlspecialchars($token, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		return '<input type="hidden" name="_csrf" value="' . $escaped . '">';
+	}
+}
+
+/**
+ * Classify where the current request came from: 'same', 'cross', or
+ * 'unknown'.
+ *
+ * This exists because a large amount of this tree mutates state on GET —
+ * cms/ops/delete_case.php deletes on a GET, system-groups.php dispatches
+ * its update action out of pl_grab_get(), and so on. The session cookie
+ * is SameSite=Lax at best, and Lax deliberately DOES attach the cookie
+ * to a cross-site top-level GET navigation, so an admin who clicks an
+ * attacker's link carries their session into that mutation.
+ *
+ * A token cannot be the answer for those endpoints: their triggers are
+ * <a href> links, not forms, so there is no request body to put a token
+ * in without rewriting the feature. Checking the request's provenance
+ * needs nothing from the markup.
+ *
+ * Sec-Fetch-Site is the load-bearing signal: the browser sets it and
+ * page script cannot forge it. Origin and Referer are the fallback for
+ * older browsers.
+ */
+if (!function_exists('pl_request_cross_site_verdict')) {
+	function pl_request_cross_site_verdict()
+	{
+		if (isset($_SERVER['HTTP_SEC_FETCH_SITE'])) {
+			switch (strtolower(trim((string)$_SERVER['HTTP_SEC_FETCH_SITE']))) {
+				// 'none' is a user-initiated load: a typed URL, a
+				// bookmark, the browser home button. No page is involved.
+				case 'none':
+				case 'same-origin':
+				case 'same-site':
+					return 'same';
+				case 'cross-site':
+					return 'cross';
+			}
+			return 'unknown';
+		}
+
+		// Origin first (older browsers still send it on form submissions),
+		// then Referer. Compare against the Host the browser used for THIS
+		// request: an attacker can set neither header from the victim's
+		// browser, so a match means the navigation started on our own page.
+		$self = isset($_SERVER['HTTP_HOST']) ? strtolower((string)$_SERVER['HTTP_HOST']) : '';
+		$candidate = '';
+		if (isset($_SERVER['HTTP_ORIGIN']) && $_SERVER['HTTP_ORIGIN'] !== '' && $_SERVER['HTTP_ORIGIN'] !== 'null') {
+			$candidate = (string)$_SERVER['HTTP_ORIGIN'];
+		} elseif (isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER'] !== '') {
+			$candidate = (string)$_SERVER['HTTP_REFERER'];
+		}
+		if ($candidate === '' || $self === '') {
+			// Nothing to judge. Bookmarks and typed URLs land here, as
+			// does any browser too old to send Origin.
+			return 'unknown';
+		}
+		$host = parse_url($candidate, PHP_URL_HOST);
+		if (!is_string($host) || $host === '') {
+			return 'unknown';
+		}
+		$port = parse_url($candidate, PHP_URL_PORT);
+		$host = strtolower($host) . ($port ? ':' . (int)$port : '');
+		if ($host === $self) {
+			return 'same';
+		}
+		return 'cross';
+	}
+}
+
+/**
+ * Reject the request unless it carries the session's CSRF token.
+ * Records a csrf.rejected audit row and exits with HTTP 403; on the
+ * common benign failure (an authenticated user resubmitting a form
+ * whose token went stale) it renders a recovery page instead so the
+ * user's data is not lost. Never returns to the caller on failure.
+ *
+ * On POST this is the token check. On any other method there is no
+ * token to compare, so it falls through to
+ * pl_request_cross_site_verdict() and refuses a mutation that a foreign
+ * site initiated — the only defence available to the legacy handlers
+ * that mutate on GET.
+ */
+if (!function_exists('pl_csrf_check')) {
+	function pl_csrf_check()
+	{
+		if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+			// 'unknown' is allowed through on purpose: a verdict we cannot
+			// establish must not lock out a bookmark or an old browser,
+			// and the POST endpoints still have the real token.
+			if (pl_request_cross_site_verdict() === 'cross') {
+				if (function_exists('pl_audit')) {
+					pl_audit('csrf.cross_site_get', null, null, array(
+						'method'  => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '',
+						'script'  => isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '',
+						'referer' => isset($_SERVER['HTTP_REFERER']) ? substr((string)$_SERVER['HTTP_REFERER'], 0, 255) : null,
+					));
+				}
+				header('HTTP/1.1 403 Forbidden');
+				header('Content-Type: text/plain; charset=utf-8');
+				echo "Blocked: this request came from another site.\n\n"
+				   . "Open the application directly and retry the action from inside it.\n";
+				exit();
+			}
+			return;
+		}
+
+		$got = isset($_POST['_csrf']) ? (string)$_POST['_csrf'] : '';
+		$sid = pl_csrf_session_id();
+		$expected = '';
+		if ($sid !== null && strlen($got) === 64) {
+			try {
+				$result = DB::preparedQuery(
+					"SELECT token FROM csrf_tokens WHERE session_id = ? LIMIT 1",
+					array($sid)
+				);
+				if ($result && DBResult::numRows($result) === 1) {
+					$row = DBResult::fetchRow($result);
+					if (is_array($row) && isset($row['token']) && is_string($row['token'])) {
+						$expected = (string)$row['token'];
+					}
+				}
+				// Touch last_used so a session in active use is not GC'd
+				// out from under the user mid-flow.
+				if (strlen($expected) === 64) {
+					DB::preparedQuery(
+						"UPDATE csrf_tokens SET last_used = CURRENT_TIMESTAMP WHERE session_id = ?",
+						array($sid)
+					);
+				}
+			} catch (Exception $e) {
+				pl_log_error('pl_csrf_check storage unavailable', $e->getMessage());
+			} catch (Throwable $e) {
+				pl_log_error('pl_csrf_check storage unavailable', $e->getMessage());
+			}
+		}
+
+		if (strlen($expected) !== 64 || !hash_equals($expected, $got)) {
+			// Separate the benign, common failure — an authenticated user
+			// resubmitting a form whose per-session token went stale (page
+			// left open across a re-login, reached with the Back button,
+			// kept open overnight) — from an anonymous, malformed or
+			// genuinely forged request. Only the former gets the recovery
+			// page. _csrf_recovery is a loop guard: a recovery resubmit
+			// that also fails falls through to the plain 403.
+			$authed      = !empty($GLOBALS['auth_row']['user_id']);
+			$well_formed = (strlen($got) === 64 && ctype_xdigit($got));
+			$recovering  = isset($_POST['_csrf_recovery']) && $_POST['_csrf_recovery'] === '1';
+			$offer_recovery = ($authed && $well_formed && !$recovering);
+
+			if (function_exists('pl_audit')) {
+				pl_audit('csrf.rejected', null, null, array(
+					'method'   => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '',
+					'script'   => isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '',
+					'referer'  => isset($_SERVER['HTTP_REFERER']) ? substr((string)$_SERVER['HTTP_REFERER'], 0, 255) : null,
+					'recovery' => $offer_recovery ? 1 : 0,
+				));
+			}
+
+			if ($offer_recovery) {
+				pl_csrf_render_recovery_form();
+				exit();
+			}
+
+			header('HTTP/1.1 403 Forbidden');
+			header('Content-Type: text/plain; charset=utf-8');
+			echo "CSRF validation failed.\n\n"
+			   . "Your session may have expired, or the form was submitted without a valid "
+			   . "token. Return to the previous page, reload it, and resubmit.\n";
+			exit();
+		}
+	}
+}
+
+/**
+ * Recursively emit hidden <input> elements reproducing a possibly nested
+ * POST value, so an in-flight save can be replayed verbatim. Array
+ * fields matter here: a flat scalar carry would silently drop exactly
+ * the data we are trying not to lose.
+ */
+if (!function_exists('pl_csrf_carry_hidden_inputs')) {
+	function pl_csrf_carry_hidden_inputs($name, $value)
+	{
+		if (is_array($value)) {
+			$out = '';
+			foreach ($value as $k => $v) {
+				$out .= pl_csrf_carry_hidden_inputs($name . '[' . $k . ']', $v);
+			}
+			return $out;
+		}
+		if (!is_scalar($value)) {
+			return '';
+		}
+		// Never echo a password back as a hidden field. The endpoints read
+		// these with pl_grab_post, so the user simply retypes it if a flow
+		// ever needs one on replay.
+		$lname = strtolower((string)$name);
+		if (strpos($lname, 'password') !== false
+				|| strpos($lname, 'newpass') !== false
+				|| strpos($lname, 'oldpass') !== false) {
+			return '';
+		}
+		$safe_n = htmlspecialchars((string)$name,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		$safe_v = htmlspecialchars((string)$value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		return '<input type="hidden" name="' . $safe_n . '" value="' . $safe_v . '">' . "\n";
+	}
+}
+
+/**
+ * Render a "confirm your save" page and exit, for an authenticated user
+ * whose POST carried a stale but well-formed token. Re-emits the
+ * in-flight POST body as hidden fields with a FRESH token behind a
+ * single button, so the user loses nothing instead of hitting a dead-end
+ * 403 and a Back-button resubmit loop.
+ *
+ * Only reachable for an authenticated session (see the gate in
+ * pl_csrf_check). A real cross-site forgery gains nothing from it: the
+ * attacker's origin can neither read the fresh token nor auto-submit the
+ * form, and the replay needs a deliberate click on our own origin.
+ */
+if (!function_exists('pl_csrf_render_recovery_form')) {
+	function pl_csrf_render_recovery_form()
+	{
+		$base       = pl_settings_get('base_url');
+		$owner      = pl_settings_get('owner_name');
+		$safe_base  = htmlspecialchars((string)$base,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
+		$safe_owner = htmlspecialchars((string)$owner, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+		// Re-post to the exact path executing now. SCRIPT_NAME already
+		// carries base_url and any subdirectory (e.g. /ops/), which a
+		// basename()-based action would drop. Keep the query string for
+		// handlers that read it.
+		$path = isset($_SERVER['SCRIPT_NAME']) ? (string)$_SERVER['SCRIPT_NAME'] : '';
+		$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string)$_SERVER['QUERY_STRING']) > 0)
+			? '?' . (string)$_SERVER['QUERY_STRING'] : '';
+		$action = htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+		// Carry the in-flight POST body, nested arrays included. Skip our
+		// own markers and _csrf; a fresh token is emitted below.
+		$carry = '';
+		$skip  = array('_csrf', '_csrf_recovery');
+		if (is_array($_POST)) {
+			foreach ($_POST as $name => $value) {
+				if (!is_scalar($name) || in_array($name, $skip, true)) {
+					continue;
+				}
+				$carry .= pl_csrf_carry_hidden_inputs((string)$name, $value);
+			}
+		}
+
+		header('HTTP/1.1 200 OK');
+		header('Content-Type: text/html; charset=utf-8');
+		echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+		   . '<meta name="robots" content="noindex, nofollow">'
+		   . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+		   . '<title>Confirm your save - ' . $safe_owner . '</title>'
+		   . '<style>body{font-family:sans-serif;max-width:38em;margin:3em auto;padding:0 1em;'
+		   . 'line-height:1.5}button{font-size:1em;padding:.5em 1.2em}</style>'
+		   . '</head><body>';
+		echo '<h1>Confirm your save</h1>';
+		echo '<p>Your security token had expired &mdash; usually because this page was '
+		   . 'left open for a while, or was reached with the browser&rsquo;s Back '
+		   . 'button. Your information was <strong>not</strong> lost. Click '
+		   . '&ldquo;Save again&rdquo; to finish saving it.</p>';
+		echo '<form method="POST" action="' . $action . '">'
+		   . pl_csrf_hidden_input()
+		   . '<input type="hidden" name="_csrf_recovery" value="1">'
+		   . $carry
+		   . '<button type="submit">Save again</button>'
+		   . '</form>';
+		echo '<p><a href="' . $safe_base . '/">Cancel and discard</a></p>';
+		echo '</body></html>';
+	}
+}
+
+/**
+ * Append a row to the audit_log table.
+ *
+ * Call sites supply the action (dotted-lowercase, e.g. 'user.disable'),
+ * and optionally the target object's type/id and a structured details
+ * payload. The actor's user_id / username / IP / User-Agent are pulled
+ * from the current request context automatically; callers can override
+ * via $actor_user_id / $actor_username for logging events where no
+ * authenticated session exists yet (failed login of a known user, for
+ * example).
+ *
+ * $details may be a scalar, array, or object; arrays/objects are
+ * json_encoded. Keep payloads small — this is a log, not a shadow copy
+ * of the underlying row.
+ *
+ * Failures are swallowed (logged to error_log via pl_log_error). An
+ * audit-log insert must never break the primary action; a missing row
+ * is a monitoring problem, not a user-facing error.
+ *
+ * @param string       $action         e.g. 'login.success', 'case.delete'
+ * @param string|null  $object_type    'user'|'case'|'activity'|'setting'|...
+ * @param mixed        $object_id      scalar stringified onto the row
+ * @param mixed        $details        scalar, array, or object (serialised)
+ * @param int|null     $actor_user_id  override the session actor (e.g. pre-auth)
+ * @param string|null  $actor_username override the session actor's username
+ * @return void
+ */
+function pl_audit(
+    $action,
+    $object_type = null,
+    $object_id = null,
+    $details = null,
+    $actor_user_id = null,
+    $actor_username = null
+) {
+    // Resolve actor from the current request context if the caller didn't
+    // pass one in. OCM does not persist $_SESSION across requests
+    // (pl_session_write is a no-op), so $_SESSION['auth_row'] is never
+    // populated — the authenticated user lives in the global $auth_row
+    // seeded by pika_init() instead. Fall back to the pikaAuth singleton's
+    // getAuthRow() if the global has not been set for any reason.
+    if ($actor_user_id === null) {
+        $actor_row = null;
+        if (isset($GLOBALS['auth_row']) && is_array($GLOBALS['auth_row'])
+                && !empty($GLOBALS['auth_row']['user_id'])) {
+            $actor_row = $GLOBALS['auth_row'];
+        } elseif (class_exists('pikaAuth', false)) {
+            try {
+                $candidate = pikaAuth::getInstance()->getAuthRow();
+                if (is_array($candidate) && !empty($candidate['user_id'])) {
+                    $actor_row = $candidate;
+                }
+            } catch (Exception $e) {
+                // Singleton not ready yet; skip.
+            }
+        }
+        if ($actor_row !== null) {
+            if (isset($actor_row['user_id'])) {
+                $actor_user_id = $actor_row['user_id'];
+            }
+            if ($actor_username === null && isset($actor_row['username'])) {
+                $actor_username = $actor_row['username'];
+            }
+        }
+    }
+
+    // Prefer the direct connection IP. X-Forwarded-For is only trustworthy
+    // when a known proxy fronts the app, and OCM's deployments vary; record
+    // both where available by folding XFF into details rather than the
+    // indexed ip_address column.
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null;
+    $ua = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : null;
+
+    // If a forwarded IP is present, keep it in details so operators can
+    // correlate without trusting an unverified header in the indexed column.
+    if (isset($_SERVER['HTTP_X_FORWARDED_FOR']) && strlen((string)$_SERVER['HTTP_X_FORWARDED_FOR']) > 0) {
+        if (!is_array($details)) {
+            $details = array('value' => $details);
+        }
+        if (!isset($details['x_forwarded_for'])) {
+            $details['x_forwarded_for'] = (string)$_SERVER['HTTP_X_FORWARDED_FOR'];
+        }
+    }
+
+    if (is_array($details) || is_object($details)) {
+        $encoded = json_encode($details, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $details = ($encoded === false) ? null : $encoded;
+    } elseif ($details !== null) {
+        $details = (string)$details;
+    }
+
+    $sql = "INSERT INTO audit_log "
+         . "(ts, user_id, username, ip_address, user_agent, action, object_type, object_id, details) "
+         . "VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?)";
+    $params = array(
+        ($actor_user_id !== null && is_numeric($actor_user_id)) ? (int)$actor_user_id : null,
+        ($actor_username !== null) ? substr((string)$actor_username, 0, 64) : null,
+        ($ip !== null) ? substr((string)$ip, 0, 45) : null,
+        ($ua !== null) ? substr((string)$ua, 0, 255) : null,
+        substr((string)$action, 0, 64),
+        ($object_type !== null) ? substr((string)$object_type, 0, 32) : null,
+        ($object_id !== null) ? substr((string)$object_id, 0, 64) : null,
+        $details,
+    );
+
+    // An audit-log failure must never break the primary action. Catch
+    // everything: DB::preparedQuery throws when the legacy (non-mysqli)
+    // driver is in use, and the table may be absent on a deployment that
+    // has not run cms/app/sql/upgrades/add_audit_log.sql yet.
+    try {
+        $result = DB::preparedQuery($sql, $params);
+        if (!$result) {
+            pl_log_error('pl_audit insert failed', $action);
+        }
+    } catch (Exception $e) {
+        pl_log_error('pl_audit insert threw', $action . ': ' . $e->getMessage());
+    } catch (Throwable $e) {
+        pl_log_error('pl_audit insert threw', $action . ': ' . $e->getMessage());
+    }
+}
 
 function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline = null)
 {
@@ -1621,6 +2754,224 @@ function pl_prepare_dir($fs_dir_path)
 	return true;
 }
 
+/**
+ * Return $ident when it is a bare SQL identifier, false when it is not.
+ *
+ * ORDER BY columns, table names and sequence names reach the query layer
+ * from query strings and from saved list preferences. DB::escapeString()
+ * does nothing for them: it escapes quotes, and an identifier is not
+ * quoted, so "1, (SELECT ...)" survives escaping unchanged. An identifier
+ * needs an allowlist instead.
+ *
+ * Fail closed. Every caller in this application passes either a literal
+ * column name or a value that came from a fixed list, so a rejection means
+ * the request was malformed.
+ */
+if (!function_exists('pl_safe_identifier')) {
+	function pl_safe_identifier($ident, $context = 'SQL identifier')
+	{
+		// One optional table qualifier, because public callers pass
+		// 'contacts.last_name' as well as bare column names.
+		if (!is_string($ident) || $ident === ''
+			|| !preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/', $ident))
+		{
+			// Log which call site rejected and what it was handed, with
+			// control characters removed (log injection) and the length
+			// capped so a large request body cannot flood the log.
+			$candidate = is_string($ident) ? $ident : gettype($ident);
+			$candidate = preg_replace('/[^\x20-\x7E]/', '.', $candidate);
+			if (strlen($candidate) > 64)
+			{
+				$candidate = substr($candidate, 0, 64) . '...';
+			}
+			pl_log_error(
+				'invalid SQL identifier rejected by allowlist',
+				$context . ' = ' . $candidate
+			);
+			return false;
+		}
+		return $ident;
+	}
+}
+
+/**
+ * Normalise a sort direction to one of the two literals MySQL accepts.
+ *
+ * The companion to pl_safe_identifier() for the other half of an ORDER BY.
+ * Anything that is not recognisably descending is treated as ascending,
+ * which is what every caller's default already was.
+ */
+if (!function_exists('pl_safe_sort_direction')) {
+	function pl_safe_sort_direction($order)
+	{
+		if (is_string($order) && 0 === strcasecmp(trim($order), 'DESC'))
+		{
+			return 'DESC';
+		}
+		return 'ASC';
+	}
+}
+
+/**
+ * Build an ORDER BY clause from a caller-supplied column list.
+ *
+ * $order_field may name more than one column, comma separated: cal_week.php
+ * asks for 'user_id, act_time'. Each name goes through pl_safe_identifier(),
+ * and one rejected name drops the whole clause instead of reaching the query.
+ * An empty return is a valid unordered query, which is what these list pages
+ * did before they had a sort control.
+ */
+if (!function_exists('pl_safe_order_by')) {
+	function pl_safe_order_by($order_field, $order = 'ASC', $context = 'sort column')
+	{
+		if (!is_string($order_field) || trim($order_field) === '')
+		{
+			return '';
+		}
+		
+		$direction = pl_safe_sort_direction($order);
+		$safe = array();
+		
+		foreach (explode(',', $order_field) AS $part)
+		{
+			$ident = pl_safe_identifier(trim($part), $context);
+			
+			if (false === $ident)
+			{
+				return '';
+			}
+			
+			$safe[] = $ident . ' ' . $direction;
+		}
+		
+		return ' ORDER BY ' . implode(', ', $safe);
+	}
+}
+
+/**
+ * True when the logged-in user is allowed to read $case_id.
+ *
+ * pika_authorize('read_case', $row) is the authority, but it needs the case
+ * row. Anything that produces a list of cases from a query with no ownership
+ * predicate of its own -- the free-text search, above all -- has to ask per
+ * row. The answers are memoised for the request, because a search result page
+ * asks about the same case many times.
+ *
+ * Fails closed: a missing case, a query error or a build with no
+ * pika_authorize() all answer false.
+ */
+if (!function_exists('pl_case_readable')) {
+	function pl_case_readable($case_id)
+	{
+		$case_id = (int) $case_id;
+		
+		if ($case_id <= 0)
+		{
+			return false;
+		}
+		
+		if (!isset($GLOBALS['pl_case_readable_cache'])
+			|| !is_array($GLOBALS['pl_case_readable_cache']))
+		{
+			$GLOBALS['pl_case_readable_cache'] = array();
+		}
+		
+		if (array_key_exists($case_id, $GLOBALS['pl_case_readable_cache']))
+		{
+			return $GLOBALS['pl_case_readable_cache'][$case_id];
+		}
+		
+		$allowed = false;
+		
+		if (function_exists('pika_authorize'))
+		{
+			// Only the columns pika_authorize('read_case') reads. Selecting
+			// the whole row would pull the case narrative into memory for
+			// every hit on a search results page.
+			$result = DB::preparedQuery(
+				'SELECT case_id, number, user_id, cocounsel1, cocounsel2, office '
+				. 'FROM cases WHERE case_id = ? LIMIT 1',
+				array($case_id)
+			);
+			
+			if ($result && 1 === DBResult::numRows($result))
+			{
+				$row = DBResult::fetchRow($result);
+				
+				if (is_array($row))
+				{
+					$allowed = (bool) pika_authorize('read_case', $row);
+				}
+			}
+		}
+		
+		$GLOBALS['pl_case_readable_cache'][$case_id] = $allowed;
+		return $allowed;
+	}
+}
+
+if (!function_exists('pl_strip_protected_columns')) {
+	/*	Remove the keys that must never come from a request body before the
+		array is handed to plBase::setValues().
+		
+		setValues() walks whatever array it is given and writes every key
+		that happens to match a column, so handing it $_POST or $_GET lets
+		the client decide which columns get written -- and the client sends
+		whatever it likes, not what the page rendered.
+		
+		The primary key is the one that bites in this codebase.
+		plBase::__construct(null) allocates the row's id from the counters
+		table and stores it in $this->values, so a request that carries
+		contact_id or case_id overwrites the allocated id and save() runs
+		INSERT ... SET contact_id='<whatever was sent>'. Pick an id that is
+		already taken and the insert is a duplicate-key error; pick one just
+		above the counter and the NEXT legitimate insert is the one that
+		fails, so intake breaks for everybody until an operator bumps the
+		counter by hand. Every caller already reads the id it means to use
+		with pl_grab_post('contact_id') or similar and passes it to the
+		constructor, so the copy inside the request array is redundant as
+		well as dangerous.
+		
+		The application-managed stamps are listed for the same reason but
+		none of them exist in this schema, so they are inert here. They stay
+		in the list because they cost nothing and a later migration adding a
+		soft-delete column should not reopen the hole: posting deleted_at
+		through a form that offers no such control would delete a record,
+		and posting it empty would bring one back.
+		
+		Table-specific columns go in $extra.
+	*/
+	function pl_strip_protected_columns($post, $extra = array())
+	{
+		if (!is_array($post))
+		{
+			return array();
+		}
+		
+		if (!is_array($extra))
+		{
+			$extra = array();
+		}
+		
+		// Primary keys of the tables these handlers write. The names are
+		// this schema's, not a guess: activities is act_id, doc_storage is
+		// doc_id.
+		$protected = array(
+			'contact_id', 'case_id', 'act_id', 'user_id', 'group_id',
+			'transfer_id', 'doc_id',
+			// Application-managed, never user-supplied.
+			'deleted_at', 'created_at', 'updated_at', 'date_created',
+		);
+		
+		foreach (array_merge($protected, $extra) AS $key)
+		{
+			unset($post[$key]);
+		}
+		
+		return $post;
+	}
+}
+
 // User SESSION Functions
 
 function pl_session_close()
@@ -1696,6 +3047,213 @@ function pl_settings_get_all()
 }
 
 
+if (!function_exists('pl_canonical_origin'))
+{
+	/**
+	 * pl_canonical_origin()
+	 *
+	 * Returns "scheme://host" for links this application builds into email
+	 * and SMS, with no trailing slash. Returns '' when it cannot work one
+	 * out, so callers can decide what to do rather than emit a broken link.
+	 *
+	 * The code that needed this read $_SERVER['SERVER_NAME'] directly.
+	 * Apache fills SERVER_NAME from the request's Host header whenever
+	 * UseCanonicalName is Off, which is the default, so a request carrying
+	 * "Host: attacker.example" produced a notification email whose link
+	 * pointed at the attacker. The recipient is a case handler who is
+	 * expecting that mail, and the link looks like the real thing.
+	 *
+	 * Set the canonical_url setting to close that: it is the only value
+	 * here that no request can influence. There is no field for it on the
+	 * settings screens, so it is set directly in the settings table, e.g.
+	 *
+	 *     INSERT INTO settings (label, value)
+	 *         VALUES ('canonical_url', 'https://ocm.example.org');
+	 *
+	 * Without it, the fallback is the best that can be done from the
+	 * request: the scheme comes from Apache rather than from a header, and
+	 * the host must look like a bare hostname[:port], so a Host header of
+	 * "evil.example/x?" cannot bolt a second URL onto the end of the link.
+	 *
+	 * $force_scheme overrides the scheme, for the one caller that needs an
+	 * origin the current request is not using: the force_https redirect in
+	 * pika-danio.php runs on a plain-HTTP request, and without the override
+	 * it would be handed back "http://<host>" and redirect the browser to
+	 * the page it is already on, forever.
+	 *
+	 * @param string|null $force_scheme 'http' or 'https', or null to derive it
+	 * @return string
+	 */
+	function pl_canonical_origin($force_scheme = null)
+	{
+		if ('http' !== $force_scheme && 'https' !== $force_scheme)
+		{
+			$force_scheme = null;
+		}
+		
+		$configured = trim((string) pl_settings_get('canonical_url'));
+		
+		if ($configured !== '')
+		{
+			$configured = rtrim($configured, '/');
+			
+			if (!is_null($force_scheme))
+			{
+				// A configured canonical_url of "http://ocm.example" must not
+				// defeat a forced https, and the setting may also be stored
+				// with no scheme at all.
+				$configured = preg_replace('#^[A-Za-z][A-Za-z0-9+.-]*://#', '', $configured);
+				$configured = $force_scheme . '://' . $configured;
+			}
+			
+			return $configured;
+		}
+		
+		// $_SERVER['HTTPS'] and SERVER_PORT are set by Apache, not by the
+		// client. X-Forwarded-Proto is not consulted: it is client-supplied
+		// unless the proxy in front is known to overwrite it, and this
+		// function cannot know that. A deployment behind a TLS-terminating
+		// proxy should set canonical_url.
+		$scheme = 'http';
+		
+		if (!is_null($force_scheme))
+		{
+			$scheme = $force_scheme;
+		}
+		
+		else if (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS'])
+		{
+			$scheme = 'https';
+		}
+		
+		else if (isset($_SERVER['SERVER_PORT']) && '443' == $_SERVER['SERVER_PORT'])
+		{
+			$scheme = 'https';
+		}
+		
+		$host = isset($_SERVER['SERVER_NAME']) ? (string) $_SERVER['SERVER_NAME'] : '';
+		
+		if ('' === $host || !preg_match('/^[A-Za-z0-9._-]+(:[0-9]{1,5})?$/', $host))
+		{
+			pl_log_error('pl_canonical_origin rejected host', $host);
+			return '';
+		}
+		
+		/*	Apache fills SERVER_NAME from ServerName or the Host header, and
+			either way it usually carries no port, so a deployment listening
+			on something other than 80 or 443 produced an origin that points
+			at the wrong port. That is a broken link in a notification email,
+			and a redirect URI the identity provider rejects.
+			
+			SERVER_PORT comes from the same place SERVER_NAME does: the
+			configured ServerName under UseCanonicalName On, the request's
+			Host header under Off. So the port is exactly as trustworthy as
+			the host beside it, and the answer for a deployment that cannot
+			trust the Host header is the same either way -- set canonical_url.
+			
+			Skipped when the scheme was forced, because the caller that
+			forces it -- the force_https redirect -- is asking for the origin
+			of a scheme this request is NOT using, and the port this request
+			arrived on is not that scheme's port. A deployment behind a
+			TLS-terminating proxy should set canonical_url.
+		*/
+		if (is_null($force_scheme) && false === strpos($host, ':') && isset($_SERVER['SERVER_PORT']))
+		{
+			$port = (string) $_SERVER['SERVER_PORT'];
+			$default_port = ('https' === $scheme) ? '443' : '80';
+			
+			if (preg_match('/^[0-9]{1,5}$/', $port) && $port !== $default_port)
+			{
+				$host .= ':' . $port;
+			}
+		}
+		
+		return $scheme . '://' . $host;
+	}
+}
+
+
+if (!function_exists('pl_settings_template_blocked'))
+{
+	/*	Settings that pl_template_sub() must never resolve from its
+		app-settings fallback.
+		
+		pl_template_sub() falls back to pl_settings_get_all() for any tag it
+		cannot find in the page's own data array, and it re-scans the text it
+		just substituted -- the last line of the function calls itself on the
+		string it just built. That recursion is load-bearing: subtemplate
+		slots are inserted as values and have to resolve their own tags
+		afterwards, so it cannot simply be removed. Put the two together and
+		any page that renders user-controlled text through pl_template()
+		turns "%%[db_password]%%" typed into a form field into the actual
+		password, because the tag is not in the page data and the fallback
+		answers it.
+		
+		Confirmed live on this codebase before the fix. search.php is the
+		shortest path: it puts ?s= into $content_t['search_value'] at line
+		23 and subtemplates/search_screen.html renders that into a value=
+		attribute, so
+		
+			GET search.php?s=%%%%[db_password]%%%%
+		
+		came back as value="<the real database password>". Any account that
+		can reach the search box could read it -- an intake volunteer, a
+		shared partner login. pl_clean_html() and pl_html_escape() are both
+		transparent to this: htmlspecialchars() does not escape %, [ or ].
+		
+		The list is the infrastructure keys from
+		cms-custom/config/settings.php plus the credentials that
+		system-sms.php writes into the settings table. Presentation values
+		from the same config file are deliberately absent: base_url in
+		particular is resolved through this fallback by templates on every
+		page, so blocking it would blank the chrome everywhere.
+		
+		Blocking a label here does not blank any admin form. Both pages that
+		render these labels put them into the page data explicitly --
+		system-sms.php assigns each one to $html, and system-settings.php
+		starts from pl_settings_get_all() -- so they resolve from the
+		template-data branch, which runs first. They also both render through
+		pikaTempLib, which has no settings fallback at all.
+	*/
+	function pl_settings_template_blocked($label)
+	{
+		static $set = null;
+		
+		if (null === $set)
+		{
+			$set = array_flip(array(
+				// cms-custom/config/settings.php infrastructure keys.
+				'db_type',
+				'db_host',
+				'db_name',
+				'db_user',
+				'db_password',
+				'base_directory',
+				// Encrypts users.totp_secret at rest. Resolving this tag
+				// would hand the key to anybody who can type into a form
+				// field, and the key is the only thing standing between a
+				// database dump and a working second factor for every
+				// account.
+				'totp_encryption_key',
+				// Filesystem path to the document store.
+				'docs_directory',
+				// Written by system-sms.php into the settings table.
+				'twilio_account_sid',
+				'twilio_auth_token',
+				'sparkpost_api_key',
+				// The OpenID Connect client secret. Holding it lets anybody
+				// exchange an authorization code for tokens as this
+				// application, which is the whole of the trust the identity
+				// provider places in the deployment.
+				'sso_client_secret',
+			));
+		}
+		
+		return is_string($label) && isset($set[$label]);
+	}
+}
+
+
 function pl_settings_init($x = null)
 {
 	static $plSettings;
@@ -1742,6 +3300,14 @@ function pl_settings_save()
 	unset($pl_settings['db_password']);
 	unset($pl_settings['base_url']);
 	unset($pl_settings['base_directory']);
+	/*	Same reason, one step further. This key decrypts users.totp_secret,
+		so copying it into the settings table would put it in the same dump
+		as the ciphertext and a leaked backup would decrypt itself. It stays
+		in cms-custom/config/settings.php only. Saving any settings page
+		would otherwise migrate it into the database silently, because
+		pl_settings_init() merges the file and the table into one array.
+	*/
+	unset($pl_settings['totp_encryption_key']);
 	
 	DB::query("LOCK TABLE settings LOW_PRIORITY WRITE");
 	DB::query("DELETE FROM settings");
@@ -2039,6 +3605,17 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 	if (strlen($subtpl_label) < 4)
 	{
 		$subtpl_label = null;
+	}
+	
+	// Auto-inject the CSRF token, same as pikaTempLib::draw(). Without it,
+	// templates rendered through this function emit a literal
+	// %%[csrf_field]%% placeholder and no token, so every POST through
+	// those forms trips pl_csrf_check and the user sees a misleading
+	// "CSRF validation failed" page.
+	if (function_exists('pl_csrf_hidden_input')
+		&& (!isset($template_data['csrf_field']) || $template_data['csrf_field'] === ''))
+	{
+		$template_data['csrf_field'] = pl_csrf_hidden_input();
 	}
 	
 	// Handle custom templates.
@@ -2571,7 +4148,14 @@ function pl_template_sub($str, $template_data)
 	}
 	
 	// Next, check the application settings.
-	else if (array_key_exists($next_name, $app_settings))
+	//
+	// Secrets and infrastructure keys are refused here -- see
+	// pl_settings_template_blocked(). They fall through to the
+	// unresolved-tag branch below and render as '', the same as any other
+	// unknown tag, so an injected %%[db_password]%% looks like a typo
+	// instead of answering with the password.
+	else if (array_key_exists($next_name, $app_settings)
+		&& !pl_settings_template_blocked($next_name))
 	{
 		// we have the name, now replace the first and any additional fields
 		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $app_settings[$next_name], substr($str, $pos));

@@ -44,14 +44,15 @@ class pikaPensionPlan extends plBase
 			$where_sql .= " AND `plan_sn` = '{$filter['plan_sn']}'";
 		}
 		
-		if($order != 'ASC') {$order = 'DESC'; }
+		// ?order_field= from pension_plans.php and assign_plan.php.
+		$order = pl_safe_sort_direction($order);
 		if ($order_field && $order){
-			$order_sql = " ORDER BY {$order_field} {$order}";
+			$order_sql = pl_safe_order_by($order_field, $order, 'pension plan sort column');
 		}
 		if ($first_row && $list_length){
-			$limit_sql = " LIMIT $first_row, $list_length";
+			$limit_sql = " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$limit_sql = " LIMIT $list_length";
+			$limit_sql = " LIMIT " . (int) $list_length;
 		}
 		
 		$sql = "SELECT COUNT(*) as nbr FROM pension_plans WHERE 1{$where_sql};";
@@ -96,14 +97,15 @@ class pikaPensionPlan extends plBase
 		}
 		
 		$order_sql = $limit_sql = '';
-		if($order != 'ASC') {$order = 'DESC'; }
+		// ?order_field= from pension_plans.php and assign_plan.php.
+		$order = pl_safe_sort_direction($order);
 		if ($order_field && $order){
-			$order_sql = " ORDER BY {$order_field} {$order}";
+			$order_sql = pl_safe_order_by($order_field, $order, 'pension plan sort column');
 		}
 		if ($first_row && $list_length){
-			$limit_sql = " LIMIT $first_row, $list_length";
+			$limit_sql = " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$limit_sql = " LIMIT $list_length";
+			$limit_sql = " LIMIT " . (int) $list_length;
 		}
 		
 		$sql = "SELECT COUNT(*) as nbr FROM cases WHERE 1{$where_sql};";

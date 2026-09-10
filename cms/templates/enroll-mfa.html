@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<!--	enroll-mfa.html -- one-time self-service MFA enrollment.
+	
+	Standalone, with the same chrome as login-form.html, because it is shown
+	before the user has reached any page of the application proper.
+	
+	No QR code. Rendering one needs a JavaScript library this repository does
+	not ship, and adding one would put a third-party script in front of the
+	login. The key is shown as text and as an otpauth:// link instead: every
+	authenticator app takes a typed key, and on a phone the link opens the app
+	directly.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>%%[page_title]%%</title>
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="%%[base_url]%%/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="icon" href="%%[base_url]%%/favicon.ico" />
+    <style>
+	html{
+		background: #397bd4;
+		background: radial-gradient(ellipse at center, #397bd4 0%,#2e63a9 100%);
+	}
+	body{
+		min-height:100%;
+		background-color: transparent;
+		color: white;
+		margin-top: 5%;
+	}
+	h1{
+		text-shadow: 3px 3px 7px #337;
+	}
+	.enroll-key{
+		font-family: monospace;
+		font-size: 18px;
+		letter-spacing: 2px;
+		color: #222;
+		background: #fff;
+		padding: 10px;
+		border: 1px solid #ccc;
+		word-break: break-all;
+	}
+    </style>
+  </head>
+
+  <body>
+  <div class="container">
+	<div class="span8">
+	<h1>Set up Multi-Factor Authentication</h1>
+	<h2>%%[owner_name]%%</h2>
+	%%[error_msg]%%
+	<p>Your administrator turned on multi-factor authentication for your
+	   account. Add it to an authenticator app (Google Authenticator, Microsoft
+	   Authenticator, Authy, 1Password and others all work), then enter the
+	   current 6-digit code to finish. You only do this once.</p>
+	<p><strong>Step 1.</strong> Add this key to your authenticator app:</p>
+	<p class="enroll-key">%%[totp_secret_cleartext]%%</p>
+	<p>On a phone you can tap this link instead, and the app fills the key in
+	   for you: <a href="%%[otpauth_uri]%%">add to authenticator app</a></p>
+	<p><strong>Step 2.</strong> Enter the 6-digit code the app is showing now:</p>
+	<form class="form-horizontal" method="POST" action="%%[base_url]%%/enroll_mfa.php" name="form2" autocomplete="off">%%[csrf_field]%%
+	  <input type="hidden" name="enroll_token" value="%%[enroll_token]%%">
+	  <div class="control-group">
+	    <label class="control-label" for="mfa_code">6-digit code</label>
+	    <div class="controls">
+	      <input type="text" name="mfa_code" id="mfa_code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+	    </div>
+	  </div>
+	  <div class="control-group">
+	    <div class="controls">
+	      <button type="submit" class="btn">Confirm and finish</button>
+	    </div>
+	  </div>
+	</form>
+	<p><a href="%%[base_url]%%/logout.php" style="color:#fff;">Sign out</a></p>
+	<p class="small">Keep the key private. Anybody who has it can generate your
+	   codes. Nobody, including your administrator, can read it back off this
+	   server once you leave this page.</p>
+	</div>
+</div>
+	</body>
+</html>

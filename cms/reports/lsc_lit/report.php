@@ -104,8 +104,13 @@ if ($x != false)
 }
 // litigation status
 //$x = pl_process_comma_vals($lit_status);
-$x = implode(',', $lit_status);
-$x = DB::escapeString($x);
+if (!(is_null($lit_status)))
+{
+  $x = implode(',', $lit_status);
+  $x = DB::escapeString($x);
+} else {
+  $x = false;
+}
 if ($x != false) 
 {	
 	$t->add_parameter('Litigation Status',$x);

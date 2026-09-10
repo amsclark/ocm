@@ -1,5 +1,5 @@
 %%[begin:edit_user]%%
-<form action="%%[base_url]%%/system-users.php" method="POST" autocomplete="off" name="form1">
+<form action="%%[base_url]%%/system-users.php" method="POST" autocomplete="off" name="form1">%%[csrf_field]%%
 
 <table border="0">
 <tr>
@@ -51,7 +51,9 @@
 	%%[attorney,attorney_status,noblank]%%
 	</td><td>
 	Security Level:<br/>
-	%%[group_id,groups,menu_no_blank]%%
+	%%[group_id,groups,menu_no_blank]%%<br/>
+	%%[mfa_control]%%<br/>
+	%%[sso_control]%%
 	</td>
 </tr><tr>
 	<td>

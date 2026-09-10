@@ -156,8 +156,26 @@ class pikaCase extends plBaseWithUdf
 		and to this object.
 		*/
 		$case_id = $this->getValue('case_id');
+		
+		/*	$role reaches here straight from the caller and was not checked
+			at all. ops/add_case_contact.php and ops/add_case_new_contact.php
+			pass pl_grab_post('relation_code'), and pl_clean_form_input()
+			encodes only < and >, so a quote arrived intact and closed this
+			string early. A POST of
+			
+				relation_code=2'),('88888888','7','7','9
+			
+			appended a second VALUES tuple, which links any contact to any
+			case in the table the conflict-of-interest check reads. The same
+			value also arrives unfiltered from services/transfer_case.php
+			(a payload from another instance) and from pikaLSXML_V2 (an
+			uploaded XML import). The contact id is already constrained by
+			the is_numeric() test above; the cast is belt and braces.
+		*/
+		$safe_role = DB::escapeString($role);
+		$safe_contact_id = (int) $contact_id;
 		$sql = "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
-					VALUES ('{$conflict_id}', '{$contact_id}', '{$case_id}', '{$role}')";
+					VALUES ('{$conflict_id}', '{$safe_contact_id}', '{$case_id}', '{$safe_role}')";
 		DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		$this->contacts[$contact_id] = $role;
 		
@@ -268,7 +286,7 @@ class pikaCase extends plBaseWithUdf
 	
 	public function getNotes($order = 'ASC', $list_length = 50, $first_row = 0, &$row_count = NULL, &$total_hours = NULL)
 	{
-		$clean_order = DB::escapeString($order);
+		$clean_order = pl_safe_sort_direction($order);
 		//$clean_first_row = mysql_real_escape_string($first_row);
 		//$clean_list_length = mysql_real_escape_string($list_length);
 		
@@ -297,9 +315,9 @@ class pikaCase extends plBaseWithUdf
 				WHERE case_id='{$this->values['case_id']}'
 				ORDER BY act_date {$clean_order}, act_time {$clean_order}, last_changed {$clean_order}";
 		if ($first_row && $list_length){
-			$sql .= " LIMIT $first_row, $list_length";
+			$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$sql .= " LIMIT $list_length";
+			$sql .= " LIMIT " . (int) $list_length;
 		}
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;

@@ -10,6 +10,14 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// This page performs its state changes on a GET: the action is dispatched
+// out of the query string and the links that trigger it are plain <a href>
+// markup, so a hidden token field is not available as a defence here.
+// On a non-POST request pl_csrf_check() falls through to the same-site
+// check, which refuses a mutation that a foreign page initiated and needs
+// nothing from the markup. See pl_request_cross_site_verdict() in pl.php.
+pl_csrf_check();
+
 require_once('pikaCase.php');
 
 // VARIABLES
@@ -21,6 +29,9 @@ $base_url = pl_settings_get('base_url');
 // BEGIN MAIN CODE...
 if (pika_authorize('delete_case', $case1->getValues())) 
 {
+	pl_audit('case.delete', 'case', $case_id, array(
+		'case_number' => $case1->number,
+	));
 	$case1->delete();
 	header("Location: {$base_url}/");
 }

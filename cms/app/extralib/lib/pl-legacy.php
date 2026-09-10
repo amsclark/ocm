@@ -238,6 +238,19 @@ function pl_table_to_array($menu_table_name, $key='value', $val='label', $ord='m
 {
 	$data = array();
 	
+	// The table name reaches here from pl_menu(), which is called with a menu
+	// name taken from a template tag, so it is not trusted.
+	$menu_table_name = pl_safe_identifier($menu_table_name, 'menu table');
+	$key = pl_safe_identifier($key, 'menu key column');
+	$val = pl_safe_identifier($val, 'menu label column');
+	$ord = pl_safe_identifier($ord, 'menu sort column');
+	
+	if (false === $menu_table_name || false === $key || false === $val
+		|| false === $ord)
+	{
+		return $data;
+	}
+	
 	$sql = "SELECT $key, $val FROM $menu_table_name ORDER BY $ord";
 
 	$x = pl_db_cache_get($sql, $menu_table_name);

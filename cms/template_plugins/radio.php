@@ -46,25 +46,31 @@ function radio($field_name = null, $field_value = null, $menu_array = null, $arg
 		$uid = "{$temp_args['id']}_" . $number_pad;
 		
 		
+		// $key comes off the menu_* tables and reaches both an attribute value
+		// and the label text. Escape it once here and reuse, alongside the $uid
+		// the input's id carries.
+		$key_attr = pl_html_escape($key);
+		$uid_attr = pl_html_escape($uid);
+		
 		$radio_output .= "<label><input type=\"radio\" ";
-		$radio_output .= "name=\"{$temp_args['name']}\" ";
-		$radio_output .= "id=\"{$uid}\" ";
-		$radio_output .= "value=\"{$key}\"";
-		$radio_output .= "class=\"{$temp_args['class']}\" ";
-		$radio_output .= "tabindex=\"{$temp_args['tabindex']}\" ";
+		$radio_output .= "name=\"" . pl_html_escape($temp_args['name']) . "\" ";
+		$radio_output .= "id=\"{$uid_attr}\" ";
+		$radio_output .= "value=\"{$key_attr}\"";
+		$radio_output .= "class=\"" . pl_html_escape($temp_args['class']) . "\" ";
+		$radio_output .= "tabindex=\"" . pl_html_escape($temp_args['tabindex']) . "\" ";
 		
 		if($temp_args['onfocus'] != '') { 
-			$radio_output .= "onFocus=\"{$temp_args['onfocus']}\" ";
+			$radio_output .= "onFocus=\"" . pl_html_escape($temp_args['onfocus']) . "\" ";
 		}if($temp_args['onblur'] != '') { 
-			$radio_output .= "onBlur=\"{$temp_args['onblur']}\" ";
+			$radio_output .= "onBlur=\"" . pl_html_escape($temp_args['onblur']) . "\" ";
 		}if($temp_args['onclick'] != '') { 
-			$radio_output .= "onClick=\"{$temp_args['onclick']}\" ";
+			$radio_output .= "onClick=\"" . pl_html_escape($temp_args['onclick']) . "\" ";
 		}
 		
 		if ($temp_args['disabled']) {
 			$radio_output .= "disabled ";
 		}
-		$radio_output .= "{$checked} />{$label}</label> ";
+		$radio_output .= "{$checked} />" . pl_html_escape_label($label) . "</label> ";
 		if ($temp_args['vertical']) {
 			$radio_output .= "<br/>\n";
 		} else { $radio_output .= "&nbsp; "; }

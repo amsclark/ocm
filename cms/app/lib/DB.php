@@ -91,4 +91,38 @@ class DB
 			return mysql_query($sql);
 		}
 	}
+
+	public static function preparedQuery($sql, $params)
+	{
+		if (!self::$mysqli_mode) {
+			throw new Exception("Prepared statements are only supported in MySQLi mode.");
+		}
+
+		$stmt = mysqli_prepare(self::$link, $sql);
+		if ($stmt === false) {
+			throw new Exception("Failed to prepare the statement: " . self::error());
+		}
+
+		if ($params) {
+			$types = str_repeat('s', count($params)); // Assuming all parameters are strings
+			$stmt->bind_param($types, ...$params);
+		}
+
+		if (!$stmt->execute()) {
+			throw new Exception("Failed to execute the statement: " . self::error());
+		}
+
+		/*	get_result() returns false for a statement that produces no result
+			set, which is every INSERT, UPDATE and DELETE. Callers read that
+			false as a failed write: pl_audit() logged "pl_audit insert failed"
+			for every audit record it successfully wrote, so the error log said
+			auditing was broken on a deployment where it was working. Report
+			success instead, and leave the real failures to the throws above.
+		*/
+		if (0 === $stmt->field_count) {
+			return true;
+		}
+
+		return $stmt->get_result();
+	}
 }

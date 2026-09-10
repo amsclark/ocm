@@ -6,6 +6,13 @@
 
 require_once('pika-danio.php');
 pika_init();
+
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
 require_once('plFlexList.php');
 require_once('pikaTempLib.php');
 require_once('pikaMenu.php');
@@ -31,6 +38,32 @@ $value = pl_grab_get('value');
 $old_value = pl_grab_get('old_value');
 $menu_name = pl_grab_get('menu_name');
 $field_list = pl_grab_get('field_list');
+
+/*	Every branch below either hands $menu_name to pikaMenu, where it becomes
+	a table name, or interpolates it into the page or a Location header. A
+	menu table name is always a plain identifier, so check it once here
+	instead of at each sink. pikaMenu validates on its own as well -- this
+	check is what makes the admin see a message rather than an error page,
+	and it also covers the branches that print $menu_name without ever
+	reaching pikaMenu.
+	
+	pl_clean_form_input() does not help here: in 'nomode' it only trims and
+	encodes < and >, so quotes, spaces and SQL keywords all pass through.
+*/
+if ('' !== (string) $menu_name)
+{
+	$menu_table = (0 === strpos($menu_name, 'menu_'))
+		? $menu_name
+		: 'menu_' . $menu_name;
+	
+	if (false === pl_safe_identifier($menu_table, 'menu table name'))
+	{
+		$main_html['content'] = 'Invalid menu name';
+		$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; Menus";
+		$default_template = new pikaTempLib('templates/default.html', $main_html);
+		pika_exit($default_template->draw());
+	}
+}
 
 $numeric_types = array('tinyint','smallint','mediumint','int','bigint',
 								'decimal','float','double','real',

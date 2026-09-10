@@ -25,7 +25,30 @@ class pikaMenu extends plBase
 		{
 			$menu_name = 'menu_' . $menu_name;
 		}
-		$this->db_table = $menu_name;
+		
+		/*	$menu_name lands in a table-name position in every query this
+			class builds, and system-menus.php takes it straight off the
+			query string. A table name is not quoted, so DB::escapeString()
+			is inert there -- it escapes quotes and nothing else. The
+			'menu_' prefix above is not a filter either: the request value
+			"close_code WHERE 1=0 UNION SELECT ..." still starts with the
+			prefix once it is prepended.
+			
+			Proven on this codebase before the fix:
+			system-menus.php?action=edit_menu&menu_name=close_code%20WHERE%201=0%20UNION%20SELECT%20username%20AS%20value,%20password%20AS%20label,%201%20AS%20menu_order%20FROM%20users
+			rendered every user's password hash into the menu editor.
+			
+			Escaping cannot help in an identifier position, so allowlist
+			instead and fail closed. Every real menu table name matches.
+		*/
+		$safe_menu_name = pl_safe_identifier($menu_name, 'menu table name');
+		
+		if (false === $safe_menu_name)
+		{
+			trigger_error('Invalid menu name.');
+		}
+		
+		$this->db_table = $safe_menu_name;
 		// Override normal plBase operation disable counter & manually set "primary" key
 		$this->db_table_id_column = 'value';
 		$this->use_next_id_counter = false;
@@ -103,7 +126,16 @@ class pikaMenu extends plBase
 		{
 			$menu_name = 'menu_' . $menu_name;
 		}
-		$safe_menu_name = DB::escapeString($menu_name);
+		// A table name is an identifier, not a value: allowlist it. See the
+		// note in __construct() for the request path and the proof.
+		$safe_menu_name = pl_safe_identifier($menu_name, 'menu table name');
+		
+		if (false === $safe_menu_name)
+		{
+			// pl_error_handler() turns this into the Pika Error page and
+			// exits, so callers never see a false result to loop over.
+			trigger_error('Invalid menu name.');
+		}
 		
 		$sql = "SELECT * 
 				FROM {$safe_menu_name} WHERE 1 
@@ -307,7 +339,15 @@ class pikaMenu extends plBase
 		{
 			$menu_name = 'menu_' . $menu_name;
 		}
-		$safe_menu_name = DB::escapeString($menu_name);
+		// Identifier position again -- see __construct().
+		$safe_menu_name = pl_safe_identifier($menu_name, 'menu table name');
+		
+		if (false === $safe_menu_name)
+		{
+			trigger_error('Invalid menu name.');
+		}
+		
+		
 		$sql = "SELECT MAX(menu_order) as next_order
 				FROM {$safe_menu_name}";
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());

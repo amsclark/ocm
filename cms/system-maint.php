@@ -8,6 +8,13 @@
 require_once('pika-danio.php');
 pika_init();
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 require_once('pikaTempLib.php');
 require_once('plFlexList.php');
 require_once('pikaCounter.php');
@@ -172,7 +179,8 @@ switch ($action) {
 			$not_available = '<p>The SSN Truncate function is not available because this database does not have the weighted name search installed.</p>';
 		}
 		
-		$main_html['content'] .= '<form action="' . $base_url . '/system-maint.php" method="POST">
+		$main_html['content'] .= '<form action="' . $base_url . '/system-maint.php" method="POST">'
+		. pl_csrf_hidden_input() . '
 		<h2>Truncate SSNs</h2>';
 		$main_html['content'] .= $not_available . 
 		'<input type="submit" name="submit" value="Truncate SSNs" onclick="if ( confirm(\'Are you sure you want to shorten all SSNs to the last four digits?  This operation can not be undone.\')) { return confirm(\'Click OK to truncate all SSNs.\'); } else {return false;}"';
@@ -189,7 +197,8 @@ switch ($action) {
 			$not_available = '<p>The SSN Delete function is not available because the SSNs in this database have already been deleted.</p>';
 		}
 
-		$main_html['content'] .= '<form action="' . $base_url . '/system-maint.php" method="POST">
+		$main_html['content'] .= '<form action="' . $base_url . '/system-maint.php" method="POST">'
+		. pl_csrf_hidden_input() . '
 		<h2>Remove SSNs</h2>';
 		$main_html['content'] .= $not_available . 
 		'<input type="submit" name="submit" value="Remove SSNs" onclick="if ( confirm(\'Are you sure you want to remove all SSNs?  This operation can not be undone.\')) { return confirm(\'Click OK to delete all SSNs.\'); } else {return false;}"';

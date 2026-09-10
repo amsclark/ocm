@@ -652,6 +652,10 @@ class pikaCms
 	// get all contact records, in alphabetical order (within a range)
 	function fetchLetterContacts($letter, &$dataset_size, $offset='0', $limit='5')
 	{
+		$letter = DB::escapeString($letter);
+		$offset = (int) $offset;
+		$limit = (int) $limit;
+		
 		// get the total number of contacts
 		$result = DB::query("SELECT COUNT(*) AS count FROM aliases WHERE last_name LIKE '$letter%'");
 		$row = DBResult::fetchRow($result);
@@ -1116,6 +1120,9 @@ class pikaCms
 	
 	function fetchNotes($case_id, $order='ASC')
 	{
+			$order = pl_safe_sort_direction($order);
+			$case_id = DB::escapeString($case_id);
+			
 			$sql = "SELECT activities.*,
 								users.first_name, 
 								users.last_name
@@ -1331,10 +1338,10 @@ class pikaCms
 				$order_field = 'contacts.last_name';
 			}
 			
-			$sql .= " ORDER BY $order_field $order";
+			$sql .= pl_safe_order_by($order_field, $order, 'case list sort column');
 		}
 		
-		$sql .= " LIMIT $first_row, $list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		
 		$full_sql = 'SELECT case_id, number, problem, status, cases.user_id, cocounsel1, 
 			cocounsel2, office, open_date, close_date, funding, client_id, 
@@ -1447,11 +1454,13 @@ class pikaCms
 	
 	function setPassword($user_id, $password)
 	{
-		$password_md5 = md5($password);
+		// bcrypt, not md5: pikaAuthDb verifies with password_verify() and
+		// only falls back to md5 for pre-migration rows.
+		$password_hash = password_hash($password, PASSWORD_DEFAULT);
 		
-		$sql = "UPDATE users SET password='$password_md5' WHERE user_id=$user_id LIMIT 1";
-		
-		$result = DB::query($sql);
+		$sql = "UPDATE users SET password=? WHERE user_id=? LIMIT 1";
+		$params = array($password_hash, $user_id);
+		$result = DB::preparedQuery($sql, $params);
 	}
 	
 	function fetchStaffArray()
@@ -1540,12 +1549,12 @@ class pikaCms
 		{
 			if ($first_row && $list_length)
 			{
-				$sql_limit = " LIMIT $first_row, $list_length";
+				$sql_limit = " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 			}
 			
 			elseif ($list_length)
 			{
-				$sql_limit = " LIMIT $list_length";
+				$sql_limit = " LIMIT " . (int) $list_length;
 			}
 			
 			// handle filter options
@@ -1724,15 +1733,15 @@ class pikaCms
 		// displayed on this screen.
 		if ($order_field == 'last_name' && $order)
 		{
-			$sql .= " ORDER BY last_name, first_name $order";
+			$sql .= " ORDER BY last_name, first_name " . pl_safe_sort_direction($order);
 		}
 		
 		else if ($order_field && $order)
 		{
-			$sql .= " ORDER BY $order_field $order";
+			$sql .= pl_safe_order_by($order_field, $order, 'activity sort column');
 		}
 		
-		$sql .= " LIMIT $first_row, $list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		
 		$full_sql = 'SELECT act_id, act_date, act_time, act_end_time, hours, completed,
 				user_id, case_id, category, funding, summary' . $sql;
@@ -1772,6 +1781,7 @@ class pikaCms
 		LEFT JOIN cases ON activities.case_id=cases.case_id 
 		LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
 		WHERE activities.user_id=$user_id
+		AND act_type = 'K'
 		AND (act_date < '$act_date' OR (act_date = '$act_date' && act_time <= '$act_time'))
 		AND completed = 0
 		ORDER BY act_date ASC, act_time ASC, act_id ASC LIMIT 1000";
@@ -1865,20 +1875,33 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	function fetchActivitiesCaseClient($filter, &$contact_count, $order_field='act_date', 
 		$order='ASC', $first_row='0', $list_length='30')
 	{
+		// Every value below arrives from the calendar's query string
+		// through pl_grab_var(), which encodes < and > and nothing else --
+		// a single quote passes straight through. These were interpolated
+		// raw, so cal_week.php?user_id=office_' OR 1=1 -- was a working
+		// injection. Escape at the point of interpolation rather than in
+		// the callers, because six of them reach this method.
 		$sql = ' FROM activities LEFT JOIN cases ON activities.case_id=cases.case_id LEFT JOIN contacts ON cases.client_id=contacts.contact_id WHERE 1';
 		
 		if (isset($filter["act_date"]) && $filter["act_date"])
 		{
-			$sql .= " AND act_date='{$filter["act_date"]}'";
+			$sql .= " AND act_date='" . DB::escapeString($filter["act_date"]) . "'";
 		}
 		
 		if (isset($filter['user_list']) && is_array($filter['user_list']))
 		{
+			// The elements went into IN (...) unquoted, so this branch did
+			// not even need a quote to be injectable. User ids are
+			// integers; a non-numeric entry is a malformed request, so it
+			// is dropped rather than escaped.
 			$tmpa = "0";
 			
 			foreach ($filter['user_list'] AS $val)
 			{
-				$tmpa .= ",$val";
+				if (is_numeric($val))
+				{
+					$tmpa .= ',' . (int) $val;
+				}
 			}
 			
 			$sql .= " AND activities.user_id IN ($tmpa)";
@@ -1886,17 +1909,17 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 
 		else if ($filter['user_id'])
 		{
-			$sql .= " AND activities.user_id='{$filter['user_id']}'";
+			$sql .= " AND activities.user_id='" . DB::escapeString($filter['user_id']) . "'";
 		}
 		
 		if ($filter["starting"])
 		{
-			$sql .= " AND act_date >= '{$filter["starting"]}'";
+			$sql .= " AND act_date >= '" . DB::escapeString($filter["starting"]) . "'";
 		}
 		
 		if ($filter["ending"])
 		{
-			$sql .= " AND act_date <= '{$filter["ending"]}'";
+			$sql .= " AND act_date <= '" . DB::escapeString($filter["ending"]) . "'";
 		}
 		
 		if (isset($filter['no_date']) && $filter['no_date'])
@@ -1906,12 +1929,12 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		
 		if (isset($filter["funding"]) && $filter["funding"])
 		{
-			$sql .= " AND activities.funding='{$filter["funding"]}'";
+			$sql .= " AND activities.funding='" . DB::escapeString($filter["funding"]) . "'";
 		}
 		
 		if (isset($filter["act_type"]) && $filter["act_type"])
 		{
-			$sql .= " AND act_type='{$filter["act_type"]}'";
+			$sql .= " AND act_type='" . DB::escapeString($filter["act_type"]) . "'";
 		}
 		
 		if (isset($filter['completed']) && is_numeric($filter['completed']))
@@ -1921,12 +1944,12 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		
 		if (isset($filter['office']) && strlen($filter['office']) > 0)
 		{
-			$sql .= " AND office='{$filter['office']}'";
+			$sql .= " AND office='" . DB::escapeString($filter['office']) . "'";
 		}
 
 		if (isset($filter['number']) && strlen($filter['number']) > 0)
 		{
-			$sql .= " AND number LIKE '{$filter['number']}'";
+			$sql .= " AND number LIKE '" . DB::escapeString($filter['number']) . "'";
 		}
 		
 		if (isset($filter['category']) && strlen($filter['category']) > 0)
@@ -1950,20 +1973,21 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		// displayed on this screen.
 		if ($order_field == 'last_name' && $order)
 		{
-			$sql .= " ORDER BY last_name, first_name $order";
+			$sql .= " ORDER BY last_name, first_name " . pl_safe_sort_direction($order);
 		}
 		
 		else if ($order_field == 'date-user-time' && $order)
 		{
-			$sql .= " ORDER BY act_date $order, user_id $order, act_time $order";
+			$dir = pl_safe_sort_direction($order);
+			$sql .= " ORDER BY act_date $dir, user_id $dir, act_time $dir";
 		}
 			
 		else if ($order_field && $order)
 		{
-			$sql .= " ORDER BY $order_field $order";
+			$sql .= pl_safe_order_by($order_field, $order, 'activity sort column');
 		}
 		
-		$sql .= " LIMIT $first_row, $list_length";
+		$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		
 		$full_sql = 'SELECT act_id, act_type, act_date, act_time, act_end_time, hours, completed, location, activities.funding,
 				activities.user_id, category, summary, cases.case_id, number, office, client_id, last_name, first_name, phone, area_code, phone_notes' . $sql;
@@ -2153,82 +2177,14 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	}
 
 	
-	function fetchCaseCharges($case_id)
-	{
-		$sql = "SELECT case_charges.*, charges.charge_label, charges.statute,
-							 menu_disposition.label AS disposition_label 
-						FROM case_charges 
-						LEFT JOIN charges ON case_charges.charge_id=charges.charge_id 
-						LEFT JOIN menu_disposition ON case_charges.disposition=menu_disposition.value 
-						WHERE case_id='$case_id'";
-		return DB::query($sql);
-	}
-	
-
-	function lookupChargeByStatute($statute)
-	{
-		// find the statute's charge_id
-		$sql = "SELECT charge_id FROM charges WHERE statute='$statute' LIMIT 1";
-		$result = DB::query($sql);
-		$row = DBResult::fetchRow($result);
-		return $row['charge_id'];
-	}
-	
-	
-	function addCaseCharge($case_id, $charge_id, $incident_date, $dispo_id)
-	{
-		// generate a new case_charge id
-		$id = pl_new_id('case_charges');
-
-		// initially assign the case's first charge as the primary charge
-		$sql = "SELECT COUNT(*) AS tally FROM case_charges WHERE case_id='$case_id'";
-		$result = DB::query($sql);
-		$row = DBResult::fetchRow($result);
+	/*	The five case_charges methods were removed here.
 		
-		if ($row['tally'] < 1)
-		{
-			$sql = "UPDATE cases SET primary_charge_id=$id WHERE case_id='$case_id' LIMIT 1";
-		}
-		
-		// add the case_charge record
-		if ($incident_date)
-		{
-			$incident_date_str = ", incident_date='$incident_date'";
-		}
-		
-		if ($dispo_id)
-		{
-			$dispo_id_str = ", disposition=$dispo_id";
-		}
-
-		DB::query("INSERT INTO case_charges SET case_charge_id=$id, case_id=$case_id, charge_id=$charge_id$incident_date_str$dispo_id_str");
-		
-		return true;
-	}
-	
-	function updateDisposition($case_charge_id, $disposition=null)
-	{
-		if (!$disposition)
-		{
-			$disposition = 'null';
-		}
-		
-		$sql = "UPDATE case_charges SET disposition=$disposition WHERE case_charge_id=$case_charge_id
-				LIMIT 1";
-		
-		//echo $sql;
-		
-		DB::query($sql);
-		
-		return true;
-	}
-	
-	function deleteCaseCharge($case_charge_id)
-	{
-		$sql = "DELETE FROM case_charges WHERE case_charge_id=$case_charge_id LIMIT 1";
-		DB::query($sql);
-		return true;
-	}
+		Their only callers were the two dead criminal-charges handlers in
+		dataops.php, which are gone; see the note there. Each one built SQL by
+		interpolating its arguments, and those arguments came straight from the
+		request, so leaving them in place would have kept the injection one
+		future caller away. new_install.sql creates neither table they query.
+	*/
 	
 	function fetchSurveyQuestions()
 	{

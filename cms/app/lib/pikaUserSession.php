@@ -55,17 +55,15 @@ class pikaUserSession extends plBase
 				LEFT JOIN `groups` on `groups`.group_id = users.group_id 
 				WHERE 1{$sql_filter}";
 
-		if($order != 'ASC') {$order = 'DESC'; }
+		$order = pl_safe_sort_direction($order);
 		if ($order_field && $order){
-			$safe_order_field = DB::escapeString($order_field);
-			$safe_order = DB::escapeString($order);
-			$sql .= " ORDER BY {$safe_order_field} {$safe_order}";
+			$sql .= pl_safe_order_by($order_field, $order, 'session list sort column');
 		}
 
 		if ($first_row && $list_length){
-			$sql .= " LIMIT $first_row, $list_length";
+			$sql .= " LIMIT " . (int) $first_row . ", " . (int) $list_length;
 		} elseif ($list_length){
-			$sql .= " LIMIT $list_length";
+			$sql .= " LIMIT " . (int) $list_length;
 		}
 		//echo $sql;
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());

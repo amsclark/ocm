@@ -1,1 +1,4 @@
 cms-custom/config/settings.php
+
+# Local container stack. Holds the database password; never commit it.
+.env

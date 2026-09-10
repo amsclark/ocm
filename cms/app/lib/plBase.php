@@ -190,8 +190,12 @@ class plBase
 		$this->is_modified = false;
 		$this->is_new = false;
 		
+		// The id value can have come from the request (see the setter and the
+		// constructor), so it is escaped here as well as on the way in.
+		$clean_id = DB::escapeString($this->values[$this->db_table_id_column]);
+		
 		$sql = "DELETE FROM {$this->db_table} 
-				WHERE `{$this->db_table_id_column}` = '{$this->values[$this->db_table_id_column]}' 
+				WHERE `{$this->db_table_id_column}` = '{$clean_id}' 
 				LIMIT 1;";
 		DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		$this->last_query = $sql;
@@ -480,9 +484,13 @@ class plBase
 		}
 		
 		
+		// dataBuildFieldList() escapes the SET values; the WHERE value was
+		// interpolated raw.
+		$clean_id = DB::escapeString($data[$primary_key]);
+		
 		$sql = "UPDATE {$this->db_table} SET ";
 		$sql .= $this->dataBuildFieldList($data,array($primary_key));
-		$sql .= " WHERE {$primary_key}='{$data[$primary_key]}'";
+		$sql .= " WHERE `{$primary_key}`='{$clean_id}'";
 		$sql .= ' LIMIT 1;';
 		
 		return $sql;

@@ -8,6 +8,13 @@
 require_once ('pika-danio.php');
 pika_init();
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 function potential_conflicts($row, $relation_code, $description)
 {
 	$base_url = pl_settings_get('base_url');

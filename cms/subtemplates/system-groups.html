@@ -31,7 +31,18 @@
 		Edit Office Records:<br/>
 		%%[edit_office,input_text]%%<br/>
 		Edit All Records:<br/>
-		%%[edit_all,yes_no,radio]%%
+		%%[edit_all,yes_no,radio]%%<br/>
+		Intake Access:<br/>
+		%%[intake,yes_no,radio]%%
+	</td>
+</tr>
+<tr>
+	<td colspan="2" class="de">
+		Intake Access lets this group read and edit cases that are not fully
+		set up yet &mdash; no primary handler assigned, or no office assigned
+		&mdash; regardless of the office settings above. Grant it to the group
+		that does intake. Leave it off for everyone else: it is a broad grant,
+		and unassigned cases are usually the newest ones.
 	</td>
 </tr>
 <tr>
@@ -71,6 +82,7 @@
 	<th nowrap>User Accounts</th>
 	<th nowrap>Pro Bono List</th>
 	<th nowrap>Message Board</th>
+	<th nowrap>Intake Access</th>
 </tr>
 %%[end:flex_header]%%
 %%[begin:flex_row]%%
@@ -83,6 +95,7 @@
 	<td>%%[users]%%</td>
 	<td>%%[pba]%%</td>
 	<td>%%[motd]%%</td>
+	<td>%%[intake]%%</td>
 </tr>
 %%[end:flex_row]%%
 %%[begin:flex_footer]%%

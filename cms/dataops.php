@@ -12,6 +12,36 @@ screen after the data operation is completed.
 
 require_once ('pika_cms.php');
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
+/*	Keep a redirect on this site.
+	
+	Several handlers below redirect to a URL the request supplied, so the
+	request chose where a logged-in staff member's browser went next. That is
+	worth having on a legal aid system: the credential-phishing page it sends
+	them to is reached from a real link inside the application they trust.
+	
+	Anything absolute, protocol-relative, or carrying a CR or LF -- which would
+	split the Location header and let the request add headers of its own -- is
+	replaced with the site root.
+*/
+function safe_redirect_url($url, $base_url)
+{
+	$url = trim((string) $url);
+	
+	if (preg_match('#^https?://#i', $url) || preg_match('#^//#', $url))
+	{
+		return $base_url . '/';
+	}
+	
+	return str_replace(array("\r", "\n"), '', $url);
+}
+
 // VARIABLES
 $pk = new pikaCms;
 $action = pl_grab_var('action', null, 'REQUEST');
@@ -41,6 +71,72 @@ if (array_key_exists('case_id', $_REQUEST) && $_REQUEST['case_id'])
 	}
 }
 
+/*	Authorize the handlers the case gate above never sees.
+	
+	That gate only ever ran when the request happened to carry a case_id.
+	Everything this file can do to something that is not a case -- update a
+	contact, add an alias, delete a timeslip, create or edit a pro bono attorney
+	-- ran with no authorization check at all, because leaving case_id out of
+	the request was enough to skip the whole block.
+*/
+switch ($action)
+{
+	// Contact writes are authorized against the cases the contact is attached
+	// to: pika_authorize('edit_contact', ...) walks them and grants only if the
+	// user can edit at least one of them.
+	case 'update_contact':
+	case 'new_alias':
+	
+	$dataops_contact_id = pl_grab_var('contact_id', null, 'REQUEST');
+	
+	if (!$dataops_contact_id
+		|| !pika_authorize('edit_contact', array('contact_id' => $dataops_contact_id)))
+	{
+		$action = 'not_allowed';
+	}
+	
+	break;
+	
+	
+	// Deleting an activity has its own permission, including a self-delete
+	// branch. It was reachable here by act_id alone.
+	case 'delete_act':
+	
+	$dataops_act_id = pl_grab_var('act_id', null, 'POST');
+	$dataops_act_row = null;
+	
+	if ($dataops_act_id)
+	{
+		$dataops_act_res = $pk->fetchActivity($dataops_act_id);
+		
+		if ($dataops_act_res)
+		{
+			$dataops_act_row = DBResult::fetchRow($dataops_act_res);
+		}
+	}
+	
+	if (!is_array($dataops_act_row) || !pika_authorize('delete_act', $dataops_act_row))
+	{
+		$action = 'not_allowed';
+	}
+	
+	break;
+	
+	
+	// Pro bono attorney records are administered from pb_attorneys.php, which
+	// gates on the group's pba flag. The same records were writable straight
+	// through this handler with no flag at all.
+	case 'add_pb':
+	case 'update_pb':
+	
+	if ($auth_row['pba'] != true && $auth_row['group_name'] != 'system')
+	{
+		$action = 'not_allowed';
+	}
+	
+	break;
+}
+
 // determine what, if any, action to perform
 switch($action)
 {
@@ -48,7 +144,7 @@ switch($action)
 	
 	if ($_REQUEST['cancel'])
 	{
-		header("Location: {$_REQUEST['act_url']}");
+		header('Location: ' . safe_redirect_url($_REQUEST['act_url'], $base_url));
 		break;
 	}
 	
@@ -68,7 +164,7 @@ switch($action)
 	// decide where to go from here
 	if ($_REQUEST['close_act'])
 	{
-		header("Location: {$_REQUEST['act_url']}");
+		header('Location: ' . safe_redirect_url($_REQUEST['act_url'], $base_url));
 	}
 	
 	else
@@ -109,7 +205,7 @@ switch($action)
 	
 	if (FALSE == $plEnableSpellcheck || !$spellcheck)
 	{
-		header("Location: $act_url");
+		header('Location: ' . safe_redirect_url($act_url, $base_url));
 		
 	}
 	
@@ -150,7 +246,7 @@ switch($action)
 		$sc = $sc . spellcheck($word);
 	}
 	
-	header("Location: $act_url");
+	header('Location: ' . safe_redirect_url($act_url, $base_url));
 	
 	break;
 	
@@ -159,18 +255,35 @@ switch($action)
 	
 	$act_date = pl_grab_var('act_date', date('Y-m-d'), 'POST', 'date');
 	
-	/*
-	if ($_REQUEST['user_id'] != $auth_row['user_id'] && !$auth_row['edit_all'])
-	{
-		header("Location: cal_day.php?act_date=$act_date");
-	}
-	*/
-	
 	$completed = pl_grab_var('completed', array(), 'POST', 'array');
 	$hours = pl_grab_var('hours', array(), 'POST', 'array');
 	
+	/*	The check that belongs here was commented out.
+		
+		The array keys are activity ids straight from the POST body, so with
+		nothing in its place this loop would mark complete, and mint billable
+		time slips against, any activity id in the database -- not only the ones
+		the day view actually rendered for this user.
+		
+		Authorize per row, and skip a row the user cannot edit rather than
+		failing the whole submit, so one stale id in a form does not throw away
+		a day of time entry.
+	*/
 	foreach ($hours as $key => $val)
 	{
+		$bulk_row = null;
+		$bulk_res = $pk->fetchActivity($key);
+		
+		if ($bulk_res)
+		{
+			$bulk_row = DBResult::fetchRow($bulk_res);
+		}
+		
+		if (!is_array($bulk_row) || !pika_authorize('edit_act', $bulk_row))
+		{
+			continue;
+		}
+		
 		// Update checked records to be completed
 		if (isset($completed[$key]) && true == $completed[$key])
 		{
@@ -656,7 +769,7 @@ switch($action)
 	
 	$pk->updateContact($a);
 	
-	header("Location: $con_url");
+	header('Location: ' . safe_redirect_url($con_url, $base_url));
 	
 	break;
 	
@@ -684,12 +797,35 @@ switch($action)
 	
 	case 'set_case_user':
 	
-	$case_id = pl_grab_var('case_id');
-	$user_id = pl_grab_var('user_id');
-	$field = pl_grab_var('field');
+	// Same GET-mutation shape as delete_conflict below: reassigning the
+	// handling attorney (and stamping their last_case date) ran off
+	// REQUEST, so it fired on a plain GET with no token. The only caller
+	// is the POST form in subtemplates/assign_atty.html, which already
+	// ships %%[csrf_field]%%, so reading POST-only costs nothing and makes
+	// the file-level pl_csrf_check() actually cover this action.
+	$case_id = pl_grab_post('case_id');
+	$user_id = pl_grab_post('user_id');
+	$field = pl_grab_post('field');
 	$x = "";
 	
-	if ($case_id && $user_id && 'user_id' == $field || 'cocounsel1' == $field || 'cocounsel2' == $field)
+	/*	Precedence bug: && binds tighter than ||, so this guard parsed as
+		
+			(($case_id && $user_id && 'user_id' == $field)
+			 || 'cocounsel1' == $field
+			 || 'cocounsel2' == $field)
+		
+		The case_id and user_id presence check therefore only applied to the
+		handling-attorney field. A request naming either co-counsel field
+		entered the block with no case and no user: with a real case_id and an
+		empty user_id it wrote '' into cocounsel1 or cocounsel2, silently
+		clearing that slot -- and pika_authorize() grants case access off those
+		two columns, so clearing one revokes a staffer's access to the case.
+		
+		The intent is "we have a case and a user, and the target column is one
+		of the three we allow", so the alternation needs its own parentheses.
+	*/
+	if ($case_id && $user_id
+		&& ('user_id' == $field || 'cocounsel1' == $field || 'cocounsel2' == $field))
 	{
 		$result = $pk->fetchCase($case_id);
 		$a = DBResult::fetchRow($result);
@@ -706,8 +842,23 @@ switch($action)
 	
 	case 'set_case_pba':
 	
-	$result = $pk->fetchCase($case_id);
-	$a = DBResult::fetchRow($result);
+	/*	GET-driven mutation, the same shape as delete_conflict below. Assigning
+		a pro bono attorney to a case slot rode on a plain <a href> built by
+		pb_attorneys.php, so anything that could make a logged-in browser issue
+		that URL reassigned the case with no token to stop it. Read the inputs
+		from POST only, so the file-level pl_csrf_check() actually covers this
+		action and a GET that still reaches this handler arrives with nothing
+		to act on.
+		
+		$field and $pba_id were never read from the request in this file at
+		all, so both were undefined here and the handler could not assign
+		anything: $x stayed empty, updateCase() rewrote the row unchanged and
+		setPbAttorneyLastCase() ran against a null id. Reading them from POST
+		is what makes the action do the job pb_attorneys.php links it for.
+	*/
+	$case_id = pl_grab_post('case_id');
+	$field = pl_grab_post('field');
+	$pba_id = pl_grab_post('pba_id');
 	
 	$x = "";
 	
@@ -716,10 +867,25 @@ switch($action)
 		$x = $field;
 	}
 	
-	if ($x)
+	// Not a POST from the attorney picker: no case, no attorney, or a target
+	// column outside the three slots. Nothing to act on, so send the user home
+	// rather than rewrite a case row for no reason.
+	if (!is_numeric($case_id) || !is_numeric($pba_id) || !$x)
 	{
-		$a[$x] = $pba_id;
+		header("Location: {$base_url}/");
+		exit();
 	}
+	
+	$result = $pk->fetchCase($case_id);
+	$a = DBResult::fetchRow($result);
+	
+	if (!is_array($a))
+	{
+		header("Location: {$base_url}/");
+		exit();
+	}
+	
+	$a[$x] = $pba_id;
 	
 	$pk->updateCase($a);
 	
@@ -733,16 +899,63 @@ switch($action)
 	
 	case 'set_password':
 	
-	if ($auth_row['password'] != $_POST['oldpass'])
-	{
-		header('Location: password.php?error_code=1');
+	/*	Two faults, and either one on its own defeats the whole control.
 		
+		The old-password check compared the stored hash to the submitted
+		plaintext with !=, so it could only ever succeed when both sides were
+		empty -- which is exactly the account you least want it to succeed on.
+		
+		Worse, neither guard had an exit() after its redirect. header() only
+		queues a header; execution carried straight on to setPassword(). A
+		wrong current password, or two new passwords that did not match, still
+		changed the password, and the browser then followed the error redirect
+		so the user was told it had failed.
+		
+		That makes "confirm your current password" do nothing at all, which is
+		the control standing between a hijacked session or an unattended
+		workstation and permanent ownership of the account.
+		
+		password.php is the real change-password screen and verifies correctly
+		(md5 for rows that predate the bcrypt migration, then password_verify).
+		Do the same here rather than leave a second, weaker door on the same
+		operation.
+	*/
+	/*	The hash has to be re-read from the users table. $auth_row on any
+		request after the login one is built from the sessions table joined to
+		users and groups, and that select list does not include the password
+		column -- reading $auth_row['password'] here yields '' and rejects even
+		the correct password, which is a working change-password screen turned
+		off. password.php re-reads the row too, via new pikaUser(); that class
+		is not on dataops.php's include_path, so read the one column directly.
+	*/
+	$stored_hash = '';
+	$pass_result = DB::preparedQuery(
+		'SELECT password FROM users WHERE user_id = ? LIMIT 1',
+		array($auth_row['user_id'])
+	);
+	$pass_row = DBResult::fetchRow($pass_result);
+	
+	if (is_array($pass_row) && isset($pass_row['password']))
+	{
+		$stored_hash = (string) $pass_row['password'];
 	}
 	
-	if ($_POST['newpass1'] != $_POST['newpass2'])
+	$old_pass_in = isset($_POST['oldpass']) ? (string) $_POST['oldpass'] : '';
+	
+	if ('' === $old_pass_in
+		|| '' === $stored_hash
+		|| (md5($old_pass_in) !== $stored_hash && !password_verify($old_pass_in, $stored_hash)))
+	{
+		header('Location: password.php?error_code=1');
+		exit();
+	}
+	
+	if (!isset($_POST['newpass1'])
+		|| '' === (string) $_POST['newpass1']
+		|| $_POST['newpass1'] != $_POST['newpass2'])
 	{
 		header('Location: password.php?error_code=2');
-		
+		exit();
 	}
 	
 	$pk->setPassword($auth_row['user_id'], $_POST['newpass1']);
@@ -764,10 +977,37 @@ switch($action)
 	
 	case 'delete_conflict':
 	
-	$conflict_id = pl_grab_var('conflict_id');
-	$case_id = pl_grab_var('case_id');
+	// GET-driven mutation. These reads used pl_grab_var(), which defaults
+	// to the REQUEST superglobal, so
+	//   GET dataops.php?action=delete_conflict&conflict_id=X&case_id=1
+	// deleted the row outright. Authorization IS enforced (the edit_case
+	// gate above), but authorization is not CSRF: any page a logged-in
+	// staff member visits could fire this from an <img src>.
+	//
+	// The file-level pl_csrf_check() at the top of dataops.php already
+	// covers the POST side, so the missing half is exactly what
+	// ops/delete_activity.php and ops/delete_contact.php do -- read the
+	// mutation inputs from POST only, so a GET that still reaches this
+	// handler arrives with nothing to act on.
+	//
+	// Nothing links here: the live "remove" control posts to
+	// ops/delete_conflict.php (subtemplates/case_screen.html), and the
+	// only builder of the GET URL is the vestigial "OLD WAY" block in
+	// case.php, whose $clients_html is assigned but whose output block is
+	// commented out.
+	//
+	// A separate $conflict_case_id keeps the outer $case_id (read from
+	// REQUEST at the top of the file, and used by the redirect) intact
+	// when the POST body carries nothing, so a bare GET still lands the
+	// user back on a case page instead of on case.php?case_id=.
+	$conflict_id = pl_grab_post('conflict_id');
+	$conflict_case_id = pl_grab_post('case_id');
 	
-	$result = $pk->deleteConflict($conflict_id, $case_id);
+	if (!is_null($conflict_id) && !is_null($conflict_case_id))
+	{
+		$result = $pk->deleteConflict($conflict_id, $conflict_case_id);
+		$case_id = $conflict_case_id;
+	}
 	
 	header("Location: {$base_url}/case.php?case_id={$case_id}&screen=info");
 	
@@ -784,66 +1024,25 @@ switch($action)
 	break;
 	
 	
-	case 'add_case_charges':
-	
-	$j = 0;
-	
-	$case_id = pl_grab_var('case_id');
-	while ($j < 5)
-	{
-		$statute = pl_grab_var("statute$j");
-		$incident_date = pl_grab_var("incident_date$j", null, 'GET', 'date');
-		$disposition = pl_grab_var("disposition$j");
+	/*	The criminal-charges handlers were removed here.
 		
-		$charge_id = $pk->lookupChargeByStatute($statute);
+		They were dead in every sense. Nothing in the tree posts
+		add_case_charges or update_case_charges; no charges case tab and no
+		module renderer ever existed to receive the screen=charges redirects
+		they issued; and new_install.sql never creates the case_charges or
+		charges tables they query, seeding only two orphan rows in counters.
 		
-		if ($charge_id)
-		{
-			$pk->addCaseCharge($case_id, $charge_id, $incident_date, $disposition);
-		}
-		$j++;
-	}
-	
-	header("Location: {$base_url}/case.php?case_id={$case_id}&screen=charges");
-	
-	break;
-	
-	
-	case 'update_case_charges':
-	
-	$delete = $_POST['delete'];
-	if (!is_array($delete))
-	{
-		$delete = array();
-	}
-	$disposition = $_POST['disposition'];
-	if (!is_array($disposition))
-	{
-		$disposition = array();
-	}
-	$ids = $_POST['ids'];
-	if (!is_array($ids))
-	{
-		$ids = array();
-	}
-	$case_id = pl_grab_var('case_id', null, 'POST');
-	
-	$i = 0;
-	foreach ($disposition as $val)
-	{
-		$pk->updateDisposition($ids[$i], $val);
-		$i++;
-	}
-	
-	foreach ($delete as $val)
-	{
-		$pk->deleteCaseCharge($val);
-	}
-	
-	header("Location: {$base_url}/case.php?case_id={$case_id}&screen=charges");
-	
-	break;
-	
+		They were also dangerous while they sat here. Both reached pikaCms
+		methods that interpolated request data straight into SQL --
+		lookupChargeByStatute() built WHERE statute='$statute' by hand -- and
+		update_case_charges read $_POST directly, so it bypassed pl_grab_var()
+		and pl_clean_form_input() with it. update_case_charges also took no
+		case_id until after the work was done, and the case gate at the top of
+		this file only runs when the request carries one, so leaving it out
+		skipped authorization entirely.
+		
+		The four unreachable pikaCms methods went with them.
+	*/
 	
 	case 'add_compen':
 	
@@ -906,7 +1105,7 @@ switch($action)
 	
 	if (array_key_exists('cancel', $_REQUEST))
 	{
-		header("Location: {$_REQUEST['act_url']}");
+		header('Location: ' . safe_redirect_url($_REQUEST['act_url'], $base_url));
 		break;
 	}
 	

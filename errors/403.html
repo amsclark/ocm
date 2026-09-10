@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<!--
+  OCM branded 403. Served by Apache via `ErrorDocument 403` (see
+  docker/apache.conf).
+
+  Reached by more than one route: the deny-by-default <Directory> rules for
+  cms-custom and for everything outside cms/, and the application's own
+  "Access denied." refusals. The copy has to make sense for all of them, so
+  it says "not available to you" rather than guessing which rule fired — and
+  it never echoes the requested path back (see the note in 404.html).
+
+  The application's refusals send plain text, not HTML, so this document is
+  what a browser gets for the *server*-level denials.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Access denied — OCM</title>
+    <link rel="stylesheet" href="/errors/error.css">
+  </head>
+  <body>
+    <main class="ocm-err-wrap">
+      <header class="ocm-err-brand">
+        <p class="ocm-err-brand-name">OCM</p>
+      </header>
+
+      <div class="ocm-err-card">
+        <span class="ocm-err-code">Error 403</span>
+        <h1>That page isn't available to you</h1>
+        <p>
+          The server refused this request. Either the address points at
+          something OCM doesn't serve, or your account doesn't have
+          permission for it.
+        </p>
+        <p>
+          If you were clicking quickly or reloading repeatedly, wait a
+          minute and try once more.
+        </p>
+        <div class="ocm-err-actions">
+          <a class="ocm-err-btn" href="/cms/">Return to OCM</a>
+        </div>
+      </div>
+
+      <p class="ocm-err-foot">
+        If you should have access to this, ask your administrator to check
+        your permissions.
+      </p>
+    </main>
+  </body>
+</html>

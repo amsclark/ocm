@@ -1,0 +1,67 @@
+name: smoke
+
+# Builds the container stack and runs tests/smoke.sh against it.
+#
+# This is the only test that proves the app still boots. It matters more here
+# than the status codes suggest: a PHP fatal error in this codebase returns
+# HTTP 200 with a near-empty body, so the smoke test checks response size and
+# body content, not just the status code.
+
+on:
+  push:
+    branches: [master, 'backport/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write a throwaway .env
+        run: |
+          # Passwords only this job ever sees. Not secrets worth hiding.
+          # Written with printf, not a heredoc: an indented heredoc body would
+          # put leading spaces into the file and compose would read them as
+          # part of the value.
+          printf '%s\n' \
+            'DB_PASSWORD=ci_throwaway_password' \
+            'DB_ROOT_PASSWORD=ci_throwaway_root' \
+            'ADMIN_USER=admin' \
+            'ADMIN_PASSWORD=ci_throwaway_admin' \
+            'HTTP_PORT=8080' \
+            'HTTP_BIND=127.0.0.1' \
+            'FORCE_HTTPS=0' > .env
+
+      - name: Build and start
+        run: docker compose up -d --build
+
+      - name: Wait for the app to answer
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/cms/; then
+              echo "up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the app never answered on port 8080"
+          exit 1
+
+      - name: Smoke test
+        env:
+          OCM_URL: http://127.0.0.1:8080/cms
+          OCM_USER: admin
+          OCM_PASSWORD: ci_throwaway_admin
+        run: bash tests/smoke.sh
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - name: Stop
+        if: always()
+        run: docker compose down -v

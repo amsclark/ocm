@@ -40,44 +40,44 @@ function input_password($field_name = null, $field_value = null, $menu_array = n
 	$pass_output .= "<input type=\"password\" ";
 	
 	
-	$pass_output .= "name=\"{$field_name}\" ";
-	$pass_output .= "id=\"{$temp_args['id']}\" ";
+	$pass_output .= "name=\"" . pl_html_escape($field_name) . "\" ";
+	$pass_output .= "id=\"" . pl_html_escape($temp_args['id']) . "\" ";
 	
 	
-	$pass_output .= "value=\"{$field_value}\" ";
+	$pass_output .= "value=\"" . pl_html_escape($field_value) . "\" ";
 	if(isset($temp_args['class']) && strlen($temp_args['class']) > 0) {
-		$pass_output .= "class=\"{$temp_args['class']}\" ";
+		$pass_output .= "class=\"" . pl_html_escape($temp_args['class']) . "\" ";
 	}
 	
 	if(isset($temp_args['style']) && strlen($temp_args['style']) > 0) {
-		$pass_output .= "style=\"{$temp_args['style']}\" ";
+		$pass_output .= "style=\"" . pl_html_escape($temp_args['style']) . "\" ";
 	}
 	
 	if($temp_args['size'] != '') {
-		$pass_output .= "size=\"{$temp_args['size']}\" ";
+		$pass_output .= "size=\"" . pl_html_escape($temp_args['size']) . "\" ";
 	} if($temp_args['maxlength'] != '') {
-		$pass_output .= "maxlength=\"{$temp_args['maxlength']}\" ";
+		$pass_output .= "maxlength=\"" . pl_html_escape($temp_args['maxlength']) . "\" ";
 	}
 	
 	
 	if($temp_args['onchange'] != '') { 
-		$pass_output .= "onChange=\"{$temp_args['onchange']}\" ";
+		$pass_output .= "onChange=\"" . pl_html_escape($temp_args['onchange']) . "\" ";
 	} if($temp_args['onclick'] != '') { 
-		$pass_output .= "onClick=\"{$temp_args['onclick']}\" ";
+		$pass_output .= "onClick=\"" . pl_html_escape($temp_args['onclick']) . "\" ";
 	} if($temp_args['onfocus'] != '') { 
-		$pass_output .= "onFocus=\"{$temp_args['onfocus']}\" ";
+		$pass_output .= "onFocus=\"" . pl_html_escape($temp_args['onfocus']) . "\" ";
 	} if($temp_args['onblur'] != '') { 
-		$pass_output .= "onBlur=\"{$temp_args['onblur']}\" ";
+		$pass_output .= "onBlur=\"" . pl_html_escape($temp_args['onblur']) . "\" ";
 	} if($temp_args['onmouseup'] != '') { 
-		$pass_output .= "onMouseUp=\"{$temp_args['onmouseup']}\" ";
+		$pass_output .= "onMouseUp=\"" . pl_html_escape($temp_args['onmouseup']) . "\" ";
 	} if($temp_args['onmousedown'] != '') { 
-		$pass_output .= "onMouseDown=\"{$temp_args['onmousedown']}\" ";
+		$pass_output .= "onMouseDown=\"" . pl_html_escape($temp_args['onmousedown']) . "\" ";
 	}if($temp_args['onkeyup'] != '') { 
-		$pass_output .= "onKeyUp=\"{$temp_args['onkeyup']}\" ";
+		$pass_output .= "onKeyUp=\"" . pl_html_escape($temp_args['onkeyup']) . "\" ";
 	}
 	
 	
-	$pass_output .= "tabindex=\"{$temp_args['tabindex']}\" ";
+	$pass_output .= "tabindex=\"" . pl_html_escape($temp_args['tabindex']) . "\" ";
 	
 	if($temp_args['disabled']) {
 		$pass_output .= "disabled ";

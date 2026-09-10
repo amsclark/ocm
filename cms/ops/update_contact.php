@@ -10,6 +10,13 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
+
 require_once('pikaContact.php');
 
 $next_tab = pl_settings_get('default_case_tab');
@@ -31,7 +38,9 @@ $screen = pl_grab_post('screen', $next_tab);
 // The user is saving the case record. 
 
 $contact = new pikaContact($contact_id);
-$contact->setValues(pl_clean_form_input($_POST));
+// The row to write is the one named by $contact_id above. Strip the copy
+// of the key out of the body so it cannot also come from the form.
+$contact->setValues(pl_strip_protected_columns(pl_clean_form_input($_POST)));
 $contact->save();
 
 if ($case_id)

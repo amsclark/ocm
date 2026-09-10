@@ -7,6 +7,13 @@
 
 require_once ('pika-danio.php'); 
 pika_init();
+
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
 require_once('pikaTempLib.php');
 require_once('pikaUser.php');
 if (PHP_VERSION_ID >= 50303)
@@ -84,12 +91,18 @@ if($action == 'update')
 	
 	if($is_authorized)
 	{
-		$user->password = md5($newpass1);
+		// password_hash, not md5. pikaAuthDb verifies with password_verify and
+		// only falls back to md5 for rows that predate the bcrypt migration;
+		// writing md5 here would downgrade an already-bcrypt hash on every
+		// self-service password change.
+		$user->password = password_hash($newpass1, PASSWORD_DEFAULT);
 		$user->save();	
+		pl_audit('password.self_change', 'user', $auth_row['user_id']);
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Password updated successfully");
 	}
 	else 
 	{
+		pl_audit('password.self_change_failed', 'user', $auth_row['user_id']);
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Errors detected - Password not updated");
 	}
 }

@@ -39,7 +39,7 @@
 %%[begin:atty_table]%%
 			<tr class="%%[class]%%" valign="top">
 				<td>
-				<form action="dataops.php" method="POST">
+				<form action="dataops.php" method="POST">%%[csrf_field]%%
 				<input type="hidden" name="case_id" value="%%[case_id]%%">
 				<input type="hidden" name="user_id" value="%%[user_id]%%">
 				<input type="hidden" name="field" value="%%[field]%%">

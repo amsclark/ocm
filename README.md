@@ -1,61 +1,120 @@
-## Welcome to the Open Case Management (OCM) Project! ##
+# Open Case Management (OCM)
 
-### What is OCM? ###
+A case management system for not-for-profit legal aid organizations. It runs in
+a web browser, and it is free software under the GPL v2.
 
-Open Case Management is a case management system featuring a browser-based user
-interface.  It is user friendly and tailored to meet the specific needs of the
-not-for-profit legal services program.  It is freely available under the GPL v2
-open source license.  For programs that don't wish to run their own server,
-commercial hosting is available from www.pikasoftware.com.
+OCM tracks intakes, cases, clients and contacts, calendars and deadlines, time
+entries, documents, and the reporting a legal aid program needs for its
+funders — including LSC case service reporting.
 
-### Installing OCM ###
+## Try it
 
-These instructions are for CentOS 5, 6, and 7.  Instructions for other operating
-systems are on the way!
+Two commands. You need Docker with the Compose plugin, and nothing else.
 
-* Install Apache web server, PHP, and mod_ssl.
+```
+git clone https://github.com/amsclark/ocm.git
+cd ocm
+cp .env.example .env      # then set DB_PASSWORD
+docker compose up -d
+```
 
-* Install MySQL 5.7 or MariaDB 10.3.  These are the versions that the project
-officially supports.  Other MySQL/MariaDB versions are not supported and may not
-work correctly.
+Watch the first start — it builds the image and loads the schema, and prints
+the generated admin password when it finishes:
 
-* OCM requires the following PHP modules:  curl, DOM, JSON, mbstring, mcrypt,
-mysql, SimpleXML, SOAP, and zip.  This command will install the additional
-required PHP modules on CentOS 7:
-	yum install php-mysqlnd php-cli php-xml php-mcrypt php-mbstring php-soap
+```
+docker compose logs -f app
+```
 
-* Install ghostscript, it's needed for indexing PDF uploads.
+Then open **http://127.0.0.1:8080/cms/** and log in.
 
-* Create a new MySQL database named 'cms'.
+Check it worked:
 
-* Download the OCM software from https://github.com/aworley/ocm
+```
+tests/smoke.sh
+```
 
-* Move the cms directory to /var/www/html/cms and the cms-custom directory to
-/var/www/html/cms-custom
+That should end with `241 passed, 0 failed`.
 
-* Create a CMS database with the command:
-	cat /var/www/html/cms/app/sql/install/new_install.sql | mysql cms
+## Documentation
 
-* Edit the file /var/www/html/cms-custom/config/settings.php and enter a valid
-MySQL username and password.
+The [wiki](https://github.com/amsclark/ocm/wiki) is the place to look.
 
-* Point your browser to https://"your server IP address"/cms/
+* [Installation with Docker](https://github.com/amsclark/ocm/wiki/Installation-with-Docker)
+  — the above, in full: configuration, backups, upgrades, and what to do before
+  putting real client data in it
+* [Installation without Docker](https://github.com/amsclark/ocm/wiki/Installation-without-Docker)
+  — Apache, PHP and MariaDB on a server you manage
+* [Admin manual](https://github.com/amsclark/ocm/wiki/OCM-Admin-Manual)
+  — configuration, users and permissions, customization, upgrades
+* [User manual](https://github.com/amsclark/ocm/wiki/OCM-User-Manual)
+  — intakes, cases, the calendar, reports
 
-* Verify that the log in page appears.
+## Requirements
 
-* Set a new Pika CMS account by running this statement in MySQL:
-	use cms; update users set username='my.username', password=MD5('my.password');
-It's a good idea to replace my.username and my.password with more secure values.
-The insecure md5 password will be replaced by a bcrypt value the first time you
-log in, as long as the server is running PHP 5.3.3 or higher.
+Running it directly rather than in a container:
 
-* Optionally, copy the file httpd-config/ocm.conf to /etc/httpd/conf.d.  This
-file contains httpd settings that will make the CMS site more secure.  The last
-section in ocm.conf should be copied and pasted into the VirtualHost section
-in your conf.d/ssl.conf file, then uncommented, for it to take effect.
+| Component | Version |
+|---|---|
+| PHP | 8.0 – 8.3, with `mysqli`, `mbstring` and `zip` |
+| MariaDB | 10.6 or newer, or MySQL 8.0 |
+| Apache | 2.4, with `mod_rewrite` and `mod_headers` |
 
-* If you have made httpd configuration changes in the previous step, restart
-httpd and apply the new settings with the command "service httpd graceful".
+Three command-line tools, each enabling one feature: `pdftotext`
+(`poppler-utils`) to index the text of uploaded PDFs, `htmldoc` to render
+reports to PDF, and `strings` (`binutils`) to index WordPerfect documents.
+Leave one out and that feature fails quietly — the upload still succeeds, but
+document search will not find its contents.
 
-* The system is now ready to use.  You can log in and set up additional user
-accounts for everyone who needs access to the system.
+`httpd-config/ocm.conf` is a ready-made Apache configuration. Use it. Among
+other things it makes `cms-custom` unreachable over HTTP, and that directory
+holds your database password.
+
+## Security
+
+Read [SECURITY.md](SECURITY.md) before running this anywhere that holds real
+client data. It sets out what is supported, what is in scope, and how to report
+a vulnerability privately.
+
+Two things are worth knowing up front:
+
+* **Put TLS in front of it.** Nothing in this repository terminates HTTPS. The
+  in-application setting named "Allow Only Secure (HTTPS) Logins" sends a
+  redirect and does no more than that — the web server is what enforces HTTPS.
+* **This is a 2019 feature set.** See below.
+
+## What this repository is
+
+OCM is a fork of Pika CMS, which Aaron Worley released under the GPL. This
+repository holds the 2019 feature set, and it stays there on purpose.
+
+Development since then has continued in a private fork, which is where new
+features go. What comes back here is security work and bug fixes, backported
+from that fork. So this repository gets more secure and more correct over time
+without growing new features, which keeps it a stable base for anyone running
+it or building on it.
+
+Commercial hosting and support are available from Case Management
+Corporation, the maintainer of this repository.
+
+## Contributing
+
+Bug reports and pull requests are welcome
+[on GitHub](https://github.com/amsclark/ocm/issues).
+
+Two things will get a pull request merged faster:
+
+* `tests/smoke.sh` passes.
+* `php -l` is clean on every file you touched. CI checks both, on PHP 8.2.
+
+Please do not send new features. They will not be merged here — see above. A
+feature idea is still worth an issue; it may land in the private fork and reach
+you that way if you are a hosting customer.
+
+For anything that looks like a vulnerability, do not open an issue. Follow
+[SECURITY.md](SECURITY.md).
+
+## License
+
+GPL v2. The full text is in [LICENSE](LICENSE).
+
+Copyright of the original Pika CMS work remains with its authors.

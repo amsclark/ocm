@@ -9,6 +9,14 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
+// This page performs its state changes on a GET: the action is dispatched
+// out of the query string and the links that trigger it are plain <a href>
+// markup, so a hidden token field is not available as a defence here.
+// On a non-POST request pl_csrf_check() falls through to the same-site
+// check, which refuses a mutation that a foreign page initiated and needs
+// nothing from the markup. See pl_request_cross_site_verdict() in pl.php.
+pl_csrf_check();
+
 
 // LIBRARIES
 require_once('pikaCase.php');
@@ -35,13 +43,18 @@ for an contact who has no previous records.
 */
 
 // Add the contact record.
+// pl_strip_protected_columns() so the query string cannot choose the new
+// row's contact_id: the constructor already took the next id from the
+// counters table, and letting a request overwrite it either collides with
+// an existing row or steps on the id the next intake will be given. Same
+// for the case below. See pl_strip_protected_columns() in app/lib/pl.php.
 $client = new pikaContact();
-$client->setValues(pl_clean_form_input($_GET));
+$client->setValues(pl_strip_protected_columns(pl_clean_form_input($_GET)));
 $client->save();
 
 // add the case record...
 $case1 = new pikaCase();
-$case1->setValues(pl_clean_form_input($_GET));
+$case1->setValues(pl_strip_protected_columns(pl_clean_form_input($_GET)));
 
 // Now link the client to the case and set the first client as the primary client
 $case1->addContact($client->getValue('contact_id'), 1);

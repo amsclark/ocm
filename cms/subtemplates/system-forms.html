@@ -5,7 +5,7 @@
 	%%[folder_listing]%%
 	%%[forms,file_list,doc_type=F,folder_field=parent_folder]%%
 	<br/>
-	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">
+	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">%%[csrf_field]%%
 		<input type="text" value="" name="folder_name"/>
 		<input type="submit" name="add_folder" value="Add Folder"/>
 		<input type='hidden' name='folder' value="1"/>
@@ -15,7 +15,7 @@
 	</td>
 	<td valign="top">
 	<h2>Upload a Form</h2>
-	<form action="%%[base_url]%%/ops/upload_document.php" name="add_document" enctype="multipart/form-data" method="post">
+	<form action="%%[base_url]%%/ops/upload_document.php" name="add_document" enctype="multipart/form-data" method="post">%%[csrf_field]%%
 	Select a File to Add:<br/>
 	<input type="file" name="doc_upload" tabindex="1"/><br/>
 	Description of file:<br/>

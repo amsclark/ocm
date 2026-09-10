@@ -85,6 +85,19 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 	
 	$docs_array = pikaDocument::getFiles($field_value,$temp_args['doc_type'],$id);
 	$docs = $doc_types = array();
+	
+	// Document and folder names, file descriptions and the uploader's name are
+	// all user-supplied -- an uploaded filename, a typed folder name, the
+	// description typed on the file-edit form, and the first/middle/last/extra
+	// columns the text_name plugin concatenates -- and every one of them was
+	// interpolated straight into the markup below. That is a stored-XSS sink:
+	// a file named `x<img src=x onerror=...>.txt` rendered as live HTML in the
+	// documents tab of every case, form and saved-report screen that draws this
+	// plugin. Escape each render through this helper.
+	$h = function ($s)
+	{
+		return pl_html_escape($s);
+	};
 	foreach ($docs_array as $key => $file)
 	{
 		// Files		
@@ -93,45 +106,30 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 		//print_r($docs_array);
 		if($file['folder'] != 1)
 		{
-			$docs[$key]['li'] = "<a href=\"{$base_url}/documents.php?doc_id={$file['doc_id']}&action=download\" target=\"_blank\">{$file['doc_name']}</a>&nbsp;";
+			$docs[$key]['li'] = "<a href=\"{$base_url}/documents.php?doc_id={$file['doc_id']}&action=download\" target=\"_blank\">" . $h($file['doc_name']) . "</a>&nbsp;";
 		
-           switch ($file['mime_type']) 
-            {
-                case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-                case 'application/vnd.openxmlformats-officedocument.word':
-                case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-                case 'application/vnd.openxmlformats-officedocument.spre':
-                case 'application/vnd.ms-excel':
-                case 'application/rtf':
-                case 'application/msword':
-                case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
-                case 'application/vnd.openxmlformats-officedocument.pres':
-                case 'application/vnd.ms-powerpoint':
-
-	            if (preg_match('/MSIE/i', $_SERVER['HTTP_USER_AGENT'])
-	            	|| preg_match('/Trident/i', $_SERVER['HTTP_USER_AGENT'])
-	            	|| preg_match('/Edge/i', $_SERVER['HTTP_USER_AGENT']))
-	            {
-	            	$safe_name = $file['doc_name'];
-	            	// AMW 2013-07-19 - Workaround for Cleveland docs with slashes in filename.
-	                $safe_name = str_replace("/", "_", $safe_name);
-	                // AMW - urlencode() needs to be run *after* str_replace().
-	                $safe_name = urlencode($safe_name);
-	                $docs[$key]['li'] .= "<a href=\"#\" onclick='new ActiveXObject(\"SharePoint.OpenDocuments.1\").EditDocument(\"{$server_name_and_port}/{$settings['db_name']}/{$file['doc_id']}/{$safe_name}\")'>[Edit Online]</a>";                    
-	            }
-	            
-	            else
-	            {
-	            	$docs[$key]['li'] .= "&nbsp;[Online edits only available with Internet Explorer]";
-				}
-            			
-
-                break;
-                
-                default:
-                break;
-			}
-			
+		
+		// Removed: an "[Edit Online]" affordance for Office mime types that
+		// opened the document through
+		// `new ActiveXObject('SharePoint.OpenDocuments.1').EditDocument(...)`
+		// from an inline onclick, plus its
+		// "[Online edits only available with Internet Explorer]" fallback text.
+		// Unlike in later versions of this code, both halves were still live
+		// here, not commented out, so this rendered a broken link and a
+		// misleading message to every user on every supported browser.
+		//
+		// It is gone for good. ActiveX is an IE-only API that no supported
+		// browser implements -- IE is end-of-life and Edge dropped ActiveX from
+		// IE mode -- and the URL it built pointed at a hard-coded
+		// dev0.pikasoftware.com host that has nothing to do with the
+		// installation being used. The user-agent sniff it hung off read
+		// $_SERVER['HTTP_USER_AGENT'] without checking the header was present,
+		// which is a PHP notice on any request that omits it.
+		//
+		// The working path is untouched: the anchor built just above links
+		// every file to documents.php?doc_id=...&action=download, which is how
+		// these documents are actually opened.
+		
 			if(in_array($temp_args['mode'],array('select','edit_select')))
 			{
 				$number_pad = str_pad(rand(0,99999),5,'0');
@@ -155,8 +153,8 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 										<a href=\"\" onClick=\"confirmDeleteFile('{$field_name}','{$file['folder_ptr']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}','{$file['doc_id']}');return false;\">Delete</a>
 										)<br/>";
 			}
-			$description['li'] .= 	"Description: {$file['description']}<br/>
-									Created by: {$user_name}&nbsp;({$doc_size})</div>";
+			$description['li'] .= 	"Description: {$h($file['description'])}<br/>
+									Created by: {$h($user_name)}&nbsp;({$doc_size})</div>";
 									
 						
 			$docs[$key]['li'] .= pikaTempLib::plugin('ul','','',array($description),array('ul_class=pika_files'));
@@ -168,7 +166,7 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 		// Folders
 		elseif($file['folder'] == 1)
 		{
-			$docs[$key]['li'] = "<a onClick=\"fileList('{$field_name}','{$file['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');return false;\">{$file['doc_name']}</a>&nbsp;";
+			$docs[$key]['li'] = "<a onClick=\"fileList('{$field_name}','{$file['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');return false;\">" . $h($file['doc_name']) . "</a>&nbsp;";
 			if($temp_args['mode'] != 'select')
 			{
 				$docs[$key]['li'] .= "<span class='folder_actions'>
@@ -196,7 +194,7 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 			
 			if($temp_args['mode'] != 'select')
 			{
-				$file_list= "<a onClick=\"fileList('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');\">{$folder['doc_name']}</a>&nbsp;".
+				$file_list= "<a onClick=\"fileList('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');\">" . $h($folder['doc_name']) . "</a>&nbsp;" .
 							"<span class='folder_actions'>
 							(<a href=\"\" onClick=\"editFile('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}');return false;\">Edit</a>
 							|
@@ -205,7 +203,7 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 			}
 			else 
 			{
-				$file_list= "<a onClick=\"fileList('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');\">{$folder['doc_name']}</a>&nbsp;" . $file_list;
+				$file_list= "<a onClick=\"fileList('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');\">" . $h($folder['doc_name']) . "</a>&nbsp;" . $file_list;
 			}
 			$file_list = pikaTempLib::plugin('ul','','',array(array('li'=>$file_list,'li_class'=>'directory_open')),array('ul_class=pika_files'));
 		}
@@ -221,25 +219,31 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 	
 	
 	if($temp_args['div']) { // checklist contained in DIV
+		// Both are pixel counts, so intval() is the whole check: it keeps a
+		// caller from writing anything else into the style attribute.
 		$width = '';
 		if($temp_args['width']) 
 		{
-			$width = 'width:' . $temp_args['width'] . 'px;';
+			$width = 'width:' . intval($temp_args['width']) . 'px;';
 		}
 		$height = '';
 		if($temp_args['height']) 
 		{
-			$height = 'height:' . $temp_args['height'] . 'px;';
+			$height = 'height:' . intval($temp_args['height']) . 'px;';
 		}
 		$class = '';
 		if($temp_args['class']) 
 		{
-			$class = " class=\"{$temp_args['class']}\"";
+			$class = ' class="' . pl_html_escape($temp_args['class']) . '"';
 		}
 		
+		// $div_id was only ever assigned inside the if, so a caller that
+		// passed no id reached the interpolation below with the variable
+		// undefined -- a warning in the page body on PHP 8.
+		$div_id = '';
 		if($temp_args['id'])
 		{
-			$div_id = " id=\"{$temp_args['id']}\"";
+			$div_id = ' id="' . pl_html_escape($temp_args['id']) . '"';
 		}
 		
 		$file_list_output = "<div{$class}{$div_id} style=\"background-color:#FFFFFF;{$width}{$height}border:1px black solid;overflow:auto;\">"

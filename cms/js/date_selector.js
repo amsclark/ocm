@@ -44,18 +44,24 @@ function openCalendar(field_name,container)
 }
 
 function closeCalendar(container) {
-	calendar_container = document.getElementById(container);
+	var calendar_container = document.getElementById(container);
 	if(calendar_container.style.display == "block") {
 		calendar_container.style.display = "none";
-		calendar_container.innerHTML = null;	
+    while (calendar_container.firstChild) {
+      calendar_container.removeChild(calendar_container.firstChild);
+    }
 	}
 }
 
 function drawCalendar(container)
 {
 	calendar_container = document.getElementById(container);
-	calendar_container.innerHTML = xmlHttp.responseText;
-	
+
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(xmlHttp.responseText, 'text/html');
+  Array.from(doc.body.childNodes).forEach(function(node) {
+    calendar_container.appendChild(node);
+  });
 	
 }
 

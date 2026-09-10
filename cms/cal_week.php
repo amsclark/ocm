@@ -48,6 +48,34 @@ if (strlen($cal_date) < 1)
 
 $user_id = pl_grab_var('user_id');
 
+// This value is interpolated into a dozen hrefs, into the RSS link and into
+// the activity filter. pl_grab_var() encodes only < and >, so a quote used to
+// break out of an attribute and run script, and the same value reached the
+// SQL. It has exactly two valid shapes: a numeric user id, or 'office_' plus
+// an office code. Check the shape once here instead of escaping a dozen
+// interpolations, and fall back to the current user when it is neither --
+// echoing the submitted value back is what made this reflected.
+//
+// The office_ form has to survive the check: the private build cast this to
+// (int) and silently broke its own office calendar filter.
+if (strlen($user_id) > 0 && 'mine' != $user_id)
+{
+	if ('office_' == substr($user_id, 0, 7))
+	{
+		if (!preg_match('/^office_[A-Za-z0-9_-]{1,20}$/', $user_id))
+		{
+			pl_log_error('calendar user_id rejected', 'malformed office filter');
+			$user_id = '';
+		}
+	}
+	
+	else if (!ctype_digit((string) $user_id))
+	{
+		pl_log_error('calendar user_id rejected', 'neither a user id nor an office filter');
+		$user_id = '';
+	}
+}
+
 if (strlen($user_id) < 1)
 {
 	$user_id = $auth_row['user_id'];

@@ -106,7 +106,15 @@ ini_set('session.hash_bits_per_character', 5);
 require_once('app/lib/pikaSettings.php');
 $plSettings = pikaSettings::getInstance();
 
-session_set_cookie_params(0,$plSettings['base_url']);
+/*	Mark the session cookie Secure when the request arrived over HTTPS. See the
+	matching comment in pika-danio.php: php.ini cannot set this unconditionally
+	without locking plain-HTTP installs out of logging in.
+*/
+$https_on = isset($_SERVER['HTTPS'])
+	&& strlen((string) $_SERVER['HTTPS']) > 0
+	&& 'off' !== strtolower((string) $_SERVER['HTTPS']);
+
+session_set_cookie_params(0, $plSettings['base_url'], '', $https_on, true);
 
 // Set this to avoid other php websites (such as SugarCRM) from invading the current session w/ serialized objects
 $session_name = 'PikaCMS' . PIKA_VERSION . PIKA_REVISION . PIKA_PATCH_LEVEL;
@@ -151,6 +159,14 @@ else
 	authenticate();
 	$auth_row = pikaAuth::getInstance()->getAuthRow();
 }
+
+/*	MFA enrollment gate. An account whose administrator turned MFA on but
+	which has no usable secret yet goes to enroll_mfa.php and nowhere
+	else, until it has one. Fails open on any error -- see
+	cms/app/lib/pikaMfaEnroll.php.
+*/
+require_once('app/lib/pikaMfaEnroll.php');
+pl_mfa_enroll_gate();
 
 
 

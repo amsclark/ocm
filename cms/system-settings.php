@@ -7,6 +7,13 @@
 
 require_once('pika-danio.php');
 pika_init();
+
+// Every POST to this handler must carry the per-session CSRF token.
+// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
+if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	pl_csrf_check();
+}
 require_once('pikaSettings.php');
 require_once('pikaMisc.php');
 require_once('pikaTempLib.php');
@@ -99,11 +106,23 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	'owner_name', 'admin_email', 'act_interval',
 	'time_zone', 'time_zone_offset', 'session_timeout', 'pass_min_strength',
 	'pass_min_length', 'password_expire', 'force_https', 'autofill_time_funding',
-	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes');
+	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
+	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
+		it is handled on its own below so that a blank field leaves the
+		stored secret alone. sso_allow_insecure_transport is not here either
+		and has no field on this form -- it exists for a test harness and is
+		set by direct SQL only.
+	*/
+	'sso_enabled', 'sso_provider', 'sso_tenant_id', 'sso_hosted_domain',
+	'sso_issuer_url', 'sso_discovery_url', 'sso_client_id',
+	'sso_autobind_by_email', 'sso_autobind_domains');
 
 switch ($action)
 {
 	case 'update':
+		// Track which settings actually changed so the audit log records a
+		// usable diff rather than every key in the form.
+		$changed = array();
 		foreach ($list_of_settings as $setting_name)
 		{
 			if(isset($_POST[$setting_name]))
@@ -113,17 +132,66 @@ switch ($action)
 					//  AMW
 					// Users enter the session timeout in minutes.  Convert this
 					// to seconds for use by Pika.
-					pl_settings_set('session_timeout', $_POST['session_timeout'] * 60);
+					$new_value = $_POST['session_timeout'] * 60;
+					$old_value = pl_settings_get('session_timeout');
+					pl_settings_set('session_timeout', $new_value);
 				}
 				
 				else
 				{
-					pl_settings_set($setting_name, $_POST[$setting_name]);
+					$new_value = $_POST[$setting_name];
+					$old_value = pl_settings_get($setting_name);
+					pl_settings_set($setting_name, $new_value);
+				}
+				
+				if ((string)$old_value !== (string)$new_value)
+				{
+					// Never log a password-like setting value; just record
+					// that it changed. Keeps secrets out of audit records
+					// even when they live in the settings table.
+					$is_secret = (stripos($setting_name, 'password') !== false
+					           || stripos($setting_name, 'secret')   !== false
+					           || stripos($setting_name, 'api_key')  !== false
+					           || stripos($setting_name, 'auth_token') !== false);
+					$changed[$setting_name] = $is_secret
+						? array('redacted' => true)
+						: array('old' => $old_value, 'new' => $new_value);
+				}
+			}
+		}
+		
+		/*	The client secret is write-only from this form. The field is
+			rendered empty, so an administrator who saves the page without
+			retyping it must not thereby erase it -- pl_settings_save() is a
+			DELETE-all followed by a re-INSERT of the whole merged array, so
+			a value that is not set is a value that is gone.
+			
+			Clearing it on purpose is done by turning SSO off, or with direct
+			SQL. A form that can blank a credential by being submitted is a
+			form that blanks credentials by accident.
+		*/
+		if (isset($_POST['sso_client_secret']))
+		{
+			$posted_secret = (string) $_POST['sso_client_secret'];
+			
+			if ('' !== $posted_secret)
+			{
+				$old_secret = (string) pl_settings_get('sso_client_secret');
+				pl_settings_set('sso_client_secret', $posted_secret);
+				
+				if ($old_secret !== $posted_secret)
+				{
+					$changed['sso_client_secret'] = array('redacted' => true);
 				}
 			}
 		}
 		
 		pl_settings_save();
+		
+		if (!empty($changed))
+		{
+			pl_audit('setting.update', 'setting', null, array('changed' => $changed));
+		}
 		
 	default:
 
@@ -131,6 +199,45 @@ switch ($action)
 		
 		// AMW - do not transmit the database password, that field stays blank.
 		$html['db_password'] = '';
+		
+		/*	Same rule for the OIDC client secret: the browser is told whether
+			one is stored, never what it is.
+		*/
+		$sso_secret_stored = (strlen((string) pl_settings_get('sso_client_secret')) > 0);
+		$html['sso_client_secret'] = '';
+		$html['sso_secret_status'] = $sso_secret_stored
+			? 'A client secret is stored. Leave this blank to keep it.'
+			: 'No client secret is stored yet.';
+		
+		/*	The exact string to register at the identity provider. Providers
+			compare the redirect URI byte for byte, and a mismatch is the
+			single most common reason a first SSO setup does not work, so the
+			value this application will actually send is shown here rather
+			than described in prose.
+		*/
+		require_once('app/lib/pikaSsoOidc.php');
+		$html['sso_redirect_uri'] = pl_sso_redirect_uri();
+		
+		$sso_ready_reason = '';
+		
+		if (!pl_sso_schema_ready())
+		{
+			$html['sso_status'] = 'The database is missing the single sign-on columns. '
+				. 'Apply cms/app/sql/upgrades/add_sso.sql, or restart the container, '
+				. 'before turning this on.';
+		}
+		
+		elseif (pl_sso_ready(null, $sso_ready_reason))
+		{
+			$html['sso_status'] = 'Single sign-on is configured and the sign-in page '
+				. 'offers it.';
+		}
+		
+		else
+		{
+			$html['sso_status'] = 'Single sign-on is not in use. Reason: '
+				. $sso_ready_reason;
+		}
 		
 		// AMW - convert session timeout limit from seconds (internal)to 
 		// minutes (user-space).
@@ -143,6 +250,12 @@ switch ($action)
 		$template->addMenu('pass_min_strength',$pass_min_strength);
 		$template->addMenu('pass_min_length',$pass_min_length);
 		$template->addMenu('password_expire', $expire);
+		$template->addMenu('sso_provider', array(
+			''        => 'None',
+			'google'  => 'Google Workspace',
+			'entra'   => 'Microsoft Entra ID',
+			'generic' => 'Other OpenID Connect provider'
+		));
 		$main_html['content'] = $template->draw();
 		
 		break;

@@ -1,3 +1,17 @@
+// Per-session CSRF token for the two mutating documents.php actions
+// (update / delete). documents.php stamps a hidden _csrf input into the
+// `edit` and `confirm_delete` fragments it returns -- see
+// pl_documents_csrf_stamp() there -- so by the time either of those buttons
+// is clickable the token is in the DOM. Fall back to any other _csrf input on
+// the host page for callers that reach removeFile()/updateFile() by some
+// other route.
+function flCsrfToken() {
+	var scoped = document.querySelector('[data-documents-csrf] input[name="_csrf"]');
+	if (scoped && scoped.value) { return scoped.value; }
+	var any = document.querySelector('input[name="_csrf"]');
+	return any ? any.value : '';
+}
+
 function fileList(container,folder_ptr,mode,doc_type,folder_field,doc_field,case_id,report_name) {
 	xmlHttp=GetXmlHttpObject();
 	if (xmlHttp==null) {
@@ -121,36 +135,35 @@ function updateFile(container,folder_ptr,mode,doc_type,folder_field,doc_field,ca
         }
         
 	}
+	// documents.php's `update` action is a state change and now requires POST
+	// plus the per-session CSRF token (it used to be a bare GET, so any page
+	// that could make the browser issue one could rename or re-folder a client
+	// document). Build the same field set as before, but as a urlencoded POST
+	// body instead of a query string.
 	var url="%%[base_url]%%/documents.php";
-	url=url+"?action=update"; // Folder PTR
-	var all_elem = document.getElementsByTagName('*');
-	//alert(all_elem.length);
-	//var str = '';
-	//for(var i = 0;i<all_elem.length;i++) {
-	//  	str += all_elem[i].name + ':' + all_elem[i].type + "\n";
-	//}
-	//alert(str);
+	var body="action=update";
 	var elem = document.getElementById(form_name).elements;
 	
 	for(var i = 0;i<elem.length;i++) {
 		if((elem[i].type == 'hidden' && elem[i].value != 0) || elem[i].type == 'text' || elem[i].type == 'textarea') {
-			url += '&' + elem[i].name + '=' + elem[i].value;
+			body += '&' + encodeURIComponent(elem[i].name) + '=' + encodeURIComponent(elem[i].value);
 		}
 		if(elem[i].type == 'select-one') {
-			url += '&' + elem[i].name + '=';
+			body += '&' + encodeURIComponent(elem[i].name) + '=';
 			for(var j = 0;j<elem[i].options.length;j++) {
 				if(elem[i].options[j].selected)
 				{
-					url += elem[i].options[j].value;
+					body += encodeURIComponent(elem[i].options[j].value);
 				}				
 			}
 		}
 	}
-		
 	
-	//alert(url);
-	xmlHttp.open("GET",url,true);
-	xmlHttp.send(null);
+	body += '&_csrf=' + encodeURIComponent(flCsrfToken());
+	
+	xmlHttp.open("POST",url,true);
+	xmlHttp.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
+	xmlHttp.send(body);
 }
 
 function removeFile(container,folder_ptr,mode,doc_type,folder_field,doc_field,case_id,report_name,doc_id) {
@@ -171,19 +184,29 @@ function removeFile(container,folder_ptr,mode,doc_type,folder_field,doc_field,ca
         }
         
 	}
+	// Same POST + CSRF conversion as updateFile() above. This one destroys a
+	// document, so it is the one that most needed to stop being reachable by a
+	// cross-site GET.
 	var url="%%[base_url]%%/documents.php";
-	url=url+"?action=delete"; // Folder PTR
-	url=url+"&doc_id="+doc_id; // doc_id
-	//alert(url);
-	xmlHttp.open("GET",url,true);
-	xmlHttp.send(null);
+	var body="action=delete"
+	       + "&doc_id=" + encodeURIComponent(doc_id)
+	       + "&_csrf=" + encodeURIComponent(flCsrfToken());
+	xmlHttp.open("POST",url,true);
+	xmlHttp.setRequestHeader("Content-Type","application/x-www-form-urlencoded");
+	xmlHttp.send(body);
 }
 
 
 function draw(container)
 {
 	var file_list_container = document.getElementById(container);
-	file_list_container.innerHTML = xmlHttp.responseText;
+	
+	// Parse the response text and append it as nodes
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(xmlHttp.responseText, 'text/html');
+  Array.from(doc.body.childNodes).forEach(function(node) {
+    file_list_container.appendChild(node);
+  });	
 	return false; // to prevent user from following link href
 }
 

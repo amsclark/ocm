@@ -10,6 +10,14 @@ chdir('../');
 
 require_once ('pika-danio.php');
 pika_init();
+
+// This page performs its state changes on a GET: the action is dispatched
+// out of the query string and the links that trigger it are plain <a href>
+// markup, so a hidden token field is not available as a defence here.
+// On a non-POST request pl_csrf_check() falls through to the same-site
+// check, which refuses a mutation that a foreign page initiated and needs
+// nothing from the markup. See pl_request_cross_site_verdict() in pl.php.
+pl_csrf_check();
 require_once('pikaCase.php');
 require_once('pikaMisc.php');
 require_once('pikaSettings.php');
@@ -212,6 +220,12 @@ while ($notes = DBResult::fetchRow($result))
 // Set the original case to transferred status.
 $case->status = 4;
 $case->save();
+
+pl_audit('case.transfer', 'case', $case_id, array(
+    'case_number'        => $case->number,
+    'transfer_option_id' => $transfer_option_id,
+    'remote_case_id'     => $tx_case_id,
+));
 
 $number = $case->number;
 if(strlen($number) < 1)

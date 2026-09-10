@@ -1,6 +1,6 @@
 %%[begin:edit_option]%%
 <h2 class="hdt">%%[op_hdr]%%</h2>
-<form action="%%[base_url]%%/transfer_options.php" method="POST">
+<form action="%%[base_url]%%/transfer_options.php" method="POST">%%[csrf_field]%%
 <table cellpadding="0">
 <tr>
 	<th>Field</th>
@@ -52,13 +52,13 @@
 		<td>%%[transfer_mode]%%</td>
 		<td>&nbsp;</td>
 		<td>
-		<form action="%%[base_url]%%/transfer_options.php" method="POST">
+		<form action="%%[base_url]%%/transfer_options.php" method="POST">%%[csrf_field]%%
 		<input type="hidden" name="action" value="edit">
 		<input type="hidden" name="transfer_option_id" value="%%[transfer_option_id]%%">
 		<input type="submit" name="edit" value="Edit">
 		</form>
 		</td><td>
-		<form action="%%[base_url]%%/transfer_options.php" method="POST" onsubmit="return confirm('Are you sure you want to Delete this Agency?');">
+		<form action="%%[base_url]%%/transfer_options.php" method="POST" onsubmit="return confirm('Are you sure you want to Delete this Agency?');">%%[csrf_field]%%
 		<input type="hidden" name="action" value="delete">
 		<input type="hidden" name="transfer_option_id" value="%%[transfer_option_id]%%">
 		<input type="submit" name="delete" value="Delete">
@@ -74,7 +74,7 @@
 &nbsp;&nbsp;Creates a new case transfer partner<br/>
 available from the Pika Case Transfer screen...<br/>
 <br/>
-<form action="%%[base_url]%%/transfer_options.php" method="POST">
+<form action="%%[base_url]%%/transfer_options.php" method="POST">%%[csrf_field]%%
 <input type="hidden" name="action" value="add">
 <input type="submit" name="add" value="Add New Agency">
 </form>

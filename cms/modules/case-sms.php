@@ -144,7 +144,7 @@ $form_url = $base_url . "/case.php?case_id={$case_id}&screen=sms";
 $C .= "
 <br>
 <h4>Send a SMS message to a case contact</h4>
-<form method='POST' action='".$form_url."'>
+<form method='POST' action='".$form_url."'>".pl_csrf_hidden_input()."
 Cell Number:<br>
 <select name='cell'>{$mobile_options}</select><br>
 Message:<br>
