@@ -64,7 +64,7 @@ class plBase
 			$this->values = array_merge($this->values, $this->db_table_default_values);
 			if($this->use_next_id_counter) 
 			{
-				$this->values[$this->db_table_id_column] = self::getNextID($this->db_table);
+				$this->values[$this->db_table_id_column] = self::getNextID($this->db_table, $this->db_table_id_column);
 			}
 		}
 		else
@@ -530,12 +530,59 @@ class plBase
 	 * Returns next id value from counters table.
 	 *
 	 * @param string $sequence
+	 * @param string $id_column Primary key of the table named by $sequence,
+	 *                          when the sequence is a table. Used to notice
+	 *                          a counter that has fallen behind the rows.
 	 * @return int $next_id
 	 */
-	public static function getNextID($sequence)
+	public static function getNextID($sequence, $id_column = null)
 	{
 		$safe_sequence = DB::escapeString($sequence);
 		$next_id = null;
+		
+		/*	How high do the rows already go?
+			
+			The counters row is the only thing that hands out ids, so it
+			normally stays ahead of the table. It falls behind when rows
+			arrive some other way - a restored dump, a migration, an import
+			- and then every INSERT fails on a duplicate key and the page
+			returns nothing at all, over and over, until somebody edits the
+			counters table by hand.
+			
+			Read the real high-water mark and start above it. This has to
+			happen before the LOCK below: while counters is locked this
+			session can read no other table.
+		*/
+		$max_existing = 0;
+		
+		if (is_string($id_column) && pl_safe_identifier($sequence, 'sequence table')
+			&& pl_safe_identifier($id_column, 'sequence id column'))
+		{
+			$sql = "SELECT MAX(`{$id_column}`) AS max_id FROM `{$sequence}`";
+			
+			/*	A sequence name that is not a table - and mysqli reports a
+				bad query as an exception on PHP 8 by default - must not
+				stop the allocation. Fall back to the counter alone.
+			*/
+			try
+			{
+				$result = DB::query($sql);
+				
+				if ($result)
+				{
+					$row = DBResult::fetchRow($result);
+					
+					if (isset($row['max_id']) && is_numeric($row['max_id']))
+					{
+						$max_existing = (int) $row['max_id'];
+					}
+				}
+			}
+			catch (Exception $e)
+			{
+				$max_existing = 0;
+			}
+		}
 		
 		$sql = "LOCK TABLES counters WRITE";
 		DB::query($sql) or trigger_error("SQL: " . $sql . ' Error: ' . DB::error());
@@ -547,16 +594,23 @@ class plBase
 		
 		if (DBResult::numRows($result) < 1)
 		{
-			$sql = "INSERT INTO counters SET id = '{$safe_sequence}', count = '1'";
+			$next_id = $max_existing + 1;
+			$sql = "INSERT INTO counters SET id = '{$safe_sequence}', count = '{$next_id}'";
 			DB::query($sql) or trigger_error("SQL: " . $sql . ' Error: ' . DB::error());
-			$next_id = 1;
 		}
 	
 		else
 		{
 			$row = DBResult::fetchRow($result);
-			$next_id = $row['count'] + 1;
-			$sql = "UPDATE counters SET count = count + '1' WHERE id = '{$safe_sequence}' LIMIT 1";
+			$count = (int) $row['count'];
+			
+			if ($max_existing > $count)
+			{
+				$count = $max_existing;
+			}
+			
+			$next_id = $count + 1;
+			$sql = "UPDATE counters SET count = '{$next_id}' WHERE id = '{$safe_sequence}' LIMIT 1";
 			DB::query($sql) or trigger_error("SQL: " . $sql . ' Error: ' . DB::error());
 			
 		}

@@ -45,7 +45,10 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 			if ($tab['file'] == "case-{$field_name}.php"){
 				$current = ' class="active"';
 			}
-			$screen_name = $tab['file'];
+			/*	The file column is nullable, so a row saved without a module
+				file reached substr(), strpos() and the sanitiser below as null.
+			*/
+			$screen_name = (string) $tab['file'];
 			if(substr($screen_name,0,5) == 'case-') {
 				$screen_name = substr($screen_name,5);
 			}
@@ -53,6 +56,15 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 			if($ext_location !== false) {
 				$screen_name = substr($screen_name,0,$ext_location);
 			}
+			
+			/*	The screen name is the module file name off the case_tabs
+				row. It goes into the href below and, in JavaScript mode,
+				into a single-quoted JavaScript string, so a row holding a
+				quote in its file name put script of the writer's choosing
+				on every case screen. A module file name is a plain word;
+				keep the characters a file name can hold and drop the rest.
+			*/
+			$screen_name = preg_replace('/[^A-Za-z0-9_.-]/','',$screen_name);
 			$onclick = '';
 			if(strlen($temp_args['onclick']) > 0) {
 				$onclick .= $temp_args['onclick'];
@@ -60,13 +72,23 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 			if($temp_args['js_mode'] && $autosave) {
 				$onclick .= "if(typeof window.setConfirmUnload == 'function') setConfirmUnload(false); document.forms.ws.screen.value='{$screen_name}'; document.forms.ws.submit(); return false;";
 			}
+			/*	The tab name is typed in on the Case Tabs admin screen and
+				went into the link as it came out of the table.
+				pl_clean_html() rather than pl_html_escape(): the name was
+				written through pl_grab_get(), which has already turned <
+				and > into entities, so escaping a second time would show
+				the user "&lt;" where the tab was named "<".
+			*/
+			$tab_name = pl_clean_html($tab['name']);
+			$case_id = isset($field_value['case_id']) ? rawurlencode((string) $field_value['case_id']) : '';
+			
 			if(!isset($case_tabs[$tab['tab_row']])) { $case_tabs[$tab['tab_row']] = ''; }
 			$case_tabs[$tab['tab_row']] .= "<li{$current}>";
 			
 			if($temp_args['url']) {
-				$case_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$screen_name}\" onClick=\"{$onclick}\">{$tab['name']}</a>";
+				$case_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$screen_name}\" onClick=\"{$onclick}\">{$tab_name}</a>";
 			} else {
-				$case_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/case.php?case_id={$field_value['case_id']}&screen={$screen_name}\" onClick=\"{$onclick}\">{$tab['name']}</a>";				
+				$case_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/case.php?case_id={$case_id}&screen={$screen_name}\" onClick=\"{$onclick}\">{$tab_name}</a>";				
 			}
 			$case_tabs[$tab['tab_row']] .= "</li>\n";
 		}

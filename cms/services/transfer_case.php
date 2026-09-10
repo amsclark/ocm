@@ -22,7 +22,24 @@ $user_id = $auth_row['user_id'];
 
 $action = pl_grab_post('action');
 $format = pl_grab_post('format');
-$raw = pl_grab_post('payload');
+
+/*	The signature covers the bytes the peer sent, so the body is read here
+	without going through pl_grab_post().
+	
+	pl_grab_post() runs pl_clean_form_input(), which trims the ends and
+	rewrites < and > as &lt; and &gt;. The HMAC used to be checked against
+	that rewritten copy, so a peer that signed what it actually sent was
+	refused with bad_signature as soon as any case field held a < or a > -
+	"rent < $500" in a note was enough - and the only body that got through
+	was one signed over the escaped form. The same rewrite changed the byte
+	lengths inside a serialize() body, so the legacy format could not carry
+	those characters at all.
+	
+	Nothing reads this string except the signature comparison and the
+	decoder below. The decoded array is escaped before any handler sees it.
+*/
+$raw = (isset($_POST['payload']) && is_string($_POST['payload'])) ? $_POST['payload'] : null;
+$raw_action = (isset($_POST['action']) && is_string($_POST['action'])) ? $_POST['action'] : '';
 
 /*	How the body is read.
 	
@@ -84,7 +101,7 @@ if ('json' === $format)
 	/*	hash_equals, not ==, so that a wrong signature always costs the
 		same time to reject and cannot be guessed one byte at a time.
 	*/
-	$expected = hash_hmac('sha256',$action . "\n" . $raw . "\n" . $ts,$secret);
+	$expected = hash_hmac('sha256',$raw_action . "\n" . $raw . "\n" . $ts,$secret);
 	if (!hash_equals($expected,$signature))
 	{
 		peer_transfer_reject('bad_signature',$action,$peer_user);
@@ -114,6 +131,27 @@ else
 		peer_transfer_reject('bad_serialized_payload',$action,$peer_user);
 	}
 }
+
+/*	Escape the payload the way a browser submission is escaped.
+	
+	Everything a user types reaches a column through pl_grab_var(), which runs
+	pl_clean_form_input() and rewrites < and > as &lt; and &gt;. This endpoint
+	went from json_decode() straight to setValues(), so nothing in it asked for
+	that escaping. Until the signature fix below it got it by accident: the body
+	was read through pl_grab_post(), which had already cleaned it - which is
+	also why an honestly signed body was refused. Now that the raw bytes are
+	read for the signature, the escaping has to be asked for here, or a peer
+	installation becomes the one writer on the box that can put a raw < into a
+	contact name, a case field or an activity summary. The list pages draw cell
+	values as they come out of the row, so that text would run as script on the
+	screen of whoever searched for the record.
+	
+	cms/services/transfer_case_v2.php and transfer_case_lsxml.php already clean
+	their bodies this way. pl_clean_form_input() walks an array and keeps its
+	keys, so the addCaseContact handler still reads $payload[0..2] and the
+	numeric tests below still work.
+*/
+$payload = pl_clean_form_input($payload);
 
 pl_audit('peer_transfer.accepted','peer_transfer',null,array(
 	'action' => (string) $action,
