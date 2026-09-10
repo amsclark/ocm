@@ -11,12 +11,25 @@ chdir('../');
 require_once ('pika-danio.php');
 pika_init();
 
-// This page performs its state changes on a GET: the action is dispatched
-// out of the query string and the links that trigger it are plain <a href>
-// markup, so a hidden token field is not available as a defence here.
-// On a non-POST request pl_csrf_check() falls through to the same-site
-// check, which refuses a mutation that a foreign page initiated and needs
-// nothing from the markup. See pl_request_cross_site_verdict() in pl.php.
+/*	This handler reads its input with pl_grab_post() and the only thing that
+	links to it is the POST form in subtemplates/transfer.html, which carries
+	the per-session token. Refuse anything else.
+	
+	A GET used to run the whole transfer with no case_id: pikaCase built an
+	empty new case, took an id for it out of the counters table, and offered
+	that to a transfer option that was equally blank.
+	
+	See pl_csrf_check() in cms/app/lib/pl.php for the token framework.
+*/
+if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'POST')
+{
+	header('HTTP/1.1 405 Method Not Allowed');
+	header('Allow: POST');
+	header('Content-Type: text/plain; charset=utf-8');
+	echo "A case transfer must be submitted as a POST with a CSRF token.\n";
+	exit();
+}
+
 pl_csrf_check();
 require_once('pikaCase.php');
 require_once('pikaMisc.php');
@@ -158,6 +171,18 @@ function transfer_error($msg = null,$line = 0,$case_id = null)
 
 // BEGIN MAIN CODE...
 
+/*	Both ids have to name a record that is there.
+	
+	plBase reads a missing or non-numeric id as "this is a new record", so a
+	request without them built an empty case and an empty transfer option
+	instead of failing, and each one took a value out of the counters table
+	on the way past.
+*/
+if (!is_numeric($case_id) || !is_numeric($transfer_option_id))
+{
+	transfer_error('Pick a case and a transfer destination.',__LINE__,null);
+}
+
 // ENFORCE PERMISSIONS
 $case = new pikaCase($case_id);
 $case_row = $case->getValues();
@@ -190,7 +215,7 @@ $response = pika_transfer($data,$transfer_option_id);
 $tx_case_id = $response;
 if (!is_numeric($response))
 {
-	$msg = 'Action: newCase<br/>\nError: Unable to transfer case data.<br/>\nResponse: ' . $response;
+	$msg = 'Action: newCase<br/>\nError: Unable to transfer case data.<br/>\nResponse: ' . pl_html_escape($response);
 	transfer_error($msg,__LINE__,$case_id);
 }
 
@@ -206,7 +231,7 @@ while ($contact_row = DBResult::fetchRow($result))
 	$tx_contact_id = $response;
 	if (!is_numeric($response))
 	{
-		$msg = 'Action: newContact<br/>\nError: Unable to Add Case Contact.<br/>\nResponse: ' . $response;
+		$msg = 'Action: newContact<br/>\nError: Unable to Add Case Contact.<br/>\nResponse: ' . pl_html_escape($response);
 		transfer_error($msg,__LINE__,$case_id);
 	}
 	
@@ -227,7 +252,7 @@ while (sizeof($stack) > 0)
 	$response = pika_transfer($data,$transfer_option_id);
 	if (!is_numeric($response))
 	{
-		$msg = 'Action: addCaseContact<br/>\nError: Unable to associate contact with transferred case.<br/>\nResponse: ' . $response;
+		$msg = 'Action: addCaseContact<br/>\nError: Unable to associate contact with transferred case.<br/>\nResponse: ' . pl_html_escape($response);
 		transfer_error($msg,__LINE__,$case_id);
 	}	
 }
@@ -248,7 +273,7 @@ while ($notes = DBResult::fetchRow($result))
 	$response = pika_transfer($data,$transfer_option_id);
 	if (!is_numeric($response))
 	{
-		$msg = 'Action: newActivity<br/>\nError: Unable to associate case note with transferred case.<br/>\nResponse: ' . $response;
+		$msg = 'Action: newActivity<br/>\nError: Unable to associate case note with transferred case.<br/>\nResponse: ' . pl_html_escape($response);
 		transfer_error($msg,__LINE__,$case_id);
 	}	
 }
@@ -268,12 +293,17 @@ if(strlen($number) < 1)
 {
 	$number = 'No Case #';
 }
-$case_url = "<a href=\"{$base_url}/case.php?case_id={$case_id}\">{$case->number}</a>";
+/*	The case number is typed in, and the response line below repeats what
+	the receiving installation sent back, so neither goes into the page as
+	it stands.
+*/
+$safe_case_id = rawurlencode((string) $case_id);
+$case_url = "<a href=\"{$base_url}/case.php?case_id={$safe_case_id}\">" . pl_clean_html($case->number) . "</a>";
 
 $main_html = array();
 $main_html['content'] = "Transfer of case # ".
 						$case_url . " ".
-						"Complete, transferred case reference number # is '{$tx_case_id}'.";
+						"Complete, transferred case reference number # is '" . pl_html_escape($tx_case_id) . "'.";
 $main_html['page_title'] = $page_title = 'Case Transfer';
 $main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; {$case_url} &gt; {$page_title}";
 $default_template = new pikaTempLib('templates/default.html',$main_html);
