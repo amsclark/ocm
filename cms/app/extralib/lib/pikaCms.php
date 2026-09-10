@@ -2177,82 +2177,14 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	}
 
 	
-	function fetchCaseCharges($case_id)
-	{
-		$sql = "SELECT case_charges.*, charges.charge_label, charges.statute,
-							 menu_disposition.label AS disposition_label 
-						FROM case_charges 
-						LEFT JOIN charges ON case_charges.charge_id=charges.charge_id 
-						LEFT JOIN menu_disposition ON case_charges.disposition=menu_disposition.value 
-						WHERE case_id='$case_id'";
-		return DB::query($sql);
-	}
-	
-
-	function lookupChargeByStatute($statute)
-	{
-		// find the statute's charge_id
-		$sql = "SELECT charge_id FROM charges WHERE statute='$statute' LIMIT 1";
-		$result = DB::query($sql);
-		$row = DBResult::fetchRow($result);
-		return $row['charge_id'];
-	}
-	
-	
-	function addCaseCharge($case_id, $charge_id, $incident_date, $dispo_id)
-	{
-		// generate a new case_charge id
-		$id = pl_new_id('case_charges');
-
-		// initially assign the case's first charge as the primary charge
-		$sql = "SELECT COUNT(*) AS tally FROM case_charges WHERE case_id='$case_id'";
-		$result = DB::query($sql);
-		$row = DBResult::fetchRow($result);
+	/*	The five case_charges methods were removed here.
 		
-		if ($row['tally'] < 1)
-		{
-			$sql = "UPDATE cases SET primary_charge_id=$id WHERE case_id='$case_id' LIMIT 1";
-		}
-		
-		// add the case_charge record
-		if ($incident_date)
-		{
-			$incident_date_str = ", incident_date='$incident_date'";
-		}
-		
-		if ($dispo_id)
-		{
-			$dispo_id_str = ", disposition=$dispo_id";
-		}
-
-		DB::query("INSERT INTO case_charges SET case_charge_id=$id, case_id=$case_id, charge_id=$charge_id$incident_date_str$dispo_id_str");
-		
-		return true;
-	}
-	
-	function updateDisposition($case_charge_id, $disposition=null)
-	{
-		if (!$disposition)
-		{
-			$disposition = 'null';
-		}
-		
-		$sql = "UPDATE case_charges SET disposition=$disposition WHERE case_charge_id=$case_charge_id
-				LIMIT 1";
-		
-		//echo $sql;
-		
-		DB::query($sql);
-		
-		return true;
-	}
-	
-	function deleteCaseCharge($case_charge_id)
-	{
-		$sql = "DELETE FROM case_charges WHERE case_charge_id=$case_charge_id LIMIT 1";
-		DB::query($sql);
-		return true;
-	}
+		Their only callers were the two dead criminal-charges handlers in
+		dataops.php, which are gone; see the note there. Each one built SQL by
+		interpolating its arguments, and those arguments came straight from the
+		request, so leaving them in place would have kept the injection one
+		future caller away. new_install.sql creates neither table they query.
+	*/
 	
 	function fetchSurveyQuestions()
 	{

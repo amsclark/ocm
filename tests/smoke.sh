@@ -714,12 +714,21 @@ sqli_probe "a legitimate dotted sort column still renders the case list" \
 # The allowlist logs every rejection. Without this the probes above would also
 # pass on a build where the payload simply happened not to break anything.
 if [ -n "${COMPOSE_PROJECT:-}" ]; then
-	if docker compose -p "$COMPOSE_PROJECT" logs app 2>/dev/null \
-		| grep -q 'invalid SQL identifier rejected by allowlist'; then
+	# Collect the log first, then search it. Piping straight into `grep -q`
+	# makes this check flaky: grep exits on the first match, `docker compose
+	# logs` then dies of SIGPIPE with 141, and `set -o pipefail` reports the
+	# whole pipeline as failed even though the pattern WAS found. It only
+	# shows up once the log is long enough for grep to win the race.
+	APPLOG="$(mktemp)"
+	docker compose -p "$COMPOSE_PROJECT" logs app >"$APPLOG" 2>/dev/null
+	
+	if grep -q 'invalid SQL identifier rejected by allowlist' "$APPLOG"; then
 		ok "the identifier allowlist logged the rejected sort columns"
 	else
 		bad "no allowlist rejection in the app log - pl_safe_order_by() did not run"
 	fi
+	
+	rm -f "$APPLOG"
 else
 	printf '  skip allowlist log check (set COMPOSE_PROJECT to enable)\n'
 fi
@@ -1850,6 +1859,172 @@ if [ "$HAVE_DB" = 1 ]; then
 	rm -f "$FH_HDR"
 else
 	printf '  skip the force_https checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
+echo "23. dataops.php authorizes and validates its own handlers"
+
+# dataops.php is the write handler for nearly everything that is not a case.
+# The only authorization gate in the file ran when the request carried a
+# case_id, so a contact update, an alias, a timeslip delete or a pro bono
+# attorney write skipped it entirely by leaving that parameter out.
+#
+# Its set_password handler was worse: it compared the stored hash to the
+# submitted plaintext with !=, and neither guard had an exit() after its
+# redirect, so a wrong current password still changed the password and the
+# browser was then sent to the error page.
+if [ "$HAVE_DB" = 1 ]; then
+	DGROUP='zz_dops_grp'
+	DUSER='zz_dops_user'
+	DPASS='zz-dops-Passw0rd'
+	DNEW='zz-dops-Changed1'
+	DJAR="$(mktemp)"
+
+	cleanup_dops() {
+		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZDOPSATTY'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-DOPS-CASE'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${DUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${DGROUP}'" >/dev/null
+		rm -f "$DJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dops' EXIT
+	cleanup_dops
+
+	# No edit_all, no pba: this user may not touch the pro bono directory.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${DGROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	DHASH="$(docker compose -p "$COMPOSE_PROJECT" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$DPASS" </dev/null 2>/dev/null)"
+	DUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${DUID}, '${DUSER}', '${DHASH}', 1, '${DGROUP}', 0)" >/dev/null
+
+	# A case this user handles, with a co-counsel already in the second slot.
+	DCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, cocounsel1, office, status)
+		VALUES (${DCASE}, 'ZZ-DOPS-CASE', ${DUID}, 1, 'ZZOFF', '1')" >/dev/null
+
+	dops_login() {
+		: > "$DJAR"
+		curl -sL --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" \
+			-X POST -d "login_user=$1&login_pass=$2&auth_id=1" "$OCM_URL/" >/dev/null
+		! grep -q 'login_pass' "$BODY"
+	}
+
+	# The post-login landing page carries no _csrf field, so the token has to
+	# come from a page that renders a form. password.php is the one page every
+	# user can always load regardless of group. Take a fresh token before each
+	# POST: pl_csrf_check() may consume it, and a spent token would make every
+	# assertion below pass because the request was refused, not because the
+	# handler checked anything.
+	dops_token() {
+		curl -sL --max-time 30 -c "$DJAR" -b "$DJAR" "$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	if [ -z "$DHASH" ] || [ -z "${DCASE:-}" ]; then
+		bad "could not seed the dataops fixtures"
+	elif ! dops_login "$DUSER" "$DPASS"; then
+		bad "the throwaway dataops user could not log in - section 23 is untested"
+	else
+		ok "the throwaway dataops user can log in"
+
+		DTOKEN="$(dops_token)"
+
+		if [ "${#DTOKEN}" -ne 64 ]; then
+			bad "no CSRF token for the dataops user - section 23 is untested"
+		else
+			# --- set_password: a wrong current password must change nothing ---
+			DHASH_BEFORE="$(adb "SELECT password FROM users WHERE user_id = ${DUID}")"
+			curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" -X POST \
+				-d "action=set_password&oldpass=totally-wrong&newpass1=${DNEW}&newpass2=${DNEW}&_csrf=${DTOKEN}" \
+				"$OCM_URL/dataops.php" >/dev/null
+			if [ "$(adb "SELECT password FROM users WHERE user_id = ${DUID}")" = "$DHASH_BEFORE" ]; then
+				ok "a wrong current password does not change the password"
+			else
+				bad "a wrong current password STILL changes the password"
+			fi
+
+			# --- set_password: mismatched new passwords must change nothing ---
+			DTOKEN="$(dops_token)"
+			curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" -X POST \
+				-d "action=set_password&oldpass=${DPASS}&newpass1=${DNEW}&newpass2=something-else&_csrf=${DTOKEN}" \
+				"$OCM_URL/dataops.php" >/dev/null
+			if [ "$(adb "SELECT password FROM users WHERE user_id = ${DUID}")" = "$DHASH_BEFORE" ]; then
+				ok "two new passwords that do not match change nothing"
+			else
+				bad "two new passwords that do not match STILL change the password"
+			fi
+
+			# --- positive control: the real change must still work ---
+			DTOKEN="$(dops_token)"
+			curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" -X POST \
+				-d "action=set_password&oldpass=${DPASS}&newpass1=${DNEW}&newpass2=${DNEW}&_csrf=${DTOKEN}" \
+				"$OCM_URL/dataops.php" >/dev/null
+			if [ "$(adb "SELECT password FROM users WHERE user_id = ${DUID}")" != "$DHASH_BEFORE" ] \
+				&& dops_login "$DUSER" "$DNEW"; then
+				ok "the correct current password still changes the password"
+			else
+				bad "the correct current password no longer changes the password"
+			fi
+
+			# The login above reset the jar, so take a fresh token with it.
+			DTOKEN="$(dops_token)"
+
+			# --- set_case_user: an empty user_id must not clear a slot ---
+			# && binds tighter than ||, so the presence check only covered the
+			# handling-attorney field. Naming a co-counsel field with an empty
+			# user_id wrote '' into it, and case access is granted off those
+			# two columns, so clearing one revoked a staffer's access.
+			DTOKEN="$(dops_token)"
+			curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" -X POST \
+				-d "action=set_case_user&case_id=${DCASE}&user_id=&field=cocounsel1&_csrf=${DTOKEN}" \
+				"$OCM_URL/dataops.php" >/dev/null
+			if [ "$(adb "SELECT cocounsel1 FROM cases WHERE case_id = ${DCASE}")" = '1' ]; then
+				ok "an empty user_id does not clear the co-counsel slot"
+			else
+				bad "an empty user_id STILL clears the co-counsel slot"
+			fi
+
+			# --- open redirect ---
+			DTOKEN="$(dops_token)"
+			DLOC="$(curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o /dev/null -D - -X POST \
+				-d "action=add_activity&cancel=1&act_url=https://zz-evil.example/steal&_csrf=${DTOKEN}" \
+				"$OCM_URL/dataops.php" | grep -i '^location:' | tr -d '\r')"
+			case "$DLOC" in
+				*zz-evil.example*) bad "dataops.php still redirects to an off-site URL (${DLOC})" ;;
+				*)                 ok "dataops.php refuses to redirect off-site" ;;
+			esac
+
+			# --- add_pb without the pba flag ---
+			DTOKEN="$(dops_token)"
+			curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" -X POST \
+				-d "action=add_pb&first_name=Zz&last_name=ZZDOPSATTY&_csrf=${DTOKEN}" \
+				"$OCM_URL/dataops.php" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM pb_attorneys WHERE last_name = 'ZZDOPSATTY'")" = '0' ]; then
+				ok "a user without the pba flag cannot create a pro bono attorney"
+			else
+				bad "a user without the pba flag STILL creates a pro bono attorney"
+			fi
+
+			# --- the dead criminal-charges handlers are gone ---
+			DTOKEN="$(dops_token)"
+			DCH="$(curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o "$BODY" -w '%{http_code}' -X POST \
+				-d "action=update_case_charges&_csrf=${DTOKEN}" "$OCM_URL/dataops.php")"
+			if ! grep -qi "SQL\|case_charges" "$BODY"; then
+				ok "the removed charges handler reaches no SQL (${DCH})"
+			else
+				bad "the removed charges handler still reaches case_charges SQL"
+			fi
+		fi
+	fi
+
+	cleanup_dops
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the dataops handler checks (set COMPOSE_PROJECT to enable)\n'
 fi
 
 echo

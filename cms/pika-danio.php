@@ -250,6 +250,64 @@ function pika_authorize($op, $row)
 
 		break;
 		
+		/*	Contact writes.
+			
+			dataops.php could update a contact record, and add aliases to one,
+			with no authorization check at all: the only gate in that file runs
+			when the request carries a case_id, and a contact write does not need
+			one. A contact row holds the client's name, address, phone, date of
+			birth and social security number.
+			
+			There is no permission column for contacts, so authorize against the
+			cases the contact is attached to -- as the primary client, or through
+			the conflict table -- and grant if the user may edit at least one of
+			them. That matches how the application actually presents contacts:
+			they are reached from a case.
+		*/
+		case 'edit_contact':
+		
+		if ($auth_row['edit_all'])
+		{
+			$allow_this = true;
+		}
+		
+		else if (isset($row['contact_id']) && is_numeric($row['contact_id']))
+		{
+			$sql = "SELECT DISTINCT cases.* FROM cases
+				LEFT JOIN conflict ON conflict.case_id = cases.case_id
+				WHERE cases.client_id = ? OR conflict.contact_id = ?";
+			$result = DB::preparedQuery($sql, array($row['contact_id'], $row['contact_id']));
+			$has_any_case = false;
+			
+			if ($result)
+			{
+				while ($contact_case_row = DBResult::fetchRow($result))
+				{
+					$has_any_case = true;
+					
+					if (pika_authorize('edit_case', $contact_case_row))
+					{
+						$allow_this = true;
+						break;
+					}
+				}
+			}
+			
+			/*	A contact on no case at all. The walk above has nothing to
+				authorize against, so every user without edit_all would land on
+				deny and could not edit a record they had just created from
+				contact.php. Such a record carries no case's confidentiality,
+				and the address book is already readable instance-wide, so
+				whoever may create one may edit one.
+			*/
+			if (!$allow_this && !$has_any_case)
+			{
+				$allow_this = true;
+			}
+		}
+		
+		break;
+		
 		case 'edit_doc':
 		
 		if ($auth_row['edit_all'])
