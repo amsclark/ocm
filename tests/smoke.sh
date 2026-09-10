@@ -728,6 +728,17 @@ if [ -n "${COMPOSE_PROJECT:-}" ]; then
 		bad "no allowlist rejection in the app log - pl_safe_order_by() did not run"
 	fi
 	
+	# Every audited action above wrote a row. mysqli's get_result() returns
+	# false for a statement with no result set, so DB::preparedQuery() used to
+	# report every successful INSERT as a failure and pl_audit() logged it --
+	# an error log that said auditing was broken on a deployment where it was
+	# working.
+	if grep -q 'pl_audit insert failed' "$APPLOG"; then
+		bad "the app log claims audit inserts failed for rows that were written"
+	else
+		ok "audit inserts are not reported as failures"
+	fi
+	
 	rm -f "$APPLOG"
 else
 	printf '  skip allowlist log check (set COMPOSE_PROJECT to enable)\n'
