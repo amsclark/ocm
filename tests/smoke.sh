@@ -3540,5 +3540,223 @@ else
 fi
 
 echo
+echo "51. the case screen authorizes before it loads and writes"
+
+# cms/case.php read the primary client's contact record, and cached a
+# computed client_age onto the case row, BEFORE it asked pika_authorize()
+# about the case. It also answered a case_id with no row differently from a
+# case_id the caller may not read, which tells an attacker which numbers are
+# real cases. The delete confirmation screen opened for anyone who could read
+# the case, though only the `system` group can carry the delete out. And
+# `screen` was passed through pl_clean_file_name(), a blocklist, on its way
+# into three include() calls.
+if [ "$HAVE_DB" = 1 ]; then
+	CSGROUP='zz_cs_grp'
+	CSUSER='zz_cs_user'
+	CSPASS='zz-cs-Passw0rd'
+	CSJAR="$(mktemp)"
+	CSB1="$(mktemp)"
+	CSB2="$(mktemp)"
+
+	cleanup_cs() {
+		adb "DELETE FROM cases WHERE number IN ('ZZ-CS-SECRET', 'ZZ-CS-MINE')" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = 'ZZCSCLIENT'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${CSUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${CSGROUP}'" >/dev/null
+		rm -f "$CSJAR" "$CSB1" "$CSB2"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cs' EXIT
+	cleanup_cs
+
+	# read_all off, no read_office, intake off: this user may read the cases
+	# it owns and nothing else.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${CSGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	CSHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$CSPASS" </dev/null 2>/dev/null)"
+	CSUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${CSUID}, '${CSUSER}', '${CSHASH}', 1, '${CSGROUP}', 0)" >/dev/null
+
+	# plBase::getNextID hands out primary keys from the `counters` row rather
+	# than from the table, so a fixture has to sit above both and move the
+	# counter up behind it.
+	cs_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	cs_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# The client whose age the case screen used to cache on the way past the
+	# permission check. birth_date is what makes calcAge() return a number.
+	CSCON="$(cs_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name, birth_date)
+		VALUES (${CSCON}, 'Zz', 'ZZCSCLIENT', '1980-01-01')" >/dev/null
+	cs_bump_counter contacts "$CSCON"
+
+	# One case owned by admin with a primary client and no cached client_age,
+	# and one owned by the throwaway user so the delete screen can be asked
+	# for by someone who is allowed to read the case.
+	CSCASE="$(cs_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id, open_date, client_age, unread_sms)
+		VALUES (${CSCASE}, 'ZZ-CS-SECRET', 1, 'ZZA', '1', ${CSCON}, '2019-01-01', NULL, 3)" >/dev/null
+	cs_bump_counter cases "$CSCASE"
+	CSMINE="$(cs_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, open_date)
+		VALUES (${CSMINE}, 'ZZ-CS-MINE', ${CSUID}, 'ZZB', '1', '2019-01-01')" >/dev/null
+	cs_bump_counter cases "$CSMINE"
+
+	# A case_id no row uses, for the enumeration check.
+	CSGONE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 5000 FROM cases")"
+
+	if [ -z "$CSHASH" ] || [ -z "${CSCASE:-}" ] || [ -z "${CSMINE:-}" ] || [ -z "${CSGONE:-}" ]; then
+		bad "could not seed the case screen fixtures"
+	else
+		: > "$CSJAR"
+		curl -sL --max-time 30 -c "$CSJAR" -b "$CSJAR" -o "$BODY" \
+			-X POST -d "login_user=${CSUSER}&login_pass=${CSPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway case user could not log in - section 51 is untested"
+		else
+			ok "the throwaway case user can log in"
+
+			# 51a. The case it does not own is refused.
+			curl -sL --max-time 30 -b "$CSJAR" -o "$CSB1" \
+				"$OCM_URL/case.php?case_id=${CSCASE}" >/dev/null
+			if grep -q 'not viewable' "$CSB1"; then
+				ok "a case outside the user's group is not viewable"
+			else
+				bad "A CASE OUTSIDE THE USER'S GROUP WAS SERVED BY case.php"
+			fi
+
+			# 51b. The case number is not on the refusal page. It used to be,
+			# in the heading and the breadcrumb, both built before the check.
+			if grep -q 'ZZ-CS-SECRET' "$CSB1"; then
+				bad "THE REFUSAL PAGE CARRIES THE CASE NUMBER IT IS REFUSING"
+			else
+				ok "the refusal page does not name the case"
+			fi
+
+			# 51c. A case_id with no row answers exactly the same way. It used
+			# to reach plBase::__construct(), which trigger_error()s "No such
+			# record found." and gets the generic unavailable-page screen -
+			# a different answer, so case_id could be walked for real cases.
+			curl -sL --max-time 30 -b "$CSJAR" -o "$CSB2" \
+				"$OCM_URL/case.php?case_id=${CSGONE}" >/dev/null
+			if cmp -s "$CSB1" "$CSB2"; then
+				ok "a case_id with no row is answered like one that is refused"
+			else
+				bad "A MISSING case_id IS DISTINGUISHABLE FROM A REFUSED ONE"
+			fi
+
+			# 51d. Nothing was written for either request. client_age was
+			# computed and UPDATEd onto the case row before the permission
+			# check, so an unauthorized request wrote to the case.
+			if [ "$(adb "SELECT COUNT(*) FROM cases WHERE case_id = ${CSCASE} AND client_age IS NULL")" = 1 ]; then
+				ok "a refused request does not cache client_age on the case"
+			else
+				bad "A REFUSED REQUEST WROTE client_age ONTO THE CASE ROW"
+			fi
+
+			# 51e. The delete confirmation screen asks for the permission the
+			# delete itself asks for, which in this application is the
+			# `system` group. This user owns the case and can read it.
+			curl -sL --max-time 30 -b "$CSJAR" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${CSMINE}&screen=confirm_delete" >/dev/null
+			if grep -q 'not authorized to delete' "$BODY"; then
+				ok "the delete confirmation screen is refused without delete_case"
+			else
+				bad "THE DELETE CONFIRMATION SCREEN OPENED WITHOUT delete_case"
+			fi
+		fi
+
+		# The rest runs as the administrator, who can read the case.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$CSB1" \
+			"$OCM_URL/case.php?case_id=${CSCASE}" >/dev/null
+		if grep -q 'ZZ-CS-SECRET' "$CSB1"; then
+			ok "the case screen still renders for a user who may read it"
+		else
+			bad "THE CASE SCREEN NO LONGER RENDERS FOR AN AUTHORIZED USER"
+		fi
+
+		# 51f. The positive control for 51d: the same page, requested by
+		# someone who may read it, does cache the age. Without this, 51d
+		# would pass on a case screen that had stopped working.
+		if [ "$(adb "SELECT COUNT(*) FROM cases WHERE case_id = ${CSCASE} AND client_age > 0")" = 1 ]; then
+			ok "an authorized request still caches client_age"
+		else
+			bad "the client_age write is gone - 51d proves nothing"
+		fi
+
+		# 51g. screen= reaches three include() calls. Anything outside
+		# [A-Za-z0-9_-] falls back to the default tab, and the page is the
+		# page the default tab draws. The date-picker markup carries a random
+		# element id on every render, so compare with that id normalised.
+		cs_normalise() {
+			sed -E 's/date_selector-[0-9]+/date_selector-ID/g' "$1"
+		}
+
+		curl -sL --max-time 30 -b "$COOKIES" -o "$CSB2" \
+			"$OCM_URL/case.php?case_id=${CSCASE}&screen=../../etc/passwd" >/dev/null
+		if cs_normalise "$CSB1" | cmp -s - <(cs_normalise "$CSB2"); then
+			ok "a traversal in screen= falls back to the default tab"
+		else
+			bad "screen=../../etc/passwd CHANGED WHAT case.php DREW"
+		fi
+
+		curl -sL --max-time 30 -b "$COOKIES" -o "$CSB2" \
+			"$OCM_URL/case.php?case_id=${CSCASE}&screen=act%00.php" >/dev/null
+		if cs_normalise "$CSB1" | cmp -s - <(cs_normalise "$CSB2"); then
+			ok "a null byte in screen= falls back to the default tab"
+		else
+			bad "A NULL BYTE IN screen= CHANGED WHAT case.php DREW"
+		fi
+
+		if grep -qF -- 'root:' "$CSB2"; then
+			bad "case.php INCLUDED A FILE FROM OUTSIDE THE APPLICATION"
+		else
+			ok "case.php did not include a file from outside the application"
+		fi
+
+		# 51h. case_id used is_numeric(), which accepts '1e3' and '12.0', and
+		# passed both on to SQL. They now redirect to the calendar, the same
+		# answer a missing case_id gets. A negative id does too.
+		for CSBAD in '1e3' '12.0' '408abc' '-408'; do
+			CSCODE="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null \
+				-w '%{http_code}' "$OCM_URL/case.php?case_id=${CSBAD}")"
+			if [ "$CSCODE" = 302 ]; then
+				ok "case_id=${CSBAD} is refused as a non-integer"
+			else
+				bad "case_id=${CSBAD} WAS ACCEPTED BY case.php (HTTP ${CSCODE})"
+			fi
+		done
+
+		# 51i. The unread-SMS link was written "{$base_url}\case.php", with a
+		# literal backslash, so the link did not work.
+		if grep -qF -- '\case.php' "$CSB1"; then
+			bad "THE SMS REMINDER LINK STILL HAS A LITERAL BACKSLASH"
+		else
+			ok "the SMS reminder link has no literal backslash"
+		fi
+
+		if grep -qF -- 'screen=sms' "$CSB1"; then
+			ok "the unread-SMS notice links to the SMS tab"
+		else
+			bad "the unread-SMS notice is missing - 51i proves nothing"
+		fi
+	fi
+
+	cleanup_cs
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the case screen checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
