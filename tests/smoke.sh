@@ -3540,5 +3540,182 @@ else
 fi
 
 echo
+echo "52. contact aliases are authorized"
+
+# cms/alias.php had no permission check. Any authenticated user could add,
+# rewrite or delete an alias on any contact_id, and nothing tied the alias_id
+# in the request to the contact_id beside it, so one contact's alias could be
+# re-pointed or deleted from another contact's page. The alias tables are what
+# the conflict check searches.
+if [ "$HAVE_DB" = 1 ]; then
+	ALGROUP='zz_al_grp'
+	ALUSER='zz_al_user'
+	ALPASS='zz-al-Passw0rd'
+	ALJAR="$(mktemp)"
+
+	cleanup_al() {
+		adb "DELETE FROM aliases WHERE last_name LIKE 'ZZAL%'" >/dev/null
+		adb "DELETE FROM conflict WHERE contact_id IN (SELECT contact_id FROM contacts WHERE last_name LIKE 'ZZAL%')" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-AL-CASE'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZAL%'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${ALUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${ALGROUP}'" >/dev/null
+		rm -f "$ALJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_al' EXIT
+	cleanup_al
+
+	# edit_all off and no offices: this user may edit the cases it owns, and
+	# so the contacts on those cases, and nothing else.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${ALGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	ALHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$ALPASS" </dev/null 2>/dev/null)"
+	ALUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${ALUID}, '${ALUSER}', '${ALHASH}', 1, '${ALGROUP}', 0)" >/dev/null
+
+	al_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	al_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# Two contacts, each the primary client on a case owned by admin. A
+	# contact on no case at all is editable by anyone who can create one, so
+	# the case is what makes edit_contact answer no for the throwaway user.
+	ALCON1="$(al_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${ALCON1}, 'Zz', 'ZZALTARGET')" >/dev/null
+	al_bump_counter contacts "$ALCON1"
+	ALCON2="$(al_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${ALCON2}, 'Zz', 'ZZALOTHER')" >/dev/null
+	al_bump_counter contacts "$ALCON2"
+
+	ALCASE="$(al_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id, open_date)
+		VALUES (${ALCASE}, 'ZZ-AL-CASE', 1, 'ZZA', '1', ${ALCON1}, '2019-01-01')" >/dev/null
+	al_bump_counter cases "$ALCASE"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+		VALUES ($(al_next_id conflict conflict_id), ${ALCASE}, ${ALCON2}, 7)" >/dev/null
+
+	# One alias on each contact.
+	ALIAS1="$(al_next_id aliases alias_id)"
+	adb "INSERT INTO aliases (alias_id, contact_id, primary_name, first_name, last_name)
+		VALUES (${ALIAS1}, ${ALCON1}, 0, 'Zz', 'ZZALONE')" >/dev/null
+	al_bump_counter aliases "$ALIAS1"
+	ALIAS2="$(al_next_id aliases alias_id)"
+	adb "INSERT INTO aliases (alias_id, contact_id, primary_name, first_name, last_name)
+		VALUES (${ALIAS2}, ${ALCON2}, 0, 'Zz', 'ZZALTWO')" >/dev/null
+	al_bump_counter aliases "$ALIAS2"
+
+	if [ -z "$ALHASH" ] || [ -z "${ALCON1:-}" ] || [ -z "${ALIAS1:-}" ] || [ -z "${ALIAS2:-}" ]; then
+		bad "could not seed the alias fixtures"
+	else
+		: > "$ALJAR"
+		curl -sL --max-time 30 -c "$ALJAR" -b "$ALJAR" -o "$BODY" \
+			-X POST -d "login_user=${ALUSER}&login_pass=${ALPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway alias user could not log in - section 52 is untested"
+		else
+			ok "the throwaway alias user can log in"
+
+			# 52a. The edit form.
+			curl -sL --max-time 30 -b "$ALJAR" -o "$BODY" \
+				"$OCM_URL/alias.php?action=edit&contact_id=${ALCON1}" >/dev/null
+			if grep -q 'not authorized to edit this contact' "$BODY"; then
+				ok "the alias edit form is refused without edit_contact"
+			else
+				bad "THE ALIAS EDIT FORM OPENED WITHOUT edit_contact"
+			fi
+
+			# 52b. The write.
+			curl -sL --max-time 30 -b "$ALJAR" -o "$BODY" \
+				"$OCM_URL/alias.php?action=update&contact_id=${ALCON1}&first_name=Zz&last_name=ZZALNEW" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM aliases WHERE last_name = 'ZZALNEW'")" = 0 ]; then
+				ok "an alias cannot be added to a contact the user cannot edit"
+			else
+				bad "AN ALIAS WAS ADDED TO A CONTACT THE USER CANNOT EDIT"
+			fi
+
+			# 52c. The delete.
+			curl -sL --max-time 30 -b "$ALJAR" -o "$BODY" \
+				"$OCM_URL/alias.php?action=delete&contact_id=${ALCON1}&alias_id=${ALIAS1}" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM aliases WHERE alias_id = ${ALIAS1}")" = 1 ]; then
+				ok "an alias cannot be deleted from a contact the user cannot edit"
+			else
+				bad "AN ALIAS WAS DELETED FROM A CONTACT THE USER CANNOT EDIT"
+			fi
+
+			# 52d. Reading the list is not gated: pika_authorize() has no
+			# read_contact case and the address book is readable instance-wide.
+			curl -sL --max-time 30 -b "$ALJAR" -o "$BODY" \
+				"$OCM_URL/alias.php?contact_id=${ALCON1}" >/dev/null
+			if grep -q 'ZZALONE' "$BODY"; then
+				ok "the alias list still renders for a user who can read contacts"
+			else
+				bad "THE ALIAS LIST NO LONGER RENDERS - 52a to 52c prove nothing"
+			fi
+		fi
+
+		# The rest runs as the administrator, who is in the system group.
+		# 52e. The positive control: the write path still works.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/alias.php?action=update&contact_id=${ALCON1}&first_name=Zz&last_name=ZZALADMIN" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM aliases WHERE last_name = 'ZZALADMIN' AND contact_id = ${ALCON1}")" = 1 ]; then
+			ok "an authorized user still adds an alias"
+		else
+			bad "the alias write path is broken - 52b proves nothing"
+		fi
+
+		# 52f. alias_id and contact_id have to name the same row. This request
+		# is the contact_id of one contact and the alias_id of another.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/alias.php?action=delete&contact_id=${ALCON1}&alias_id=${ALIAS2}" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM aliases WHERE alias_id = ${ALIAS2}")" = 1 ]; then
+			ok "an alias belonging to another contact is not deleted"
+		else
+			bad "ANOTHER CONTACT'S ALIAS WAS DELETED THROUGH alias.php"
+		fi
+
+		if grep -q 'does not belong to this contact' "$BODY"; then
+			ok "the mismatched alias_id is refused by name"
+		else
+			bad "the mismatched alias_id was not refused by name"
+		fi
+
+		# 52g. Re-pointing that alias by posting an update is refused too.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/alias.php?action=update&contact_id=${ALCON1}&alias_id=${ALIAS2}&first_name=Zz&last_name=ZZALTWO" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM aliases WHERE alias_id = ${ALIAS2} AND contact_id = ${ALCON2}")" = 1 ]; then
+			ok "an alias cannot be re-pointed at another contact"
+		else
+			bad "AN ALIAS WAS RE-POINTED AT ANOTHER CONTACT"
+		fi
+
+		# 52h. The positive control for 52c and 52f: the delete still works
+		# when the two ids agree and the user may edit the contact.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/alias.php?action=delete&contact_id=${ALCON1}&alias_id=${ALIAS1}" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM aliases WHERE alias_id = ${ALIAS1}")" = 0 ]; then
+			ok "an authorized user still deletes an alias"
+		else
+			bad "the alias delete path is broken - 52c proves nothing"
+		fi
+	fi
+
+	cleanup_al
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the alias authorization checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

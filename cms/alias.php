@@ -24,8 +24,11 @@ require_once('pikaTempLib.php');
 
 $base_url = pl_settings_get('base_url');
 
-$contact_id = pl_grab_get('contact_id');
-$alias_id = pl_grab_get('alias_id');
+/*	Both ids reach a database lookup, and $contact_id is also written back
+	into the record on 'update'. Ask for integers.
+*/
+$contact_id = pl_grab_get('contact_id', null, 'number');
+$alias_id = pl_grab_get('alias_id', null, 'number');
 $action = pl_grab_get('action');
 
 $first_name = pl_grab_get('first_name');
@@ -38,6 +41,54 @@ $alias_description = pl_grab_get('alias_description');
 
 $contact = new pikaContact($contact_id);
 $contact_full_name = pikaTempLib::plugin('text_name','',$contact->getValues(),array(),array('order=last'));
+
+/*	AUTHORIZE THE MUTATING ACTIONS.
+	
+	This page had no permission check at all. Any authenticated user could add,
+	rewrite or delete an alias on any contact_id, and the alias tables are what
+	the conflict check searches, so a false or deleted alias changes the answer
+	the next conflict search gives.
+	
+	There is no read permission for a contact - the address book is readable
+	instance-wide, and pika_authorize() has no 'read_contact' case - so only
+	the four actions that change something are gated, against the same
+	'edit_contact' permission cms/contact.php uses.
+*/
+$restricted_actions = array('edit', 'confirm_delete', 'update', 'delete');
+
+if (in_array($action, $restricted_actions, true))
+{
+	$contact_row = $contact->getValues();
+	
+	if (!isset($contact_row['contact_id']) || !$contact_row['contact_id']
+		|| !pika_authorize('edit_contact', $contact_row))
+	{
+		$main_html['page_title'] = 'Contact Alias';
+		$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; Contact Alias";
+		$main_html['content'] = 'You are not authorized to edit this contact.';
+		$default_template = new pikaTempLib('templates/default.html', $main_html);
+		pika_exit($default_template->draw());
+	}
+}
+
+/*	An alias_id names a row in the aliases table, and nothing tied it to the
+	contact_id in the same request: 'update' could re-point another contact's
+	alias by posting that alias_id, and 'delete' could remove it. Require the
+	two to agree.
+*/
+if ($alias_id && in_array($action, $restricted_actions, true))
+{
+	$check_alias = new pikaAlias($alias_id);
+	
+	if ($check_alias->getValue('contact_id') != $contact_id)
+	{
+		$main_html['page_title'] = 'Contact Alias';
+		$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; Contact Alias";
+		$main_html['content'] = 'That alias does not belong to this contact.';
+		$default_template = new pikaTempLib('templates/default.html', $main_html);
+		pika_exit($default_template->draw());
+	}
+}
 
 
 switch ($action) {
