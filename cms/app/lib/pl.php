@@ -156,14 +156,23 @@ function pl_array_to_php_sub($array_data)
  */
 function authenticate()
 {
+	/*	POST only. These read $_REQUEST, so a login could be driven entirely
+		from a query string, and a query string ends up in the Apache access
+		log, in the Referer header of every asset the resulting page loads,
+		in browser history, and in any proxy in front of the box. The login
+		form has always been method="post", so nothing legitimate is lost.
+		What this removes is the ability to hand somebody a link that logs
+		them in as another user, and the steady trickle of real passwords
+		into logs when a person or an integration builds the URL by hand.
+	*/
 	$user = $pass = null;
-	if(isset($_REQUEST['login_user']))
+	if(isset($_POST['login_user']))
 	{
-		$user = $_REQUEST['login_user'];
+		$user = $_POST['login_user'];
 	}
-	if(isset($_REQUEST['login_pass']))
+	if(isset($_POST['login_pass']))
 	{
-		$pass = $_REQUEST['login_pass'];
+		$pass = $_POST['login_pass'];
 	}
 	
 	
@@ -171,13 +180,33 @@ function authenticate()
 	$auth = pikaAuth::getInstance();
 	$authdb = new pikaAuthDb('users','username','password','md5');
 	
+	/*	Count the attempt and refuse it once the counter passes its
+		threshold. Only an attempt that actually submitted something is
+		counted: every authenticated page load calls authenticate() with
+		both values null so the existing session is picked up, and counting
+		those would lock a working session out of the application.
+	*/
+	$submitted_credentials = (!is_null($user) && '' !== $user)
+		|| (!is_null($pass) && '' !== $pass);
+	$rl_keys = $submitted_credentials ? pl_auth_rate_limit_keys($user) : array();
+	$locked_key = pl_auth_rate_limit_first_locked($rl_keys);
+	
 	$display_login = false;
-	if(!$auth->authenticate($user,$pass,$authdb)) 
+	if(!is_null($locked_key))
 	{
+		error_log('Auth rate limit triggered for key=' . $locked_key);
+		$msgstr = 'Too many recent failed login attempts. Please wait a few minutes and try again.';
+		$auth->setMessage('0429',$msgstr,__FILE__,__LINE__);
+		$display_login = true;
+	}
+	elseif(!$auth->authenticate($user,$pass,$authdb)) 
+	{
+		pl_auth_rate_limit_record_failure_all($rl_keys);
 		$display_login = true;
 	}
 	else 
 	{
+		pl_auth_rate_limit_reset_all($rl_keys);
 		$auth_row = $auth->getAuthRow();
 		if ($auth_row['password_expire'] != 0 && $auth_row['password_expire'] < time())
 		{
@@ -206,7 +235,14 @@ function authenticate()
 		$reserved_names = array('login_user','login_pass','auth_id','signin');
 		foreach ($form_data as $name => $value)
 		{
-			if(!in_array($name,$reserved_names))
+			/*	Only scalars. An array in the POST body reached
+				input_hidden(), which nulls an array value but still puts the
+				array itself in the name position, so the field name rendered
+				as the word "Array" and the real request was silently
+				rewritten. The name and the value are escaped inside
+				input_hidden(), so they are not escaped again here.
+			*/
+			if(!in_array($name,$reserved_names,true) && is_scalar($name) && is_scalar($value))
 			{
 				$html['form_data'] .= pikaTempLib::plugin('input_hidden',$name,$value);
 			}
@@ -214,9 +250,15 @@ function authenticate()
 		$html['messages'] = '';
 		foreach ($auth->getMessages() as $auth_message)
 		{
-			$html['messages'] .= $auth_message[1] . "<br/>\n"; 
+			// Operator-controlled strings today. Escaped anyway, so a future
+			// caller that puts a submitted value in a login message cannot
+			// turn the unauthenticated page into a reflected XSS sink.
+			$html['messages'] .= pl_html_escape_label($auth_message[1]) . "<br/>\n"; 
 		}
-		$html['auth_id'] = $_SESSION['auth_id'];
+		// Written as an integer by pikaAuth and only incremented there. Cast
+		// before echoing it into the form anyway, and default it, because an
+		// unset key here is a PHP 8 warning on the login page.
+		$html['auth_id'] = isset($_SESSION['auth_id']) ? (int) $_SESSION['auth_id'] : 1;
 		$default_template = new pikaTempLib('templates/login-form.html',$html);
 		if(browser_is_mobile())
 		{
@@ -241,9 +283,413 @@ function authenticate_http()
 {
 	require_once('app/lib/pikaAuthHttp.php');
 	require_once('app/lib/pikaAuthDb.php');
+	
+	$http_user = isset($_SERVER['PHP_AUTH_USER']) ? $_SERVER['PHP_AUTH_USER'] : null;
+	$rl_keys = pl_auth_rate_limit_keys($http_user);
+	$locked_key = pl_auth_rate_limit_first_locked($rl_keys);
+	
+	if(!is_null($locked_key))
+	{
+		error_log('Auth rate limit triggered for key=' . $locked_key);
+		header('HTTP/1.0 429 Too Many Requests');
+		header('Retry-After: 60');
+		exit();
+	}
+	
 	$auth = pikaAuthHttp::getInstance();
 	$authdb = new pikaAuthDb('users','username','password','md5');
-	$auth->authenticate($authdb);
+	
+	if(!$auth->authenticate($authdb))
+	{
+		/*	pikaAuthHttp::authenticate() exits on failure as it stands, so
+			this line does not run today. Record the failure anyway: a later
+			change that stops it exiting must not silently drop the counter.
+		*/
+		pl_auth_rate_limit_record_failure_all($rl_keys);
+	}
+	
+	else
+	{
+		pl_auth_rate_limit_reset_all($rl_keys);
+	}
+}
+
+/*	AUTHENTICATION RATE LIMITING
+	
+	The login form was an unlimited password oracle. Nothing anywhere in the
+	request path counted attempts, so a script could work through a wordlist
+	against every username in the organisation as fast as the box would
+	answer, and the only trace was a growing pile of login.failure rows that
+	nobody watches in real time.
+	
+	These functions keep a small failure counter per attempt, on disk, and
+	refuse further attempts once it passes a threshold. Two keys are counted
+	for every attempt:
+	
+	  account  hash(ip | username)  repeated attempts against one account
+	  ip       hash(ip | '')        credential stuffing that rotates the
+	                               username from one source
+	
+	The per-IP key is the one that can lock a whole office out after one
+	person fumbles their password ten times, because a NAT presents every
+	member of staff as the same address. Its threshold is therefore
+	configurable through the auth_ip_lockout_threshold setting, and setting
+	that to 0 turns the per-IP lockout off without touching the per-account
+	one.
+	
+	Storage is the system temp directory, not the database. A lockout has to
+	work when the database is the thing being attacked, the counters are
+	worthless after a few minutes, and a file write is cheaper than a row.
+	Everything here fails open: if there is nowhere writable, the counters
+	are skipped and login behaves as it did before. This is defence in
+	depth, not an authorisation gate, and it must never be the reason
+	nobody can log in.
+	*/
+
+if (!function_exists('pl_auth_rate_limit_key'))
+{
+	/**
+	 * Derive a rate-limit key from the caller's IP and, optionally, the
+	 * submitted username. The key is hashed so the filenames on disk never
+	 * reveal an attempted username.
+	 *
+	 * @param string|null $username
+	 * @return string
+	 */
+	function pl_auth_rate_limit_key($username = null)
+	{
+		$ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown';
+		$name = is_string($username) ? strtolower(trim($username)) : '';
+		
+		return hash('sha256', $ip . '|' . $name);
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_keys'))
+{
+	/**
+	 * The set of keys checked on every authentication attempt, each carrying
+	 * the policy scope that governs it.
+	 *
+	 * @param string|null $username
+	 * @return array
+	 */
+	function pl_auth_rate_limit_keys($username)
+	{
+		return array(
+			array('key' => pl_auth_rate_limit_key($username), 'scope' => 'account'),
+			array('key' => pl_auth_rate_limit_key(null), 'scope' => 'ip'),
+		);
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_entry'))
+{
+	/**
+	 * Normalise an entry to array(key, scope). A bare string is accepted and
+	 * treated as the stricter 'account' scope, so a caller holding plain keys
+	 * keeps working.
+	 *
+	 * @param array|string $entry
+	 * @return array
+	 */
+	function pl_auth_rate_limit_entry($entry)
+	{
+		if (is_array($entry) && isset($entry['key']))
+		{
+			$scope = (isset($entry['scope']) && 'ip' === $entry['scope']) ? 'ip' : 'account';
+			
+			return array((string) $entry['key'], $scope);
+		}
+		
+		return array((string) $entry, 'account');
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_first_locked'))
+{
+	/**
+	 * The first key in $rl_keys that is currently locked out, or null.
+	 *
+	 * @param array $rl_keys
+	 * @return string|null
+	 */
+	function pl_auth_rate_limit_first_locked(array $rl_keys)
+	{
+		foreach ($rl_keys as $candidate)
+		{
+			list($key, $scope) = pl_auth_rate_limit_entry($candidate);
+			
+			if (pl_auth_rate_limit_locked($key, $scope))
+			{
+				return $key;
+			}
+		}
+		
+		return null;
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_record_failure_all'))
+{
+	/**
+	 * Record a failed attempt against every key in $rl_keys.
+	 *
+	 * @param array $rl_keys
+	 * @return void
+	 */
+	function pl_auth_rate_limit_record_failure_all(array $rl_keys)
+	{
+		foreach ($rl_keys as $candidate)
+		{
+			list($key, $scope) = pl_auth_rate_limit_entry($candidate);
+			pl_auth_rate_limit_record_failure($key, $scope);
+		}
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_reset_all'))
+{
+	/**
+	 * Clear the failure counter for every key in $rl_keys.
+	 *
+	 * @param array $rl_keys
+	 * @return void
+	 */
+	function pl_auth_rate_limit_reset_all(array $rl_keys)
+	{
+		foreach ($rl_keys as $candidate)
+		{
+			list($key, ) = pl_auth_rate_limit_entry($candidate);
+			pl_auth_rate_limit_reset($key);
+		}
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_dir'))
+{
+	/**
+	 * The directory the failure counters live in, created 0700 on first use.
+	 * Returns null when there is nowhere writable, which makes every other
+	 * function here a no-op.
+	 *
+	 * @return string|null
+	 */
+	function pl_auth_rate_limit_dir()
+	{
+		$base = sys_get_temp_dir();
+		
+		if (!is_string($base) || 0 === strlen($base))
+		{
+			return null;
+		}
+		
+		$dir = rtrim($base, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'ocm_auth_rl';
+		
+		if (!is_dir($dir))
+		{
+			@mkdir($dir, 0700, true);
+		}
+		
+		if (!is_dir($dir) || !is_writable($dir))
+		{
+			return null;
+		}
+		
+		return $dir;
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_policy'))
+{
+	/**
+	 * Lock out after fail_threshold failures inside window_secs, then refuse
+	 * further attempts for lockout_secs.
+	 *
+	 * The 'account' scope keeps a fixed 10 in 5 minutes. The 'ip' scope reads
+	 * its threshold from auth_ip_lockout_threshold so an organisation behind
+	 * one office address can raise it, or set it to 0 to switch that key off.
+	 * Blank or absent means the default of 10.
+	 *
+	 * @param string $scope 'account' or 'ip'
+	 * @return array
+	 */
+	function pl_auth_rate_limit_policy($scope = 'account')
+	{
+		$policy = array(
+			'fail_threshold' => 10,
+			'window_secs' => 300,
+			'lockout_secs' => 300,
+		);
+		
+		if ('ip' === $scope && function_exists('pl_settings_get'))
+		{
+			$raw = pl_settings_get('auth_ip_lockout_threshold');
+			
+			if (!is_null($raw) && '' !== $raw && is_numeric($raw) && (int) $raw >= 0)
+			{
+				$policy['fail_threshold'] = (int) $raw;
+			}
+		}
+		
+		return $policy;
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_locked'))
+{
+	/**
+	 * Whether this key has passed its threshold and is still inside the
+	 * lockout period. Fails open.
+	 *
+	 * @param string $rl_key
+	 * @param string $scope
+	 * @return bool
+	 */
+	function pl_auth_rate_limit_locked($rl_key, $scope = 'account')
+	{
+		$policy = pl_auth_rate_limit_policy($scope);
+		
+		// Threshold 0 means this scope's lockout is switched off by policy.
+		if ((int) $policy['fail_threshold'] <= 0)
+		{
+			return false;
+		}
+		
+		$dir = pl_auth_rate_limit_dir();
+		
+		if (is_null($dir))
+		{
+			return false;
+		}
+		
+		$file = $dir . DIRECTORY_SEPARATOR . $rl_key;
+		
+		if (!is_file($file))
+		{
+			return false;
+		}
+		
+		$raw = @file_get_contents($file);
+		
+		if (!is_string($raw) || 0 === strlen($raw))
+		{
+			return false;
+		}
+		
+		$state = @json_decode($raw, true);
+		
+		if (!is_array($state) || !isset($state['count'], $state['first_ts']))
+		{
+			return false;
+		}
+		
+		$now = time();
+		
+		// Window and lockout both elapsed: a stale counter, not a lockout.
+		if (($now - (int) $state['first_ts']) > ($policy['window_secs'] + $policy['lockout_secs']))
+		{
+			return false;
+		}
+		
+		if ((int) $state['count'] < $policy['fail_threshold'])
+		{
+			return false;
+		}
+		
+		// The lockout runs for lockout_secs from the most recent failure, so
+		// hammering the form during a lockout extends it.
+		$last = isset($state['last_ts']) ? (int) $state['last_ts'] : (int) $state['first_ts'];
+		
+		return ($now - $last) < $policy['lockout_secs'];
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_record_failure'))
+{
+	/**
+	 * Count one failed attempt against a key.
+	 *
+	 * @param string $rl_key
+	 * @param string $scope
+	 * @return void
+	 */
+	function pl_auth_rate_limit_record_failure($rl_key, $scope = 'account')
+	{
+		$dir = pl_auth_rate_limit_dir();
+		
+		if (is_null($dir))
+		{
+			return;
+		}
+		
+		$file = $dir . DIRECTORY_SEPARATOR . $rl_key;
+		$policy = pl_auth_rate_limit_policy($scope);
+		$now = time();
+		
+		/*	Counters keep accruing even at threshold 0, so switching the
+			setting back on part way through an attack does not hand the
+			attacker a clean slate.
+			*/
+		$state = array('count' => 0, 'first_ts' => $now, 'last_ts' => $now);
+		
+		if (is_file($file))
+		{
+			$raw = @file_get_contents($file);
+			$decoded = is_string($raw) ? @json_decode($raw, true) : null;
+			
+			if (is_array($decoded) && isset($decoded['count'], $decoded['first_ts']))
+			{
+				// Start again if the counting window has elapsed.
+				if (($now - (int) $decoded['first_ts']) <= $policy['window_secs'])
+				{
+					$state = $decoded;
+				}
+			}
+		}
+		
+		$state['count'] = (int) $state['count'] + 1;
+		$state['last_ts'] = $now;
+		@file_put_contents($file, json_encode($state), LOCK_EX);
+		@chmod($file, 0600);
+	}
+}
+
+
+if (!function_exists('pl_auth_rate_limit_reset'))
+{
+	/**
+	 * Clear a key's failure counter, called after a successful login so the
+	 * next attempt is not penalised.
+	 *
+	 * @param string $rl_key
+	 * @return void
+	 */
+	function pl_auth_rate_limit_reset($rl_key)
+	{
+		$dir = pl_auth_rate_limit_dir();
+		
+		if (is_null($dir))
+		{
+			return;
+		}
+		
+		$file = $dir . DIRECTORY_SEPARATOR . $rl_key;
+		
+		if (is_file($file))
+		{
+			@unlink($file);
+		}
+	}
 }
 
 

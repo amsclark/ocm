@@ -2038,6 +2038,105 @@ else
 	printf '  skip the dataops handler checks (set COMPOSE_PROJECT to enable)\n'
 fi
 
+# ── 24. Repeated failed logins are locked out ──────────────────────────────
+# Runs last on purpose. The per-IP counter is shared by every account, so a
+# lockout raised here would refuse the admin logins the earlier sections rely
+# on. The counters are files under the container's temp directory, so this
+# needs a compose project to be able to clear them.
+echo
+echo "24. repeated failed logins are locked out"
+if [ -n "${COMPOSE_PROJECT:-}" ] && command -v docker >/dev/null 2>&1; then
+	RLJAR="$(mktemp)"
+	trap 'rm -f "$COOKIES" "$BODY" "$RLJAR"' EXIT
+
+	# Wipe the counters. Also done at the start: a previous run of this suite
+	# leaves this IP locked out, and then every assertion below would pass
+	# for the wrong reason.
+	rl_clear() {
+		docker compose -p "$COMPOSE_PROJECT" exec -T app \
+			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+	}
+	rl_try() {
+		# $1 username, $2 password. Prints nothing; leaves the body in $BODY.
+		: > "$RLJAR"
+		curl -sL --max-time 30 -c "$RLJAR" -b "$RLJAR" -o "$BODY" -X POST \
+			-d "login_user=$1&login_pass=$2&auth_id=1" "$OCM_URL/" >/dev/null
+	}
+	RL_MSG='Too many recent failed login attempts'
+
+	rl_clear
+
+	# The threshold is 10 failures in 5 minutes. Nine must NOT lock out: an
+	# off-by-one that locks at the first failure would make every check below
+	# pass while breaking every real login.
+	i=1
+	while [ "$i" -le 9 ]; do
+		rl_try zz_lockout_user "wrong-${i}"
+		i=$((i+1))
+	done
+	if grep -q "$RL_MSG" "$BODY"; then
+		bad "the lockout fired after 9 failures — the threshold is too low"
+	else
+		ok "nine failed logins do not lock the account out"
+	fi
+
+	rl_try zz_lockout_user wrong-10
+	rl_try zz_lockout_user wrong-11
+	if grep -q "$RL_MSG" "$BODY"; then
+		ok "the tenth failed login locks further attempts out"
+	else
+		bad "no lockout after 11 failed logins — the login form is still an unlimited password oracle"
+	fi
+
+	# The per-IP key is what stops credential stuffing that rotates the
+	# username, so the correct admin password must be refused too while the
+	# lockout stands. This is also the check that would catch a per-account
+	# key being counted but never read.
+	rl_try "$OCM_USER" "$OCM_PASSWORD"
+	if grep -q "$RL_MSG" "$BODY"; then
+		ok "the lockout also refuses a valid password from the same address"
+	else
+		bad "a valid password is still accepted from a locked-out address — the per-IP key is not enforced"
+	fi
+
+	rl_clear
+	rl_try "$OCM_USER" "$OCM_PASSWORD"
+	if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+		ok "clearing the counters lets the admin log in again"
+	else
+		bad "the admin cannot log in after the counters were cleared"
+	fi
+
+	# auth_ip_lockout_threshold=0 is the escape hatch for an organisation
+	# whose whole staff shares one office address. With it set, twelve
+	# failures against one username must not touch anybody else's login.
+	if [ "$HAVE_DB" = 1 ]; then
+		adb "DELETE FROM settings WHERE label='auth_ip_lockout_threshold'" >/dev/null
+		adb "INSERT INTO settings (label, value) VALUES ('auth_ip_lockout_threshold','0')" >/dev/null
+		rl_clear
+		i=1
+		while [ "$i" -le 12 ]; do
+			rl_try zz_lockout_user "wrong-${i}"
+			i=$((i+1))
+		done
+		rl_try "$OCM_USER" "$OCM_PASSWORD"
+		if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			ok "auth_ip_lockout_threshold=0 keeps one user's failures off everybody else"
+		else
+			bad "auth_ip_lockout_threshold=0 did NOT disable the per-IP lockout"
+		fi
+		adb "DELETE FROM settings WHERE label='auth_ip_lockout_threshold'" >/dev/null
+	fi
+
+	# Leave nothing behind: the next run of this suite starts from zero, and a
+	# developer running it against their own stack is not locked out of it.
+	rl_clear
+	rm -f "$RLJAR"
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the login lockout checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
