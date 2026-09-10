@@ -231,6 +231,29 @@ switch ($action)
 				// An admin set this user's password; self-service changes
 				// land in password.php as password.self_change.
 				pl_audit('user.password_admin_reset', 'user', $target_user_id, array('username' => $target_username));
+				
+				/*	An administrator resets a password to lock an account
+					holder's attacker out. That only works if the sessions the
+					old password opened end with it. An admin who resets their
+					own password here keeps the session they are working in,
+					the same way password.php does.
+				*/
+				$keep_session_id = null;
+				
+				if (isset($auth_row['user_id']) && (string) $auth_row['user_id'] === (string) $target_user_id)
+				{
+					$keep_session_id = pl_csrf_session_id();
+				}
+				
+				$ended = pl_user_sessions_invalidate_others($target_user_id, $keep_session_id);
+				
+				if ($ended > 0)
+				{
+					pl_audit('user.password_admin_reset_invalidated_sessions', 'user', $target_user_id, array(
+						'username'        => $target_username,
+						'sessions_ended'  => $ended,
+					));
+				}
 			}
 		}
 		

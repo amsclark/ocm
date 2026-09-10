@@ -4589,6 +4589,48 @@ function pl_tmp_path()
 	return $tmp_path;
 }
 
+/**
+ * @return int
+ * @param int $user_id the user whose sessions are to be ended
+ * @param string|null $keep_session_id a session id to leave alone, or null to
+ * end every session for the user
+ * @desc End every live session for a user except one. A session row with
+ * logout = 1 is refused by pikaAuth::authenticate() on the next request, so
+ * the other browser is returned to the login form without waiting for the
+ * session timeout. Returns how many sessions were ended, counted before the
+ * update so that rows that were already logged out are not counted again.
+ */
+function pl_user_sessions_invalidate_others($user_id, $keep_session_id = null)
+{
+	if (!is_numeric($user_id))
+	{
+		return 0;
+	}
+	
+	$where = 'user_id = ? AND (logout IS NULL OR logout = 0)';
+	$params = array($user_id);
+	
+	if (!is_null($keep_session_id) && strlen((string) $keep_session_id) > 0)
+	{
+		$where .= ' AND session_id <> ?';
+		$params[] = (string) $keep_session_id;
+	}
+	
+	$result = DB::preparedQuery('SELECT COUNT(*) AS session_count FROM user_sessions WHERE ' . $where, $params);
+	$row = DBResult::fetchRow($result);
+	$ended = (is_array($row) && isset($row['session_count'])) ? (int) $row['session_count'] : 0;
+	
+	if ($ended < 1)
+	{
+		return 0;
+	}
+	
+	DB::preparedQuery('UPDATE user_sessions SET logout = 1 WHERE ' . $where, $params);
+	
+	return $ended;
+}
+
+
 function pl_process_comma_vals($str)
 {
 	$tmp_array = array();
