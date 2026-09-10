@@ -2978,6 +2978,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	PT_LSXML_URL="$OCM_URL/services/transfer_case_lsxml.php"
 	PT_SECRET='smoke-peer-transfer-secret'
 	lsxml_case_id=''
+	xss_case_id=''
 	# judge_name is a plain varchar on cases, so a value written through the
 	# endpoint can be read straight back out and compared.
 	PT_BODY='{"judge_name":"SmokePeerTransfer","court_city":"Smokeville"}'
@@ -3085,7 +3086,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		ts="$(date +%s)"
 		good_sig="$(pt_sign newCase "$PT_BODY" "$ts")"
 
-		code="$(pt_post_json newCase "$PT_BODY" "$ts" "${good_sig%?}0")"
+		# Change the last character to one it is not. Flipping it to a fixed
+		# '0' passed the good signature back unchanged whenever the digest
+		# happened to end in '0', which is one run in sixteen.
+		case "$good_sig" in
+			*0) bad_sig="${good_sig%?}1" ;;
+			*)  bad_sig="${good_sig%?}0" ;;
+		esac
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$bad_sig")"
 		if [ "$code" = 403 ] && grep -q 'bad_signature' "$BODY"; then
 			ok "a packet with one flipped signature character is refused"
 		else
@@ -3231,10 +3239,38 @@ if [ "$HAVE_DB" = 1 ]; then
 			bad "the LSXML endpoint answered something unexpected: $(head -c 80 "$BODY")"
 		fi
 
+		# 27g. What the peer is allowed to write. Everything a user types
+		# reaches a column through pl_grab_var(), which rewrites < and > on
+		# the way in; this endpoint went from json_decode() straight to
+		# setValues(), so a peer installation was the one writer on the box
+		# that could put a raw < into a column. plTable draws cell values as
+		# they come out of the row, so that text ran as script on the screen
+		# of whoever searched for the record.
+		PT_XSS_BODY='{"judge_name":"<script>zzptxss()</script>","court_city":"Smokeville"}'
+		ts="$(date +%s)"
+		code="$(pt_post_json newCase "$PT_XSS_BODY" "$ts" "$(pt_sign newCase "$PT_XSS_BODY" "$ts")")"
+		xss_case_id="$(cat "$BODY")"
+		case "$xss_case_id" in
+			''|*[!0-9]*) xss_case_id='' ;;
+		esac
+		if [ "$code" != 200 ] || [ -z "$xss_case_id" ]; then
+			bad "a signed packet holding markup was refused outright (status $code) - cannot test what it stored"
+		else
+			stored="$(adb "SELECT judge_name FROM cases WHERE case_id = ${xss_case_id}")"
+			case "$stored" in
+				*'<script'*)
+					bad "a peer packet wrote a raw <script> into the case row: $stored" ;;
+				*'&lt;script'*)
+					ok "a peer packet cannot write a raw < into a column" ;;
+				*)
+					bad "the peer packet stored something unexpected in judge_name: $stored" ;;
+			esac
+		fi
+
 		pt_settings_restore
 
 		# Leave the tables as they were found.
-		for cid in $new_case_id $legacy_case_id $lsxml_case_id; do
+		for cid in $new_case_id $legacy_case_id $lsxml_case_id $xss_case_id; do
 			adb "DELETE FROM cases WHERE case_id = ${cid}" >/dev/null
 		done
 		adb "DELETE FROM cases WHERE judge_name IN ('SmokePeerTransfer','SmokeLegacy','Smoke')" >/dev/null
@@ -3758,6 +3794,41 @@ if [ "$HAVE_DB" = 1 ]; then
 	adb "DELETE FROM cases WHERE case_id = 9990001" >/dev/null
 else
 	printf '  skip the case tab and duplicate matching checks (needs the database)\n'
+fi
+
+echo
+echo "30. the caseless pop-up timer"
+
+# cms/timer.php supports a timer with no case attached - it prints
+# "(No Case #)" for one. pl_clean_form_input() copies only the keys that were
+# submitted, so on that path there was no case_id key and both reads of it were
+# undefined-key warnings. Nothing about the page changed, so the only way to see
+# the fix is in the log.
+if [ "$HAVE_COMPOSE" = 1 ]; then
+	TIMERLOG="$(mktemp)"
+	docker compose "${COMPOSE_ARGS[@]}" logs app >"$TIMERLOG" 2>/dev/null
+	timer_log_before="$(wc -l < "$TIMERLOG")"
+	
+	curl -sL --max-time 30 -b "$COOKIES" -c "$COOKIES" -o "$BODY" "$OCM_URL/timer.php" >/dev/null
+	
+	if grep -q '(No Case #)' "$BODY"; then
+		ok "a timer with no case still draws, labelled (No Case #)"
+	else
+		bad "the caseless timer did not draw (size $(wc -c < "$BODY"))"
+	fi
+	
+	docker compose "${COMPOSE_ARGS[@]}" logs app >"$TIMERLOG" 2>/dev/null
+	timer_new="$(tail -n "+$((timer_log_before + 1))" "$TIMERLOG" \
+		| grep -c 'Undefined array key "case_id".*timer\.php' || true)"
+	if [ "${timer_new:-0}" -eq 0 ]; then
+		ok "the caseless timer logged no undefined case_id key"
+	else
+		bad "the caseless timer logged ${timer_new} undefined case_id warnings"
+	fi
+	
+	rm -f "$TIMERLOG"
+else
+	printf '  skip the timer check (needs a running docker compose stack)\n'
 fi
 
 echo
