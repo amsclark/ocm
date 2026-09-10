@@ -77,9 +77,16 @@ class plCsvReport
 		header("Content-type: application/force-download");
 		header("Content-Type: text/x-comma-separated-values");
 		
+		/*	strlen(), not mb_strlen(). Content-Length counts bytes; on a
+			build where mbstring's internal encoding is UTF-8, mb_strlen()
+			counts characters, so a report holding any non-ASCII text -- an
+			accented client name, a curly quote pasted out of a document --
+			declared a length shorter than the body and the browser cut the
+			download off at that many bytes.
+		*/
 		if (pl_settings_get("enable_compression") == false)
 		{
-			header("Content-Length: " . mb_strlen($buffer));
+			header("Content-Length: " . strlen($buffer));
 		}
 
 		// AMW 2013-10-16 - Workaround for new Chrome/CSV behavior.

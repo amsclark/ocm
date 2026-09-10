@@ -3539,6 +3539,227 @@ else
 	printf '  skip the ops authorization checks (needs the database)\n'
 fi
 
+# ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
+echo
+echo "29. case tabs, the id counter and duplicate matching"
+
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_ct() {
+		adb "DELETE FROM case_tabs WHERE name LIKE 'ZZCT%' OR name LIKE '%zzctxss%'" >/dev/null
+		adb "DELETE FROM case_tabs WHERE tab_id = 120" >/dev/null
+		adb "DELETE FROM aliases WHERE last_name LIKE 'ZZCT%' OR first_name = 'ZZCTBLANK'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZCT%' OR notes = 'ZZCTFIXTURE'" >/dev/null
+	}
+	cleanup_ct
+
+	# A tab module that is actually installed, so the allowlist accepts it.
+	CTFILE="$(basename "$(ls "${REPO_DIR}"/cms/modules/case-*.php 2>/dev/null | head -1)")"
+
+	if [ -z "$CTFILE" ]; then
+		printf '  skip the case tab checks (no case-*.php modules found)\n'
+	else
+		# ── The add form must not write a row just for being looked at ──
+		# It used to: the edit branch save()d a brand new object on every GET
+		# of "Add New Case Tab", which left blank tabs in the list and failed
+		# outright wherever the counters row had fallen behind MAX(tab_id).
+		CTBEFORE="$(adb "SELECT COUNT(*) FROM case_tabs")"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=edit" >/dev/null
+		CTAFTER="$(adb "SELECT COUNT(*) FROM case_tabs")"
+		if [ "${CTBEFORE:-0}" = "${CTAFTER:-1}" ]; then
+			ok "opening the Add New Case Tab form writes no row"
+		else
+			bad "opening the Add New Case Tab form INSERTed a row (${CTBEFORE} -> ${CTAFTER})"
+		fi
+
+		if grep -qE 'name="action"[^>]*value="add"' "$BODY"; then
+			ok "the empty form submits the add action"
+		else
+			bad "the empty form does not submit action=add - the new tab has no write path"
+		fi
+
+		if grep -qE 'name="tab_id"[^>]*value=""' "$BODY"; then
+			ok "the empty form carries no tab_id"
+		else
+			bad "the empty form carries a tab_id for a row that does not exist"
+		fi
+
+		# ── The add action writes exactly one row ──
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=add&name=ZZCTTAB&file=${CTFILE}&enabled=1&tab_row=1&autosave=0" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE name='ZZCTTAB'")" = 1 ]; then
+			ok "the add action writes the new case tab once"
+		else
+			bad "the add action did not write the new case tab"
+		fi
+
+		# ── A tab file that is not installed is refused ──
+		# The value goes into a link and into a JavaScript string on every
+		# case screen, and a tab pointing at a missing module is a dead link.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=add&name=ZZCTBADFILE&file=case-zz-not-installed.php&enabled=1&tab_row=1" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE name='ZZCTBADFILE'")" = 0 ]; then
+			ok "a case tab file that is not installed is refused"
+		else
+			bad "a case tab was saved pointing at a module that is not installed"
+		fi
+
+		# ── An update naming no existing row writes nothing ──
+		# plBase reads a missing id as "new record", so this used to INSERT.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=update&tab_id=126&name=ZZCTGHOST&file=${CTFILE}&enabled=1&tab_row=1" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE name='ZZCTGHOST'")" = 0 ]; then
+			ok "an update naming a case tab that is not there writes nothing"
+		else
+			bad "an update with an unknown tab_id INSERTed a new row"
+		fi
+
+		# ── A counter behind the rows still allocates a usable id ──
+		# This is the shape a restored dump leaves behind: counters.count
+		# lower than MAX(tab_id), so every INSERT dies on a duplicate key and
+		# the page comes back empty until somebody edits counters by hand.
+		CTMAX="$(adb "SELECT MAX(tab_id) FROM case_tabs")"
+		adb "INSERT INTO counters (id,count) VALUES ('case_tabs',1) ON DUPLICATE KEY UPDATE count=1" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/system-case_tabs.php?action=add&name=ZZCTCOUNTER&file=${CTFILE}&enabled=1&tab_row=1" >/dev/null
+		CTNEW="$(adb "SELECT tab_id FROM case_tabs WHERE name='ZZCTCOUNTER'")"
+		if [ -n "$CTNEW" ] && [ "${CTNEW:-0}" -gt "${CTMAX:-0}" ]; then
+			ok "a counter behind the rows still allocates an unused id"
+		else
+			bad "a counter behind MAX(tab_id) blocked the INSERT (max ${CTMAX}, got '${CTNEW}')"
+		fi
+
+		# ── The tab name and the tab file reach the case screen escaped ──
+		# Both are written straight into the tab bar by
+		# template_plugins/case_tabs.php: the name into the link text, the
+		# file into the href and into a single-quoted JavaScript string.
+		# Write them with SQL, because the admin form escapes < and > on the
+		# way in and that would hide the defect being tested for.
+		# A case to open. Earlier sections remove their own case fixtures, so
+		# there may well be none left by the time this section runs.
+		CTCASE=9990001
+		adb "INSERT INTO cases (case_id,number,status,problem) VALUES
+			(${CTCASE},'ZZCT-0001','1','ZZ')
+			ON DUPLICATE KEY UPDATE number='ZZCT-0001'" >/dev/null
+		CTFIX=
+		if [ "$(adb "SELECT COUNT(*) FROM cases WHERE case_id=${CTCASE}")" != 1 ]; then
+			printf '  skip the case tab bar escaping checks (could not write a case)\n'
+		else
+			# case.php keys the tab list by the file name, so the fixture
+			# needs a file of its own or one of the tabs added above wins the
+			# key and this proves nothing. tab_id is a tinyint.
+			CTFIX=120
+			if [ "$(adb "SELECT COUNT(*) FROM case_tabs WHERE tab_id=${CTFIX}")" != 0 ]; then
+				CTFIX=
+			fi
+		fi
+
+		if [ -z "${CTFIX:-}" ]; then
+			printf '  skip the case tab bar escaping checks (no fixture slot)\n'
+		else
+			adb "INSERT INTO case_tabs (tab_id,name,file,enabled,tab_order,autosave,tab_row)
+				VALUES (${CTFIX},'<script>zzctxss()</script>','case-zzctfixture.php',1,99,0,1)" >/dev/null
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${CTCASE}" >/dev/null
+			if grep -q 'zzctxss' "$BODY"; then
+				if grep -q '<script>zzctxss' "$BODY"; then
+					bad "a case tab name put an unescaped <script> on the case screen"
+				else
+					ok "a case tab name reaches the case screen escaped"
+				fi
+			else
+				bad "the fixture case tab did not render - the escaping check proved nothing"
+			fi
+
+			adb "UPDATE case_tabs SET name='ZZCTJS', file='case-zz\"onmouseover=zzctjs().php' WHERE tab_id=${CTFIX}" >/dev/null
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${CTCASE}" >/dev/null
+			if grep -q 'zzonmouseoverzzctjs' "$BODY"; then
+				if grep -q 'onmouseover=zzctjs' "$BODY"; then
+					bad "a case tab file name added its own attribute to the tab link"
+				else
+					ok "a case tab file name cannot add attributes to the tab link"
+				fi
+			else
+				bad "the fixture tab file did not render - the sanitiser check proved nothing"
+			fi
+		fi
+	fi
+
+	# ── ops/transfer_case.php only answers a POST ──
+	# It reads pl_grab_post(), so a GET arrived with no case_id at all and ran
+	# the whole transfer against a brand new empty case object.
+	CTCASES="$(adb "SELECT COUNT(*) FROM cases")"
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/ops/transfer_case.php")"
+	if [ "$code" = 405 ]; then
+		ok "a GET of the case transfer handler is refused with 405"
+	else
+		bad "a GET of the case transfer handler answered $code, not 405"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM cases")" = "$CTCASES" ]; then
+		ok "the refused transfer created no case row"
+	else
+		bad "the refused transfer left a new case row behind"
+	fi
+
+	# ── Duplicate matching does not key on a blank or placeholder SSN ──
+	# metaphoneContactCheck() searched aliases.ssn = '' for a contact with no
+	# name, which matches nearly every contact in the address book, and it
+	# treated "XXX-XX-XXXX" as a number, which matches every other record
+	# carrying the same placeholder. Both flooded the merge screen with
+	# unrelated people.
+	adb "INSERT INTO contacts (contact_id,first_name,last_name,ssn,notes) VALUES
+		(9990001,'','','','ZZCTFIXTURE'),
+		(9990002,'Zz','ZZCTFINDME','','ZZCTFIXTURE'),
+		(9990003,'Zz','ZZCTPLACEA','XXX-XX-XXXX','ZZCTFIXTURE'),
+		(9990004,'Zz','ZZCTPLACEB','XXX-XX-XXXX','ZZCTFIXTURE')" >/dev/null
+	adb "INSERT INTO aliases (alias_id,contact_id,primary_name,first_name,last_name,mp_first,mp_last,ssn) VALUES
+		(9990001,9990001,1,'','','','',''),
+		(9990002,9990002,1,'Zz','ZZCTFINDME','S','SKTFNTM',''),
+		(9990003,9990003,1,'Zz','ZZCTPLACEA','S','SKTPLK','XXX-XX-XXXX'),
+		(9990004,9990004,1,'Zz','ZZCTPLACEB','S','SKTPLKB','XXX-XX-XXXX')" >/dev/null
+
+	if [ "$(adb "SELECT COUNT(*) FROM contacts WHERE notes='ZZCTFIXTURE'")" = 4 ]; then
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/merge_contacts.php?contact_id=9990001" >/dev/null
+		if grep -q 'ZZCTFINDME' "$BODY"; then
+			bad "a contact with no name and no SSN was matched against the address book"
+		else
+			ok "a contact with no name and no SSN matches nothing"
+		fi
+
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/merge_contacts.php?contact_id=9990003" >/dev/null
+		if grep -q 'ZZCTPLACEB' "$BODY"; then
+			bad "a placeholder SSN matched an unrelated contact carrying the same placeholder"
+		else
+			ok "a placeholder SSN with no digits in it matches nothing"
+		fi
+
+		# Positive control: a real number still finds the other record, so
+		# the two checks above are not passing because matching is broken.
+		adb "UPDATE contacts SET ssn='555-00-9911' WHERE contact_id IN (9990003,9990004)" >/dev/null
+		adb "UPDATE aliases SET ssn='555-00-9911' WHERE contact_id IN (9990003,9990004)" >/dev/null
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/merge_contacts.php?contact_id=9990003" >/dev/null
+		if grep -q 'ZZCTPLACEB' "$BODY"; then
+			ok "a real SSN still matches the other record with that number"
+		else
+			bad "a real SSN no longer matches - the placeholder guard is too tight"
+		fi
+	else
+		printf '  skip the duplicate matching checks (could not write the fixture)\n'
+	fi
+
+	cleanup_ct
+	adb "DELETE FROM aliases WHERE alias_id BETWEEN 9990001 AND 9990004" >/dev/null
+	adb "DELETE FROM contacts WHERE contact_id BETWEEN 9990001 AND 9990004" >/dev/null
+	adb "DELETE FROM cases WHERE case_id = 9990001" >/dev/null
+else
+	printf '  skip the case tab and duplicate matching checks (needs the database)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
