@@ -106,7 +106,15 @@ ini_set('session.hash_bits_per_character', 5);
 require_once('app/lib/pikaSettings.php');
 $plSettings = pikaSettings::getInstance();
 
-session_set_cookie_params(0,$plSettings['base_url']);
+/*	Mark the session cookie Secure when the request arrived over HTTPS. See the
+	matching comment in pika-danio.php: php.ini cannot set this unconditionally
+	without locking plain-HTTP installs out of logging in.
+*/
+$https_on = isset($_SERVER['HTTPS'])
+	&& strlen((string) $_SERVER['HTTPS']) > 0
+	&& 'off' !== strtolower((string) $_SERVER['HTTPS']);
+
+session_set_cookie_params(0, $plSettings['base_url'], '', $https_on, true);
 
 // Set this to avoid other php websites (such as SugarCRM) from invading the current session w/ serialized objects
 $session_name = 'PikaCMS' . PIKA_VERSION . PIKA_REVISION . PIKA_PATCH_LEVEL;

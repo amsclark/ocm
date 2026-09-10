@@ -2589,15 +2589,38 @@ if (!function_exists('pl_canonical_origin'))
 	 * the host must look like a bare hostname[:port], so a Host header of
 	 * "evil.example/x?" cannot bolt a second URL onto the end of the link.
 	 *
+	 * $force_scheme overrides the scheme, for the one caller that needs an
+	 * origin the current request is not using: the force_https redirect in
+	 * pika-danio.php runs on a plain-HTTP request, and without the override
+	 * it would be handed back "http://<host>" and redirect the browser to
+	 * the page it is already on, forever.
+	 *
+	 * @param string|null $force_scheme 'http' or 'https', or null to derive it
 	 * @return string
 	 */
-	function pl_canonical_origin()
+	function pl_canonical_origin($force_scheme = null)
 	{
+		if ('http' !== $force_scheme && 'https' !== $force_scheme)
+		{
+			$force_scheme = null;
+		}
+		
 		$configured = trim((string) pl_settings_get('canonical_url'));
 		
 		if ($configured !== '')
 		{
-			return rtrim($configured, '/');
+			$configured = rtrim($configured, '/');
+			
+			if (!is_null($force_scheme))
+			{
+				// A configured canonical_url of "http://ocm.example" must not
+				// defeat a forced https, and the setting may also be stored
+				// with no scheme at all.
+				$configured = preg_replace('#^[A-Za-z][A-Za-z0-9+.-]*://#', '', $configured);
+				$configured = $force_scheme . '://' . $configured;
+			}
+			
+			return $configured;
 		}
 		
 		// $_SERVER['HTTPS'] and SERVER_PORT are set by Apache, not by the
@@ -2607,7 +2630,12 @@ if (!function_exists('pl_canonical_origin'))
 		// proxy should set canonical_url.
 		$scheme = 'http';
 		
-		if (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS'])
+		if (!is_null($force_scheme))
+		{
+			$scheme = $force_scheme;
+		}
+		
+		else if (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS'])
 		{
 			$scheme = 'https';
 		}

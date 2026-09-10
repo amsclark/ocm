@@ -1769,5 +1769,89 @@ else
 fi
 
 echo
+echo "22. force_https redirects instead of serving the page over plain HTTP"
+
+# cms/pika-danio.php sent the 302 and then built and served the whole page
+# anyway: there was no exit() after the header, so every side effect of the
+# request still ran over the insecure connection force_https exists to
+# prevent. Measured before the fix: 302 with a 3425-byte login page attached.
+#
+# The redirect target also came from $_SERVER['SERVER_NAME'], which Apache
+# fills from the request's Host header, and it was built as "https://" . that,
+# so it now goes through pl_canonical_origin('https') instead.
+if [ "$HAVE_DB" = 1 ]; then
+	FH_HDR="${BODY}.hdr"
+
+	restore_https() {
+		adb "UPDATE settings SET value='0' WHERE label='force_https'" >/dev/null
+		rm -f "$FH_HDR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; restore_https' EXIT
+
+	# The session cookie must NOT be marked Secure on a plain-HTTP request.
+	# php.ini deliberately leaves session.cookie_secure unset, because a
+	# browser will not send a Secure cookie back over http:// and a local
+	# install would then never log in. SameSite and HttpOnly are unconditional.
+	restore_https
+	curl -s -D "$FH_HDR" -o "$BODY" --max-time 30 "${OCM_URL}/" >/dev/null
+	FH_COOKIE="$(grep -i '^set-cookie' "$FH_HDR" | head -1)"
+
+	case "$FH_COOKIE" in
+		*[Ss]ecure*) bad "the session cookie is marked Secure over plain HTTP" ;;
+		'')          bad "no session cookie was set at all" ;;
+		*)           ok "the session cookie is not marked Secure over plain HTTP" ;;
+	esac
+
+	case "$FH_COOKIE" in
+		*HttpOnly*) ok "the session cookie is HttpOnly" ;;
+		*)          bad "the session cookie is not HttpOnly" ;;
+	esac
+
+	case "$FH_COOKIE" in
+		*SameSite=Lax*) ok "the session cookie is SameSite=Lax" ;;
+		*)              bad "the session cookie is not SameSite=Lax (rebuild the image?)" ;;
+	esac
+
+	adb "UPDATE settings SET value='1' WHERE label='force_https'" >/dev/null
+	FH_CODE="$(curl -s -D "$FH_HDR" -o "$BODY" -w '%{http_code}' --max-time 30 "${OCM_URL}/")"
+	FH_LOC="$(grep -i '^location:' "$FH_HDR" | tr -d '\r')"
+
+	if [ "$FH_CODE" = '302' ]; then
+		ok "a plain-HTTP request is redirected when force_https is on"
+	else
+		bad "a plain-HTTP request is not redirected when force_https is on (${FH_CODE})"
+	fi
+
+	# The redirect must go to https, or it points at the page it is already on
+	# and the browser loops.
+	case "$FH_LOC" in
+		*https://*) ok "the force_https redirect targets https" ;;
+		*)          bad "the force_https redirect does not target https (${FH_LOC})" ;;
+	esac
+
+	if [ "$(wc -c < "$BODY")" -eq 0 ]; then
+		ok "the redirect serves no page body over plain HTTP"
+	else
+		bad "the redirect still serves a page body over plain HTTP ($(wc -c < "$BODY") bytes)"
+	fi
+
+	# Positive control: with the setting back off the page must still render,
+	# or the checks above only prove the site is down.
+	restore_https
+	FH_OFF="$(curl -s -o "$BODY" -w '%{http_code}' --max-time 30 "${OCM_URL}/")"
+
+	if [ "$FH_OFF" = '200' ] && [ "$(wc -c < "$BODY")" -gt 500 ]; then
+		ok "the login page still renders with force_https off"
+	else
+		bad "the login page no longer renders with force_https off (${FH_OFF})"
+	fi
+
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	rm -f "$FH_HDR"
+else
+	printf '  skip the force_https checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

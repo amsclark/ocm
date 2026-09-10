@@ -610,10 +610,33 @@ function pika_init()
 	
 	// AMW - This will redirect the user to https:// if they connect over
 	// http:// to a server that requires a secure connection.
-	if (true == $plSettings['force_https'] && 0 == strlen($_SERVER['HTTPS']))
+	//
+	// Three fixes here:
+	//  - $_SERVER['HTTPS'] was read unguarded. It is absent, not empty, on a
+	//    plain-HTTP request, so this emitted an undefined-index notice on the
+	//    one path it exists to handle.
+	//  - The redirect target came from $_SERVER['SERVER_NAME'], which Apache
+	//    fills from the request's Host header unless UseCanonicalName is on.
+	//    An attacker who chose the Host header chose where the browser went
+	//    next. pl_canonical_origin() prefers the configured canonical_url and
+	//    validates the fallback.
+	//  - There was no exit() after the header, so the redirect was sent and
+	//    then the page was built and served anyway over the insecure
+	//    connection that force_https exists to prevent.
+	$https_on = isset($_SERVER['HTTPS'])
+		&& strlen((string) $_SERVER['HTTPS']) > 0
+		&& 'off' !== strtolower((string) $_SERVER['HTTPS']);
+	
+	if (true == $plSettings['force_https'] && !$https_on)
 	{
-		header("Location: https://" . $_SERVER['SERVER_NAME'] . 
-			$_SERVER['REQUEST_URI']);
+		$force_https_origin = pl_canonical_origin('https');
+		
+		if ('' !== $force_https_origin)
+		{
+			header('Location: ' . $force_https_origin
+				. (isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '/'));
+			exit();
+		}
 	}
 	
 	// GZIP compression
@@ -623,7 +646,19 @@ function pika_init()
 	}
 	
 	
-	session_set_cookie_params(0,$plSettings['base_url']);
+	/*	Mark the session cookie Secure when the request arrived over HTTPS, so
+		the browser will not send it again over plain HTTP. This cannot be set
+		unconditionally in php.ini: a plain-HTTP install -- `docker compose up`
+		on a laptop, or a box behind a proxy that does not forward the scheme --
+		cannot log in at all if the cookie is marked Secure, because the browser
+		declines to send it back.
+	
+		The httponly and samesite values also come from php.ini. Passing them
+		here again is harmless and makes them true regardless of which ini file
+		the deployment ended up with. The legacy argument list has no samesite
+		slot; the ini value survives this call (verified on PHP 8.2).
+	*/
+	session_set_cookie_params(0, $plSettings['base_url'], '', $https_on, true);
 	
 	 // Set this to avoid other php websites (such as SugarCRM) from invading the current session w/ serialized objects
 	$session_name = 'PikaCMS' . PIKA_VERSION . PIKA_REVISION . PIKA_PATCH_LEVEL;
