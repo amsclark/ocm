@@ -2561,6 +2561,75 @@ function pl_settings_get_all()
 }
 
 
+if (!function_exists('pl_canonical_origin'))
+{
+	/**
+	 * pl_canonical_origin()
+	 *
+	 * Returns "scheme://host" for links this application builds into email
+	 * and SMS, with no trailing slash. Returns '' when it cannot work one
+	 * out, so callers can decide what to do rather than emit a broken link.
+	 *
+	 * The code that needed this read $_SERVER['SERVER_NAME'] directly.
+	 * Apache fills SERVER_NAME from the request's Host header whenever
+	 * UseCanonicalName is Off, which is the default, so a request carrying
+	 * "Host: attacker.example" produced a notification email whose link
+	 * pointed at the attacker. The recipient is a case handler who is
+	 * expecting that mail, and the link looks like the real thing.
+	 *
+	 * Set the canonical_url setting to close that: it is the only value
+	 * here that no request can influence. There is no field for it on the
+	 * settings screens, so it is set directly in the settings table, e.g.
+	 *
+	 *     INSERT INTO settings (label, value)
+	 *         VALUES ('canonical_url', 'https://ocm.example.org');
+	 *
+	 * Without it, the fallback is the best that can be done from the
+	 * request: the scheme comes from Apache rather than from a header, and
+	 * the host must look like a bare hostname[:port], so a Host header of
+	 * "evil.example/x?" cannot bolt a second URL onto the end of the link.
+	 *
+	 * @return string
+	 */
+	function pl_canonical_origin()
+	{
+		$configured = trim((string) pl_settings_get('canonical_url'));
+		
+		if ($configured !== '')
+		{
+			return rtrim($configured, '/');
+		}
+		
+		// $_SERVER['HTTPS'] and SERVER_PORT are set by Apache, not by the
+		// client. X-Forwarded-Proto is not consulted: it is client-supplied
+		// unless the proxy in front is known to overwrite it, and this
+		// function cannot know that. A deployment behind a TLS-terminating
+		// proxy should set canonical_url.
+		$scheme = 'http';
+		
+		if (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS'])
+		{
+			$scheme = 'https';
+		}
+		
+		else if (isset($_SERVER['SERVER_PORT']) && '443' == $_SERVER['SERVER_PORT'])
+		{
+			$scheme = 'https';
+		}
+		
+		$host = isset($_SERVER['SERVER_NAME']) ? (string) $_SERVER['SERVER_NAME'] : '';
+		
+		if ('' === $host || !preg_match('/^[A-Za-z0-9._-]+(:[0-9]{1,5})?$/', $host))
+		{
+			pl_log_error('pl_canonical_origin rejected host', $host);
+			return '';
+		}
+		
+		return $scheme . '://' . $host;
+	}
+}
+
+
 if (!function_exists('pl_settings_template_blocked'))
 {
 	/*	Settings that pl_template_sub() must never resolve from its

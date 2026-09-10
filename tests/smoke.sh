@@ -1668,5 +1668,106 @@ else
 fi
 
 echo
+echo "21. the Twilio webhook requires a signed POST"
+
+# cms/services/twilio.php runs with PL_DISABLE_SECURITY, so nothing else in
+# the request path checks anything. Before the signature gate it accepted any
+# POST: an activity record with attacker-chosen notes on any open case whose
+# client phone number the caller could guess, an email to the case handlers
+# about it, and a reply whose wording said whether that number belongs to a
+# client of this organisation.
+#
+# The endpoint parses the number as +1AAAPPPNNNN: area code from offset 2,
+# then PPP-NNNN from offset 5.
+if [ "$HAVE_DB" = 1 ]; then
+	TW_TOKEN='zz_twilio_token'
+	TW_URL="${OCM_URL}/services/twilio.php"
+
+	cleanup_tw() {
+		adb "DELETE FROM activities WHERE notes LIKE 'ZZTW-%'" >/dev/null
+		adb "DELETE FROM conflict WHERE contact_id IN
+			(SELECT contact_id FROM contacts WHERE last_name = 'ZZTWCONTACT')" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-TW-CASE'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = 'ZZTWCONTACT'" >/dev/null
+		adb "DELETE FROM settings WHERE label = 'twilio_auth_token'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tw' EXIT
+	cleanup_tw
+
+	WCONTACT="$(adb "SELECT COALESCE(MAX(contact_id), 0) + 1 FROM contacts")"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name, area_code, phone)
+		VALUES (${WCONTACT}, 'Zz', 'ZZTWCONTACT', '555', '123-4567')" >/dev/null
+	WCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id)
+		VALUES (${WCASE}, 'ZZ-TW-CASE', 1, 'ZZOFF', '1', ${WCONTACT})" >/dev/null
+	adb "INSERT INTO conflict (case_id, contact_id, relation_code)
+		VALUES (${WCASE}, ${WCONTACT}, 1)" >/dev/null
+
+	if [ -z "${WCASE:-}" ]; then
+		bad "could not seed the Twilio webhook fixtures"
+	else
+		# A GET is not a webhook.
+		WCODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$TW_URL")"
+		if [ "$WCODE" = '405' ]; then
+			ok "the Twilio webhook refuses a GET"
+		else
+			bad "the Twilio webhook answered a GET with ${WCODE}"
+		fi
+
+		# No auth token configured: refuse rather than accept unsigned.
+		curl -s --max-time 30 -o "$BODY" -X POST \
+			-d 'From=%2B15551234567' -d 'Body=ZZTW-UNCONFIGURED' "$TW_URL" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM activities WHERE notes = 'ZZTW-UNCONFIGURED'")" = '0' ]; then
+			ok "the Twilio webhook refuses a POST when no auth token is configured"
+		else
+			bad "THE TWILIO WEBHOOK WROTE AN ACTIVITY WITH NO AUTH TOKEN CONFIGURED"
+		fi
+
+		adb "INSERT INTO settings (label, value) VALUES ('twilio_auth_token', '${TW_TOKEN}')
+			ON DUPLICATE KEY UPDATE value = '${TW_TOKEN}'" >/dev/null
+
+		# Configured, but the request carries no signature.
+		curl -s --max-time 30 -o "$BODY" -X POST \
+			-d 'From=%2B15551234567' -d 'Body=ZZTW-UNSIGNED' "$TW_URL" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM activities WHERE notes = 'ZZTW-UNSIGNED'")" = '0' ]; then
+			ok "the Twilio webhook refuses an unsigned POST"
+		else
+			bad "THE TWILIO WEBHOOK WROTE AN ACTIVITY FROM AN UNSIGNED POST"
+		fi
+
+		# A signature over the right body but computed with the wrong token.
+		WBAD="$(docker compose -p "$COMPOSE_PROJECT" exec -T app php -r \
+			'echo base64_encode(hash_hmac("sha1", $argv[1] . "Body" . $argv[2] . "From" . $argv[3], "wrong_token", true));' \
+			"$TW_URL" 'ZZTW-BADSIG' '+15551234567' </dev/null 2>/dev/null)"
+		curl -s --max-time 30 -o "$BODY" -X POST -H "X-Twilio-Signature: ${WBAD}" \
+			--data-urlencode 'From=+15551234567' --data-urlencode 'Body=ZZTW-BADSIG' "$TW_URL" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM activities WHERE notes = 'ZZTW-BADSIG'")" = '0' ]; then
+			ok "the Twilio webhook refuses a signature made with the wrong token"
+		else
+			bad "THE TWILIO WEBHOOK ACCEPTED A SIGNATURE MADE WITH THE WRONG TOKEN"
+		fi
+
+		# Positive control: a correctly signed webhook must still work, or the
+		# three checks above only prove the endpoint is broken. Twilio signs
+		# the full URL followed by each POST name and value in name order.
+		WSIG="$(docker compose -p "$COMPOSE_PROJECT" exec -T app php -r \
+			'echo base64_encode(hash_hmac("sha1", $argv[1] . "Body" . $argv[2] . "From" . $argv[3], $argv[4], true));' \
+			"$TW_URL" 'ZZTW-SIGNED' '+15551234567' "$TW_TOKEN" </dev/null 2>/dev/null)"
+		curl -s --max-time 30 -o "$BODY" -H "X-Twilio-Signature: ${WSIG}" -X POST \
+			--data-urlencode 'From=+15551234567' --data-urlencode 'Body=ZZTW-SIGNED' "$TW_URL" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM activities WHERE notes = 'ZZTW-SIGNED' AND case_id = ${WCASE}")" = '1' ]; then
+			ok "a correctly signed Twilio webhook still records the message"
+		else
+			bad "a correctly signed Twilio webhook no longer records the message"
+		fi
+	fi
+
+	cleanup_tw
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the Twilio webhook checks (set COMPOSE_PROJECT to enable)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

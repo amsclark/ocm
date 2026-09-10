@@ -8,6 +8,133 @@ pika_init();
 require_once('pikaActivity.php');
 require_once('pikaCase.php');
 
+/*	Verify Twilio's request signature before doing anything else.
+
+	This endpoint runs with PL_DISABLE_SECURITY, so there is no session and
+	no authorization gate: it accepted whatever anyone posted to it. That
+	was enough to write an activity record, with attacker-chosen notes, onto
+	any open case whose client phone number the caller could guess, and to
+	send the case handlers an email about it. The reply is also an oracle:
+	the wording differs depending on whether the number matched an open
+	case, so the endpoint answered "is this person a client of yours" to
+	anyone who asked. For a domestic violence caseload that answer is the
+	thing most worth protecting.
+
+	Twilio signs every webhook with the account auth token. The signature is
+	the base64 HMAC-SHA1 of the full request URL followed by each POST
+	parameter name and value in name order. Recomputing it here needs no
+	library.
+
+	The only legitimate caller is Twilio's inbound webhook, which is a POST,
+	so anything else is refused before the signature is even considered.
+*/
+if (!isset($_SERVER['REQUEST_METHOD']) || 'POST' !== $_SERVER['REQUEST_METHOD'])
+{
+	header('HTTP/1.1 405 Method Not Allowed');
+	header('Allow: POST');
+	header('Content-Type: text/plain; charset=utf-8');
+	exit("POST only.\n");
+}
+
+$twilio_auth_token = pl_settings_get('twilio_auth_token');
+
+if (!is_string($twilio_auth_token) || strlen($twilio_auth_token) < 1)
+{
+	/*	Refuse rather than fall back to accepting unsigned requests. An
+		installation that has not configured SMS has nothing to lose by this
+		endpoint being closed; one that has, cannot afford it being open.
+	*/
+	pl_audit('twilio.webhook.rejected', 'twilio', null, array(
+		'reason' => 'auth_token_not_configured',
+		'remote_ip' => isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null
+	));
+	header('HTTP/1.1 403 Forbidden');
+	header('Content-Type: text/plain; charset=utf-8');
+	exit("Twilio webhook rejected: signature verification not configured.\n");
+}
+
+/*	Rebuild the URL Twilio signed. Twilio hashes the absolute URL it was
+	configured with, including the query string, so a deployment behind a
+	TLS-terminating proxy has to sign with the public-facing URL and not the
+	internal one. The forwarded headers are consulted for that reason; they
+	are client-supplied, but they cannot be used to forge a signature -- a
+	caller who alters them only changes the string being hashed, and the
+	HMAC then fails to match.
+*/
+$twilio_scheme = 'http';
+
+if (!empty($_SERVER['HTTPS']) && 'off' !== $_SERVER['HTTPS'])
+{
+	$twilio_scheme = 'https';
+}
+
+else if (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
+	&& 'https' === strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']))
+{
+	$twilio_scheme = 'https';
+}
+
+$twilio_host = '';
+
+if (isset($_SERVER['HTTP_X_FORWARDED_HOST']) && strlen((string) $_SERVER['HTTP_X_FORWARDED_HOST']) > 0)
+{
+	$twilio_host = (string) $_SERVER['HTTP_X_FORWARDED_HOST'];
+}
+
+else if (isset($_SERVER['HTTP_HOST']) && strlen((string) $_SERVER['HTTP_HOST']) > 0)
+{
+	$twilio_host = (string) $_SERVER['HTTP_HOST'];
+}
+
+else if (isset($_SERVER['SERVER_NAME']))
+{
+	$twilio_host = (string) $_SERVER['SERVER_NAME'];
+}
+
+$twilio_url = $twilio_scheme . '://' . $twilio_host
+	. (isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '');
+
+$twilio_signed = $twilio_url;
+$twilio_params = $_POST;
+ksort($twilio_params);
+
+foreach ($twilio_params as $twilio_key => $twilio_value)
+{
+	// Twilio sends flat parameters. An array here is not something Twilio
+	// produced, so it cannot be part of a valid signature.
+	if (is_array($twilio_value))
+	{
+		$twilio_signed = null;
+		break;
+	}
+	
+	$twilio_signed .= $twilio_key . $twilio_value;
+}
+
+$twilio_signature = isset($_SERVER['HTTP_X_TWILIO_SIGNATURE'])
+	? (string) $_SERVER['HTTP_X_TWILIO_SIGNATURE']
+	: '';
+
+$twilio_expected = is_null($twilio_signed)
+	? ''
+	: base64_encode(hash_hmac('sha1', $twilio_signed, $twilio_auth_token, true));
+
+// hash_equals, not ==, so the comparison does not leak the correct
+// signature one byte at a time.
+if ('' === $twilio_signature
+	|| '' === $twilio_expected
+	|| !hash_equals($twilio_expected, $twilio_signature))
+{
+	pl_audit('twilio.webhook.rejected', 'twilio', null, array(
+		'reason' => ('' === $twilio_signature) ? 'missing_signature' : 'bad_signature',
+		'remote_ip' => isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null,
+		'webhook_url' => $twilio_url
+	));
+	header('HTTP/1.1 403 Forbidden');
+	header('Content-Type: text/plain; charset=utf-8');
+	exit("Twilio webhook rejected: signature verification failed.\n");
+}
+
 
 function send_mail_notification($user_id, $case_id, $case_number, $sender_name)
 {
@@ -35,8 +162,11 @@ function send_mail_notification($user_id, $case_id, $case_number, $sender_name)
 		
 		$base_url = pl_settings_get('base_url');
 		$subject = "New SMS for {$case_number}";
+		// The link was built from $_SERVER['SERVER_NAME'], which Apache
+		// fills from the request's Host header by default. See
+		// pl_canonical_origin().
 		$message = "{$sender_name} has sent a new SMS message, you can view it at:  "
-			. "https://{$_SERVER['SERVER_NAME']}{$base_url}/case.php?case_id={$case_id}&screen=sms";
+			. pl_canonical_origin() . "{$base_url}/case.php?case_id={$case_id}&screen=sms";
 		
 		$data_string = '{"options": {"sandbox": false, "open_tracking": false, "click_tracking": false}, "content": {"from": "' 
 			. pl_settings_get('sparkpost_from_address') 
@@ -67,8 +197,8 @@ function send_mail_notification($user_id, $case_id, $case_number, $sender_name)
 
 
 // Main code
-$number = $_POST['From'];
-$body = $_POST['Body'];
+$number = isset($_POST['From']) ? (string) $_POST['From'] : '';
+$body = isset($_POST['Body']) ? (string) $_POST['Body'] : '';
 
 $case_id = '';
 
