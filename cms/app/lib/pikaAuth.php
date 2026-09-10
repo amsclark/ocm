@@ -93,10 +93,25 @@ class pikaAuth
 				$this->setMessage('0102',$msgstr,__FILE__,__LINE__);
 				
 			}
-			elseif($row['enabled'] && ($row['ip_address'] == $this->ip_address || $row['user_agent'] == $this->user_agent))
+			elseif($row['enabled']
+				&& pl_session_ip_pin_allows($row['ip_address'], $this->ip_address)
+				&& $row['user_agent'] == $this->user_agent)
 			{
-				// Verify IP or User Agent is the same (measure against spoofing)
-				// Needs to be one or other as many mobile phones operate through cache proxies (meaning multiple ips)
+				/*	Both halves of the pin are required. This used to be OR,
+					which meant neither half held: a user agent is a header the
+					client picks, so an attacker replaying a captured session
+					cookie set it to the victim's value and the address was
+					never looked at -- and anyone sharing the victim's address
+					(an office NAT, a VPN egress, the Docker bridge) got in
+					with any user agent at all.
+					
+					The address test compares networks rather than exact hosts
+					and grandfathers rows recorded behind a proxy that hid the
+					client, so requiring it does not sign out a caseworker
+					whose carrier NAT moved them. See pl_session_ip_matches().
+					pl_session_ip_pin_allows() wraps it so an organisation
+					whose address will not hold still can turn that half off.
+				*/
 				$this->is_authorized = true;
 				
 				$session = new pikaUserSession($row['user_session_id']);

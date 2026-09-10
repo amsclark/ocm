@@ -3540,5 +3540,162 @@ else
 fi
 
 echo
+echo "60. the session address and user-agent pin"
+# ── 60. The session address and user-agent pin ─────────────────────────────
+# pikaAuth::authenticate() pins a signed-in session to the client address and
+# the browser it was created from. The historical test was
+#
+#     $row['ip_address'] == $this->ip_address || $row['user_agent'] == $this->user_agent
+#
+# which is not a pin at all. A user agent is a request header the client picks,
+# so an attacker replaying a captured session cookie sets it to the victim's
+# value and the address half never runs; and in the other direction anyone
+# sharing the victim's address -- an office NAT, a shared VPN egress, the
+# Docker bridge -- got in with any user agent at all. Either half alone
+# defeated the whole check (CWE-613).
+#
+# Both halves are required now, and the address half compares the network
+# (/24 for IPv4, /64 for IPv6) rather than the exact host so that a caseworker
+# whose carrier NAT moves them mid-session is not signed out. An organisation
+# that cannot hold an address range still can keep only the user-agent half
+# with the session_ip_pin setting.
+if [ "$HAVE_DB" = 1 ]; then
+	SPUA='OCM-SMOKE-SESSION-PIN-UA'
+	SPJAR="$(mktemp)"
+	SPPIN="$(adb "SELECT COALESCE(value, '') FROM settings WHERE label = 'session_ip_pin'")"
+
+	cleanup_sp() {
+		adb "DELETE FROM user_sessions WHERE user_agent = '${SPUA}'" >/dev/null
+		if [ -n "${SPPIN:-}" ]; then
+			adb "UPDATE settings SET value = '${SPPIN}' WHERE label = 'session_ip_pin'" >/dev/null
+		fi
+		rm -f "$SPJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sp' EXIT
+	adb "DELETE FROM user_sessions WHERE user_agent = '${SPUA}'" >/dev/null
+
+	# Replay the session cookie with a given user agent and say whether the
+	# request came back signed in or at the login form.
+	sp_replay() {
+		curl -sL --max-time 30 -A "$1" -b "$SPJAR" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			echo refused
+		else
+			echo accepted
+		fi
+	}
+
+	: > "$SPJAR"
+	curl -sL --max-time 30 -A "$SPUA" -c "$SPJAR" -b "$SPJAR" -o "$BODY" \
+		-X POST -d "login_user=admin&login_pass=${OCM_PASSWORD}&auth_id=1" \
+		"$OCM_URL/" >/dev/null
+
+	SPID="$(adb "SELECT user_session_id FROM user_sessions
+		WHERE user_agent = '${SPUA}' ORDER BY user_session_id DESC LIMIT 1")"
+	SPIP="$(adb "SELECT COALESCE(ip_address, '') FROM user_sessions
+		WHERE user_session_id = '${SPID}'")"
+
+	if [ -z "$SPID" ] || [ -z "$SPIP" ]; then
+		bad "could not mint a pinned session to test (id='${SPID}' ip='${SPIP}')"
+	else
+		ok "a login records the client address and user agent on the session"
+
+		# The control. If this ever fails the rest of the section is noise.
+		if [ "$(sp_replay "$SPUA")" = accepted ]; then
+			ok "the session continues from the same address and browser"
+		else
+			bad "the session does not continue from its own address and browser"
+		fi
+
+		# A stolen cookie replayed from a different browser. Before the fix
+		# this was accepted, because the address half matched.
+		if [ "$(sp_replay 'SMOKE-DIFFERENT-ATTACKER-UA')" = refused ]; then
+			ok "the session is refused to a different user agent"
+		else
+			bad "A SESSION COOKIE IS ACCEPTED FROM A DIFFERENT USER AGENT (CWE-613)"
+		fi
+
+		# The other direction: the browser matches but the address does not.
+		# Before the fix this was accepted too, so neither half held.
+		adb "UPDATE user_sessions SET ip_address = '203.0.113.7'
+			WHERE user_session_id = '${SPID}'" >/dev/null
+		if [ "$(sp_replay "$SPUA")" = refused ]; then
+			ok "the session is refused from a foreign network"
+		else
+			bad "A SESSION COOKIE IS ACCEPTED FROM A FOREIGN NETWORK (CWE-613)"
+		fi
+
+		# ... but the pin is on the network, not the host, so a client whose
+		# address moved inside its own /24 keeps working. Without this an
+		# exact-match pin signs out every user on carrier NAT.
+		case "$SPIP" in
+			*.*.*.*)
+				adb "UPDATE user_sessions SET ip_address = '${SPIP%.*}.99'
+					WHERE user_session_id = '${SPID}'" >/dev/null
+				if [ "$(sp_replay "$SPUA")" = accepted ]; then
+					ok "the session survives a new address on the same /24"
+				else
+					bad "the pin is host-exact, which signs out clients on rotating NAT"
+				fi
+				;;
+			*)
+				printf '  skip the /24 check (the client address is not IPv4)\n'
+				;;
+		esac
+
+		# An operator whose address will not hold still can keep only the
+		# user-agent half.
+		adb "UPDATE user_sessions SET ip_address = '203.0.113.7'
+			WHERE user_session_id = '${SPID}'" >/dev/null
+		adb "UPDATE settings SET value = '0' WHERE label = 'session_ip_pin'" >/dev/null
+		if [ "$(sp_replay "$SPUA")" = accepted ]; then
+			ok "session_ip_pin off keeps only the user-agent half of the pin"
+		else
+			bad "session_ip_pin off does not release the address half"
+		fi
+
+		# With the address half off, the user-agent half must still hold.
+		if [ "$(sp_replay 'SMOKE-DIFFERENT-ATTACKER-UA')" = refused ]; then
+			ok "session_ip_pin off still refuses a different user agent"
+		else
+			bad "session_ip_pin off drops the user-agent half as well"
+		fi
+
+		# A value this build does not recognise -- 'network', which is what a
+		# Ciprocity install writes -- must enforce, not fail open.
+		adb "UPDATE settings SET value = 'network' WHERE label = 'session_ip_pin'" >/dev/null
+		if [ "$(sp_replay "$SPUA")" = refused ]; then
+			ok "an unrecognised session_ip_pin value enforces the pin"
+		else
+			bad "an unrecognised session_ip_pin value fails open"
+		fi
+
+		# And so must a missing row, so that an installation which has not
+		# applied add_session_ip_pin.sql is still protected.
+		adb "DELETE FROM settings WHERE label = 'session_ip_pin'" >/dev/null
+		if [ "$(sp_replay "$SPUA")" = refused ]; then
+			ok "a missing session_ip_pin row enforces the pin"
+		else
+			bad "a missing session_ip_pin row fails open"
+		fi
+		adb "INSERT INTO settings (label, value) VALUES ('session_ip_pin', '1')" >/dev/null
+
+		# The admin screen can carry the setting, or an operator cannot reach it.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
+		if grep -q 'name="session_ip_pin"' "$BODY"; then
+			ok "system-settings.php offers the session pin control"
+		else
+			bad "system-settings.php has no session pin control"
+		fi
+	fi
+
+	cleanup_sp
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the session pin checks (needs the database)\n'
+fi
+
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

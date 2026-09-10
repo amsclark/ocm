@@ -3106,6 +3106,140 @@ function pl_session_set_default($name, $value)
 	}
 }
 
+/*	Does a stored session's client address still match the current request?
+
+	pikaAuth::authenticate() pins a session to the address and the browser it
+	was created from, as a measure against a stolen session cookie. The test
+	used to be "the address matches OR the user agent matches", which is not a
+	pin at all: a user agent is a request header the client chooses, so an
+	attacker replaying a captured cookie sets it to the victim's value and the
+	address half never runs. In the other direction, anyone on the victim's
+	own address -- an office NAT, a shared VPN egress, a Docker bridge -- got
+	in with any user agent at all. Either half alone defeated the whole check.
+
+	Both halves are now required. That makes the address half load-bearing for
+	the first time, and an exact address match is the wrong test for real
+	clients: a caseworker on cellular data, on a VPN, or behind a NAT pool
+	that rotates gets a new address mid-session through no fault of their own.
+	So:
+
+	  - Same address: match, the ordinary case.
+	  - Either side empty: match. Rows written before the column was filled
+	    would otherwise log their owners out on the next request.
+	  - Stored address is private but the current one is not: match. That row
+	    was recorded behind a reverse proxy, when every client looked like the
+	    bridge gateway. Without this, the first request after an operator puts
+	    OCM behind a proxy that forwards real client addresses signs out every
+	    user at once. It is self-expiring -- sessions re-pin on next login.
+	  - Otherwise compare the network, not the host: /24 for IPv4, /64 for
+	    IPv6. An attacker replaying a stolen cookie still has to be on the
+	    victim's network, which is what the control was for.
+
+	@param string $stored  ip_address recorded on the user_sessions row
+	@param string $current REMOTE_ADDR for the request being authenticated
+	@return bool true when the session may continue
+*/
+function pl_session_ip_matches($stored, $current)
+{
+	$stored  = (string) $stored;
+	$current = (string) $current;
+	
+	if ($stored === '' || $current === '')
+	{
+		return true;
+	}
+	
+	if ($stored === $current)
+	{
+		return true;
+	}
+	
+	/*	Establish both values are addresses before asking anything about
+		them. filter_var with the range flags returns false for "private"
+		and for "not an address at all" alike, so testing privacy first
+		would grandfather any junk value straight past the pin.
+	*/
+	if (filter_var($stored, FILTER_VALIDATE_IP) === false
+		|| filter_var($current, FILTER_VALIDATE_IP) === false)
+	{
+		return false;
+	}
+	
+	$private = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+	$stored_is_private  = (filter_var($stored, FILTER_VALIDATE_IP, $private) === false);
+	$current_is_private = (filter_var($current, FILTER_VALIDATE_IP, $private) === false);
+	
+	if ($stored_is_private && !$current_is_private)
+	{
+		// Row recorded behind a proxy that hid the client. Grandfathered.
+		return true;
+	}
+	
+	$stored_v4  = filter_var($stored, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+	$current_v4 = filter_var($current, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+	
+	if ($stored_v4 && $current_v4)
+	{
+		$a = explode('.', $stored);
+		$b = explode('.', $current);
+		return ($a[0] === $b[0] && $a[1] === $b[1] && $a[2] === $b[2]);
+	}
+	
+	$stored_v6  = filter_var($stored, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+	$current_v6 = filter_var($current, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+	
+	if ($stored_v6 && $current_v6)
+	{
+		// inet_pton gives 16 bytes; the first 8 are the /64 prefix.
+		$a = @inet_pton($stored);
+		$b = @inet_pton($current);
+		
+		if ($a === false || $b === false)
+		{
+			return false;
+		}
+		
+		return (substr($a, 0, 8) === substr($b, 0, 8));
+	}
+	
+	// Mixed families, or something that is not an address at all.
+	return false;
+}
+
+
+/*	Wraps pl_session_ip_matches() with the operator's setting.
+
+	An organisation whose public address will not hold still -- a satellite
+	link, a mobile workforce on carrier NAT that hops between /24s -- can set
+	session_ip_pin to 'off' (the admin screen writes 0) and keep only the
+	user-agent half of the pin. The default, including on an install that has
+	not applied add_session_ip_pin.sql, is to enforce it.
+
+	@param string      $stored  ip_address recorded on the user_sessions row
+	@param string      $current REMOTE_ADDR for the request being authenticated
+	@param string|null $mode    override for the setting, for tests
+	@return bool true when the address half of the pin allows the session
+*/
+function pl_session_ip_pin_allows($stored, $current, $mode = null)
+{
+	if ($mode === null)
+	{
+		$mode = pl_settings_get('session_ip_pin');
+	}
+	
+	/*	Absent means enforce. Only an explicit off turns the pin off, so a
+		value this build does not recognise -- 'network', which is what a
+		Ciprocity install writes -- still enforces.
+	*/
+	if ('off' === (string) $mode || '0' === (string) $mode)
+	{
+		return true;
+	}
+	
+	return pl_session_ip_matches($stored, $current);
+}
+
+
 // End SESSION Functions
 
 

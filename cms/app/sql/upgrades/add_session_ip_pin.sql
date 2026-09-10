@@ -1,0 +1,28 @@
+-- add_session_ip_pin.sql -- operator control over the session address pin.
+--
+-- pikaAuth::authenticate() pins a signed-in session to the client address and
+-- the browser it was created from. The historical test was "the address
+-- matches OR the user agent matches", which is not a pin: a user agent is a
+-- request header the client chooses, so an attacker replaying a captured
+-- session cookie sets it to the victim's value and the address half never
+-- runs -- and in the other direction anyone sharing the victim's address (an
+-- office NAT, a shared VPN egress, the Docker bridge) got in with any user
+-- agent at all. Either half alone defeated the whole check (CWE-613).
+--
+-- Both halves are now required, and the address half compares the network
+-- (/24 for IPv4, /64 for IPv6) rather than the exact host so that a
+-- caseworker whose carrier NAT moves them mid-session is not signed out. See
+-- pl_session_ip_matches() in cms/app/lib/pl.php.
+--
+-- Some organisations still cannot hold an address range still -- a satellite
+-- link, or a mobile workforce on carrier NAT that hops between /24s. This
+-- setting lets such an organisation keep only the user-agent half.
+--
+--   session_ip_pin  1 (default) requires the client address to be on the same
+--                   network the session was created from. 0 keeps only the
+--                   user-agent half of the pin.
+--
+-- The default is on, and code treats a MISSING row as on as well, so an
+-- installation that has not applied this file is still protected.
+INSERT IGNORE INTO settings (label, value) VALUES
+	('session_ip_pin', '1');

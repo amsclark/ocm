@@ -106,6 +106,12 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	'owner_name', 'admin_email', 'act_interval',
 	'time_zone', 'time_zone_offset', 'session_timeout', 'pass_min_strength',
 	'pass_min_length', 'password_expire', 'force_https', 'autofill_time_funding',
+	/*	session_ip_pin. Unticking it keeps only the user-agent half of the
+		session pin, for an organisation whose public address will not hold
+		still. A missing row is treated as ticked -- see
+		pl_session_ip_pin_allows() in cms/app/lib/pl.php.
+	*/
+	'session_ip_pin',
 	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
 	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
 		it is handled on its own below so that a blank field leaves the
