@@ -127,12 +127,20 @@ fi
 # These run on EVERY start, fresh database or not, so an existing deployment
 # picks up new tables by restarting the container.
 #
-# The list is an explicit allowlist, not `upgrades/*.sql`. The historical
-# pika<version>.sql scripts in that directory are version-stepped and NOT
-# idempotent — replaying pika602.sql on a 7.00 schema would fail or corrupt
-# it. Only add a file here once it is safe to run repeatedly, which in
-# practice means CREATE TABLE IF NOT EXISTS / ALTER ... IF NOT EXISTS only.
-for upgrade in add_audit_log.sql add_csrf_tokens_table.sql add_groups_intake.sql add_totp.sql add_sso.sql; do
+# The list is an explicit allowlist, not `upgrades/*.sql`, and it lives in
+# cms/app/sql/upgrades/APPLY_IN_ORDER so that this script and the manual
+# installation instructions cannot drift apart. The historical pika<version>.sql
+# scripts in that directory are version-stepped and NOT idempotent — replaying
+# pika602.sql on a 7.00 schema would fail or corrupt it.
+UPGRADE_LIST=/var/www/html/cms/app/sql/upgrades/APPLY_IN_ORDER
+
+if [ ! -f "$UPGRADE_LIST" ]; then
+	echo "entrypoint: $UPGRADE_LIST is missing from the image" >&2
+	exit 1
+fi
+
+# sed strips comments and blank lines; the list is one filename per line.
+for upgrade in $(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$UPGRADE_LIST"); do
 	path="/var/www/html/cms/app/sql/upgrades/${upgrade}"
 	if [ ! -f "$path" ]; then
 		echo "entrypoint: ${upgrade} is missing from the image" >&2

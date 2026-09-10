@@ -1,0 +1,20 @@
+# Additive upgrades that are safe to run on every start, in this order.
+#
+# This file is the single source of truth for that list. docker/entrypoint.sh
+# reads it, and the manual installation instructions on the wiki tell an
+# operator to loop over it, so a hand-built install ends up with the same
+# schema as a container one.
+#
+# Only add a file here once it is safe to run repeatedly, which in practice
+# means CREATE TABLE IF NOT EXISTS and ALTER ... IF NOT EXISTS only. The
+# historical pika<version>.sql scripts in this directory are version-stepped
+# and NOT idempotent -- replaying pika602.sql on a 7.00 schema would fail or
+# corrupt it. They must never be listed here.
+#
+# Blank lines and lines beginning with # are ignored.
+
+add_audit_log.sql
+add_csrf_tokens_table.sql
+add_groups_intake.sql
+add_totp.sql
+add_sso.sql
