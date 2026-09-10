@@ -11,6 +11,7 @@ define('PL_DISABLE_DISPLAY_LOGIN',true);
 require_once('pika-danio.php');
 pika_init();
 
+require_once('pikaCase.php');
 require_once('pikaDocument.php');
 require_once('pikaTempLib.php');
 
@@ -118,14 +119,43 @@ $html['doc_field'] = $doc_field;
 switch($action) {
 	case 'download':
 		$doc = new pikaDocument($doc_id);
+		
+		/*	This branch had no permission check at all: any signed-in user
+			could read any document in the system by walking doc_id, which on
+			a legal aid installation means every client's papers. Documents
+			attached to a case are readable by whoever may read the case, so
+			load the case row and ask pika_authorize the same question the
+			case screen asks. A document with no case_id is not case material
+			(a form template, a letterhead) and stays readable.
+		*/
+		if ($doc->case_id)
+		{
+			$doc_case = new pikaCase($doc->case_id);
+			
+			if (!pika_authorize('read_case',$doc_case->getValues()))
+			{
+				die('Access denied');
+			}
+		}
+		
 		$doc_data = gzuncompress(stripslashes($doc->doc_data));
 		//$doc_data = stripslashes($doc->doc_data);
-
+		
+		/*	The uploader chooses the file name, and it went into two response
+			headers unfiltered. A name holding a carriage return or newline
+			splits the header block and lets the uploader write headers of
+			their own, or a whole second response, into the download of any
+			user who opens the file. Strip the line breaks and the quote that
+			would end the filename argument early.
+		*/
+		$safe_mime_type = str_replace(array("\r","\n"),'',(string) $doc->mime_type);
+		$safe_doc_name = str_replace(array("\r","\n",'"'),'',(string) $doc->doc_name);
+		
 		header("Pragma: public");
 		header("Cache-Control: cache, must-revalidate");
 		header("Content-type: application/force-download");
-		header("Content-Type: {$doc->mime_type}");
-		header("Content-Disposition: inline; filename=\"{$doc->doc_name}\"");
+		header("Content-Type: {$safe_mime_type}");
+		header("Content-Disposition: inline; filename=\"{$safe_doc_name}\"");
 		
 		/*	I'm not sure how determine the Content Length if GZIP is being used,
 			and Firefox 33 doesn't like it when I send the uncompressed size
@@ -139,6 +169,18 @@ switch($action) {
 		exit();
 	case 'edit':
 		$doc = new pikaDocument($doc_id);
+		
+		/*	confirm_delete, update and delete all ask edit_doc first. This
+			branch did not, so the edit form - which shows the name, the
+			description and the folder, and is the way in to the update
+			action below - opened for any doc_id any signed-in user typed.
+		*/
+		if (!pika_authorize("edit_doc",$doc->getValues()))
+		{
+			$template = new pikaTempLib('subtemplates/documents.html',$html,'access_denied');
+			$buffer = $template->draw();
+			break;
+		}
 		
 		$html['doc_type'] = $doc->doc_type;
 		$html['doc_name'] = $doc->doc_name;

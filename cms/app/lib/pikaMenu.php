@@ -181,8 +181,20 @@ class pikaMenu extends plBase
 		{
 			$menu_name = 'menu_' . $menu_name;
 		}
-		$safe_menu_name = DB::escapeString($menu_name);
-		$sql = "DELETE FROM {$safe_menu_name};";
+		/*	DB::escapeString escapes a value, not an identifier, so it does
+			not stop a table name being bent into something else. The menu
+			name reaches here from the caller, and this statement is a
+			DELETE. Check the name against the identifier rule and give up
+			before deleting anything if it does not pass.
+		*/
+		$safe_menu_name = pl_safe_identifier($menu_name, 'menu table name');
+		
+		if (false === $safe_menu_name)
+		{
+			return false;
+		}
+		
+		$sql = "DELETE FROM `{$safe_menu_name}`;";
 		DB::query($sql) or trigger_error('SQL: ' . $sql . ' Error: ' . DB::error());
 		if(is_array($menu_array) && count($menu_array) > 0)
 		{
@@ -272,16 +284,22 @@ class pikaMenu extends plBase
 		{
 			$menu_name = 'menu_' . $menu_name;
 		}
-		$safe_menu_name = DB::escapeString($menu_name);
-		$safe_value = DB::escapeString($value);
+		// Same identifier rule as setMenu(): escapeString is a value escape
+		// and does not make a table name safe.
+		$safe_menu_name = pl_safe_identifier($menu_name, 'menu table name');
 		
-		$sql = "SELECT * 
-				FROM {$safe_menu_name} 
+		if (false === $safe_menu_name)
+		{
+			return false;
+		}
+		
+		$sql = "SELECT *
+				FROM `{$safe_menu_name}`
 				WHERE 1
-				AND value='{$safe_value}'
+				AND value = ?
 				LIMIT 1;";
 		
-		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+		$result = DB::preparedQuery($sql,array($value)) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		if(DBResult::numRows($result) == 1)
 		{
 			return true;

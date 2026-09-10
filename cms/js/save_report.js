@@ -2,6 +2,17 @@ function reload (name) {
 	fileList(name,0,'edit_select','R','parent_folder','form_id','','%%[report_name]%%'); 
 }
 
+// Per-session CSRF token for the save_report POST. The request body is raw
+// XML, not a form encoding, so ops/upload_report.php cannot find a _csrf field
+// in $_POST; it reads this header instead. The token comes from the hidden
+// input the docgen form on the report page carries -- see the %%[csrf_field]%%
+// tag in reports/*/form.html -- with a fall back to any other _csrf input on
+// the page.
+function srCsrfToken() {
+	var any = document.querySelector('input[name="_csrf"]');
+	return any ? any.value : '';
+}
+
 function save_report(form_container,save_as) {
 	
 	xmlHttp=GetXmlHttpObject();
@@ -23,6 +34,7 @@ function save_report(form_container,save_as) {
 	xmlHttp.open("POST", url, true)
 	xmlHttp.setRequestHeader("Content-type", "text/xml")
 	xmlHttp.setRequestHeader("Content-length", xml.length);
+	xmlHttp.setRequestHeader("X-CSRF-Token", srCsrfToken());
 	xmlHttp.send(xml);
 	reload('saved_reports');
 }

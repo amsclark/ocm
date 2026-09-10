@@ -204,11 +204,29 @@ class pikaContact extends plBase
 			$match_first = 'first_name';
 			$match_last = 'last_name';
 		}
-		$ssn_sql = '';
-		if (strlen($this->ssn) > 0)
+		/*	The name, the social security number and the contact id all went
+			into this query as text. They come from a contact record, and a
+			contact record is typed in by whoever takes the intake, so this
+			was a way to run a statement of your choosing against the case
+			database from the address book. Bind every one of them.
+			
+			The two column names are still written into the statement because
+			a bound parameter cannot name a column, but they are chosen by the
+			branch just above and are never anything the caller supplied. The
+			check below says so out loud, so a later edit that starts passing
+			a column name in has to notice.
+		*/
+		$valid_columns = array('mp_first','mp_last','first_name','last_name');
+		
+		if (!in_array($match_first,$valid_columns,true) || !in_array($match_last,$valid_columns,true))
 		{
-			$ssn_sql = "OR aliases.ssn='{$this->ssn}' ";
+			trigger_error('Invalid column name in metaphoneContactCheck');
+			return false;
 		}
+		
+		$params = array();
+		$contact_id = (int) $this->contact_id;
+		$ssn_clause = '';
 		
 		
 		/*
@@ -219,40 +237,58 @@ class pikaContact extends plBase
 		// If $mp_last has a trailing wild card, it will generate too many false hits
 		if (!$mp_first && $mp_last)
 		{
+			$params[] = $mp_last;
+			
+			if (strlen((string) $this->ssn) > 0)
+			{
+				$ssn_clause = 'OR aliases.ssn = ?';
+				$params[] = $this->ssn;
+			}
+			
+			$params[] = $contact_id;
 			$sql = "SELECT contacts.*
 				    FROM aliases 
 				    LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-				    WHERE 1 AND 
-				    (aliases.{$match_last} LIKE '{$mp_last}'
-				    {$ssn_sql})
-				    AND aliases.contact_id != '{$this->contact_id}'
+				    WHERE 1
+				    AND (aliases.{$match_last} LIKE ? {$ssn_clause})
+				    AND aliases.contact_id != ?
 				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
 		}
 		
 		else if ($mp_last)
 		{
+			$params[] = $mp_last;
+			$params[] = $mp_first;
+			
+			if (strlen((string) $this->ssn) > 0)
+			{
+				$ssn_clause = 'OR aliases.ssn = ?';
+				$params[] = $this->ssn;
+			}
+			
+			$params[] = $contact_id;
 			$sql = "SELECT contacts.*
 				    FROM aliases 
 				    LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
 				    WHERE 1
-				    AND (aliases.{$match_last} LIKE '{$mp_last}' 
-				    AND aliases.{$match_first} LIKE '{$mp_first}'
-				    {$ssn_sql})
-				    AND aliases.contact_id != '{$this->contact_id}'
+				    AND (aliases.{$match_last} LIKE ? AND aliases.{$match_first} LIKE ? {$ssn_clause})
+				    AND aliases.contact_id != ?
 				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
 		}
 		
 		else
 		{
+			$params[] = $this->ssn;
+			$params[] = $contact_id;
 			$sql = "SELECT contacts.*, aliases.ssn AS ssn
 				    FROM aliases LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
 				    WHERE 1 
-				    AND aliases.ssn='{$this->ssn}'
-				    AND aliases.contact_id != '{$this->contact_id}'
+				    AND aliases.ssn = ?
+				    AND aliases.contact_id != ?
 				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
 		}
 		
-		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+		$result = DB::preparedQuery($sql,$params) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;
 	}
 	

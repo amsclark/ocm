@@ -35,7 +35,24 @@ $screen = pl_grab_post('screen', $next_tab);
 
 // BEGIN MAIN CODE...
 
-// The user is saving the case record. 
+// The user is saving the contact record.
+
+/*	When the save comes from a case screen, the caller must be allowed to
+	edit that case. Without this any signed-in user could rewrite a
+	contact - a client's name, address, date of birth - by posting a
+	contact id.
+*/
+if ($case_id)
+{
+	require_once('pikaCase.php');
+	$case_check = new pikaCase($case_id);
+	
+	if (!pika_authorize('edit_case',$case_check->getValues()))
+	{
+		header("Location: {$base_url}/case.php?case_id={$case_id}");
+		exit();
+	}
+}
 
 $contact = new pikaContact($contact_id);
 // The row to write is the one named by $contact_id above. Strip the copy

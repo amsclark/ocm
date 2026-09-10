@@ -37,6 +37,16 @@ if (is_null($case_id) || is_null($relation_code))
 }
 
 $case1 = new pikaCase($case_id);
+
+/*	Same gate as add_case_contact.php: this creates a contact and links it
+	to a case, which is a change to that case.
+*/
+if (!pika_authorize('edit_case',$case1->getValues()))
+{
+	header("Location: {$base_url}/case.php?case_id={$case_id}");
+	exit();
+}
+
 $contact = new pikaContact();
 // Two changes on this line:
 //   - pl_clean_form_input(), which every other handler already ran and

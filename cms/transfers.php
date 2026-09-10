@@ -111,13 +111,40 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 	$x = json_decode($tx->getValue('json_data'), 1);
 	
 	require_once('pikaContact.php');
+	
+	/*	The JSON here is what a remote installation sent us. setValues()
+		writes any column of the row that the JSON names, so a sending
+		organisation - or anyone who can get a record into our transfer
+		queue - could set fields the intake form never collects. Keep the
+		write to the fields an intake actually carries.
+	*/
+	$contact_allowed = array(
+		'first_name','middle_name','last_name','extra_name','alt_name','title',
+		'address','address2','city','state','zip','county',
+		'area_code','phone','phone_notes',
+		'area_code_alt','phone_alt','phone_notes_alt',
+		'email','org','birth_date','ssn',
+		'language','gender','ethnicity','marital','residence',
+		'disabled','notes'
+		);
+	
+	// Same rule for the case row: without it the sender could set user_id
+	// and hand one of our staff a case they never took.
+	$case_allowed = array(
+		'problem','sp_problem','funding',
+		'case_county','case_zip','open_date',
+		'adults','children','persons_helped',
+		'income','income_type0','annual0',
+		'intake_type'
+		);
+	
 	$client = new pikaContact();
-	$client->setValues($x['client']);
+	$client->setValues(pl_array_only($x['client'],$contact_allowed));
 	$client->save();
 	
 	require_once('pikaCase.php');
 	$case0 = new pikaCase();
-	$case0->setValues($x['case']);
+	$case0->setValues(pl_array_only($x['case'],$case_allowed));
 	$case0->addContact($client->getValue('contact_id'), 1);
 	$case0->save();
 
@@ -125,7 +152,7 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 	if (isset($x['op']))
 	{
 		$op = new pikaContact();
-		$op->setValues($x['op']);
+		$op->setValues(pl_array_only($x['op'],$contact_allowed));
 		$op->save();
 		$case0->addContact($op->getValue('contact_id'), 2);
 	}
@@ -134,7 +161,7 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 	if (isset($x['opa']))
 	{
 		$opa = new pikaContact();
-		$opa->setValues($x['opa']);
+		$opa->setValues(pl_array_only($x['opa'],$contact_allowed));
 		$opa->save();
 		$case0->addContact($opa->getValue('contact_id'), 3);
 	}

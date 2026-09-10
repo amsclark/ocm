@@ -117,10 +117,16 @@ class pikaAuth
 			if($authAdapterObj->authenticate($user,$pass,$totp))
 			{
 				// Check to see that the login is not a back/refresh of submission form
+				/*	$_POST, not $_REQUEST. Reading this token from the query
+					string means a plain link - or an <img src> on any page the
+					user visits - can carry a value that satisfies the replay
+					check, so a login could be driven from another site.
+					The login form posts it.
+				*/
 				$auth_id = $_SESSION['auth_id'];
-				if(isset($_REQUEST['auth_id']))
+				if(isset($_POST['auth_id']))
 				{
-					$auth_id = $_REQUEST['auth_id'];
+					$auth_id = $_POST['auth_id'];
 				}
 				if($auth_id == $_SESSION['auth_id'])
 				{

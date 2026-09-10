@@ -3250,5 +3250,295 @@ else
 fi
 
 echo
+echo "28. the ops/ handlers gated in the authz batch"
+
+# Nine handlers in this section ran on nothing but an id out of the request.
+# cms/ops/{duplicate_case,add_case_contact,add_case_new_contact,update_contact}
+# .php each changed a case without asking pika_authorize about it;
+# cms/ops/{update_zipcode,upload_report}.php wrote shared administrator data
+# with no check at all; documents.php?action=download served any row in
+# doc_storage by doc_id; and ops/update_case.php let the request name
+# intake_user_id, which is the column that records who took the intake.
+if [ "$HAVE_DB" = 1 ]; then
+	AZGROUP='zz_az_grp'
+	AZUSER='zz_az_user'
+	AZPASS='zz-az-Passw0rd'
+	AZJAR="$(mktemp)"
+
+	cleanup_az() {
+		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZAZ%' OR report_name = 'ZZAZREPORT'" >/dev/null
+		adb "DELETE FROM conflict WHERE contact_id IN (SELECT contact_id FROM contacts WHERE last_name LIKE 'ZZAZ%')" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZAZ%'" >/dev/null
+		adb "DELETE FROM cases WHERE number IN ('ZZ-AZ-SECRET', 'ZZ-AZ-MINE')" >/dev/null
+		adb "DELETE FROM zip_codes WHERE city = 'ZZAZCITY'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${AZUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${AZGROUP}'" >/dev/null
+		rm -f "$AZJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_az' EXIT
+	cleanup_az
+
+	# Every flag off. This user may edit the cases it owns and nothing else,
+	# and holds none of the administrator capabilities.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${AZGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	AZHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$AZPASS" </dev/null 2>/dev/null)"
+	AZUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${AZUID}, '${AZUSER}', '${AZHASH}', 1, '${AZGROUP}', 0)" >/dev/null
+
+	# One case this user has no claim on, and one it owns. The owned case is
+	# where the mass assignment check runs: the gate has to let the write
+	# through so that the denylist is what refuses the column.
+	# Ids come from the `counters` row as well as from MAX(). plBase::getNextID
+	# hands out the next primary key from counters, not from the table, so a
+	# fixture inserted at MAX()+1 alone can sit on an id the application is
+	# about to allocate, and the save that lands on it fails on a duplicate
+	# key. Take the higher of the two and move the counter up behind it.
+	az_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	az_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	AZCASE="$(az_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${AZCASE}, 'ZZ-AZ-SECRET', 1, 'ZZOFF', '1', 1)" >/dev/null
+	az_bump_counter cases "$AZCASE"
+	AZMINE="$(az_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${AZMINE}, 'ZZ-AZ-MINE', ${AZUID}, 'ZZMINE', '1', 1)" >/dev/null
+	az_bump_counter cases "$AZMINE"
+
+	AZCON="$(az_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${AZCON}, 'Zz', 'ZZAZCONTACT')" >/dev/null
+	az_bump_counter contacts "$AZCON"
+
+	# A document on the case this user cannot read. doc_data is gzcompress()ed
+	# binary, so PHP inside the container writes the UPDATE and mariadb reads
+	# it back rather than passing it through a shell.
+	AZDOC="$(az_next_id doc_storage doc_id)"
+	adb "INSERT INTO doc_storage (doc_id, doc_name, doc_type, description, created, case_id, user_id, folder, mime_type)
+		VALUES (${AZDOC}, 'ZZAZdoc.txt', 'C', 'ZZAZ doc', CURDATE(), ${AZCASE}, 1, 0, 'text/plain')" >/dev/null
+	az_bump_counter doc_storage "$AZDOC"
+	az_seed_doc() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+			file_put_contents("/tmp/zzazdoc.sql",
+				"UPDATE doc_storage SET doc_data=\x27"
+				. addslashes(gzcompress($argv[2]))
+				. "\x27 WHERE doc_id=" . $argv[1] . ";");
+		' "$1" "$2" </dev/null
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			sh -c 'cat /tmp/zzazdoc.sql' </dev/null > "$BODY"
+		docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
+			mariadb -uroot "$DB_NAME" < "$BODY"
+	}
+	az_seed_doc "$AZDOC" 'ZZAZDOC-SECRET private case document body'
+
+	# password.php is the one form every user can load whatever their group,
+	# so it is where a token comes from. Take a fresh one before each POST:
+	# a spent token would make every assertion below pass because the request
+	# was refused by pl_csrf_check(), not because the handler checked anything.
+	az_token() {
+		curl -sL --max-time 30 -c "$1" -b "$1" "$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	if [ -z "$AZHASH" ] || [ -z "${AZCASE:-}" ] || [ -z "${AZDOC:-}" ] || [ -z "${AZCON:-}" ]; then
+		bad "could not seed the ops authorization fixtures"
+	else
+		: > "$AZJAR"
+		curl -sL --max-time 30 -c "$AZJAR" -b "$AZJAR" -o "$BODY" \
+			-X POST -d "login_user=${AZUSER}&login_pass=${AZPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway ops user could not log in - section 28 is untested"
+		else
+			ok "the throwaway ops user can log in"
+
+			AZTOK="$(az_token "$AZJAR")"
+			if [ "${#AZTOK}" -eq 64 ]; then
+				ok "the throwaway ops user holds a CSRF token"
+			else
+				bad "no CSRF token for the ops user - section 28 is untested"
+			fi
+
+			# 28a. duplicate_case.php copies the whole case record into a new
+			# one the caller then owns.
+			curl -sL --max-time 30 -b "$AZJAR" -o "$BODY" \
+				"$OCM_URL/ops/duplicate_case.php?case_id=${AZCASE}" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM cases WHERE number = 'ZZ-AZ-SECRET'")" = 1 ]; then
+				ok "a case cannot be duplicated by a user who cannot edit it"
+			else
+				bad "A CASE THE USER CANNOT EDIT WAS COPIED BY duplicate_case.php"
+			fi
+
+			# 28b. add_case_contact.php links an existing contact to a case.
+			AZTOK="$(az_token "$AZJAR")"
+			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
+				-d "_csrf=${AZTOK}&case_id=${AZCASE}&relation_code=7&thiscon=${AZCON}&screen=act" \
+				"$OCM_URL/ops/add_case_contact.php" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM conflict WHERE case_id = ${AZCASE}")" = 0 ]; then
+				ok "a contact cannot be attached to a case the user cannot edit"
+			else
+				bad "A CONTACT WAS ATTACHED TO A CASE THE USER CANNOT EDIT"
+			fi
+
+			# 28c. add_case_new_contact.php creates the contact as well.
+			AZTOK="$(az_token "$AZJAR")"
+			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
+				-d "_csrf=${AZTOK}&case_id=${AZCASE}&relation_code=7&first_name=Zz&last_name=ZZAZNEW&screen=act" \
+				"$OCM_URL/ops/add_case_new_contact.php" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM contacts WHERE last_name = 'ZZAZNEW'")" = 0 ]; then
+				ok "a new contact cannot be created onto a case the user cannot edit"
+			else
+				bad "A CONTACT WAS CREATED ONTO A CASE THE USER CANNOT EDIT"
+			fi
+
+			# 28d. update_contact.php rewrites a contact row - a client's
+			# name, address, date of birth - from a case screen.
+			AZTOK="$(az_token "$AZJAR")"
+			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
+				-d "_csrf=${AZTOK}&contact_id=${AZCON}&case_id=${AZCASE}&first_name=Zz&last_name=ZZAZHACKED" \
+				"$OCM_URL/ops/update_contact.php" >/dev/null
+			if [ "$(adb "SELECT last_name FROM contacts WHERE contact_id = ${AZCON}")" = 'ZZAZCONTACT' ]; then
+				ok "a contact cannot be rewritten from a case the user cannot edit"
+			else
+				bad "A CONTACT WAS REWRITTEN FROM A CASE THE USER CANNOT EDIT"
+			fi
+
+			# 28e. documents.php?action=download had no permission check at
+			# all, so a doc_id walk read every client's papers.
+			curl -sL --max-time 30 -b "$AZJAR" -o "$BODY" \
+				"$OCM_URL/documents.php?action=download&doc_id=${AZDOC}" >/dev/null
+			if grep -q 'ZZAZDOC-SECRET' "$BODY"; then
+				bad "A DOCUMENT ON A CASE THE USER CANNOT READ WAS DOWNLOADED"
+			else
+				ok "a document on a case the user cannot read is refused"
+			fi
+
+			# 28f. update_zipcode.php writes the shared zip code table. The
+			# screen it serves is behind pika_authorize('system'); the handler
+			# was not.
+			AZTOK="$(az_token "$AZJAR")"
+			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
+				-d "_csrf=${AZTOK}&screen_name=edit&zipcode=99999&state=ZZ&city=ZZAZCITY&county=ZZAZCOUNTY&area_code=999" \
+				"$OCM_URL/ops/update_zipcode.php" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM zip_codes WHERE city = 'ZZAZCITY'")" = 0 ]; then
+				ok "the zip code table is refused to a user without system rights"
+			else
+				bad "A NON-ADMIN REWROTE THE SHARED ZIP CODE TABLE"
+			fi
+
+			# 28g. upload_report.php installs a report definition, which is a
+			# document every user of the site then runs.
+			AZTOK="$(az_token "$AZJAR")"
+			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
+				-H 'Content-Type: text/xml' -H "X-CSRF-Token: ${AZTOK}" \
+				--data-binary '<?xml version="1.0"?><form name="zzaz"></form>' \
+				"$OCM_URL/ops/upload_report.php?report_name=ZZAZREPORT&doc_name=ZZAZreport.xml" >/dev/null
+			if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZAZREPORT'")" = 0 ]; then
+				ok "a report definition is refused to a user without system rights"
+			else
+				bad "A NON-ADMIN INSTALLED A SAVED REPORT DEFINITION"
+			fi
+
+			# 28h. ops/update_case.php writes any cases column the request
+			# carries. intake_user_id records who took the intake, and no case
+			# screen offers it, so a value for it can only have been added by
+			# hand. Run on the case this user owns, so that the edit_case gate
+			# lets the save through and the denylist is what refuses the field.
+			AZTOK="$(az_token "$AZJAR")"
+			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
+				-d "_csrf=${AZTOK}&case_id=${AZMINE}&screen=info&intake_user_id=${AZUID}&good_story=1" \
+				"$OCM_URL/ops/update_case.php" >/dev/null
+			if [ "$(adb "SELECT intake_user_id FROM cases WHERE case_id = ${AZMINE}")" = 1 ]; then
+				ok "intake_user_id cannot be rewritten by posting it to update_case.php"
+			else
+				bad "A POSTED intake_user_id REWROTE THE CASE INTAKE RECORD"
+			fi
+
+			# Positive control for 28h: an ordinary field on the same POST has
+			# to land, or the check above passes because the whole save was
+			# refused rather than because the column was dropped.
+			if [ "$(adb "SELECT good_story FROM cases WHERE case_id = ${AZMINE}")" = 1 ]; then
+				ok "an ordinary field on the same save still lands"
+			else
+				bad "the update_case denylist blocked the whole save - it is too tight"
+			fi
+		fi
+
+		# Positive controls. The admin holds every right, so each of these
+		# must still work; an authorization check that refuses everybody
+		# passes the negatives above for the wrong reason.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/documents.php?action=download&doc_id=${AZDOC}" >/dev/null
+		if grep -q 'ZZAZDOC-SECRET' "$BODY"; then
+			ok "the admin still downloads a case document"
+		else
+			bad "the admin cannot download a case document - the gate is too tight"
+		fi
+
+		ADMTOK="$(az_token "$COOKIES")"
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=${ADMTOK}&case_id=${AZCASE}&relation_code=7&thiscon=${AZCON}&screen=act" \
+			"$OCM_URL/ops/add_case_contact.php" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM conflict WHERE case_id = ${AZCASE}")" -ge 1 ]; then
+			ok "the admin still attaches a contact to a case"
+		else
+			bad "the admin cannot attach a contact to a case - the gate is too tight"
+		fi
+
+		ADMTOK="$(az_token "$COOKIES")"
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=${ADMTOK}&screen_name=edit&zipcode=99999&state=ZZ&city=ZZAZCITY&county=ZZAZCOUNTY&area_code=999" \
+			"$OCM_URL/ops/update_zipcode.php" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM zip_codes WHERE city = 'ZZAZCITY'")" = 1 ]; then
+			ok "the admin still writes the zip code table"
+		else
+			bad "the admin cannot write the zip code table - the gate is too tight"
+		fi
+
+		# The save_report flow sends its parameters as a raw text/xml body, so
+		# there is no _csrf field in $_POST and the token has to travel in an
+		# X-CSRF-Token header. Without the header handling in
+		# ops/upload_report.php this POST is refused by pl_csrf_check() and
+		# saving a report is broken for everybody, admin included.
+		ADMTOK="$(az_token "$COOKIES")"
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+			-H 'Content-Type: text/xml' -H "X-CSRF-Token: ${ADMTOK}" \
+			--data-binary '<?xml version="1.0"?><form name="zzaz"></form>' \
+			"$OCM_URL/ops/upload_report.php?report_name=ZZAZREPORT&doc_name=ZZAZreport.xml" >/dev/null
+		if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZAZREPORT'")" = 1 ]; then
+			ok "the admin still saves a report definition over a raw XML body"
+		else
+			bad "the admin cannot save a report definition - the CSRF header path is broken"
+		fi
+
+		# And the token has to be on the report page for the browser to find.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/reports/megareport/" >/dev/null
+		if grep -qE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY"; then
+			ok "the report page carries a CSRF token for save_report.js"
+		else
+			bad "the report page has no CSRF token - save_report.js cannot send one"
+		fi
+	fi
+
+	cleanup_az
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the ops authorization checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -32,10 +32,22 @@ $merge_these = pl_grab_get('merge_these');
 
 switch ($action) {
 	case 'merge':
-		if(is_array($merge_these)) {
+		/*	A merge folds one contact's records into another and removes the
+			one merged away. It ran on nothing but a contact id, so any
+			signed-in user could destroy any two contacts in the system by
+			typing their ids. Ask permission for both sides: the contact that
+			survives, and every contact being folded into it.
+			pika_authorize('edit_contact') walks the cases the contact appears
+			on and checks edit_case on each.
+		*/
+		if(is_array($merge_these) && is_numeric($contact_id)
+			&& pika_authorize('edit_contact',array('contact_id' => $contact_id))) {
 			$contact = new pikaContact($contact_id);
 			foreach ($merge_these as $selected_contact_id) {
-				if(is_numeric($selected_contact_id) && !$contact->is_new) { // Ensure a number is passed and the record isn't new
+				// Ensure a number is passed, the record isn't new, and the
+				// user may edit the contact being merged away.
+				if(is_numeric($selected_contact_id) && !$contact->is_new
+					&& pika_authorize('edit_contact',array('contact_id' => $selected_contact_id))) {
 					
 					if(!$contact->merge($selected_contact_id)) {
 						die('An error occured during the merge');

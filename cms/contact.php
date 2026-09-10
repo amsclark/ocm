@@ -185,12 +185,24 @@ if (strlen($case_id) > 0)
 		$num = 'This Case';
 	}
 	
-	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php\">Cases</a> &gt; <a href=\"{$base_url}/case.php?case_id={$case_id}\">{$num}</a> &gt; {$main_html['page_title']}";
+	/*	$number and $case_id are read from the query string at the top of
+		this file and went into the breadcrumb as they arrived, so a link
+		like contact.php?case_id=1&number=<script>... ran that script for
+		whoever opened it. The page title is a contact's name, which the
+		address book lets anyone type. Escape all three at the point they
+		are written into the markup.
+	*/
+	$nav_num = pl_html_escape($num);
+	$nav_case_id = pl_html_escape($case_id);
+	$nav_page_title = pl_html_escape($main_html['page_title']);
+	
+	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php\">Cases</a> &gt; <a href=\"{$base_url}/case.php?case_id={$nav_case_id}\">{$nav_num}</a> &gt; {$nav_page_title}";
 }
 
 else 
 {
-	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/addressbook.php\">Address Book</a> &gt; {$main_html['page_title']}";
+	$nav_page_title = pl_html_escape($main_html['page_title']);
+	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/addressbook.php\">Address Book</a> &gt; {$nav_page_title}";
 }
 
 $default_template = new pikaTempLib('templates/default.html', $main_html);

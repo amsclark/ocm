@@ -19,6 +19,16 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 	pl_csrf_check();
 }
 
+/*	zipcode.php, the screen this handler serves, is behind pika_authorize
+	('system'). The handler itself was not, so any signed-in user could
+	rewrite or delete rows in the shared zip code table by posting here
+	directly. Same gate, same place.
+*/
+if (!pika_authorize('system',array()))
+{
+	die('Access denied');
+}
+
 
 // Variables
 // probably should be an array at this point

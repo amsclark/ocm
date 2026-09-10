@@ -59,10 +59,41 @@ if ($allow_edits)
 		$screen = 'outcomes';
 	}
 	
-	$case_data->setValues(pl_clean_form_input($submitted_data));
+	/*	setValues() writes any column of the cases row that the request
+		happens to carry. The case screens do not offer these five, so a
+		value for one of them can only have been added to the request by
+		hand: case_id is the primary key, created and last_changed are
+		stamped by the database, intake_user_id records who took the intake
+		and is meant to stay put afterwards, and poten_conflicts is written
+		by the conflict check. Drop them before the write.
+		
+		Listing the columns that are allowed instead would be the stronger
+		rule, but this one page saves more than twenty case tabs, each with
+		its own set of fields, so the list would be long and would go stale.
+		Denying the handful that are always system-owned is what closes the
+		hole that matters, which is a user rewriting their own audit trail.
+	*/
+	$form_input = pl_clean_form_input($submitted_data);
+	$denied_fields = array(
+		'case_id',
+		'created',
+		'last_changed',
+		'intake_user_id',
+		'poten_conflicts'
+		);
 	
-	$check_valid_client_id_sql = "select contact_id from contacts where contact_id = '" . $case_data->getValue('client_id') . "'";
-        $valid_client_id_result = DB::query($check_valid_client_id_sql) or trigger_error("SQL: " . $check_valid_client_id_sql . " Error: " . DB::error());
+	foreach ($denied_fields as $denied_field)
+	{
+		unset($form_input[$denied_field]);
+	}
+	
+	$case_data->setValues($form_input);
+	
+	/*	client_id arrives in the request, so it cannot be pasted into a
+		query. Bind it.
+	*/
+	$check_valid_client_id_sql = "select contact_id from contacts where contact_id = ?";
+        $valid_client_id_result = DB::preparedQuery($check_valid_client_id_sql,array($case_data->getValue('client_id'))) or trigger_error("SQL: " . $check_valid_client_id_sql . " Error: " . DB::error());
         $num_valid_client_id = DBResult::numrows($valid_client_id_result);
         if ($num_valid_client_id == 0)
         {
@@ -95,8 +126,9 @@ if ($allow_edits)
 	// AC - clear outcomes if the problem code changes
         if (array_key_exists('prior_problem', $_POST) && array_key_exists('problem', $_POST) && $_POST['prior_problem'] != $_POST['problem'])
         {
-                $reset_sql = "DELETE FROM outcomes WHERE case_id = {$case_id}";
-                DB::query($reset_sql) or trigger_error("SQL: " . $reset_sql . " Error: " . DB::error());
+                // $case_id comes from the request; bind it rather than pasting it in.
+                $reset_sql = "DELETE FROM outcomes WHERE case_id = ?";
+                DB::preparedQuery($reset_sql,array($case_id)) or trigger_error("SQL: " . $reset_sql . " Error: " . DB::error());
         }
 
 }

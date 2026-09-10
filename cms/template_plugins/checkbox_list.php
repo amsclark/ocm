@@ -49,7 +49,10 @@ function checkbox_list($field_name = null, $field_value = null, $menu_array = nu
 	// Begin building menu
 	$checklist_output = '';
 	$field_value_array = array();
-	if(!is_array($field_value) && strlen($field_value) > 0) 
+	// (string) cast: a checkbox list drawn for a field the row has no value
+	// for arrives here as null, and strlen(null) is a deprecation notice on
+	// every render under PHP 8.
+	if(!is_array($field_value) && strlen((string) $field_value) > 0) 
 	{
 		$field_value_array = explode(',',$field_value);	
 	}
