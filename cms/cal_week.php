@@ -83,6 +83,30 @@ if (strlen((string) $user_id) < 1)
 	$user_id = $auth_row['user_id'];
 }
 
+/*	Another user's calendar. See pl_can_view_user_calendar() in
+	cms/pika-danio.php: this page rendered whichever user id the query string
+	named, with no check at all.
+*/
+/*	An office filter asks for a group of people, so it is never the caller's
+	own calendar however it is spelled. Ask the question about a user id that
+	cannot match, and let the permission decide.
+*/
+$calendar_target = ctype_digit((string) $user_id) ? $user_id : '';
+
+if (!pl_can_view_user_calendar($calendar_target))
+{
+	pl_log_error('calendar refused', 'user ' . $auth_row['user_id']
+		. ' asked for user ' . $user_id);
+	$plTemplate['page_title'] = 'Calendar';
+	$plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> &gt; Calendar";
+	$plTemplate['content'] = 'That calendar is not viewable. Only a group with'
+		. ' read-all permission may look at another user&rsquo;s calendar while'
+		. ' shared calendars are switched off.';
+	echo pl_template($plTemplate, 'templates/default.html');
+	exit();
+}
+
+
 $custom = pl_grab_var('custom', 0, 'GET', 'boolean');
 /*
 if (is_array($_REQUEST['user_list']))
@@ -123,7 +147,10 @@ function print_calendar_item($a)
 	$title = " title='(no summary)'";
 	
 	$tmp = pl_unmogrify_time($a["act_time"]);
-	if (strlen($a['act_end_time']) > 0)
+	/*	act_end_time is nullable and most rows leave it null, so this was a
+		deprecation notice on every activity drawn on the week grid.
+	*/
+	if (strlen((string) ($a['act_end_time'] ?? '')) > 0)
 	{
 		$tmp .= ' - ' . pl_unmogrify_time($a['act_end_time']);
 	}
