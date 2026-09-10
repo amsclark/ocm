@@ -88,16 +88,31 @@ $feeds_text = '';
 if(count($feeds_array) >= 1) 
 {
 	foreach ($feeds_array as $feed) {
-		$feeds_text .= "<h2>{$feed['title']}</h2>\n";
+		$feeds_text .= "<h2>" . pl_html_escape($feed['title']) . "</h2>\n";
 		
 		foreach ($feed['entries'] as $entry) 
 		{
+			/*	Everything below comes from a third party feed, and
+				pl_template() substitutes a tag value as it is given. So each
+				field is made safe here: the two titles are escaped, the link
+				has to be a scheme a browser can follow, and the body is
+				rebuilt from a parsed tree.
+				
+				strip_tags() used to do the body. It keeps every attribute on
+				the tags it allows, so a feed could put onmouseover= on an
+				allowed <a> and point its href at javascript:.
+			*/
+			$raw_content = $entry['content'];
 			$entry['feed_id'] = rand();
-			$entry['content'] = strip_tags($entry['content'],'<a><ul><ol><li><p>');
+			$entry['title'] = pl_html_escape($entry['title']);
+			$entry['link'] = pl_html_escape(pikaRssFeed::safeUrl($entry['link']));
+			$entry['content'] = pikaRssFeed::safeHtml($raw_content);
 			$entry['summary_content'] = $entry['content'];
-			if(strlen($entry['content']) > 140) 
+			if(strlen($raw_content) > 140) 
 			{
-				$entry['summary_content'] = substr($entry['content'],0,140);
+				//	Cut the raw text and rebuild it, so the parser closes the
+				//	tag the cut ran through.
+				$entry['summary_content'] = pikaRssFeed::safeHtml(substr($raw_content,0,140));
 				$entry['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleFeed({$entry['feed_id']});" .
 											 " return false;\">View Full Text</a></i>)";
 			}
