@@ -361,6 +361,27 @@ function pika_authorize($op, $row)
 		}
 		
 		break;
+		
+		/*	Reading another user's calendar and time entries.
+			
+			There is no groups column for this, so it resolves to read_all:
+			the groups that may already read every case -- supervisors, grant
+			and compliance staff -- are the groups that may read every
+			calendar. Adding a column would need a schema change and a
+			Security Levels screen for it; read_all needs neither and is the
+			same set of people in practice.
+			
+			See pl_can_view_user_calendar() below for how the calendar pages
+			use this.
+		*/
+		case 'calendar_admin':
+		
+		if ($auth_row['read_all'])
+		{
+			$allow_this = true;
+		}
+		
+		break;
 
 		case 'system':
 		case 'delete_case':
@@ -408,6 +429,70 @@ function pika_report_authorize($report_name)
 	}
 	
 	return $allow_this;
+}
+
+
+/*	May the current user look at $target_user_id's calendar?
+	
+	cal_day.php, cal_week.php, cal_adv.php and services/cal-rss.php all took a
+	user id off the query string and rendered that user's activities -- summary,
+	notes, case number and hours -- with no check of any kind. Any authenticated
+	user could read any colleague's diary, and cal-rss.php did not even ask for
+	authentication (see the note at the top of that file).
+	
+	Open visibility is what most legal aid programs want and what every install
+	of this application has had since 2019, so this does not switch to
+	deny-by-default: it adds the switch that was missing. The rule is
+	
+		your own calendar                                   always
+		another user's, with read_all (calendar_admin)      always
+		another user's, without it                          only while the
+		                                                    enable_shared_calendars
+		                                                    setting is not 0
+	
+	An installation that has never heard of the setting has no such row, and a
+	missing row reads as open -- the behaviour it already had. To close it, add
+	the row with value 0:
+	
+		cms/app/sql/upgrades/add_shared_calendars.sql
+	
+	This is read-only visibility either way. It grants nothing on the write
+	side; ops/update_activity.php still checks ownership on its own.
+	
+	@param mixed $target_user_id the user whose calendar is being asked for
+	@return boolean
+*/
+function pl_can_view_user_calendar($target_user_id)
+{
+	global $auth_row;
+	
+	if (!is_array($auth_row) || !isset($auth_row['user_id']))
+	{
+		return false;
+	}
+	
+	if ((string) $target_user_id === (string) $auth_row['user_id'])
+	{
+		return true;
+	}
+	
+	if (pika_authorize('calendar_admin', array()))
+	{
+		return true;
+	}
+	
+	$shared = pl_settings_get('enable_shared_calendars');
+	
+	/*	No row, or a row with an empty value, means the question was never
+		asked at this installation. Answer it the way the application always
+		has.
+	*/
+	if (is_null($shared) || '' === (string) $shared)
+	{
+		return true;
+	}
+	
+	return (0 != (int) $shared);
 }
 
 /**

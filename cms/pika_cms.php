@@ -59,8 +59,16 @@ require_once('lib/pikaCms.php');
 // GLOBAL
 global $plSettings;
 
-// GZIP compression
-if ($plSettings['enable_compression'] && !defined('PIKA_NO_COMPRESSION'))
+/*	GZIP compression.
+	
+	pika_cms.php never calls pika_init(), so nothing here has filled
+	$plSettings. It is null on every request that comes in through this file -
+	the reports under cms/reports/ - and reading a key off it is a warning on
+	PHP 8. Compression stays off on these pages, which is what already
+	happened.
+*/
+if (is_array($plSettings) && !empty($plSettings['enable_compression'])
+	&& !defined('PIKA_NO_COMPRESSION'))
 {
 	ob_start("ob_gzhandler");
 }
@@ -1119,8 +1127,23 @@ function pika_error_notice($title, $message)
 	if (file_exists('templates/unavailable.html'))
 	{
 		$template_data["debug"] = $d;
-		$template_data["title"] = "Error:  $title";
-		$template_data["message"] = $message;
+		/*	These two went into the template raw. pl_template() substitutes
+			a tag with the value it was given and does no escaping of its
+			own, so any caller that passes a request value made this screen
+			a reflected-XSS sink - ops/vcal.php passes the submitted
+			act_type straight into the message.
+			
+			pl_clean_html() rather than pl_html_escape(): the callers hand
+			us values that came through pl_grab_var(), and
+			pl_clean_form_input() has already rewritten < and > as entities
+			on the way in. pl_clean_html() turns those back into characters
+			and then escapes the whole string once, so the message reads as
+			it was typed instead of showing "&lt;" to the user, and a raw <
+			from a caller that never went through the input layer is still
+			escaped.
+		*/
+		$template_data["title"] = 'Error:  ' . pl_clean_html($title);
+		$template_data["message"] = pl_clean_html($message);
 		
 		$plTemplate["page_title"] = "Pika CMS Error Screen";
 		$plTemplate['nav'] = "<a href=\".\" class=light>$pikaNavRootLabel</a> &gt; Error Screen";
