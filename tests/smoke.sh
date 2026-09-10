@@ -4003,6 +4003,217 @@ else
 	printf '  skip the conflict check checks (needs the database)\n'
 fi
 
+# ── 30. Another user's calendar ────────────────────────────────────────────
+# cal_day.php, cal_week.php, cal_adv.php and services/cal-rss.php took a user
+# id off the query string and drew that user's activities, with the summary and
+# the notes, for anyone who asked. cal-rss.php did not even require a login: it
+# set PL_DISABLE_SECURITY, so an unauthenticated GET returned a week of a named
+# user's appointments and case notes as XML.
+#
+# All four pages now ask pl_can_view_user_calendar() (cms/pika-danio.php):
+# your own calendar always, another user's with a read-all group always,
+# another user's without one only while the enable_shared_calendars setting is
+# not 0. A missing setting row reads as open, which is what the application
+# always did, so an installation that has not applied
+# cms/app/sql/upgrades/add_shared_calendars.sql keeps its old behaviour.
+#
+# Three states are checked for each page, because a gate that refuses in every
+# state would pass the refusal assertion while taking colleague calendars away
+# from every office that wants them.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	CAL_GROUP='zz_cal_grp'
+	CAL_USER='zz_cal_user'
+	CAL_PASS='zz-cal-Passw0rd'
+	CAL_JAR="$(mktemp)"
+	# What this installation had before the section touched it, so the value
+	# an operator chose survives a test run.
+	CAL_SETTING_WAS="$(adb "SELECT value FROM settings WHERE label = 'enable_shared_calendars'")"
+
+	cleanup_cal() {
+		adb "DELETE FROM activities WHERE summary IN ('ZZ-CAL-PRIVATE', 'ZZ-CAL-REDACT')" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-CAL-CASE'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${CAL_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${CAL_GROUP}'" >/dev/null
+		adb "DELETE FROM settings WHERE label = 'enable_shared_calendars'" >/dev/null
+		if [ -n "${CAL_SETTING_WAS}" ]; then
+			adb "INSERT INTO settings (label, value)
+				VALUES ('enable_shared_calendars', '${CAL_SETTING_WAS}')" >/dev/null
+		fi
+		rm -f "$CAL_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cal' EXIT
+
+	adb "DELETE FROM activities WHERE summary IN ('ZZ-CAL-PRIVATE', 'ZZ-CAL-REDACT')" >/dev/null
+	adb "DELETE FROM cases WHERE number = 'ZZ-CAL-CASE'" >/dev/null
+	adb "DELETE FROM users WHERE username = '${CAL_USER}'" >/dev/null
+	adb "DELETE FROM \`groups\` WHERE group_id = '${CAL_GROUP}'" >/dev/null
+
+	# One appointment on the admin's calendar, today, with a note. Every
+	# assertion below is about whether this string comes back.
+	CAL_ACT="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, user_id, act_date, summary, notes, completed)
+		VALUES (${CAL_ACT}, 1, CURDATE(), 'ZZ-CAL-PRIVATE', 'ZZ-CAL-PRIVATE note', 0)" >/dev/null
+
+	# A second appointment on the admin's calendar, this one on a case in an
+	# office the fixture group does not have. pika_authorize('read_act') refuses
+	# it, so cal_day.php and cal_week.php draw their redacted row for it: the
+	# time and the owner, and nothing else.
+	CAL_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${CAL_CASE}, 'ZZ-CAL-CASE', 1, 'zzz', '1')" >/dev/null
+	CAL_ACT2="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	adb "INSERT INTO activities (act_id, user_id, case_id, act_date, act_time, summary, notes, completed)
+		VALUES (${CAL_ACT2}, 1, ${CAL_CASE}, CURDATE(), '09:30:00', 'ZZ-CAL-REDACT', 'ZZ-CAL-REDACT note', 0)" >/dev/null
+
+	# 30a. The unauthenticated feed. This one needs no fixture user: before the
+	# fix, this exact request returned the row seeded above to anybody on the
+	# network.
+	curl -s --max-time 30 -o "$BODY" "$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+	if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
+		bad "cal-rss.php SERVES A USER'S APPOINTMENTS AND NOTES WITH NO LOGIN (CWE-306)"
+	elif grep -q 'login_pass' "$BODY"; then
+		ok "cal-rss.php asks an anonymous caller to log in ($(wc -c < "$BODY") bytes)"
+	else
+		bad "cal-rss.php gave neither the feed nor a login form ($(wc -c < "$BODY") bytes)"
+	fi
+
+	# A group with no permissions at all: no read_all, no offices, no reports.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${CAL_GROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	CAL_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$CAL_PASS" </dev/null 2>/dev/null)"
+	CAL_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${CAL_UID}, '${CAL_USER}', '${CAL_HASH}', 1, '${CAL_GROUP}', 0)" >/dev/null
+
+	cal_login() {
+		: > "$CAL_JAR"
+		curl -sL --max-time 30 -c "$CAL_JAR" -b "$CAL_JAR" -o "$BODY" \
+			-X POST -d "login_user=${CAL_USER}&login_pass=${CAL_PASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+	}
+
+	# $1 label, $2 path with query string, $3 allow|deny
+	cal_probe() {
+		curl -sL --max-time 60 -b "$CAL_JAR" -o "$BODY" "$OCM_URL/$2" >/dev/null
+		size="$(wc -c < "$BODY")"
+		if [ "$size" -lt 500 ]; then
+			bad "$1: only $size bytes (PHP fatal?)"
+		elif grep -qF 'not viewable' "$BODY"; then
+			if [ "$3" = deny ]; then
+				ok "$1: refused"
+			else
+				bad "$1: REFUSED a calendar this user is allowed to see"
+			fi
+		elif [ "$3" = deny ]; then
+			bad "$1: ANOTHER USER'S CALENDAR IS READABLE BY A USER WITH NO PERMISSIONS (CWE-639)"
+		else
+			ok "$1: drawn ($size bytes)"
+		fi
+	}
+
+	if [ -z "$CAL_HASH" ] || [ -z "${CAL_UID:-}" ] || [ -z "${CAL_ACT:-}" ] \
+		|| [ -z "${CAL_CASE:-}" ] || [ -z "${CAL_ACT2:-}" ]; then
+		bad "could not seed the calendar fixtures (hash/user/activity)"
+	else
+		cal_login
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway calendar user could not log in - the rest of section 30 is untested"
+		else
+			ok "the throwaway no-permission calendar user can log in"
+
+			# 30b. No setting row: the 2019 behaviour, kept on purpose. An
+			# upgrade must not take colleague calendars away on its own.
+			adb "DELETE FROM settings WHERE label = 'enable_shared_calendars'" >/dev/null
+			cal_probe "cal_day with no setting row" "cal_day.php?user_id=1" allow
+			cal_probe "cal_week with no setting row" "cal_week.php?user_id=1" allow
+
+			# The row for an activity on a case this group may not read shows
+			# the time and no case text. Both pages used to print $z there,
+			# which is set inside the authorized branch, so the cell held the
+			# time of the last activity the caller WAS allowed to read; two of
+			# the four copies also printed the summary of the activity they
+			# were redacting.
+			for page in cal_day.php cal_week.php; do
+				curl -sL --max-time 60 -b "$CAL_JAR" -o "$BODY" \
+					"$OCM_URL/${page}?user_id=1" >/dev/null
+				if grep -qF 'ZZ-CAL-REDACT' "$BODY"; then
+					bad "${page} PRINTS THE SUMMARY OF AN ACTIVITY THE CALLER MAY NOT READ"
+				elif grep -qF '9:30' "$BODY"; then
+					ok "${page} shows the time of an unreadable activity and no case text"
+				else
+					bad "${page} drew neither the time nor the summary of the redacted row"
+				fi
+			done
+
+			# 30c. The setting at 0: refused on all four pages.
+			adb "REPLACE INTO settings (label, value) VALUES ('enable_shared_calendars', '0')" >/dev/null
+			cal_probe "cal_day with sharing off" "cal_day.php?user_id=1" deny
+			cal_probe "cal_week with sharing off" "cal_week.php?user_id=1" deny
+			cal_probe "cal_adv with sharing off" "cal_adv.php?user_list%5B%5D=1" deny
+
+			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
+				"$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+			if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
+				bad "cal-rss.php SERVES ANOTHER USER'S FEED TO A USER WITH NO PERMISSIONS"
+			else
+				ok "cal-rss.php refuses another user's feed with sharing off"
+			fi
+
+			# The refusal is scoped to other people. Own calendar, and the feed
+			# with no user_id at all, still work with sharing off.
+			cal_probe "own cal_day with sharing off" "cal_day.php?user_id=${CAL_UID}" allow
+			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
+				"$OCM_URL/services/cal-rss.php" >/dev/null
+			if grep -q '<rss' "$BODY"; then
+				ok "cal-rss.php still serves the caller their own feed"
+			else
+				bad "cal-rss.php does not serve the caller's own feed ($(wc -c < "$BODY") bytes)"
+			fi
+
+			# The feed is XML now, not the text/html it used to claim.
+			CAL_CT="$(curl -s --max-time 30 -b "$CAL_JAR" -o /dev/null -D - \
+				"$OCM_URL/services/cal-rss.php" | tr -d '\r' \
+				| awk 'tolower($1) == "content-type:" { print tolower($2) }' | tail -n 1)"
+			case "$CAL_CT" in
+				application/rss+xml*) ok "cal-rss.php sends Content-Type: $CAL_CT" ;;
+				*) bad "cal-rss.php sends Content-Type: ${CAL_CT:-none}" ;;
+			esac
+
+			# 30d. A read-all group gets the colleague calendars back with
+			# sharing off, which is what calendar_admin resolves to.
+			adb "UPDATE \`groups\` SET read_all = 1 WHERE group_id = '${CAL_GROUP}'" >/dev/null
+			cal_login
+			cal_probe "cal_day, read_all, sharing off" "cal_day.php?user_id=1" allow
+			cal_probe "cal_week, read_all, sharing off" "cal_week.php?user_id=1" allow
+			cal_probe "cal_adv, read_all, sharing off" "cal_adv.php?user_list%5B%5D=1" allow
+
+			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
+				"$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+			if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
+				ok "cal-rss.php serves another user's feed to a read-all group"
+			else
+				bad "a read-all group did NOT get another user's feed ($(wc -c < "$BODY") bytes)"
+			fi
+
+			# 30e. The refusal is on the record either way.
+			CAL_DENIED="$(docker compose "${COMPOSE_ARGS[@]}" logs app 2>/dev/null \
+				| grep -c 'calendar refused\|calendar rss refused' || true)"
+			if [ "${CAL_DENIED:-0}" -ge 1 ]; then
+				ok "the calendar refusals are logged (${CAL_DENIED} lines)"
+			else
+				bad "no calendar refusal reached the application log"
+			fi
+		fi
+	fi
+
+	cleanup_cal
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the calendar scope checks (needs the database and docker compose)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
