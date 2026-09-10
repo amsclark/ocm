@@ -151,11 +151,59 @@ switch($action) {
 		$safe_mime_type = str_replace(array("\r","\n"),'',(string) $doc->mime_type);
 		$safe_doc_name = str_replace(array("\r","\n",'"'),'',(string) $doc->doc_name);
 		
+		/*	The content type is whatever the uploading browser claimed in
+			$_FILES['doc_upload']['type'], stored verbatim by
+			pikaDocument::uploadDoc(). It was echoed straight back with
+			Content-Disposition: inline, so a caseworker who may upload to one
+			case could store an .html file, have it served as text/html from
+			the application's own origin, and run script in the session of
+			every user who opened it -- reading the session cookie and acting
+			as that user. CWE-79 by way of CWE-434.
+			
+			Inline is kept only for types that render in a browser but cannot
+			execute script in our origin:
+			
+			  * application/pdf  -- a browser's PDF viewer isolates any
+			    embedded JS from the page origin.
+			  * text/plain       -- rendered as text, never parsed as markup.
+			  * image/*          -- except image/svg+xml, which is the
+			    exception that matters: an <svg> may carry <script> and it
+			    runs same-origin when the file is opened directly.
+			
+			Everything else, HTML and XML included, downloads instead. A
+			downloaded file cannot reach the session.
+			
+			The declared type is still the uploader's word, so nosniff goes
+			out with it: the file may claim image/png and hold markup, and
+			without nosniff a browser is free to sniff the body and render it
+			anyway. It is set here as well as in the vhost because this is the
+			one response in the application whose body is user-supplied bytes,
+			and it must not depend on the server config being right.
+			
+			doc_force_download makes every document an attachment for
+			organisations that would rather give up in-browser preview
+			entirely. Absent means the allowlist above, which is the
+			behaviour a 2019 install expects.
+		*/
+		$mime = strtolower(trim($safe_mime_type));
+		
+		$inline_ok = ('application/pdf' === $mime
+			|| 'text/plain' === $mime
+			|| (0 === strpos($mime, 'image/') && 'image/svg+xml' !== $mime));
+		
+		if ('1' === (string) pl_settings_get('doc_force_download'))
+		{
+			$inline_ok = false;
+		}
+		
+		$disposition = $inline_ok ? 'inline' : 'attachment';
+		
 		header("Pragma: public");
 		header("Cache-Control: cache, must-revalidate");
 		header("Content-type: application/force-download");
 		header("Content-Type: {$safe_mime_type}");
-		header("Content-Disposition: inline; filename=\"{$safe_doc_name}\"");
+		header("X-Content-Type-Options: nosniff");
+		header("Content-Disposition: {$disposition}; filename=\"{$safe_doc_name}\"");
 		
 		/*	I'm not sure how determine the Content Length if GZIP is being used,
 			and Firefox 33 doesn't like it when I send the uncompressed size
@@ -217,7 +265,17 @@ switch($action) {
 		$doc = new pikaDocument($doc_id);
 		
 		$html['doc_type'] = $doc->doc_type;
-		$html['doc_name'] = $doc->doc_name;
+		/*	subtemplates/documents.html asks for this one as a plain
+			%%[doc_name]%% inside <i>...</i>, and a plain tag is substituted
+			raw -- unlike the %%[doc_name,input_text]%% on the edit fragment,
+			which the input_text plugin escapes. The name comes from
+			$_FILES['doc_upload']['name'], which no input filter touches, so
+			an upload named <img src=x onerror=...> ran in the browser of
+			whoever opened the delete confirmation. Escaped here rather than
+			in the template because a per-org custom template directory
+			commonly replaces this file.
+		*/
+		$html['doc_name'] = pl_html_escape($doc->doc_name);
 		$html['description'] = $doc->description;
 		$html['folder_ptr'] =  $doc->folder_ptr;
 		$html['case_id'] = $doc->case_id;
