@@ -23,12 +23,10 @@ $pri_count = 0;
 $names_count = 0;
 $ssn_count = 0;
 
-$pri->sortable = FALSE;
-$pri->show_pager = FALSE;
-$names->sortable = FALSE;
-$names->show_pager = FALSE;
-$ssn->sortable = FALSE;
-$ssn->show_pager = FALSE;
+// The three sortable/show_pager pairs that were here are gone. plFlexList has
+// no such properties - they are plTable's, from before this module changed
+// class - so each assignment created a property nobody reads, which PHP 8
+// reports as deprecated on every view of this tab.
 
 $case1 = new pikaCase($case_id);
 
