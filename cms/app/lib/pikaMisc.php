@@ -1501,8 +1501,17 @@ class pikaMisc
 			
 			while ($r = DBResult::fetchArray($result))
 			{
-				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_text_name($r) 
-				. " (" . $r['role'] . ")&nbsp;&nbsp;&nbsp;";
+				/*	Same escape-consistency gap as the conflict panel below:
+					the contact name and the role are user-typed free text, and
+					the SSN and telephone blocks earlier in this function run
+					pl_clean_html_array() over their rows while these two did
+					not. No template in this repo renders case_contacts or
+					case_conflicts today, so this is not currently reachable
+					output -- it is escaped so that adding the tag back to
+					subtemplates/case_contact_list.html is not a new XSS.
+				*/
+				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_html_escape(pl_text_name($r)) 
+				. " (" . pl_html_escape($r['role']) . ")&nbsp;&nbsp;&nbsp;";
 			}
 			
 			if($intake->resetConflictStatus(false))
@@ -1514,9 +1523,13 @@ class pikaMisc
 				foreach($cons as $z)
 				{
 					//var_dump($z);
-					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id={$z['contact_id']}\">" 
-					. pl_text_name($z) . "</a> was a(n) {$z['role']} on "
-					. "<a href=\"{$base_url}/case_id={$z['case_id']}\">{$z['number']}</a>\n<br>";
+					/*	The contact name, the role and cases.number are all
+						user-typed free text. Escape the text cells and cast
+						the two link ids.
+					*/
+					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id=" . (int) $z['contact_id'] . "\">" 
+					. pl_html_escape(pl_text_name($z)) . "</a> was a(n) " . pl_html_escape($z['role']) . " on "
+					. "<a href=\"{$base_url}/case_id=" . (int) $z['case_id'] . "\">" . pl_html_escape($z['number']) . "</a>\n<br>";
 				}
 				
 				$content_t['case_conflicts'] .= "<br>";
