@@ -1,0 +1,20 @@
+-- add_shared_calendars.sql -- the switch for cross-user calendar visibility.
+--
+-- cal_day.php, cal_week.php, cal_adv.php and services/cal-rss.php took a user
+-- id off the query string and rendered that user's activities, with no check
+-- of any kind. cal-rss.php did not even require a login. Those pages now ask
+-- pl_can_view_user_calendar() (cms/pika-danio.php), which allows:
+--
+--   your own calendar                                always
+--   another user's, with a read-all group             always
+--   another user's, without one                       only while this
+--                                                     setting is not 0
+--
+-- An installation with no such row reads as open, which is the behaviour it
+-- already had, so nothing breaks by not applying this file. Apply it, then set
+-- the value to 0, at an organisation that wants calendars private to their
+-- owner and the read-all groups.
+--
+-- Idempotent: INSERT IGNORE leaves an existing row and its current value
+-- alone.
+INSERT IGNORE INTO settings (label, value) VALUES ('enable_shared_calendars', '1');

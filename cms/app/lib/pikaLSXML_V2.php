@@ -840,104 +840,170 @@ class pikaLSXML
 
 	
 
+	/*	Conflict of interest check for a case that has not been saved yet.
+		
+		The values here come out of the XML another organisation posted to
+		cms/services/transfer_case_lsxml.php, and they went into the statements
+		below as text. The social security number is the sender's to choose
+		freely: "1' OR 1=1#" in the SSN element returned the whole conflict
+		table, and a peer could read any table this database user can read, one
+		intake at a time. Every value is bound now.
+		
+		The same four under-reporting faults as the two saved-case copies were
+		here as well:
+		
+		strlen($row['ssn'] > 0) measured the comparison, not the number, so a
+		"XXX-XX-XXXX" placeholder in the payload matched every record in the
+		address book carrying the same placeholder.
+		
+		The social security block built two statements and assigned both to
+		$sql, so the one that reads the contacts table never ran. Both run now.
+		
+		metaphone('') is an empty string, so a party the sender named with no
+		surname - an organisation, most often - searched for aliases.mp_last='',
+		which matches every organisation on file.
+		
+		A role the relation_codes lookup could not map left relation_code empty,
+		which made the statement "relation_code != " and a SQL error. The
+		lookup reads menu_relation_codes, whose labels carry spaces
+		("Opposing Party"), so the role names in the LSXML specification map
+		only on a site that has not renamed them. Such a party is skipped now.
+		
+		cms/app/lib/pikaCase.php holds the same check for a saved case, and
+		cms/app/extralib/lib/pikaCms.php a third copy for the report under
+		cms/reports/. This file shares pikaCase's collectConflicts() because
+		both are under app/lib; pikaCms cannot, because pika_cms.php does not
+		put app/lib on the include path.
+		
+		Nothing in this tree calls this method. It is kept because a per-site
+		module may, and because the endpoint that would use it is live.
+	*/
 	public function fuzzyConflictCheck($lim = 10)
 	{
-		ini_set('display_errors','On');
+		require_once('pikaCase.php');
+		
+		$lim = (int) $lim;
+		$conflict_array = array();
+		$seen = array();
+		
+		if ($lim < 1)
+		{
+			return $conflict_array;
+		}
+		
 		$case = $this->importXML(false);
 		
-		//print_r($case['contacts']);
-		//exit;
-		// Assemble Aliases Array
+		if (!is_array($case) || !isset($case['contacts']) || !is_array($case['contacts']))
+		{
+			return $conflict_array;
+		}
+		
+		// Assemble the names to search for: each party, then each of its aliases.
 		$aliases_array = array();
-		foreach ($case['contacts'] as $contact) {
+		
+		foreach ($case['contacts'] as $contact)
+		{
 			$lineitem = array();
-			// Create primary alias
 			$lineitem['relation_code'] = $contact['role'];
-			$lineitem['mp_first'] = metaphone($contact['first_name']);
-			$lineitem['mp_last'] = metaphone($contact['last_name']);
+			$lineitem['mp_first'] = metaphone((string) $contact['first_name']);
+			$lineitem['mp_last'] = metaphone((string) $contact['last_name']);
 			$lineitem['birth_date'] = $contact['birth_date'];
-			$lineitem['ssn'] = $contact['ssn'];
+			$lineitem['ssn'] = (string) $contact['ssn'];
 			$aliases_array[] = $lineitem;
-			// Determine metaphone names
-			foreach ($contact['aliases'] as $alias) {
+			
+			if (!isset($contact['aliases']) || !is_array($contact['aliases']))
+			{
+				continue;
+			}
+			
+			foreach ($contact['aliases'] as $alias)
+			{
 				$lineitem = array();
 				$lineitem['relation_code'] = $contact['role'];
-				$lineitem['mp_first'] = metaphone($alias['first_name']);
-				$lineitem['mp_last'] = metaphone($alias['last_name']);
+				$lineitem['mp_first'] = metaphone((string) $alias['first_name']);
+				$lineitem['mp_last'] = metaphone((string) $alias['last_name']);
 				$lineitem['birth_date'] = $contact['birth_date'];
-				$lineitem['ssn'] = $contact['ssn'];
+				$lineitem['ssn'] = (string) $contact['ssn'];
 				$aliases_array[] = $lineitem;
 			}
 		}
-		//print_r($aliases_array);
-		//exit;
-		$conflict_array = array();
+		
 		foreach ($aliases_array as $row)
 		{
-			// Match by metaphone name/birth date
-			if (strlen($row['mp_first']) > 0)
+			/*	A role the lookup could not map cannot be searched on: "every
+				role but nothing" would be every role on file.
+			*/
+			if (!is_numeric($row['relation_code']))
 			{
-				$mp_first = " AND aliases.mp_first='{$row['mp_first']}'";
-			} else {
-				$mp_first = '';
-			}
-			if ($row['birth_date'])
-			{
-				$safe_birth_date = DB::escapeString(date('Y-m-d',strtotime($row['birth_date'])));
-				$mp_first .= " AND (birth_date='{$safe_birth_date}' OR birth_date IS NULL)";
-			}
-			$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
-					FROM aliases
-					LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-					LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND aliases.mp_last='{$row['mp_last']}'{$mp_first}
-					LIMIT $lim";
-			
-			$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
-			
-			while($tmp_row = DBResult::fetchRow($sub_result))
-			{
-				$tmp_row['match'] = 'NAME';
-				$conflict_array[] = $tmp_row;
+				continue;
 			}
 			
-			// Match by SSN
-			if (strlen($row['ssn'] > 0))
+			$relation_code = $row['relation_code'];
+			$mp_first = $row['mp_first'];
+			$mp_last = $row['mp_last'];
+			$ssn = $row['ssn'];
+			
+			// Match by metaphone name and birth date
+			if (strlen($mp_last) > 0)
 			{
-				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
-					FROM contacts
-					LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND ssn='{$row['ssn']}'
-					AND mp_last!='{$row['mp_last']}'
-					LIMIT $lim";
-				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
-					FROM aliases
-					LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-					LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
-					LEFT JOIN cases ON conflict.case_id=cases.case_id
-					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != {$row['relation_code']} AND aliases.ssn='{$row['ssn']}'
-					AND aliases.mp_last!='{$row['mp_last']}'
-					LIMIT $lim";
-				$sub_result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());;
-				//echo $sql;
-				while($tmp_row = DBResult::fetchRow($sub_result))
+				$clause = '';
+				$params = array($relation_code,$mp_last);
+				
+				if (strlen($mp_first) > 0)
 				{
-					$tmp_row['match'] = 'SSN';
-					$conflict_array[] = $tmp_row;
+					$clause .= ' AND aliases.mp_first = ?';
+					$params[] = $mp_first;
 				}
+				
+				if ($row['birth_date'])
+				{
+					$clause .= ' AND (contacts.birth_date = ? OR contacts.birth_date IS NULL)';
+					$params[] = date('Y-m-d',strtotime($row['birth_date']));
+				}
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
+						FROM aliases
+						LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
+						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND aliases.mp_last = ?{$clause}
+						LIMIT {$lim}";
+				pikaCase::collectConflicts($sql,$params,'NAME',$conflict_array,$seen);
+			}
+			
+			// Match by social security number
+			if (strlen(preg_replace('/\D/','',$ssn)) > 0)
+			{
+				$params = array($relation_code,$ssn,$mp_last);
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
+						FROM contacts
+						LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND contacts.ssn = ?
+						AND contacts.mp_last != ?
+						LIMIT {$lim}";
+				pikaCase::collectConflicts($sql,$params,'SSN',$conflict_array,$seen);
+				
+				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
+						FROM aliases
+						LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
+						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
+						LEFT JOIN cases ON conflict.case_id=cases.case_id
+						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
+						WHERE relation_code != ? AND aliases.ssn = ?
+						AND aliases.mp_last != ?
+						LIMIT {$lim}";
+				pikaCase::collectConflicts($sql,$params,'SSN',$conflict_array,$seen);
 			}
 		}
-		//echo $sql;
-		//exit;
+		
 		return $conflict_array;
 	}
 	
-	public static function getIncomeFields()
+		public static function getIncomeFields()
 	{
 		$income_fields_array = array();
 		

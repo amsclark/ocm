@@ -222,7 +222,8 @@ while ($row = DBResult::fetchRow($result))
 	  $row['cnp_info_js'] .= trim($ztmp) . "\n";
 	}
 
-	if (strlen(trim($row['email'])) > 0)
+	// A contact with no e-mail address holds NULL here, not ''.
+	if (strlen(trim((string) $row['email'])) > 0)
 	{
 	  $row['cnp_info_js'] .= trim($row['email']) . "\n";
 	}
