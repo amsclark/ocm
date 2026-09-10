@@ -1151,6 +1151,158 @@ if (!function_exists('pl_sso_user_is_sso'))
 }
 
 
+
+if (!function_exists('pl_sso_session_user'))
+{
+	/**
+	 * The account behind the session cookie on this request.
+	 *
+	 * cms/services/logout.php and cms/m/logout.php define
+	 * PL_DISABLE_SECURITY, so pika_init() never authenticates and $auth_row
+	 * is empty there. pikaAuth works around that internally by reading
+	 * user_sessions itself, but the session id it uses is private, so a
+	 * caller outside the class cannot ask it. This reads the same row the
+	 * same way.
+	 *
+	 * Nothing the request supplied is trusted: the lookup is on the session
+	 * id only, and the row must still be live.
+	 *
+	 * Call it BEFORE pikaAuth::logout(), which sets logout = 1 and makes
+	 * this return null.
+	 *
+	 * @return array|null user_id, username and auth_method, or null
+	 */
+	function pl_sso_session_user()
+	{
+		if (session_id() === '')
+		{
+			return null;
+		}
+		
+		$sid = session_id();
+		
+		if (isset($_SESSION['SID']) && $_SESSION['SID'])
+		{
+			$sid = $_SESSION['SID'];
+		}
+		
+		try
+		{
+			$result = DB::preparedQuery(
+				"SELECT users.user_id, users.username, users.auth_method
+					FROM user_sessions
+					JOIN users ON users.user_id = user_sessions.user_id
+					WHERE user_sessions.session_id = ?
+						AND (user_sessions.logout IS NULL OR user_sessions.logout = 0)
+						AND users.enabled = '1'
+					LIMIT 1",
+				array($sid)
+			);
+			
+			if (!$result || DBResult::numRows($result) != 1)
+			{
+				return null;
+			}
+			
+			$row = DBResult::fetchRow($result);
+			
+			return is_array($row) ? $row : null;
+		}
+		
+		catch (Exception $e)
+		{
+			/*	An installation that has not run add_sso.sql has no
+				auth_method column. Sign-out must still work there.
+			*/
+			return null;
+		}
+	}
+}
+
+
+if (!function_exists('pl_sso_end_session_url'))
+{
+	/**
+	 * Where to send the browser after a local sign-out so that the identity
+	 * provider's session ends too, or '' to stay local.
+	 *
+	 * The endpoint is read from the provider's discovery document rather
+	 * than hard-coded, so this works for any provider that publishes
+	 * end_session_endpoint. Google does not publish one, and its account
+	 * sign-out URL would sign the user out of every Google service, so a
+	 * Google deployment stays local and that is the intended result.
+	 *
+	 * post_logout_redirect_uri is built from pl_canonical_origin(), not from
+	 * the Host header. The provider compares that value against a registered
+	 * list byte for byte, so a forged Host would produce a URI the provider
+	 * rejects and an error page instead of a sign-out.
+	 *
+	 * Fails closed to '' on anything unexpected: an unreachable provider
+	 * must not stop somebody signing out.
+	 *
+	 * @return string absolute URL, or ''
+	 */
+	function pl_sso_end_session_url()
+	{
+		try
+		{
+			if ('1' !== (string) pl_settings_get('sso_single_logout'))
+			{
+				return '';
+			}
+			
+			$config = pl_sso_config();
+			
+			if (empty($config['enabled']) || '' === $config['discovery_url'])
+			{
+				return '';
+			}
+			
+			$discovery = pl_sso_discovery($config);
+			
+			if (empty($discovery['end_session_endpoint'])
+				|| !is_string($discovery['end_session_endpoint']))
+			{
+				return '';
+			}
+			
+			$endpoint = $discovery['end_session_endpoint'];
+			
+			/*	pl_sso_discovery() checks the three endpoints the sign-in flow
+				uses. This one is not among them, so it is checked here.
+			*/
+			if (!pl_sso_url_transport_ok($endpoint, $config))
+			{
+				return '';
+			}
+			
+			$params = array(
+				'post_logout_redirect_uri' => pl_canonical_origin()
+					. rtrim((string) pl_settings_get('base_url'), '/') . '/'
+			);
+			
+			/*	Entra requires the client id when a post-logout redirect is
+				asked for; other providers ignore it.
+			*/
+			if ('' !== $config['client_id'])
+			{
+				$params['client_id'] = $config['client_id'];
+			}
+			
+			$separator = (false === strpos($endpoint, '?')) ? '?' : '&';
+			
+			return $endpoint . $separator . http_build_query($params);
+		}
+		
+		catch (Exception $e)
+		{
+			error_log('pl_sso_end_session_url staying local: ' . $e->getMessage());
+			
+			return '';
+		}
+	}
+}
+
 if (!function_exists('pl_sso_login_button_html'))
 {
 	/**

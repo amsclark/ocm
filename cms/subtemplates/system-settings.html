@@ -103,6 +103,14 @@
 		is blank. A user signing in for the first time is matched to an
 		existing enabled account with the same verified email address; no
 		account is ever created.</em><br/>
+		<br/>
+		%%[sso_single_logout,yes_no,checkbox,label=End the Provider Session on Sign-Out]%%<br/>
+		<em>Sends the user to the identity provider to sign out there as well,
+		so the next sign-in asks for credentials again. Register this
+		installation's address as a post-logout redirect URI at the provider
+		before turning this on, or the provider will show an error instead of
+		returning the user. Providers that do not publish an end-session
+		endpoint, Google among them, ignore this.</em><br/>
 	</div>
 	<div style="clear:both;padding:5px" id="form_peer_transfer" class="de">
 		<h2>Peer Case Transfer</h2>

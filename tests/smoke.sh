@@ -3540,5 +3540,194 @@ else
 fi
 
 echo
+echo "42. single sign-on: ending the provider session too"
+# Signing out of the application does not, on its own, end the session the
+# identity provider is holding. With sso_single_logout on, sign-out sends the
+# browser to the provider's end_session_endpoint as well, so the next sign-in
+# asks for credentials instead of walking straight back in.
+#
+# Driven against the same fake provider as section 26, set up again here so
+# this section does not depend on what an earlier one left behind.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	if [ -n "$(adb "SELECT 1 FROM settings WHERE label = 'sso_single_logout'")" ]; then
+		ok "the sso_single_logout setting is seeded"
+	else
+		bad "settings has no sso_single_logout row (add_sso_single_logout.sql did not run)"
+	fi
+
+	SLO_GROUP='zz_slo_grp'
+	SLO_USER='zz_slo_user'
+	SLO_PWUSER='zz_slo_pwuser'
+	SLO_PWPASS='zz-slo-Passw0rd'
+	SLO_SUB='zz-slo-subject-0001'
+	SLO_MAIL='zz_slo_user@zz-slo.example'
+	SLO_CLIENT='zz-ocm-slo-client'
+	SLO_SECRET='zz-ocm-slo-secret'
+	SLO_JAR="$(mktemp)"
+	SLO_IDP='/var/www/html/cms/zz_test_idp.php'
+	SLO_DIR='/tmp/zz_test_idp'
+	SLO_PATH="$(printf '%s' "$OCM_URL" | sed -E 's#^[a-z]+://[^/]*##')"
+	SLO_BROWSER="${OCM_URL}/zz_test_idp.php"
+	SLO_SERVER="http://localhost${SLO_PATH}/zz_test_idp.php"
+	SLO_ISSUER="http://localhost${SLO_PATH}/zz_test_idp"
+	SLO_ORIGIN="$(printf '%s' "$OCM_URL" | sed -E 's#^(https?://[^/]+).*#\1#')"
+
+	slo_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+	slo_set() { adb "UPDATE settings SET value = '$2' WHERE label = '$1'" >/dev/null; }
+	slo_flags() { printf '%s' "${1:-}" | slo_dex sh -c "cat > ${SLO_DIR}/flags"; }
+
+	# The Location header from a sign-out, without following it.
+	slo_logout_target() {
+		curl -s --max-time 30 -b "$SLO_JAR" -c "$SLO_JAR" \
+			-o /dev/null -w '%{redirect_url}' "$OCM_URL/services/logout.php"
+	}
+
+	# A complete SSO sign-in, leaving the session in $SLO_JAR.
+	slo_signin() {
+		slo_flags "${1:-}"
+		: > "$SLO_JAR"
+		adb "DELETE FROM pika_sso_oidc_state" >/dev/null
+		curl -sL --max-time 30 -c "$SLO_JAR" -b "$SLO_JAR" -o "$BODY" \
+			-w '%{http_code}' "$OCM_URL/services/sso/login.php"
+	}
+
+	cleanup_slo() {
+		adb "DELETE FROM users WHERE username IN ('${SLO_USER}', '${SLO_PWUSER}')" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SLO_GROUP}'" >/dev/null
+		adb "DELETE FROM pika_sso_oidc_state" >/dev/null
+		adb "DELETE FROM audit_log WHERE action = 'sso.logout.redirect'" >/dev/null
+		adb "UPDATE settings SET value = '' WHERE label LIKE 'sso\\_%'" >/dev/null
+		adb "UPDATE settings SET value = '0' WHERE label IN
+			('sso_enabled', 'sso_autobind_by_email', 'sso_allow_insecure_transport',
+			 'sso_single_logout')" >/dev/null
+		slo_dex rm -rf "$SLO_IDP" "$SLO_DIR" >/dev/null 2>&1 || true
+		rm -f "$SLO_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_slo' EXIT
+
+	cleanup_slo
+	slo_dex mkdir -p "$SLO_DIR" >/dev/null 2>&1
+	slo_dex chmod 0777 "$SLO_DIR" >/dev/null 2>&1
+	slo_dex sh -c "cat > ${SLO_IDP}" < "${SMOKE_DIR}/fixtures/zz_test_idp.php"
+	slo_dex sh -c "cat > ${SLO_DIR}/config.json" <<SLOCFG
+{
+	"issuer": "${SLO_ISSUER}",
+	"browser_base": "${SLO_BROWSER}",
+	"server_base": "${SLO_SERVER}",
+	"client_id": "${SLO_CLIENT}",
+	"client_secret": "${SLO_SECRET}",
+	"sub": "${SLO_SUB}",
+	"email": "${SLO_MAIL}"
+}
+SLOCFG
+	slo_flags ''
+
+	slo_set sso_provider generic
+	slo_set sso_issuer_url "$SLO_ISSUER"
+	slo_set sso_discovery_url "${SLO_SERVER}?ep=discovery"
+	slo_set sso_client_id "$SLO_CLIENT"
+	slo_set sso_client_secret "$SLO_SECRET"
+	slo_set sso_allow_insecure_transport 1
+	slo_set sso_enabled 1
+	slo_set sso_single_logout 0
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SLO_GROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	SLO_HASH="$(slo_dex php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SLO_PWPASS" </dev/null 2>/dev/null)"
+	SLO_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire,
+			email, auth_method, sso_subject)
+		VALUES (${SLO_UID}, '${SLO_USER}', '', 1, '${SLO_GROUP}', 0,
+			'${SLO_MAIL}', 'sso', '${SLO_SUB}')" >/dev/null
+	SLO_PWUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire, auth_method)
+		VALUES (${SLO_PWUID}, '${SLO_PWUSER}', '${SLO_HASH}', 1, '${SLO_GROUP}', 0, 'password')" >/dev/null
+
+	if [ -z "${SLO_UID:-}" ] || [ -z "${SLO_HASH:-}" ]; then
+		bad "could not seed the single-logout fixtures"
+	else
+		# 42a. Off by default: an SSO account signs out locally, exactly as
+		# it did before this setting existed.
+		if [ "$(slo_signin '')" = 200 ] && ! grep -q 'login_pass' "$BODY"; then
+			ok "the fixture signs in through the provider"
+		else
+			bad "the SSO fixture did not sign in - nothing below can be trusted"
+		fi
+		SLO_TARGET="$(slo_logout_target)"
+		case "$SLO_TARGET" in
+			*ep=endsession*) bad "sign-out went to the provider while sso_single_logout is off: ${SLO_TARGET}" ;;
+			*) ok "with the setting off, sign-out stays on this installation" ;;
+		esac
+
+		# 42b. On: the same account is handed to the provider's end-session
+		# endpoint, with a return address the provider can check.
+		slo_set sso_single_logout 1
+		slo_signin '' >/dev/null
+		SLO_TARGET="$(slo_logout_target)"
+		case "$SLO_TARGET" in
+			*ep=endsession*) ok "with the setting on, sign-out goes to the provider's end-session endpoint" ;;
+			*) bad "sign-out did not reach the end-session endpoint: ${SLO_TARGET:-none}" ;;
+		esac
+		case "$SLO_TARGET" in
+			*post_logout_redirect_uri=*) ok "the end-session URL carries a post-logout return address" ;;
+			*) bad "the end-session URL has no post_logout_redirect_uri - the provider has nowhere to send the user back to" ;;
+		esac
+		# The return address has to be this installation, not somewhere a
+		# request header chose.
+		SLO_RETURN="$(printf '%s' "$SLO_TARGET" | sed -n 's/.*post_logout_redirect_uri=\([^&]*\).*/\1/p' \
+			| sed -e 's/%3A/:/g' -e 's/%2F/\//g')"
+		case "$SLO_RETURN" in
+			"${SLO_ORIGIN}"*) ok "the return address points back at this installation" ;;
+			*) bad "the return address is not this installation: ${SLO_RETURN:-none}" ;;
+		esac
+		case "$SLO_TARGET" in
+			*"${SLO_SECRET}"*) bad "the end-session URL leaks the client secret" ;;
+			*) ok "the end-session URL carries no client secret" ;;
+		esac
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'sso.logout.redirect' LIMIT 1")" ]; then
+			ok "audit_log recorded sso.logout.redirect"
+		else
+			bad "audit_log has no sso.logout.redirect row"
+		fi
+		# The URL has to be one the provider actually answers.
+		if [ "$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' "$SLO_TARGET")" = 200 ]; then
+			ok "the provider answers the end-session URL"
+		else
+			bad "the provider did not answer the end-session URL"
+		fi
+
+		# 42c. A password account is never sent to the provider, even with
+		# the setting on.
+		: > "$SLO_JAR"
+		curl -sL --max-time 30 -c "$SLO_JAR" -b "$SLO_JAR" -o "$BODY" \
+			-X POST -d "login_user=${SLO_PWUSER}&login_pass=${SLO_PWPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the password fixture did not sign in"
+		fi
+		SLO_TARGET="$(slo_logout_target)"
+		case "$SLO_TARGET" in
+			*ep=endsession*) bad "a password account was sent to the identity provider to sign out" ;;
+			*) ok "a password account signs out locally" ;;
+		esac
+
+		# 42d. A provider that publishes no end-session endpoint, Google
+		# among them, must not break sign-out.
+		slo_signin 'no_end_session' >/dev/null
+		SLO_TARGET="$(slo_logout_target)"
+		case "$SLO_TARGET" in
+			*ep=endsession*) bad "sign-out invented an end-session endpoint the provider does not publish" ;;
+			'') bad "sign-out produced no redirect at all with no end-session endpoint published" ;;
+			*) ok "a provider with no end-session endpoint signs out locally" ;;
+		esac
+	fi
+
+	cleanup_slo
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the single sign-out checks (needs the database and compose)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

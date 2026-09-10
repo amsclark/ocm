@@ -115,7 +115,7 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	*/
 	'sso_enabled', 'sso_provider', 'sso_tenant_id', 'sso_hosted_domain',
 	'sso_issuer_url', 'sso_discovery_url', 'sso_client_id',
-	'sso_autobind_by_email', 'sso_autobind_domains',
+	'sso_autobind_by_email', 'sso_autobind_domains', 'sso_single_logout',
 	/*	Peer case transfer. peer_transfer_shared_secret is deliberately NOT in
 		this list, for the same reason as the SSO client secret: it is handled
 		on its own below so that a blank field keeps the stored value.

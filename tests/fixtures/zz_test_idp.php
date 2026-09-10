@@ -102,7 +102,7 @@ switch ($ep)
 			both, and a discovery document is exactly where a provider gets
 			to say so.
 		*/
-		idp_json(array(
+		$doc = array(
 			'issuer'                                => $issuer,
 			'authorization_endpoint'                => $browser . '?ep=authorize',
 			'token_endpoint'                        => $server . '?ep=token',
@@ -110,8 +110,31 @@ switch ($ep)
 			'response_types_supported'              => array('code'),
 			'subject_types_supported'               => array('public'),
 			'id_token_signing_alg_values_supported' => array('RS256')
-		));
+		);
+		
+		/*	RP-initiated logout. Optional in the specification and absent
+			from some real providers, Google among them, so the flag lets a
+			test see what the application does without it.
+		*/
+		if (!idp_flag('no_end_session'))
+		{
+			$doc['end_session_endpoint'] = $browser . '?ep=endsession';
+		}
+		
+		idp_json($doc);
 		break;
+	
+	case 'endsession':
+		/*	A real provider clears its own cookie here and then returns the
+			browser to post_logout_redirect_uri. Nothing here holds a
+			provider-side session, so saying so is the whole job.
+		*/
+		header('Content-Type: text/plain; charset=utf-8');
+		echo "provider session ended\n";
+		echo 'post_logout_redirect_uri='
+			. (isset($_GET['post_logout_redirect_uri'])
+				? (string) $_GET['post_logout_redirect_uri'] : '') . "\n";
+		exit();
 	
 	case 'jwks':
 		$details = openssl_pkey_get_details(idp_key('key'));
