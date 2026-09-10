@@ -106,6 +106,11 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	'owner_name', 'admin_email', 'act_interval',
 	'time_zone', 'time_zone_offset', 'session_timeout', 'pass_min_strength',
 	'pass_min_length', 'password_expire', 'force_https', 'autofill_time_funding',
+	/*	Breach checking. password_breach_api_url is deliberately NOT in this
+		list and has no field on this form -- it exists for a test harness
+		and is set by direct SQL only.
+	*/
+	'password_breach_policy',
 	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
 	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
 		it is handled on its own below so that a blank field leaves the
@@ -283,6 +288,11 @@ switch ($action)
 		$template->addMenu('pass_min_strength',$pass_min_strength);
 		$template->addMenu('pass_min_length',$pass_min_length);
 		$template->addMenu('password_expire', $expire);
+		$template->addMenu('password_breach_policy', array(
+			'off'   => 'Off',
+			'warn'  => 'Warn, but allow the password',
+			'block' => 'Refuse the password'
+		));
 		$template->addMenu('sso_provider', array(
 			''        => 'None',
 			'google'  => 'Google Workspace',

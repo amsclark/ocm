@@ -16,6 +16,7 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 }
 require_once('pikaTempLib.php');
 require_once('pikaUser.php');
+require_once('app/lib/plPasswordBreach.php');
 if (PHP_VERSION_ID >= 50303)
 {
 	require_once('password_hash_compat.php');
@@ -86,6 +87,37 @@ if($action == 'update')
 		if($newpass1 != $newpass2){
 			$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Error: New password(s) entries don't match");
 			$is_authorized = false;
+		}
+		/*	Last of the checks, because it is the only one that costs a
+			network round trip, and there is no point paying for it on a
+			password the rules above have already refused.
+			
+			Does nothing at all unless an administrator has switched it on;
+			see cms/app/lib/plPasswordBreach.php.
+		*/
+		if($is_authorized)
+		{
+			$breach = pl_password_breach_check($newpass1);
+			
+			if('compromised' === $breach['verdict'])
+			{
+				$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',
+					pl_clean_html($breach['message']));
+				
+				if($breach['should_block'])
+				{
+					$is_authorized = false;
+				}
+				
+				pl_audit('password.breach_check_hit', 'user', $auth_row['user_id'],
+					array('count' => $breach['count'],
+						'policy' => $breach['policy'],
+						'blocked' => $breach['should_block'] ? 1 : 0));
+			}
+			elseif('unreachable' === $breach['verdict'])
+			{
+				pl_audit('password.breach_check_unreachable', 'user', $auth_row['user_id']);
+			}
 		}
 	}
 	
