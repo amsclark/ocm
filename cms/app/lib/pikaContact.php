@@ -175,13 +175,21 @@ class pikaContact extends plBase
 	
 	public function metaphoneContactCheck()
 	{
-		// Ensure that mp_first & mp_last are populated
-		if(strlen($this->mp_first) < 1 && strlen($this->first_name) > 1) {
-			$this->mp_first = metaphone($this->first_name);
-			$this->save();
-		}
-		if(strlen($this->mp_last) < 1 || strlen($this->last_name) > 1) {
-			$this->mp_last = metaphone($this->last_name);
+		/*	save() calls genMetaphone(), so the metaphone columns are already
+			current on any record this application wrote. All that is needed
+			here is to fill them in once for a record that has none.
+			
+			The two blocks that used to be here called metaphone() by hand,
+			without the firstNameOnly() split and the 8-character cap that
+			genMetaphone() applies, and save() overwrote both values a moment
+			later - so the hand-rolled values never reached the database. The
+			second test also used || instead of &&, which saved the contact
+			row on every duplicate check. Both tests read four columns that
+			are nullable, which was a deprecation warning on PHP 8.
+		*/
+		if (strlen((string) $this->mp_first) < 1 || strlen((string) $this->mp_last) < 1)
+		{
+			$this->genMetaphone();
 			$this->save();
 		}
 		
@@ -228,6 +236,16 @@ class pikaContact extends plBase
 		$contact_id = (int) $this->contact_id;
 		$ssn_clause = '';
 		
+		/*	Count digits, not characters.
+			
+			The test used to be strlen($this->ssn) > 0, and intake staff put a
+			placeholder in this field when the client has no number or will
+			not give one: "XXX-XX-XXXX", "N/A", "none", "-". Every contact
+			carrying the same placeholder then matched every other one, so
+			the merge screen offered unrelated people as the same person.
+		*/
+		$has_ssn = strlen(preg_replace('/\D/','',(string) $this->ssn)) > 0;
+		
 		
 		/*
 		Organizations will only have a $last_name, which makes them a
@@ -239,7 +257,7 @@ class pikaContact extends plBase
 		{
 			$params[] = $mp_last;
 			
-			if (strlen((string) $this->ssn) > 0)
+			if ($has_ssn)
 			{
 				$ssn_clause = 'OR aliases.ssn = ?';
 				$params[] = $this->ssn;
@@ -260,7 +278,7 @@ class pikaContact extends plBase
 			$params[] = $mp_last;
 			$params[] = $mp_first;
 			
-			if (strlen((string) $this->ssn) > 0)
+			if ($has_ssn)
 			{
 				$ssn_clause = 'OR aliases.ssn = ?';
 				$params[] = $this->ssn;
@@ -276,7 +294,7 @@ class pikaContact extends plBase
 				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
 		}
 		
-		else
+		else if ($has_ssn)
 		{
 			$params[] = $this->ssn;
 			$params[] = $contact_id;
@@ -286,6 +304,20 @@ class pikaContact extends plBase
 				    AND aliases.ssn = ?
 				    AND aliases.contact_id != ?
 				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
+		}
+		
+		else
+		{
+			/*	No name to metaphone and no number either. This branch used
+				to search on aliases.ssn = '', which matches every contact
+				that has no social security number recorded - most of the
+				address book - and the merge screen then offered all of them
+				as possible duplicates of a record with no name.
+				
+				Answer with an empty result rather than false, because the
+				caller counts the rows.
+			*/
+			$sql = "SELECT contacts.* FROM contacts WHERE 0";
 		}
 		
 		$result = DB::preparedQuery($sql,$params) or trigger_error("SQL: " . $sql . " Error: " . DB::error());

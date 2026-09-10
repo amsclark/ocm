@@ -23,6 +23,17 @@ class DB
 	public static function error()
 	{
 		if (self::$mysqli_mode) {
+			/*	error() is called from the "or trigger_error(... DB::error())"
+				idiom all over the tree, which includes the paths that run
+				when the connection itself failed. mysqli_error(null) is a
+				TypeError on PHP 8, so the report of the real problem died
+				inside the reporting of it and the page returned nothing at
+				all. Say what happened instead.
+			*/
+			if (!self::$link) {
+				return 'No MySQLi connection established.';
+			}
+			
 			return mysqli_error(self::$link);
 		}
 
