@@ -159,12 +159,12 @@ switch ($action)
 		// < and > and nothing else, so a single quote in any filter value
 		// closed the attribute and gave a reflected XSS on a page that
 		// renders inside the case screen.
-		$pba_list->get_url = 'practice_areas=' . rawurlencode($practice_areas)
-			. '&county=' . rawurlencode($county)
-			. '&last_name=' . rawurlencode($last_name)
-			. '&languages=' . rawurlencode($languages)
-			. '&case_id=' . rawurlencode($case_id)
-			. '&field=' . rawurlencode($field) . '&';
+		$pba_list->get_url = 'practice_areas=' . rawurlencode((string) $practice_areas)
+			. '&county=' . rawurlencode((string) $county)
+			. '&last_name=' . rawurlencode((string) $last_name)
+			. '&languages=' . rawurlencode((string) $languages)
+			. '&case_id=' . rawurlencode((string) $case_id)
+			. '&field=' . rawurlencode((string) $field) . '&';
 		$pba_list->order_field = $order_field;
 		$pba_list->order = $order;
 		$pba_list->records_per_page = $page_size;
@@ -174,8 +174,10 @@ switch ($action)
 
 		while ($row = DBResult::fetchRow($result))
 		{
-			$row['atty_address'] = pl_text_address($row);
-			$row['last_case'] = pl_date_unmogrify($row['last_case']);
+			// Escapes atty_address and the seven other DB-sourced columns the
+			// subtemplate renders raw. atty_name is built below and escaped
+			// there.
+			$row = pikaPbAttorney::decorateListRow($row);
 			$atty_href = $base_url . '/assign_pba.php?action=assign_pba'
 				. '&case_id=' . rawurlencode($case_id)
 				. '&pba_id=' . rawurlencode($row['pba_id'])
