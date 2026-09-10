@@ -14,15 +14,56 @@ require_once('pikaTempLib.php');
 require_once('plFlexList.php');
 
 
+/**
+ * @return array
+ * @param mixed $value the raw user_list or pba_list value from the request
+ * @desc Normalise a checkbox_list selection to an array of ids. Accepts either
+ * the comma-separated string the plugin submits or an array, and drops empty
+ * entries: explode() on an empty string returns one empty element, which would
+ * otherwise count as a selected staff member and suppress the default below.
+ */
+function pika_cal_adv_id_list($value)
+{
+	if (is_null($value))
+	{
+		return array();
+	}
+	
+	if (!is_array($value))
+	{
+		$value = explode(',', (string) $value);
+	}
+	
+	$id_list = array();
+	
+	foreach ($value as $id)
+	{
+		$id = trim((string) $id);
+		
+		if ($id !== '')
+		{
+			$id_list[] = $id;
+		}
+	}
+	
+	return $id_list;
+}
+
+
 $base_url = pl_settings_get('base_url');
 
 // report form variables
 $action = pl_grab_get('action');
 $contact_id = pl_grab_get('contact_id');
-$user_list = pl_grab_get('user_list');
-if (is_null($user_list)) {$user_list = array();}
-$pba_list = pl_grab_get('pba_list');
-if (is_null($pba_list)) {$pba_list = array();}
+/*	The Staff and Pro Bono Attorneys pickers are checkbox_list plugins. That
+	plugin draws the checkboxes with the id as the field name and keeps the
+	selection in one hidden field holding a comma-separated list, so both
+	arrive here as a string, not as a name[] array. sizeof() on a string is a
+	fatal TypeError on PHP 8, which is why every click of the View button
+	returned a blank page.
+*/
+$user_list = pika_cal_adv_id_list(pl_grab_get('user_list'));
+$pba_list = pika_cal_adv_id_list(pl_grab_get('pba_list'));
 
 $cal_date = pl_grab_get('cal_date');
 $user_id = pl_grab_get('user_id');
@@ -171,8 +212,10 @@ switch ($action) {
 		$a['number'] = $case_number;
 		$a['office'] = $office;
 		$a['category'] = $category;
-		$a['user_list'] = $user_list;
-		$a['pba_list'] = $pba_list;
+		// Back to the comma-separated form the hidden field carries: given an
+		// array, checkbox_list discards the value and draws nothing checked.
+		$a['user_list'] = implode(',', $user_list);
+		$a['pba_list'] = implode(',', $pba_list);
 		$a['row_limit'] = $row_limit;
 		
 		if(!$action) 

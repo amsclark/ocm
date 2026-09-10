@@ -140,7 +140,10 @@ else if ($count)
 
 else
 {
-	if (sizeof($fo) < 1)
+	// pl_grab_post() answers null for a field that was never submitted, and
+	// sizeof(null) is a fatal TypeError on PHP 8. Submitting the form with no
+	// columns checked should reach the error message below, not a blank page.
+	if (!is_array($fo) || count($fo) < 1)
 	{
 		echo "<h1>Error:  you need to check off the fields you want displayed on this report</h1>\n";
 		exit();

@@ -3085,7 +3085,16 @@ if [ "$HAVE_DB" = 1 ]; then
 		ts="$(date +%s)"
 		good_sig="$(pt_sign newCase "$PT_BODY" "$ts")"
 
-		code="$(pt_post_json newCase "$PT_BODY" "$ts" "${good_sig%?}0")"
+		# Appending a fixed character is only a wrong signature when the real
+		# one ends in something else, so one run in sixteen sent the correct
+		# signature and read the acceptance as a failure.
+		if [ "${good_sig#"${good_sig%?}"}" = "0" ]; then
+			bad_sig="${good_sig%?}1"
+		else
+			bad_sig="${good_sig%?}0"
+		fi
+
+		code="$(pt_post_json newCase "$PT_BODY" "$ts" "$bad_sig")"
 		if [ "$code" = 403 ] && grep -q 'bad_signature' "$BODY"; then
 			ok "a packet with one flipped signature character is refused"
 		else
@@ -3537,6 +3546,96 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
 	printf '  skip the ops authorization checks (needs the database)\n'
+fi
+
+# 37. The advanced calendar staff filter.
+#
+# The Staff and Pro Bono pickers on cal_adv.php are checkbox_list plugins.
+# That plugin keeps the selection in a single hidden field holding a
+# comma-separated list of ids, so the value arrives as a string, not as a
+# name[] array. sizeof() on a string is a fatal TypeError on PHP 8, so every
+# click of the View button returned a blank page.
+#
+# The same section covers the mega party report, which reached sizeof() with
+# the null that pl_grab_post() returns for a field that was never submitted.
+echo
+echo "checking the advanced calendar staff filter"
+
+cleanup_cal()
+{
+	if [ "$HAVE_DB" != 1 ]; then
+		return
+	fi
+	adb "DELETE FROM activities WHERE summary LIKE 'ZZCAL%'" >/dev/null 2>&1
+	adb "DELETE FROM users WHERE last_name = 'ZZCALSTAFF'" >/dev/null 2>&1
+}
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cal' EXIT
+	cleanup_cal
+
+	CALUSER="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, last_name, first_name)
+		VALUES (${CALUSER}, 'zzcalstaff', '', 1, 'system', 'ZZCALSTAFF', 'Other')" >/dev/null
+
+	# act_id is a primary key with no AUTO_INCREMENT, so pick the ids here.
+	CALACT="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+	CALACT2=$((CALACT + 1))
+	CALDAY="$(date +%Y-%m-%d)"
+	adb "INSERT INTO activities (act_id, act_date, act_time, hours, completed, act_type, user_id, summary)
+		VALUES (${CALACT}, '${CALDAY}', '09:00:00', 1.00, 1, 'T', 1, 'ZZCALADMIN')" >/dev/null
+	adb "INSERT INTO activities (act_id, act_date, act_time, hours, completed, act_type, user_id, summary)
+		VALUES (${CALACT2}, '${CALDAY}', '10:00:00', 1.00, 1, 'T', ${CALUSER}, 'ZZCALOTHER')" >/dev/null
+
+	# An empty picker is what the form submits when nothing is checked.
+	CALCODE="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/cal_adv.php?action=run_report&user_list=&pba_list=&start_date=${CALDAY}&end_date=${CALDAY}")"
+	if [ "$CALCODE" = "200" ] && [ -s "$BODY" ]; then
+		ok "the advanced calendar runs with an empty staff selection"
+	else
+		bad "the advanced calendar returned ${CALCODE} for an empty staff selection"
+	fi
+
+	# With nothing checked the page defaults to the signed-in user, so the
+	# other staff member's activity must not be on it.
+	if grep -q 'ZZCALADMIN' "$BODY" && ! grep -q 'ZZCALOTHER' "$BODY"; then
+		ok "an empty staff selection lists only the signed-in user"
+	else
+		bad "an empty staff selection did not default to the signed-in user"
+	fi
+
+	# The hidden field has to come back with the selection in it, or the
+	# checkboxes redraw empty and the next View discards the filter.
+	if grep -qE 'name="user_list"[^>]*value="1"' "$BODY"; then
+		ok "the staff picker redraws with the selection still in it"
+	else
+		bad "the staff picker lost its selection on redraw"
+	fi
+
+	CALCODE="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/cal_adv.php?action=run_report&user_list=${CALUSER}&pba_list=&start_date=${CALDAY}&end_date=${CALDAY}")"
+	if [ "$CALCODE" = "200" ] && grep -q 'ZZCALOTHER' "$BODY" && ! grep -q 'ZZCALADMIN' "$BODY"; then
+		ok "picking one staff member lists only that staff member"
+	else
+		bad "picking one staff member did not filter the listing (HTTP ${CALCODE})"
+	fi
+
+	# The mega party report with no columns checked.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/reports/megapartyreport/" >/dev/null
+	CALTOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+		-d "_csrf=${CALTOK}&report_format=html" \
+		"$OCM_URL/reports/megapartyreport/report.php" >/dev/null
+	if grep -q 'you need to check off the fields' "$BODY"; then
+		ok "the mega party report explains an empty column list"
+	else
+		bad "the mega party report returned a blank page for an empty column list"
+	fi
+
+	cleanup_cal
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the advanced calendar checks (needs the database)\n'
 fi
 
 echo
