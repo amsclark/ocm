@@ -3540,5 +3540,123 @@ else
 fi
 
 echo
+echo "62. the extension allowlist on pm.php"
+
+# ── 62. pm.php: which extension directories may run ─────────────────────────
+#
+# pm.php builds a require() target out of the request path. The reports branch
+# checks the requested directory against the enabled names with in_array();
+# the other branch asked
+#
+#     strpos(pl_settings_get('extensions'), $filepath) === false
+#
+# which is whether the name appears ANYWHERE in the setting, not whether it is
+# one of the names in it. So any substring of the setting ran -- with
+# 'extensions' set to 'project', cms-custom/extensions/pro was reachable, and a
+# directory named after two enabled extensions joined by the comma that
+# separates them was reachable too.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	# 'zzpmext' and 'zzpmb' are enabled. 'zzpm' is a substring of the setting
+	# and is NOT enabled; neither is the literal name 'zzpmext,zzpmb', which
+	# is the whole setting value and so sits inside it.
+	PMEXT='zzpmext'
+	PMSUB='zzpm'
+	PMSECOND='zzpmb'
+	PMSPAN='zzpmext, zzpmb'
+	PMROOT='/var/www/html/cms-custom/extensions'
+
+	cleanup_pm() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			sh -c "rm -rf ${PMROOT}/${PMEXT} ${PMROOT}/${PMSUB} ${PMROOT}/${PMSECOND} '${PMROOT}/${PMSPAN}'" </dev/null >/dev/null 2>&1
+		adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
+		if [ -n "${PMSAVED:-}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMSAVED}')" >/dev/null
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
+
+	PMSAVED="$(adb "SELECT value FROM settings WHERE label = 'extensions'")"
+	cleanup_pm
+
+	adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMSPAN}')" >/dev/null
+
+	# Four plants: both enabled extensions, a directory whose name is a
+	# substring of the setting, and a directory whose name is the whole
+	# setting value, comma and space included.
+	docker compose "${COMPOSE_ARGS[@]}" exec -T app sh -c "
+		mkdir -p ${PMROOT}/${PMEXT} ${PMROOT}/${PMSUB} ${PMROOT}/${PMSECOND} '${PMROOT}/${PMSPAN}' &&
+		printf '<?php echo \"ZZPM-ENABLED-RAN\";'  > ${PMROOT}/${PMEXT}/ok.php &&
+		printf '<?php echo \"ZZPM-SECOND-RAN\";'   > ${PMROOT}/${PMSECOND}/ok.php &&
+		printf '<?php echo \"ZZPM-SUBSTRING-RAN\";' > ${PMROOT}/${PMSUB}/ok.php &&
+		printf '<?php echo \"ZZPM-SPAN-RAN\";'     > '${PMROOT}/${PMSPAN}/ok.php' &&
+		printf 'not php'                           > ${PMROOT}/${PMEXT}/ok.txt
+	" </dev/null >/dev/null 2>&1
+
+	pm_get() {
+		curl -sL --max-time 30 -b "$COOKIES" "$OCM_URL/pm.php${1}" 2>/dev/null \
+			| grep -o 'ZZPM-[A-Z-]*' | head -1
+	}
+
+	# 62a. Control: the enabled extension still runs, on both branches.
+	if [ "$(pm_get "/${PMEXT}/ok.php")" = "ZZPM-ENABLED-RAN" ]; then
+		ok "an enabled extension still runs"
+	else
+		bad "an enabled extension no longer runs — the allowlist is too strict"
+	fi
+
+	if [ "$(pm_get "/reports/${PMEXT}/ok.php")" = "ZZPM-ENABLED-RAN" ]; then
+		ok "an enabled extension still runs through the reports branch"
+	else
+		bad "the reports branch no longer runs an enabled extension"
+	fi
+
+	# 62b. The bug: a directory the operator did not enable, whose name happens
+	# to sit inside the setting string.
+	if [ -z "$(pm_get "/${PMSUB}/ok.php")" ]; then
+		ok "a directory that is only a substring of the setting is refused"
+	else
+		bad "AN EXTENSION THAT IS NOT ENABLED RAN — its name is a substring of the setting (CWE-98)"
+	fi
+
+	# 62c. And the same name through the branch that was already correct, so
+	# the two branches are shown to agree.
+	if [ -z "$(pm_get "/reports/${PMSUB}/ok.php")" ]; then
+		ok "the reports branch refuses the same substring name"
+	else
+		bad "the reports branch ran an extension that is not enabled"
+	fi
+
+	# 62d. The other reachable shape of the same bug: a directory named after
+	# the whole setting value. It is inside the setting string, so strpos()
+	# accepted it, but it is not one of the names the setting lists.
+	if [ -z "$(pm_get "/zzpmext,%20zzpmb/ok.php")" ]; then
+		ok "a directory named after the whole setting value is refused"
+	else
+		bad "AN EXTENSION THAT IS NOT ENABLED RAN — its name spans the comma in the setting (CWE-98)"
+	fi
+
+	# 62e. Control: the setting is a comma list, and the space an operator
+	# naturally types after the comma must not stop the second name matching.
+	if [ "$(pm_get "/${PMSECOND}/ok.php")" = "ZZPM-SECOND-RAN" ]; then
+		ok "the second name in the comma list still runs"
+	else
+		bad "a comma-list entry with a leading space no longer runs"
+	fi
+
+	# 62f. Control on the other rule in this file: the target must be PHP.
+	if [ -z "$(pm_get "/${PMEXT}/ok.txt")" ]; then
+		ok "a target that is not a .php file is refused"
+	else
+		bad "a non-.php target was included"
+	fi
+
+	cleanup_pm
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the pm.php allowlist checks (needs the database and compose)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

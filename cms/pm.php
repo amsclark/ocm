@@ -88,8 +88,30 @@ else
 	$filepath = array_shift($uri);
 	$filename = array_shift($uri);
 	
-	//if (array_search($filepath, pl_settings_get('extensions')) === false)
-	if (strpos(pl_settings_get('extensions'), $filepath) === false)
+	/*	The same allowlist test the reports branch above already uses. This
+		was:
+		
+			strpos(pl_settings_get('extensions'), $filepath) === false
+		
+		which asks whether the requested directory name appears ANYWHERE
+		inside the setting, not whether it is one of the names in it. Two ways
+		that lets code run that the operator did not enable:
+		
+		  * any substring of the setting passes. With 'extensions' set to
+		    'project', cms-custom/extensions/pro was reachable and ran --
+		    confirmed live.
+		  * an empty segment passes, because PHP 8 returns 0, not false, for
+		    strpos() with an empty needle. That reached
+		    cms-custom/extensions//<file>, i.e. the extensions directory
+		    itself, which is outside every installed extension.
+		
+		in_array() with strict comparison answers the question that was meant:
+		is this exactly one of the enabled names. Null and the empty string
+		both fail it.
+	*/
+	$enabled_extensions = array_map('trim', explode(',', (string) pl_settings_get('extensions')));
+	
+	if (!in_array($filepath, $enabled_extensions, true))
 	{
 		trigger_error("Extension '{$filepath}':'{$filename}' is either not enabled or not installed.");
 	}
