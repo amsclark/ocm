@@ -35,13 +35,33 @@ class pikaCaseTab extends plBase
 		return $result;
 	}
 	
+	private static function readModuleDirectory($directory)
+	{
+		if (!is_dir($directory) || !is_readable($directory))
+		{
+			return array();
+		}
+		
+		$files = scandir($directory);
+		
+		if (!is_array($files))
+		{
+			return array();
+		}
+		
+		return $files;
+	}
+	
 	public static function getCaseTabFiles() {
 		
-		$main_dir = getcwd() . "/modules";
-		$main = scandir($main_dir);
-		
-		$custom_dir = pl_custom_directory() . "/modules";
-		$custom = scandir($custom_dir);
+		/*	A site does not have to carry a custom overlay, and the
+			directory is unreadable on a stock install. scandir() then
+			returned false, the foreach below raised a warning and the
+			list came back short - so a case tab file that is installed
+			could be reported as missing.
+		*/
+		$main = self::readModuleDirectory(getcwd() . "/modules");
+		$custom = self::readModuleDirectory(pl_custom_directory() . "/modules");
 		
 		$tabs = array();
 		$excluded_files = array('autonumber.php');
@@ -125,8 +145,12 @@ class pikaCaseTab extends plBase
 	
 	public function save() {
 		$this->last_modified = date('YmdHis');
-		parent::save($show_sql);
 		
+		/*	plBase::save() takes no arguments. The $show_sql that used to be
+			passed here was never set, so every save of a case tab raised an
+			undefined-variable warning on PHP 8 and the value went nowhere.
+		*/
+		return parent::save();
 	}
 	
 }

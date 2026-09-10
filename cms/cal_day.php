@@ -53,6 +53,24 @@ if (strlen((string) $user_id) < 1)
 	$user_id = $auth_row['user_id'];
 }
 
+/*	Another user's calendar. See pl_can_view_user_calendar() in
+	cms/pika-danio.php: this page rendered whichever user id the query string
+	named, with no check at all.
+*/
+if (!pl_can_view_user_calendar($user_id))
+{
+	pl_log_error('calendar refused', 'user ' . $auth_row['user_id']
+		. ' asked for user ' . $user_id);
+	$plTemplate['page_title'] = 'Calendar';
+	$plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> &gt; Calendar";
+	$plTemplate['content'] = 'That calendar is not viewable. Only a group with'
+		. ' read-all permission may look at another user&rsquo;s calendar while'
+		. ' shared calendars are switched off.';
+	echo pl_template($plTemplate, 'templates/default.html');
+	exit();
+}
+
+
 
 $C = '';
 $content = array();
@@ -167,14 +185,28 @@ while ($row = DBResult::fetchRow($result))
 
 	else 
 	{
-		$a[] = "$z";
+		/*	Somebody else's activity, on a case this user may not read. Only the
+			time and the owner belong in a row like this - the same two things
+			print_calendar_item() in cal_week.php shows for an activity the
+			caller cannot open. Two values did not belong here:
+			
+			$z, which is set inside the branch above. On the first row of the
+			table it was undefined, and on every row after that it was the time
+			of the last activity the caller WAS allowed to read.
+			
+			the summary of an activity the caller may not read, which is the
+			one piece of case text on the row and the reason the branch exists.
+			(One of the four copies read $row['js'], a column no query here
+			selects, so it printed nothing and warned about the missing key.)
+		*/
+		$a[] = pl_unmogrify_time($row['act_time']);
 		$a[] = "&nbsp;";
-		$a[] = $plMenus['user_id'][$row['user_id']];
+		$a[] = pl_array_lookup($row['user_id'], $plMenus['user_id']);
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
-		$a[] = "&nbsp;";		
-		$a[] = $row['js'];
+		$a[] = "&nbsp;";
+		$a[] = "&nbsp;";
 	}
 
 	// AMW - 2012-5-29 - Stop XSS.
@@ -274,14 +306,28 @@ while ($row = DBResult::fetchRow($result))
 
 	else 
 	{
-		$a[] = "$z";
+		/*	Somebody else's activity, on a case this user may not read. Only the
+			time and the owner belong in a row like this - the same two things
+			print_calendar_item() in cal_week.php shows for an activity the
+			caller cannot open. Two values did not belong here:
+			
+			$z, which is set inside the branch above. On the first row of the
+			table it was undefined, and on every row after that it was the time
+			of the last activity the caller WAS allowed to read.
+			
+			the summary of an activity the caller may not read, which is the
+			one piece of case text on the row and the reason the branch exists.
+			(One of the four copies read $row['js'], a column no query here
+			selects, so it printed nothing and warned about the missing key.)
+		*/
+		$a[] = pl_unmogrify_time($row['act_time']);
 		$a[] = "&nbsp;";
-		$a[] = $plMenus['user_id'][$row['user_id']];
+		$a[] = pl_array_lookup($row['user_id'], $plMenus['user_id']);
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
-		$a[] = $row['summary'];
+		$a[] = "&nbsp;";
 	}
 
 	$p->addRow($a);
@@ -368,14 +414,28 @@ while ($row = DBResult::fetchRow($result))
 
 	else 
 	{
-		$a[] = "$z";
+		/*	Somebody else's activity, on a case this user may not read. Only the
+			time and the owner belong in a row like this - the same two things
+			print_calendar_item() in cal_week.php shows for an activity the
+			caller cannot open. Two values did not belong here:
+			
+			$z, which is set inside the branch above. On the first row of the
+			table it was undefined, and on every row after that it was the time
+			of the last activity the caller WAS allowed to read.
+			
+			the summary of an activity the caller may not read, which is the
+			one piece of case text on the row and the reason the branch exists.
+			(One of the four copies read $row['js'], a column no query here
+			selects, so it printed nothing and warned about the missing key.)
+		*/
+		$a[] = pl_unmogrify_time($row['act_time']);
 		$a[] = "&nbsp;";
-		$a[] = $plMenus['user_id'][$row['user_id']];
+		$a[] = pl_array_lookup($row['user_id'], $plMenus['user_id']);
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
-		$a[] = "&nbsp;";		
-		$a[] = $row['summary'];
+		$a[] = "&nbsp;";
+		$a[] = "&nbsp;";
 	}
 
 	$overdue->addRow($a);
@@ -435,14 +495,28 @@ while ($row = DBResult::fetchRow($result))
 	
 	else
 	{
-		$a[] = "$z";
+		/*	Somebody else's activity, on a case this user may not read. Only the
+			time and the owner belong in a row like this - the same two things
+			print_calendar_item() in cal_week.php shows for an activity the
+			caller cannot open. Two values did not belong here:
+			
+			$z, which is set inside the branch above. On the first row of the
+			table it was undefined, and on every row after that it was the time
+			of the last activity the caller WAS allowed to read.
+			
+			the summary of an activity the caller may not read, which is the
+			one piece of case text on the row and the reason the branch exists.
+			(One of the four copies read $row['js'], a column no query here
+			selects, so it printed nothing and warned about the missing key.)
+		*/
+		$a[] = pl_unmogrify_time($row['act_time']);
 		$a[] = "&nbsp;";
-		$a[] = $plMenus['user_id'][$row['user_id']];
+		$a[] = pl_array_lookup($row['user_id'], $plMenus['user_id']);
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
 		$a[] = "&nbsp;";
-		$a[] = $row['summary'];
+		$a[] = "&nbsp;";
 	}
 
 	$todo->addRow($a);
