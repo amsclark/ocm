@@ -1119,8 +1119,23 @@ function pika_error_notice($title, $message)
 	if (file_exists('templates/unavailable.html'))
 	{
 		$template_data["debug"] = $d;
-		$template_data["title"] = "Error:  $title";
-		$template_data["message"] = $message;
+		/*	These two went into the template raw. pl_template() substitutes
+			a tag with the value it was given and does no escaping of its
+			own, so any caller that passes a request value made this screen
+			a reflected-XSS sink - ops/vcal.php passes the submitted
+			act_type straight into the message.
+			
+			pl_clean_html() rather than pl_html_escape(): the callers hand
+			us values that came through pl_grab_var(), and
+			pl_clean_form_input() has already rewritten < and > as entities
+			on the way in. pl_clean_html() turns those back into characters
+			and then escapes the whole string once, so the message reads as
+			it was typed instead of showing "&lt;" to the user, and a raw <
+			from a caller that never went through the input layer is still
+			escaped.
+		*/
+		$template_data["title"] = 'Error:  ' . pl_clean_html($title);
+		$template_data["message"] = pl_clean_html($message);
 		
 		$plTemplate["page_title"] = "Pika CMS Error Screen";
 		$plTemplate['nav'] = "<a href=\".\" class=light>$pikaNavRootLabel</a> &gt; Error Screen";
