@@ -38,12 +38,25 @@ if($action == 'update_prefs')
 	$default_prefs = pikaDefPrefs::getInstance()->getValues();
 	$default_prefs_fieldnames = array_keys($default_prefs);
 	
+	/*	These go into users.session_data, and pikaDefPrefs::initPrefs() puts
+		them back into $_SESSION on every request the user makes. Whatever
+		is stored here is therefore what cms/pika_cms.php later includes as
+		a theme file and interpolates into a LIMIT clause, so store the
+		request value only when it is something the preference may hold.
+		A rejected field is simply left out, and initPrefs() fills it from
+		the system defaults.
+	*/
 	$user_prefs = array();
 	foreach ($_POST as $field_name => $field_value)
 	{
 		if(in_array($field_name,$default_prefs_fieldnames))
 		{
-			$user_prefs[$field_name] = $field_value;
+			$field_value = pikaDefPrefs::filterValue($field_name, $field_value);
+			
+			if (!is_null($field_value))
+			{
+				$user_prefs[$field_name] = $field_value;
+			}
 		}
 	}	
 	$user->session_data = serialize($user_prefs);
@@ -58,10 +71,7 @@ $user_prefs = $user->getUserPrefs();
 
 $r_format = array(	'pdf' => 'PDF',
 					'html' => 'HTML');
-$font_size = array(	'Small' => 'Small',
-					'Medium' => 'Medium',
-					'Large' => 'Large',
-					'Super Size' => 'Super Size');
+$font_size = array_combine(pikaDefPrefs::fontSizes(), pikaDefPrefs::fontSizes());
 $rss_interval = array(	'1' => '1 Day',
 						'5' => '5 Days',
 						'7' => '7 Days',

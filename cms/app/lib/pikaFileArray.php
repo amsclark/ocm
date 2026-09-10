@@ -121,19 +121,30 @@ class pikaFileArray implements ArrayAccess, Iterator
 	
     // End Iterator
 	
+	/*	What this returns is written to a .php file that is then include()d
+		on every request, so each key and value has to be a PHP literal and
+		not a piece of source. Writing the literals by hand - '{$key}' =>
+		"{$val}" - let a value that held a double quote close its own string
+		and add an expression of its own, and the preference screen stores
+		whatever it is given: 'theme' => "Purple" . file_put_contents(...)
+		. "" ran that call every time the preferences were loaded.
+		var_export() writes a literal that means exactly the string it is
+		handed.
+	*/
 	protected function array2Php($values,$tab_counter = 0) {
 		
 		$values_string_array = array();
 		$tab_level = str_repeat("\t",$tab_counter);
 		$values_string = "array(\n";
 		foreach ($values as $key => $val) {
+			$key_literal = var_export((string) $key, true);
 			if(is_array($val))
 			{	
-				$values_string_array[] .= "{$tab_level}'{$key}' => " . $this->array2Php($values[$key],$tab_counter+1);
+				$values_string_array[] = "{$tab_level}{$key_literal} => " . $this->array2Php($values[$key],$tab_counter+1);
 			}
 			else 
 			{
-				$values_string_array[] = "{$tab_level}'{$key}' => \"{$val}\"";
+				$values_string_array[] = "{$tab_level}{$key_literal} => " . var_export((string) $val, true);
 			}
 		}
 		$values_string .= implode(",\n",$values_string_array);

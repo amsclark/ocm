@@ -18,6 +18,7 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 }
 
 require_once ('pikaUser.php');
+require_once ('pikaDefPrefs.php');
 
 
 
@@ -27,16 +28,35 @@ $user_id = $auth_row['user_id'];
 $user = new pikaUser($user_id);
 
 
-$_SESSION['def_office'] =  pl_grab_post('def_office');
-$_SESSION['def_intake_type'] =  pl_grab_post('def_intake_type');
-$_SESSION['def_relation_code'] = pl_grab_post('def_relation_code');
-$_SESSION['paging'] =  pl_grab_post('paging');
-$_SESSION['font_size'] =  pl_grab_post('font_size');
-$_SESSION['popup'] =  pl_grab_post('popup');
-$_SESSION['theme'] = pl_grab_post('theme');
-$_SESSION['def_ical_interval'] = pl_grab_post('def_ical_interval');
-$_SESSION['def_rss_interval'] = pl_grab_post('def_rss_interval');
-$_SESSION['r_format'] = pl_grab_post('r_format');
+/*	Each of these is read back out of the session later on: the theme names
+	a file cms/pika_cms.php includes, the paging count is interpolated into
+	a LIMIT clause, and the font size is used as an array key. A name that
+	the system defaults file does not carry is not overwritten by
+	pikaDefPrefs::initPrefs() on the next request, so a bad value stored
+	here stays for the rest of the session. Keep the value that is already
+	in the session when the request offers one the preference may not hold.
+*/
+$pref_names = array('def_office',
+					'def_intake_type',
+					'def_relation_code',
+					'paging',
+					'font_size',
+					'popup',
+					'theme',
+					'def_ical_interval',
+					'def_rss_interval',
+					'r_format');
+
+foreach ($pref_names as $pref_name)
+{
+	$pref_value = pikaDefPrefs::filterValue($pref_name, pl_grab_post($pref_name));
+	
+	if (!is_null($pref_value))
+	{
+		$_SESSION[$pref_name] = $pref_value;
+	}
+}
+
 session_write_close();
 
 
