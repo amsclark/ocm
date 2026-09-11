@@ -880,6 +880,13 @@ class pikaLSXML
 	*/
 	public function fuzzyConflictCheck($lim = 10)
 	{
+		/*	ini_set('display_errors','On') used to be the first line of this
+			method. It ran on the intake conflict-check path, which parses XML
+			that arrives from outside, so any error raised while handling that
+			input was printed straight back to the caller with the server file
+			path attached. Error detail follows php.ini through
+			pl_is_debug_mode(); nothing in the tree should override it.
+		*/
 		require_once('pikaCase.php');
 		
 		$lim = (int) $lim;

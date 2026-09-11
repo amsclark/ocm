@@ -4921,5 +4921,69 @@ else
 fi
 
 echo
+echo "36. the Mega Report no longer prints PHP errors to the browser"
+
+# Three lines of leftover debugging sat at the top of the report:
+# ini_set on display_errors and display_startup_errors, plus
+# error_reporting(E_ALL). They forced PHP's own error output into the
+# response for this one page whatever the server was configured to do, so
+# a fatal printed the absolute file path and a stack trace to whoever ran
+# the report. Whether error detail reaches the browser is php.ini's
+# decision, read through pl_is_debug_mode() in cms/app/lib/pl.php.
+mr_token() {
+	curl -sL --max-time 30 -b "$COOKIES" "$OCM_URL/reports/megareport/" \
+		| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+		| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+}
+
+MRTOK="$(mr_token)"
+if [ "${#MRTOK}" -ne 64 ]; then
+	bad "no CSRF token on the Mega Report form - section 36 is untested"
+else
+	# 36a. No columns ticked. pl_grab_post() returns null for a field that
+	# was not submitted, and this is the case the friendly message below
+	# was written for -- but sizeof(null) is a fatal TypeError under PHP 8,
+	# so the report died before it could print it.
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+		--data-urlencode "_csrf=${MRTOK}" \
+		"$OCM_URL/reports/megareport/report.php" >/dev/null
+	if grep -q 'you need to check off the fields' "$BODY"; then
+		ok "the Mega Report explains that no columns were ticked"
+	else
+		bad "the Mega Report does not handle an empty column list"
+	fi
+	if grep -q '/var/www/\|Stack trace' "$BODY"; then
+		bad "the Mega Report prints a server file path to the browser"
+	else
+		ok "that page carries no server path and no stack trace"
+	fi
+
+	# 36b. And a query the database refuses. The detail belongs in the log,
+	# not in the response.
+	MRTOK="$(mr_token)"
+	mr_status="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' -X POST \
+		--data-urlencode "_csrf=${MRTOK}" \
+		-d "fo[]=cases.case_id" -d "order_by=zznotacolumn" \
+		"$OCM_URL/reports/megareport/report.php")"
+	if grep -q '/var/www/\|Stack trace\|Uncaught' "$BODY"; then
+		bad "a failed Mega Report query prints error detail to the browser (status ${mr_status})"
+	else
+		ok "a failed Mega Report query keeps its error detail in the log (status ${mr_status})"
+	fi
+
+	# 36c. A report that does run still runs.
+	MRTOK="$(mr_token)"
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+		--data-urlencode "_csrf=${MRTOK}" \
+		-d "fo[]=cases.case_id" -d "recordlimit=5" \
+		"$OCM_URL/reports/megareport/report.php" >/dev/null
+	if grep -q 'Mega Report' "$BODY" && ! grep -q '/var/www/' "$BODY"; then
+		ok "the Mega Report still renders a result"
+	else
+		bad "the Mega Report no longer renders a result"
+	fi
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
