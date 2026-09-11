@@ -41,6 +41,13 @@
 		%%[pass_min_length,pass_min_length]%%<br/>
 		Password Expiration Period<br />
 		%%[password_expire,password_expire]%%<br/>
+		Check New Passwords Against Known Breaches<br/>
+		%%[password_breach_policy,password_breach_policy]%%<br/>
+		<em>Asks Have I Been Pwned whether a password being set already
+		appears in a published breach. The password is not sent: it is
+		hashed, and only the first five characters of the hash leave this
+		server. Anything but Off makes this server contact that service
+		every time somebody sets a password.</em><br/>
 		<br/>
 		%%[enable_system,yes_no,checkbox,label=Enable Logins]%%<br/>
 		%%[force_https,yes_no,checkbox,label=Allow Only Secure (HTTPS) Logins]%%<br/>

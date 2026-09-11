@@ -5929,5 +5929,167 @@ else
 fi
 
 echo
+echo "43. new passwords checked against known breaches"
+# A password that satisfies every length and character rule is still no good
+# if it is already in a credential-stuffing list. With the policy on, a
+# password being set is checked against the Pwned Passwords index.
+#
+# The real service is a third party on the internet, so this section installs
+# a stand-in that answers in the same shape and deletes it again. The
+# application is pointed at it with password_breach_api_url, which exists for
+# exactly this and has no field on any admin screen.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	if [ "$(adb "SELECT value FROM settings WHERE label = 'password_breach_policy'")" = "off" ]; then
+		ok "password_breach_policy is seeded, and is off until somebody turns it on"
+	else
+		bad "password_breach_policy is missing or is not off by default"
+	fi
+
+	HIBP_GROUP='zz_hibp_grp'
+	HIBP_USER='zz_hibp_user'
+	HIBP_PASS='zz-hibp-Passw0rd'
+	HIBP_BAD='Zz-Hibp-Breach1!'
+	HIBP_BAD2='Zz-Hibp-Breach2!'
+	HIBP_GOOD='Zz-Hibp-Clean9f3a!'
+	HIBP_JAR="$(mktemp)"
+	HIBP_STUB='/var/www/html/cms/zz_test_hibp.php'
+	HIBP_DIR='/tmp/zz_test_hibp'
+	HIBP_PATH="$(printf '%s' "$OCM_URL" | sed -E 's#^[a-z]+://[^/]*##')"
+	# The container reaches itself on port 80; the published port is the
+	# test's way in, not the application's.
+	HIBP_API="http://localhost${HIBP_PATH}/zz_test_hibp.php"
+
+	hibp_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+	hibp_set() { adb "UPDATE settings SET value = '$2' WHERE label = '$1'" >/dev/null; }
+	hibp_flags() { printf '%s' "${1:-}" | hibp_dex sh -c "cat > ${HIBP_DIR}/flags"; }
+	hibp_hash() { adb "SELECT password FROM users WHERE username = '${HIBP_USER}'"; }
+
+	# Sign the fixture in and post a password change. $1 old, $2 new.
+	# Echoes the response body's flag text so the caller can look at it.
+	hibp_change() {
+		: > "$HIBP_JAR"
+		curl -sL --max-time 30 -c "$HIBP_JAR" -b "$HIBP_JAR" -o /dev/null \
+			-X POST -d "login_user=${HIBP_USER}&login_pass=$1&auth_id=1" "$OCM_URL/" 
+		curl -sL --max-time 30 -c "$HIBP_JAR" -b "$HIBP_JAR" -o "$BODY" \
+			"$OCM_URL/password.php"
+		HIBP_TOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed 's/.*value="//;s/"//')"
+		curl -sL --max-time 30 -c "$HIBP_JAR" -b "$HIBP_JAR" -o "$BODY" \
+			-X POST -d "action=update" -d "oldpass=$1" \
+			-d "newpass1=$2" -d "newpass2=$2" -d "_csrf=${HIBP_TOK}" \
+			"$OCM_URL/password.php"
+	}
+
+	cleanup_hibp() {
+		adb "DELETE FROM users WHERE username = '${HIBP_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${HIBP_GROUP}'" >/dev/null
+		adb "DELETE FROM audit_log WHERE action LIKE 'password.breach\\_%'" >/dev/null
+		adb "UPDATE settings SET value = 'off' WHERE label = 'password_breach_policy'" >/dev/null
+		adb "UPDATE settings SET value = '' WHERE label = 'password_breach_api_url'" >/dev/null
+		hibp_dex rm -rf "$HIBP_STUB" "$HIBP_DIR" >/dev/null 2>&1 || true
+		rm -f "$HIBP_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_hibp' EXIT
+
+	cleanup_hibp
+	hibp_dex mkdir -p "$HIBP_DIR" >/dev/null 2>&1
+	hibp_dex chmod 0777 "$HIBP_DIR" >/dev/null 2>&1
+	hibp_dex sh -c "cat > ${HIBP_STUB}" < "${SMOKE_DIR}/fixtures/zz_test_hibp.php"
+	printf '%s\n%s\n' "$HIBP_BAD" "$HIBP_BAD2" | hibp_dex sh -c "cat > ${HIBP_DIR}/passwords"
+	hibp_flags ''
+	hibp_set password_breach_api_url "$HIBP_API"
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${HIBP_GROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	HIBP_HASH="$(hibp_dex php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$HIBP_PASS" </dev/null 2>/dev/null)"
+	HIBP_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${HIBP_UID}, '${HIBP_USER}', '${HIBP_HASH}', 1, '${HIBP_GROUP}', 0)" >/dev/null
+
+	# The stand-in has to be serving, or nothing below means anything.
+	HIBP_PREFIX="$(hibp_dex php -r 'echo strtoupper(substr(sha1($argv[1]), 0, 5));' "$HIBP_BAD" </dev/null 2>/dev/null)"
+	HIBP_SUFFIX="$(hibp_dex php -r 'echo strtoupper(substr(sha1($argv[1]), 5));' "$HIBP_BAD" </dev/null 2>/dev/null)"
+	curl -s --max-time 30 -o "$BODY" "${OCM_URL}/zz_test_hibp.php/${HIBP_PREFIX}" >/dev/null
+	if grep -q "$HIBP_SUFFIX" "$BODY"; then
+		ok "the stand-in breach service answers for the test password's prefix"
+	else
+		bad "the stand-in breach service did not answer - the rest of this section cannot be trusted"
+	fi
+
+	if [ -z "${HIBP_UID:-}" ] || [ -z "${HIBP_HASH:-}" ]; then
+		bad "could not seed the breach-check fixtures"
+	else
+		# 43a. Off means off: a password in the list is accepted.
+		hibp_set password_breach_policy off
+		hibp_change "$HIBP_PASS" "$HIBP_BAD" >/dev/null
+		if [ "$(hibp_hash)" != "$HIBP_HASH" ]; then
+			ok "with the policy off, a breached password is accepted"
+		else
+			bad "with the policy off, the password change was refused anyway"
+		fi
+		HIBP_HASH="$(hibp_hash)"
+
+		# 43b. Warn: the user is told, and the change still goes through.
+		hibp_set password_breach_policy warn
+		hibp_change "$HIBP_BAD" "$HIBP_BAD2" >/dev/null
+		if grep -qi 'known&nbsp;data&nbsp;breach' "$BODY"; then
+			ok "on warn, the user is told the password has been breached"
+		else
+			bad "on warn, the page said nothing about the breach"
+		fi
+		if [ "$(hibp_hash)" != "$HIBP_HASH" ]; then
+			ok "on warn, the change still goes through"
+		else
+			bad "on warn, the change was refused - warn must not block"
+		fi
+		HIBP_HASH="$(hibp_hash)"
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'password.breach_check_hit' LIMIT 1")" ]; then
+			ok "audit_log recorded password.breach_check_hit"
+		else
+			bad "audit_log has no password.breach_check_hit row"
+		fi
+
+		# 43c. Block: refused, and the stored password is untouched.
+		hibp_set password_breach_policy block
+		hibp_change "$HIBP_BAD2" "$HIBP_BAD" >/dev/null
+		if [ "$(hibp_hash)" = "$HIBP_HASH" ]; then
+			ok "on block, a breached password is refused and the old one stands"
+		else
+			bad "on block, the breached password was stored anyway"
+		fi
+
+		# 43d. Block does not refuse a password nobody has seen.
+		hibp_change "$HIBP_BAD2" "$HIBP_GOOD" >/dev/null
+		if [ "$(hibp_hash)" != "$HIBP_HASH" ]; then
+			ok "on block, a password that is not in the index is accepted"
+		else
+			bad "on block, a clean password was refused"
+		fi
+		HIBP_HASH="$(hibp_hash)"
+
+		# 43e. A service that is down must not stop anyone changing their
+		# password, even on block.
+		hibp_flags 'fail'
+		hibp_change "$HIBP_GOOD" "$HIBP_BAD" >/dev/null
+		if [ "$(hibp_hash)" != "$HIBP_HASH" ]; then
+			ok "an unreachable breach service does not block a password change"
+		else
+			bad "an unreachable breach service blocked a password change"
+		fi
+		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'password.breach_check_unreachable' LIMIT 1")" ]; then
+			ok "audit_log recorded password.breach_check_unreachable"
+		else
+			bad "audit_log has no password.breach_check_unreachable row"
+		fi
+		hibp_flags ''
+	fi
+
+	cleanup_hibp
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the breach-check checks (needs the database and compose)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
