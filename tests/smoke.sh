@@ -4159,6 +4159,109 @@ else
 	printf '  skip the calendar hours and activity lock checks (needs the database)\n'
 fi
 
+echo
+echo "35. cross-site GETs that used to mutate"
+
+# pl_csrf_check() does two jobs. On a POST it validates the per-session
+# token; on any other method it falls through to
+# pl_request_cross_site_verdict() and refuses a 'cross' verdict. Most
+# handlers wrap the call in a REQUEST_METHOD === 'POST' test, which drops
+# the second half. That is right for a read page and wrong for the three
+# handlers that dispatch a write out of the query string.
+if [ "$HAVE_DB" = 1 ]; then
+	XSMENU='menu_zzxs'
+
+	cleanup_xs() {
+		adb "DROP TABLE IF EXISTS \`${XSMENU}\`" >/dev/null
+		adb "DELETE FROM outcome_goals WHERE goal LIKE 'ZZXS%'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_xs' EXIT
+	cleanup_xs
+
+	adb "CREATE TABLE \`${XSMENU}\` (
+		value char(12) NOT NULL DEFAULT '',
+		label char(65) NOT NULL DEFAULT '',
+		menu_order tinyint(4) DEFAULT NULL,
+		KEY value (value)
+	)" >/dev/null
+	adb "INSERT INTO \`${XSMENU}\` (value, label, menu_order) VALUES ('zzkeep', 'Keep Me', 1)" >/dev/null
+	# problem is char(2), and outcome_goal_id is NOT NULL with no
+	# auto_increment, so both have to be supplied by hand.
+	XSPROB='ZZ'
+	XSGOAL="$(adb "SELECT COALESCE(MAX(outcome_goal_id), 0) + 1 FROM outcome_goals")"
+	adb "INSERT INTO outcome_goals (outcome_goal_id, problem, goal, active, outcome_goal_order)
+		VALUES (${XSGOAL}, '${XSPROB}', 'ZZXS goal', 1, 0)" >/dev/null
+
+	# $1 the Sec-Fetch-Site value, $2 the path and query. Prints the status.
+	xs_get() {
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			-H "Sec-Fetch-Site: $1" "$OCM_URL/$2"
+	}
+
+	# 35a. The worst of the three. ?action=update_pba mass-assigns $_GET onto
+	# a pb_attorneys row, and a password in the query string is hashed and
+	# written, so a link opened by an administrator reset that attorney's
+	# password.
+	if [ "$(xs_get cross-site 'pb_attorneys.php?action=update_pba&pba_id=1&password=zzforged')" = 403 ]; then
+		ok "a cross-site GET cannot reset a pro bono attorney password"
+	else
+		bad "pb_attorneys.php?action=update_pba still runs for a cross-site GET"
+	fi
+
+	# 35b. And the refusal has to happen before the write, not after it.
+	xs_get cross-site "system-menus.php?action=delete&menu_name=${XSMENU}&value=zzkeep" >/dev/null
+	if [ "$(adb "SELECT COUNT(*) FROM \`${XSMENU}\` WHERE value = 'zzkeep'")" = 1 ]; then
+		ok "a cross-site GET cannot delete a menu row"
+	else
+		bad "a cross-site GET deleted a menu row"
+	fi
+
+	# 35c. system-outcomes.php runs UPDATE outcome_goals SET active = 0
+	# before it reads the submitted list, so a GET carrying no values
+	# deactivated every goal for the named problem.
+	xs_get cross-site "system-outcomes.php?action=update&outcome=${XSPROB}" >/dev/null
+	if [ "$(adb "SELECT active FROM outcome_goals WHERE outcome_goal_id = ${XSGOAL}")" = 1 ]; then
+		ok "a cross-site GET cannot deactivate the goals for a problem"
+	else
+		bad "a cross-site GET deactivated the goals for a problem"
+	fi
+
+	# 35d. A request that started on one of our own pages is untouched. The
+	# check refuses a 'cross' verdict only; a typed URL, a bookmark and an
+	# emailed link all read as 'unknown' and still go through.
+	xs_status="$(xs_get same-origin "system-menus.php?action=delete&menu_name=${XSMENU}&value=zzkeep")"
+	if [ "$(adb "SELECT COUNT(*) FROM \`${XSMENU}\` WHERE value = 'zzkeep'")" = 0 ]; then
+		ok "a same-site GET still deletes a menu row (status ${xs_status})"
+	else
+		bad "the cross-site check also refuses a same-site menu delete"
+	fi
+	xs_status="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/system-menus.php?menu_name=${XSMENU}")"
+	if [ "$xs_status" = 200 ]; then
+		ok "a GET with no Sec-Fetch-Site header still reaches the menu editor"
+	else
+		bad "the cross-site check refuses a plain GET (status ${xs_status})"
+	fi
+
+	# 35e. Left-over debugging in the same handler printed the submitted and
+	# the stored goal lists to the browser. Because it wrote output before
+	# the header("Location: ...") at the end of the case, the redirect never
+	# fired either.
+	xs_status="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		-H 'Sec-Fetch-Site: same-origin' \
+		"$OCM_URL/system-outcomes.php?action=update&outcome=${XSPROB}")"
+	if [ "$xs_status" = 302 ] && ! grep -q '<pre>' "$BODY"; then
+		ok "the outcome goal save redirects and prints no debug dump"
+	else
+		bad "system-outcomes.php?action=update still dumps output (status ${xs_status})"
+	fi
+
+	cleanup_xs
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the cross-site GET checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"

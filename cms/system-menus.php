@@ -7,12 +7,21 @@
 require_once('pika-danio.php');
 pika_init();
 
-// Every POST to this handler must carry the per-session CSRF token.
-// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
-if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
-{
-	pl_csrf_check();
-}
+// Unconditional, not wrapped in a REQUEST_METHOD === 'POST' test like most
+// of the other handlers, because this page dispatches a mutating action out
+// of the query string: ?action=update, delete, move_up and move_down each
+// edit, remove or reorder a menu row.
+//
+// pl_csrf_check() does two different jobs. On a POST it validates the
+// per-session token. On any other method it falls through to
+// pl_request_cross_site_verdict() and refuses a 'cross' verdict, which is
+// the only defence a GET-dispatched write has. Wrapping the call in a POST
+// test removes exactly that half.
+//
+// A typed URL, a bookmark and an emailed link all read as 'unknown' and are
+// still allowed through, so this costs nothing a user would notice. See
+// pl_csrf_check() in cms/app/lib/pl.php.
+pl_csrf_check();
 require_once('plFlexList.php');
 require_once('pikaTempLib.php');
 require_once('pikaMenu.php');
