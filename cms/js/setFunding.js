@@ -32,6 +32,14 @@ function loadValues()
 	xmlDoc=xmlHttp.responseXML;
 	funding_form = document.getElementById("funding");
 	var funding = xmlDoc.getElementsByTagName("funding")[0];
+	/*	cases-lookup-ajax.php answers with an empty <pikaCase/> when the
+		caller may not read the case, so there is no <funding> element to
+		read. Leave the field as the user left it. Without this guard the
+		reads below throw and the rest of the page's scripts stop.
+	*/
+	if(funding_form == null || funding == null) {
+		return;
+	}
 	if(funding_form.value == '') {
 		if(funding.firstChild != null) {
 			funding_form.value = funding.firstChild.nodeValue;

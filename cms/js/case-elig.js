@@ -422,15 +422,22 @@ function calc_poverty()
 	var povtmp = 0;
 	var g = new Array();
 
-	g[0] = %%[0,menu_poverty,text_menu]%%;
-	g[1] = %%[1,menu_poverty,text_menu]%%;
-	g[2] = %%[2,menu_poverty,text_menu]%%;
-	g[3] = %%[3,menu_poverty,text_menu]%%;
-	g[4] = %%[4,menu_poverty,text_menu]%%;
-	g[5] = %%[5,menu_poverty,text_menu]%%;
-	g[6] = %%[6,menu_poverty,text_menu]%%;
-	g[7] = %%[7,menu_poverty,text_menu]%%;
-	g[8] = %%[8,menu_poverty,text_menu]%%;
+	/*	The menu value is written straight into the source of this file, so a
+		guideline typed with a thousands separator - "5,680", which is how the
+		federal table prints it - became the JavaScript comma operator:
+		g[0] = 5,680 assigned 680. Every household size then measured against
+		one eighth of the real figure. Quote the tag so the value arrives as a
+		string, take the commas out, and read it as a base-10 integer.
+	*/
+	g[0] = parseInt((""+"%%[0,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[1] = parseInt((""+"%%[1,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[2] = parseInt((""+"%%[2,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[3] = parseInt((""+"%%[3,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[4] = parseInt((""+"%%[4,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[5] = parseInt((""+"%%[5,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[6] = parseInt((""+"%%[6,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[7] = parseInt((""+"%%[7,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
+	g[8] = parseInt((""+"%%[8,menu_poverty,text_menu]%%").replace(/,/g, ''), 10);
 	
 	calc_income();
 

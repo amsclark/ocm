@@ -113,29 +113,39 @@ function pl_array_to_php_sub($array_data)
 	
 	$x .= "array (\n";
 	
+	/*	var_export() writes the literal, rather than wrapping the value in
+		quotes by hand. The old code quoted the key with no escaping at all, so
+		a key holding an apostrophe closed its own string and the rest of the
+		key became PHP source; a null was emitted as the string '' instead of
+		null, and a bool or a float lost its type on the way through.
+		stripslashes() is kept because the values can still come from
+		magic-quoted legacy data.
+	*/
 	foreach ($array_data as $key => $val)
 	{
 		if (is_string($key))
 		{
-			$key = "'$key'";
+			$key = var_export(stripslashes($key), true);
 		}
 		
-		if (is_string($val))
+		else
 		{
-			$val = stripslashes($val);
-			$val = str_replace("'", "\'", $val);
-			
-			$val = "'$val'";
+			$key = var_export($key, true);
 		}
 		
-		elseif (is_array($val))
+		if (is_array($val))
 		{
 			$val = pl_array_to_php_sub($val);
 		}
 		
-		else if (is_null($val))
+		elseif (is_string($val))
 		{
-			$val = "'$val'";
+			$val = var_export(stripslashes($val), true);
+		}
+		
+		else
+		{
+			$val = var_export($val, true);
 		}
 		
 		$x .= "$key => $val,\n";
@@ -1054,9 +1064,6 @@ function pl_clean_html($str)
 		$str = '';
 	}
 	
-	// 2013-06-27 AMW - Added version check.
-	$version = phpversion();
-	
 	/*	Greater Than and Less Than characters are no longer allowed to be stored
 		in the database.  The are filtered out when submitted via GET or POST.
 		Restore them here, so htmlspecialchar (below) doesn't double encode
@@ -1065,20 +1072,20 @@ function pl_clean_html($str)
 	$str = str_replace('&lt;', '<', $str);
 	$str = str_replace('&gt;', '>', $str);
 	
-	if ($version[0] > 4 && $version[1] > 3)
-	{
-		// AMW - 2012-5-29 - Turned on quote encoding.
-		// 2013-06-27 AMW - Changed to ENT_HTML5 for Bootstrap conversion.
-		$clean_str = htmlspecialchars($str, ENT_QUOTES | ENT_HTML5);
-	}
-	
-	else
-	{
-		// 2013-06-27 AMW - Removed ENT_HTML... for PHP versions prior to 5.4.
-		$clean_str = htmlspecialchars($str, ENT_QUOTES);
-	}
-	
-	return $clean_str;
+	/*	The version check that used to stand here never chose the branch it was
+		written for. It read
+		
+			$version = phpversion();
+			if ($version[0] > 4 && $version[1] > 3)
+		
+		and $version[1] is the dot in "5.4.0", not the minor number, so the
+		test was false on every PHP release ever shipped and ENT_HTML5 was
+		never applied. pl_html_escape() applies it, along with ENT_SUBSTITUTE,
+		which matters more: without it htmlspecialchars() returns the empty
+		string for input that is not valid UTF-8, so one bad byte in a stored
+		field silently blanked the whole value.
+	*/
+	return pl_html_escape($str);
 }
 
 
@@ -1091,46 +1098,25 @@ function pl_clean_html_array($a)
 {
 	$b = array();
 	
-	/*	Same null guard as pl_clean_html(): the arrays handed to this are
-		database rows, and htmlspecialchars() is declared with a string
-		parameter, so one NULL column logged one deprecation per row. It
-		returned '' for null, so nothing renders differently.
+	if (!is_array($a))
+	{
+		return $b;
+	}
+	
+	/*	Now one call to pl_clean_html() per element, which also restores the
+		&lt; and &gt; that pl_clean_form_input() wrote when the value was
+		submitted. This function used to skip that step, so the two cleaners
+		disagreed: a stored "&lt;" came out of pl_clean_html() as "&lt;" and
+		displayed as "<", but came out of here as "&amp;lt;" and displayed as
+		the literal "&lt;". Lists built with plFlexList::addRow() go through
+		this one, so a bracket in a case number or a note read correctly on
+		the detail screen and wrongly in the list beside it. Both paths still
+		end in htmlspecialchars(), so neither was ever unsafe.
 	*/
-	if (is_array($a))
+	foreach ($a as $key => $str)
 	{
-		foreach ($a as $key => $str)
-		{
-			if (is_null($str))
-			{
-				$a[$key] = '';
-			}
-		}
+		$b[$key] = pl_clean_html($str);
 	}
-	
-	// 2013-06-27 AMW - Added version check.
-	$version = phpversion();
-
-	if ($version[0] > 4 && $version[1] > 3)
-	{
-		foreach ($a as $key => $str)
-		{
-			// AMW - 2012-5-29 - Turned on quote encoding.
-			// 2013-06-27 AMW - Changed to ENT_HTML5 for Bootstrap conversion.
-			$b[$key] = htmlspecialchars($str, ENT_QUOTES | ENT_HTML5);
-		}
-	}
-	
-	else
-	{
-		foreach ($a as $key => $str)
-		{
-			// AMW - 2012-5-29 - Turned on quote encoding.
-			// 2013-06-27 AMW - Removed ENT_HTML... for PHP versions prior to 5.4.
-			$b[$key] = htmlspecialchars($str, ENT_QUOTES);
-		}
-	}
-	
-
 	
 	return $b;
 }
@@ -1418,6 +1404,54 @@ if (!function_exists('pl_html_escape')) {
 			return '';
 		}
 		return htmlspecialchars((string)$value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+	}
+}
+
+/**
+ * Escape a value for insertion inside a <script> block or a JavaScript event
+ * attribute.
+ *
+ * json_encode() with the four HEX flags turns < > & ' and " into \uXXXX
+ * escapes, so the result cannot close the script element, cannot close a
+ * quoted HTML attribute, and cannot terminate the JavaScript string literal
+ * it sits inside. That last part is why htmlentities() is not a substitute:
+ * inside a <script> block the HTML parser does not decode entities, so
+ * escaping a quote to &quot; corrupts the value instead of protecting it,
+ * and inside an event attribute the parser decodes &#039; back to a real
+ * quote before JavaScript ever sees it, which closes the string early.
+ *
+ * The return value keeps its surrounding double quotes, because a JSON
+ * string literal is what a JavaScript parser wants. JSON_UNESCAPED_UNICODE
+ * only keeps accented characters legible; the HEX flags are what make the
+ * output safe.
+ */
+if (!function_exists('pl_js_escape')) {
+	function pl_js_escape($value)
+	{
+		if (is_array($value) || (is_object($value) && !method_exists($value, '__toString')))
+		{
+			return '""';
+		}
+		
+		if (is_null($value))
+		{
+			$value = '';
+		}
+		
+		$encoded = json_encode(
+			(string) $value,
+			JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE);
+		
+		/*	json_encode() returns false for a string that is not valid UTF-8.
+			An empty JSON string keeps the surrounding JavaScript parseable;
+			letting false through would print the word "false" into it.
+		*/
+		if (false === $encoded)
+		{
+			return '""';
+		}
+		
+		return $encoded;
 	}
 }
 
@@ -2259,28 +2293,36 @@ function pl_html_address($data)
 {
 	$C = "";
 	
+	/*	Every component is escaped on its way in, never the finished string:
+		this function interleaves <br> tags with the data, so escaping the
+		result would print the tags instead of applying them. The address
+		fields are free text a user typed, so a quote or an angle bracket in
+		one of them used to reach the page as markup.
+	*/
 	if (isset($data["org"]) && $data["org"])
 	{
-		$C .= "{$data["org"]}<br>\n";
+		$C .= pl_html_escape($data["org"]) . "<br>\n";
 	}
 	
 	if (isset($data["address"]) && $data["address"])
-	$C .= "{$data["address"]}<br>\n";
+	$C .= pl_html_escape($data["address"]) . "<br>\n";
 	
 	if (isset($data["address2"]) && $data["address2"])
-	$C .= "{$data["address2"]}<br>\n";
+	$C .= pl_html_escape($data["address2"]) . "<br>\n";
 	
 	if (isset($data["city"]) && (isset($data["state"]) || isset($data["zip"])))
 	{
-		$C .= "{$data["city"]}, {$data["state"]} {$data["zip"]}\n";
+		$C .= pl_html_escape($data["city"]) . ', '
+			. pl_html_escape(isset($data["state"]) ? $data["state"] : '') . ' '
+			. pl_html_escape(isset($data["zip"]) ? $data["zip"] : '') . "\n";
 	}
 	
 	else
 	{
 		// no comma
-		$C .= pl_array_lookup('city', $data) . ' '
-			. pl_array_lookup('state', $data) . ' '
-			. pl_array_lookup('zip', $data) . "\n";
+		$C .= pl_html_escape(pl_array_lookup('city', $data)) . ' '
+			. pl_html_escape(pl_array_lookup('state', $data)) . ' '
+			. pl_html_escape(pl_array_lookup('zip', $data)) . "\n";
 	}
 	
 	return $C;
@@ -2300,9 +2342,13 @@ function pl_html_checkbox($name, $val)
 		$checked = '';
 	}
 	
+	// The name reaches this from a template tag, so it goes into three
+	// quoted attributes escaped.
+	$safe_name = pl_html_escape($name);
+	
 	// Assigning two fields the same name may not be compatible with all browsers.  May not be compliant with W3C standards, either.
-	$C .= "<input type=\"hidden\" name=\"$name\" value=\"0\"/>";
-	$C .= "<input type=\"checkbox\" name=\"$name\" id=\"$name\" value=\"1\" class=\"plcheck\" tabindex=\"1\"{$checked}/>\n";
+	$C .= "<input type=\"hidden\" name=\"{$safe_name}\" value=\"0\"/>";
+	$C .= "<input type=\"checkbox\" name=\"{$safe_name}\" id=\"{$safe_name}\" value=\"1\" class=\"plcheck\" tabindex=\"1\"{$checked}/>\n";
 	return $C;
 }
 
@@ -2335,7 +2381,19 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 		$a = array();
 	}
 	
-	$o .= "<select name=\"$field_name\" id=\"$field_name\" class=\"plmenu\" tabindex=\"$ti\">\n";
+	/*	Menu keys and the field name go into quoted attributes, so they run
+		through pl_html_escape(). Labels run through pl_html_escape_label()
+		instead, because a label is allowed to arrive already encoded: the
+		%%[tag]%% parser splits on commas, so an author who needs a comma in a
+		label writes &#44;, and menu_comparison_sql ships labels that are
+		literally "&lt;" and "&gt;". Escaping those again would show the user
+		"&amp;lt;". Anything that could break out of an attribute or start a
+		tag is escaped either way -- see pl_html_escape_label().
+	*/
+	$safe_field_name = pl_html_escape($field_name);
+	$safe_ti = pl_html_escape($ti);
+	
+	$o .= "<select name=\"{$safe_field_name}\" id=\"{$safe_field_name}\" class=\"plmenu\" tabindex=\"{$safe_ti}\">\n";
 	
 	/*	Add a blank/NULL option if requested
 	
@@ -2370,6 +2428,9 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 	
 	foreach ($a as $key => $label)
 	{
+		$safe_key = pl_html_escape($key);
+		$safe_label = pl_html_escape_label($label);
+		
 		/*
 		Don't eval. fields with string values with this test; strings
 		always return true.  Weed out strings here with is_numeric() and use
@@ -2379,26 +2440,35 @@ function pl_html_menu($a, $field_name, $field_value, $add_blank='1', $ti='1')
 		*/
 		if (($field_value == $key) && is_numeric($field_value) && !$field_value_selected)
 		{
-			$o .= "<option selected value=\"$key\">$label</option>\n";
+			$o .= "<option selected value=\"{$safe_key}\">{$safe_label}</option>\n";
 			$field_value_selected = TRUE;
 		}
 		
 		// if not a string, must be a string.  use strcmp
 		else if ((strcmp($field_value,$key) == 0) && !$field_value_selected)
 		{
-			$o .= "<option selected value=\"$key\">$label</option>\n";
+			$o .= "<option selected value=\"{$safe_key}\">{$safe_label}</option>\n";
 			$field_value_selected = TRUE;
 		}
 		
 		else
 		{
-			$o .= "<option value=\"$key\">$label</option>\n";
+			$o .= "<option value=\"{$safe_key}\">{$safe_label}</option>\n";
 		}
 	}
 	
 	if ($field_value_selected == FALSE)
 	{
-		$o .= '<option selected value="' . $field_value . '">' . $field_value . '</option>
+		/*	The stored value is not in the menu, so it is shown as its own
+			option to keep the form from silently changing it on save. It came
+			off a request or out of the database, so it is escaped for both the
+			attribute and the visible text. pl_html_escape(), not the label
+			variant: this is a value that has to round-trip on submit, and
+			guessing that it is pre-encoded would change what the form sends
+			back.
+		*/
+		$safe_value = pl_html_escape($field_value);
+		$o .= '<option selected value="' . $safe_value . '">' . $safe_value . '</option>
 		';
 	}
 	
@@ -2433,8 +2503,16 @@ function pl_html_multiselect($a, $field_name, $field_values, $ti='1', $size = '1
 	}
 	reset($field_values);
 	
+	/*	Same split as pl_html_menu(): keys and the field name are escaped for
+		an attribute, labels go through the label-aware escaper. tabindex was
+		also being written without quotes around it.
+	*/
+	$safe_field_name = pl_html_escape($field_name);
+	$safe_size = pl_html_escape($size);
+	$safe_ti = pl_html_escape($ti);
+	
 	// Save menu HTML code as $o
-	$o .= "<select name=\"{$field_name}[]\" id=\"{$field_name}\" multiple size=\"{$size}\" tabindex=$ti>\n";
+	$o .= "<select name=\"{$safe_field_name}[]\" id=\"{$safe_field_name}\" multiple size=\"{$safe_size}\" tabindex=\"{$safe_ti}\">\n";
 	
 	// catch any cases where no menu data is available
 	if (sizeof($a) < 1)
@@ -2462,14 +2540,17 @@ function pl_html_multiselect($a, $field_name, $field_values, $ti='1', $size = '1
 		$o .= "<option selected value=\"$key\">$label</option>\n";
 		}*/
 		
+		$safe_key = pl_html_escape($key);
+		$safe_label = pl_html_escape_label($label);
+		
 		if (in_array($key, $field_values))
 		{
-			$o .= "<option selected value=\"$key\">$label</option>\n";
+			$o .= "<option selected value=\"{$safe_key}\">{$safe_label}</option>\n";
 		}
 		
 		else
 		{
-			$o .= "<option value=\"$key\">$label</option>\n";
+			$o .= "<option value=\"{$safe_key}\">{$safe_label}</option>\n";
 		}
 	}
 	
@@ -2828,7 +2909,15 @@ function pl_prepare_dir($fs_dir_path)
 		$parent_dir = implode('/', $b);	
 		pl_prepare_dir($parent_dir);
 		
-		if (!mkdir($fs_dir_path, 0700))
+		/*	Mode 0700 keeps the directory private to the web-server user.
+			
+			The is_dir() check above and this mkdir() are two steps, so a
+			second request can create the directory in between and this
+			one then fails on a directory that exists. Suppress the
+			warning and ask again: a concurrent creator is the expected
+			case under any amount of load, not an error.
+		*/
+		if (!@mkdir($fs_dir_path, 0700) && !is_dir($fs_dir_path))
 		{
 			trigger_error('');
 		}
@@ -3105,6 +3194,146 @@ function pl_session_set_default($name, $value)
 		$_SESSION[$name] = $value;
 	}
 }
+
+
+/*	Does a stored session's client address still match the current
+	request?
+	
+	pikaAuth::authenticate() pins a session to the address it was created
+	from. An exact match is the wrong test for a real client address: a
+	caseworker on cellular data, on a VPN, or behind a NAT pool that
+	rotates gets a new address mid-session through no fault of their own,
+	and an exact pin signs them out each time. So:
+	
+	  - Same address: match, the ordinary case.
+	  - Stored address is private but the current one is not: match. That
+		row was written while the application sat behind a reverse proxy
+		with no forwarded-address handling, so every client recorded as
+		the proxy's own address on the container network. Without this,
+		the first request after a deployment turns that handling on signs
+		out every user at once. It expires by itself: sessions re-pin to a
+		real address at the next sign-in.
+	  - Otherwise compare the network, not the host: /24 for IPv4, /64 for
+		IPv6. Someone replaying a stolen cookie still has to be on the
+		user's network, which is what the control was for.
+	@param string $stored  ip_address recorded on the user_sessions row
+	@param string $current REMOTE_ADDR for the request being authenticated
+	@return bool true when the session may continue
+*/
+function pl_session_ip_matches($stored, $current)
+{
+	$stored  = (string) $stored;
+	$current = (string) $current;
+	
+	if ('' === $stored || '' === $current)
+	{
+		/*	Nothing to compare. This has always passed, and refusing here
+			would lock out anyone whose row predates the column being
+			filled in.
+		*/
+		return true;
+	}
+	
+	if ($stored === $current)
+	{
+		return true;
+	}
+	
+	/*	Establish that both values are addresses before asking anything
+		about them. filter_var with the range flags returns false for "is
+		private" and for "is not an address at all" alike, so testing for
+		privacy first would grandfather any junk value straight past the
+		pin.
+	*/
+	if (false === filter_var($stored, FILTER_VALIDATE_IP)
+		|| false === filter_var($current, FILTER_VALIDATE_IP))
+	{
+		return false;
+	}
+	
+	$private = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+	$stored_is_private  = (false === filter_var($stored, FILTER_VALIDATE_IP, $private));
+	$current_is_private = (false === filter_var($current, FILTER_VALIDATE_IP, $private));
+	
+	if ($stored_is_private && !$current_is_private)
+	{
+		// Session pinned behind a proxy. Grandfathered; see above.
+		return true;
+	}
+	
+	$stored_v4  = filter_var($stored, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+	$current_v4 = filter_var($current, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+	
+	if ($stored_v4 && $current_v4)
+	{
+		$a = explode('.', $stored);
+		$b = explode('.', $current);
+
+		return ($a[0] === $b[0] && $a[1] === $b[1] && $a[2] === $b[2]);
+	}
+	
+	$stored_v6  = filter_var($stored, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+	$current_v6 = filter_var($current, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+	
+	if ($stored_v6 && $current_v6)
+	{
+		// inet_pton gives 16 bytes; the first 8 are the /64 prefix.
+		$a = @inet_pton($stored);
+		$b = @inet_pton($current);
+		
+		if (false === $a || false === $b)
+		{
+			return false;
+		}
+		
+		return (substr($a, 0, 8) === substr($b, 0, 8));
+	}
+	
+	// Mixed families, or something that is not an address at all.
+	return false;
+}
+
+
+/*	The session address pin, honouring the session_ip_pin setting.
+	
+	pl_session_ip_matches() is the policy; this is the switch in front of
+	it. Some offices sit behind an internet connection whose public
+	address is not stable: a dual-WAN firewall balancing across two
+	carriers, a carrier-grade NAT that re-homes the office every few
+	minutes, a satellite link. Staff there are returned to the sign-in
+	page every time it moves, which reads as "the idle timeout is fifteen
+	minutes" no matter what the timeout is set to. Nothing on the org's
+	side can be asked to hold still, so the org has to be able to turn the
+	address half of the pin off.
+	
+	  'network' (the default, and what an unset value means)
+			pl_session_ip_matches(): same /24 for IPv4, same /64 for IPv6.
+	  'off'
+			never compare addresses. The user-agent pin in pikaAuth still
+			applies, as do both timeouts.
+	
+	@param string      $stored  ip_address recorded on the user_sessions row
+	@param string      $current REMOTE_ADDR for the request being authenticated
+	@param string|null $mode    override for tests; null reads the setting
+	@return bool true when the session may continue
+*/
+function pl_session_ip_pin_allows($stored, $current, $mode = null)
+{
+	if (is_null($mode))
+	{
+		$mode = function_exists('pl_settings_get')
+			? pl_settings_get('session_ip_pin')
+			: null;
+	}
+	
+	if ('off' === (string) $mode || '0' === (string) $mode)
+	{
+		return true;
+	}
+	
+	return pl_session_ip_matches($stored, $current);
+}
+
 
 // End SESSION Functions
 
@@ -3661,6 +3890,458 @@ function pl_template_section_handler()
 
 // function pl_template($template_data, $template_file='templates/default.html', $retmode='no')
 /**
+ * @desc How long one successful re-auth challenge covers later requests
+ * for the same action scope. Five minutes is short enough that someone
+ * who walks up to an unlocked, signed-in terminal cannot chain sensitive
+ * changes, and long enough that an administrator can finish a normal
+ * multi-step edit without being asked twice.
+ */
+if (!defined('PL_REAUTH_WINDOW_SECONDS'))
+{
+	define('PL_REAUTH_WINDOW_SECONDS', 300);
+}
+
+/**
+ * @return array
+ * @desc The re-auth scopes this application uses. Kept in one place
+ * because services/sso/login.php has to validate a scope that arrived
+ * over the wire before it starts an identity-provider round trip, and
+ * both ends have to agree on the list.
+ */
+function pl_reauth_scopes()
+{
+	return array('password_change', 'user_admin', 'settings');
+}
+
+/**
+ * @return bool
+ * @desc True when the signed-in user authenticates at an identity
+ * provider instead of against a local password hash. Reads the
+ * request-local auth row first, because pikaUserSession::getSessions()
+ * carries auth_method, and falls back to a direct lookup for callers
+ * that got here without the global populated.
+ */
+function pl_reauth_user_is_sso()
+{
+	global $auth_row;
+	
+	if (is_array($auth_row) && isset($auth_row['auth_method']))
+	{
+		return ('sso' === $auth_row['auth_method']);
+	}
+	
+	$user_id = (is_array($auth_row) && isset($auth_row['user_id'])) ? (int) $auth_row['user_id'] : 0;
+	
+	if ($user_id < 1)
+	{
+		return false;
+	}
+	
+	$result = DB::preparedQuery('SELECT auth_method FROM users WHERE user_id = ? LIMIT 1', array($user_id));
+	
+	if (!$result || DBResult::numRows($result) !== 1)
+	{
+		return false;
+	}
+	
+	$row = DBResult::fetchRow($result);
+	
+	return (is_array($row) && isset($row['auth_method']) && 'sso' === $row['auth_method']);
+}
+
+/**
+ * @return bool
+ * @desc True when single sign-on is switched on for this site. The
+ * shape of the check matches pikaSsoOidc.php so a site that has never
+ * written the setting reads as off.
+ */
+function pl_reauth_sso_enabled()
+{
+	return ('1' === (string) pl_settings_get('sso_enabled'));
+}
+
+/**
+ * @return string
+ * @desc Where the browser should land after an SSO re-auth round trip,
+ * for example '/system-settings.php?tab=sso'. The path is relative to
+ * base_url and is validated again in services/sso/login.php before it
+ * is stored, so a tampered value can only ever redirect inside this
+ * deployment.
+ */
+function pl_reauth_return_path()
+{
+	$script = isset($_SERVER['SCRIPT_NAME']) ? basename((string) $_SERVER['SCRIPT_NAME']) : '';
+	
+	if ('' === $script)
+	{
+		return '/';
+	}
+	
+	$path = '/' . $script;
+	
+	if (isset($_SERVER['QUERY_STRING']) && strlen((string) $_SERVER['QUERY_STRING']) > 0)
+	{
+		$path .= '?' . (string) $_SERVER['QUERY_STRING'];
+	}
+	
+	return $path;
+}
+
+/**
+ * @return string
+ * @desc The URL the challenge form posts back to: the exact path that
+ * is executing now. SCRIPT_NAME already carries base_url and any
+ * subdirectory, which a basename()-based action would drop. The query
+ * string is kept for handlers that read it.
+ */
+function pl_reauth_self_action()
+{
+	$path = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
+	$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string) $_SERVER['QUERY_STRING']) > 0)
+		? '?' . (string) $_SERVER['QUERY_STRING'] : '';
+	
+	return htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
+/**
+ * @return void
+ * @param string $action_scope the scope being challenged
+ * @param string $error_msg text to show above the button, or ''
+ * @desc Render the single sign-on version of the re-auth challenge.
+ * Unlike pl_reauth_render_form() this cannot carry the in-flight POST
+ * body: the browser leaves this application for the identity provider
+ * and comes back on a GET. The user lands on the page they started
+ * from with a grant in hand and submits once more.
+ */
+function pl_reauth_render_sso_form($action_scope, $error_msg = '')
+{
+	$safe_base   = htmlspecialchars((string) pl_settings_get('base_url'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_owner  = htmlspecialchars((string) pl_settings_get('owner_name'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_scope  = htmlspecialchars((string) $action_scope, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_error  = htmlspecialchars((string) $error_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_return = htmlspecialchars(pl_reauth_return_path(), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	
+	$provider = (string) pl_settings_get('sso_provider');
+	$safe_provider = htmlspecialchars(('google' === $provider) ? 'Google' : 'Microsoft Entra ID', ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	
+	$err_block = '';
+	
+	if (strlen($safe_error) > 0)
+	{
+		$err_block = '<div class="ocm-reauth-error"><strong>' . $safe_error . '</strong></div>';
+	}
+	
+	header('Content-Type: text/html; charset=utf-8');
+	
+	echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+	   . '<meta name="robots" content="noindex, nofollow">'
+	   . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+	   . '<title>Confirm your identity - ' . $safe_owner . '</title>'
+	   . '<link rel="stylesheet" href="' . $safe_base . '/css/reauth.css">'
+	   . '</head><body><main id="main-content">';
+	echo '<h1>Confirm your identity</h1>';
+	echo $err_block;
+	
+	/*	If single sign-on has been switched off since this user was
+		linked, they cannot complete the round trip. Say so plainly
+		instead of drawing a button that dead-ends on a 404.
+	*/
+	if (pl_reauth_sso_enabled())
+	{
+		echo '<p>For your security, ' . $safe_owner . ' asks you to confirm who you are '
+		   . 'before this change takes effect. Your account signs in through '
+		   . $safe_provider . ', so confirmation happens there.</p>';
+		echo '<p>You will be returned to this page afterwards. Anything you had already '
+		   . 'filled in will need to be entered again.</p>';
+		echo '<form method="POST" action="' . $safe_base . '/services/sso/login.php">'
+		   . pl_csrf_hidden_input()
+		   . '<input type="hidden" name="reauth_scope" value="' . $safe_scope . '">'
+		   . '<input type="hidden" name="reauth_return" value="' . $safe_return . '">'
+		   . '<button type="submit">Confirm with ' . $safe_provider . '</button>'
+		   . '</form>';
+	}
+	else
+	{
+		echo '<p>Your account signs in through an identity provider, but single sign-on '
+		   . 'is currently switched off for this site. A system administrator has to '
+		   . 'switch it back on, or move your account back to password sign-in, before '
+		   . 'you can make this change.</p>';
+	}
+	
+	echo '<p class="ocm-reauth-cancel"><a href="' . $safe_base . '/">Cancel</a></p>';
+	echo '</main></body></html>';
+}
+
+/**
+ * @return void
+ * @param string $action_scope the scope being challenged
+ * @param string $error_msg text to show above the fields, or ''
+ * @desc Render the password re-auth challenge and exit. The in-flight
+ * POST body is carried forward as hidden fields, nested arrays
+ * included, so the user does not retype the change they were making.
+ * Password fields are dropped by pl_csrf_carry_hidden_inputs() rather
+ * than echoed back into the markup.
+ */
+function pl_reauth_render_form($action_scope, $error_msg = '')
+{
+	$safe_base  = htmlspecialchars((string) pl_settings_get('base_url'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_owner = htmlspecialchars((string) pl_settings_get('owner_name'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_scope = htmlspecialchars((string) $action_scope, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$safe_error = htmlspecialchars((string) $error_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$action     = pl_reauth_self_action();
+	
+	/*	Carry the caller's POST body. Our own challenge fields go, and
+		_csrf goes because a fresh token is emitted below.
+	*/
+	$carry = '';
+	$skip  = array('_reauth_scope', '_reauth_password', '_reauth_totp', '_csrf');
+	
+	if (is_array($_POST))
+	{
+		foreach ($_POST as $name => $value)
+		{
+			if (!is_scalar($name) || in_array($name, $skip, true))
+			{
+				continue;
+			}
+			
+			$carry .= pl_csrf_carry_hidden_inputs((string) $name, $value);
+		}
+	}
+	
+	$err_block = '';
+	
+	if (strlen($safe_error) > 0)
+	{
+		$err_block = '<div class="ocm-reauth-error"><strong>' . $safe_error . '</strong></div>';
+	}
+	
+	header('Content-Type: text/html; charset=utf-8');
+	
+	/*	The challenge is raised from ordinary mutation routes, which are
+		not on the path of the application's own chrome or stylesheet, so
+		the page links its own stylesheet from base_url. The <main>
+		landmark is there because this page owns its whole body.
+	*/
+	echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+	   . '<meta name="robots" content="noindex, nofollow">'
+	   . '<meta name="viewport" content="width=device-width, initial-scale=1">'
+	   . '<title>Confirm your identity - ' . $safe_owner . '</title>'
+	   . '<link rel="stylesheet" href="' . $safe_base . '/css/reauth.css">'
+	   . '</head><body><main id="main-content">';
+	echo '<h1>Confirm your identity</h1>';
+	echo '<p>For your security, ' . $safe_owner . ' asks you to enter your current '
+	   . 'password again before this change takes effect. If your account uses an '
+	   . 'authenticator app, enter the current 6-digit code as well.</p>';
+	echo $err_block;
+	echo '<form method="POST" action="' . $action . '" autocomplete="off">'
+	   . pl_csrf_hidden_input()
+	   . '<input type="hidden" name="_reauth_scope" value="' . $safe_scope . '">'
+	   . $carry
+	   . '<label for="_reauth_password">Current password</label>'
+	   . '<input type="password" id="_reauth_password" name="_reauth_password" autocomplete="current-password" required>'
+	   . '<label for="_reauth_totp">Authenticator code (if enabled)</label>'
+	   . '<input type="text" id="_reauth_totp" name="_reauth_totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*">'
+	   . '<button type="submit">Confirm</button>'
+	   . '</form>';
+	echo '<p class="ocm-reauth-cancel"><a href="' . $safe_base . '/">Cancel</a></p>';
+	echo '</main></body></html>';
+}
+
+/**
+ * @return bool
+ * @param string $action_scope one of pl_reauth_scopes()
+ * @desc Put a sensitive change behind a recent password check. Call it
+ * at the top of a handler, before any mutation runs. If the session
+ * already holds an unexpired grant for this scope the call returns true
+ * and the handler carries on. Otherwise it renders a challenge and
+ * exits; when the user answers the challenge correctly the grant is
+ * recorded, the challenge fields are removed from $_POST, and the call
+ * returns true so the handler runs with the body it was given.
+ *
+ * A borrowed session is the threat this closes: someone at an unlocked
+ * workstation, or holding a stolen cookie, can otherwise change the
+ * password, edit accounts, or rewrite settings without ever proving
+ * they know the password.
+ */
+function pl_reauth_required($action_scope)
+{
+	$sid = pl_csrf_session_id();
+	
+	if (is_null($sid))
+	{
+		/*	No session means no row to attach a grant to. Let the
+			request through so the caller's own auth gate rejects it.
+		*/
+		return true;
+	}
+	
+	$result = DB::preparedQuery(
+		'SELECT granted_until FROM reauth_grants WHERE session_id = ? AND action_scope = ? AND granted_until > NOW() LIMIT 1',
+		array($sid, (string) $action_scope));
+	
+	if ($result && DBResult::numRows($result) === 1)
+	{
+		return true;
+	}
+	
+	/*	An SSO user has no local password hash: the link path retires it
+		deliberately. For them the password challenge below can never
+		succeed, so every settings save and user edit would be refused
+		for good, with no error they could act on. Send them back to the
+		identity provider instead, which re-runs whatever conditional
+		access and MFA policy the tenant enforces.
+	*/
+	if (pl_reauth_user_is_sso())
+	{
+		pl_reauth_render_sso_form($action_scope);
+		exit();
+	}
+	
+	// Roughly one challenge in a hundred clears out the expired rows.
+	if (mt_rand(1, 100) === 1)
+	{
+		DB::preparedQuery('DELETE FROM reauth_grants WHERE granted_until < NOW()', array());
+	}
+	
+	$is_reauth_post = isset($_SERVER['REQUEST_METHOD'])
+		&& 'POST' === $_SERVER['REQUEST_METHOD']
+		&& isset($_POST['_reauth_scope'])
+		&& $_POST['_reauth_scope'] === $action_scope;
+	
+	if (!$is_reauth_post)
+	{
+		pl_reauth_render_form($action_scope, '');
+		exit();
+	}
+	
+	global $auth_row;
+	$user_id = (is_array($auth_row) && isset($auth_row['user_id'])) ? (int) $auth_row['user_id'] : 0;
+	
+	/*	Throttle the challenge the way the login form is throttled.
+		Without this the form is an unlimited oracle against the session
+		owner's password and 6-digit code: a TOTP code space of 10^6
+		falls in minutes at full speed. The key carries the scope and
+		the user so a lockout on one scope does not lock the user out of
+		an unrelated one, and pl_auth_rate_limit_keys() adds the per-IP
+		key that catches address rotation.
+	*/
+	$rl_keys = pl_auth_rate_limit_keys('reauth:' . $action_scope . ':' . $user_id);
+	
+	if (!is_null(pl_auth_rate_limit_first_locked($rl_keys)))
+	{
+		pl_audit('reauth.locked', 'user', $user_id, array(
+			'scope' => $action_scope,
+		));
+		pl_reauth_render_form($action_scope, 'Too many failed attempts. Please wait a few minutes and try again.');
+		exit();
+	}
+	
+	$ok = false;
+	$totp_window = null;
+	
+	if ($user_id > 0)
+	{
+		$result = DB::preparedQuery('SELECT password, totp_enabled, totp_secret FROM users WHERE user_id = ? LIMIT 1', array($user_id));
+		
+		if ($result && DBResult::numRows($result) === 1)
+		{
+			$user = DBResult::fetchRow($result);
+			$submitted_pw   = isset($_POST['_reauth_password']) ? (string) $_POST['_reauth_password'] : '';
+			$submitted_totp = isset($_POST['_reauth_totp']) ? (string) $_POST['_reauth_totp'] : '';
+			$stored_pw      = isset($user['password']) ? (string) $user['password'] : '';
+			
+			$pw_ok = false;
+			
+			if (strlen($submitted_pw) > 0 && strlen($stored_pw) > 0)
+			{
+				$pw_ok = password_verify($submitted_pw, $stored_pw) || hash_equals($stored_pw, md5($submitted_pw));
+			}
+			
+			/*	The code's window index is held back and only burned once
+				the password has also checked out, which matches the
+				login path: a wrong password must not consume the user's
+				current code.
+			*/
+			$totp_ok = true;
+			
+			if (!empty($user['totp_enabled']) && !empty($user['totp_secret']))
+			{
+				$totp_ok = false;
+				
+				if (strlen($submitted_totp) > 0)
+				{
+					try
+					{
+						require_once(__DIR__ . '/pikaCrypto.php');
+						
+						/*	The stored secret is ciphertext at rest.
+							pl_totp_decrypt() also reads the older
+							cleartext rows. If it fails for an enrolled
+							user, for example because the key is missing,
+							fail closed: no grant without the real second
+							factor.
+						*/
+						$secret = pl_totp_decrypt((string) $user['totp_secret']);
+						
+						if (false !== $secret && strlen($secret) > 0)
+						{
+							$totp_window = pl_totp_verify_once($user_id, $secret, $submitted_totp);
+							$totp_ok = (false !== $totp_window);
+						}
+					}
+					catch (Throwable $e)
+					{
+						$totp_ok = false;
+					}
+				}
+			}
+			
+			$ok = ($pw_ok && $totp_ok);
+		}
+	}
+	
+	if (!$ok)
+	{
+		pl_auth_rate_limit_record_failure_all($rl_keys);
+		pl_audit('reauth.denied', 'user', $user_id, array(
+			'scope' => $action_scope,
+		));
+		pl_reauth_render_form($action_scope, 'Credentials did not match. Please try again.');
+		exit();
+	}
+	
+	pl_auth_rate_limit_reset_all($rl_keys);
+	
+	if (!is_null($totp_window) && false !== $totp_window)
+	{
+		pl_totp_mark_used($user_id, $totp_window);
+	}
+	
+	$window = (int) PL_REAUTH_WINDOW_SECONDS;
+	
+	DB::preparedQuery(
+		'INSERT INTO reauth_grants (session_id, action_scope, granted_until) '
+		. 'VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND)) '
+		. 'ON DUPLICATE KEY UPDATE granted_until = VALUES(granted_until)',
+		array($sid, (string) $action_scope, $window));
+	
+	pl_audit('reauth.granted', 'user', $user_id, array(
+		'scope'  => $action_scope,
+		'window' => $window,
+	));
+	
+	/*	Take the challenge fields back out of $_POST so the handler
+		downstream sees only its own form data.
+	*/
+	unset($_POST['_reauth_scope']);
+	unset($_POST['_reauth_password']);
+	unset($_POST['_reauth_totp']);
+	
+	return true;
+}
+
+/**
 * @return string
 * @param template_file string
 * @param template_data array
@@ -4112,10 +4793,44 @@ function pl_template_sub($str, $template_data)
 			$tag_value = urlencode($tag_value);
 			break;
 			
-			case 'html':
 			case 'js':
+			/*	encode=js used to run htmlentities(), which is the wrong
+				encoder in both places a JS value lands. Inside a <script>
+				block the HTML parser does not decode entities, so a quote
+				turned into &quot; corrupts the string instead of protecting
+				it. Inside an event attribute the parser decodes &#039; back
+				to a real quote before JavaScript sees it, which closes the
+				string literal early and lets the rest of the value run as
+				code.
+				
+				pl_js_escape() emits a JSON string with < > & ' and "
+				hex-escaped, which is safe in both. The outer quotes are
+				stripped because the templates using this tag already write
+				their own quotes around it.
+			*/
+			$encoded = pl_js_escape((string) $tag_value);
+			
+			if (strlen($encoded) >= 2 && '"' === $encoded[0] && '"' === substr($encoded, -1))
+			{
+				$tag_value = substr($encoded, 1, -1);
+			}
+			
+			else
+			{
+				$tag_value = $encoded;
+			}
+			
+			break;
+			
+			case 'html':
 			default:
-			$tag_value = htmlentities($tag_value);
+			/*	htmlspecialchars() by way of pl_html_escape(), not
+				htmlentities(). htmlentities() also converts every accented
+				character to a named entity, which mangles names and addresses
+				for no benefit, and it returned the empty string for input
+				that is not valid UTF-8 -- one bad byte blanked the tag.
+			*/
+			$tag_value = pl_html_escape($tag_value);
 			break;
 		}
 	}
@@ -4141,13 +4856,21 @@ function pl_template_sub($str, $template_data)
 		{
 			case 'text':
 			
-			$x = pl_array_lookup($tag_value, $menu_array);
+			/*	The looked-up label is written straight into the page, so it
+				is escaped here. The label-aware escaper, for the same reason
+				as in pl_html_menu(): some menu labels are stored as entities
+				on purpose.
+			*/
+			$x = pl_html_escape_label(pl_array_lookup($tag_value, $menu_array));
 			
 			break;
 			
 			
 			case 'radio':
 			
+			$safe_tag_name = pl_html_escape($tag_name);
+			$safe_tabindex = pl_html_escape($tag_tabindex);
+			
 			foreach ($menu_array as $key => $val)
 			{
 				if ($key == $tag_value)
@@ -4160,13 +4883,19 @@ function pl_template_sub($str, $template_data)
 					$checked = '';
 				}
 				
-				$x .= "<input type=\"radio\" name=\"$tag_name\" value=\"$key\" class=\"plradio\" tabindex=\"{$tag_tabindex}\"{$checked}/>{$val} &nbsp; ";
+				$safe_key = pl_html_escape($key);
+				$safe_val = pl_html_escape_label($val);
+				
+				$x .= "<input type=\"radio\" name=\"{$safe_tag_name}\" value=\"{$safe_key}\" class=\"plradio\" tabindex=\"{$safe_tabindex}\"{$checked}/>{$safe_val} &nbsp; ";
 			}
 			
 			break;
 			
 			case 'vradio':
 			
+			$safe_tag_name = pl_html_escape($tag_name);
+			$safe_tabindex = pl_html_escape($tag_tabindex);
+			
 			foreach ($menu_array as $key => $val)
 			{
 				if ($key == $tag_value)
@@ -4179,7 +4908,10 @@ function pl_template_sub($str, $template_data)
 					$checked = '';
 				}
 				
-				$x .= "<input type=\"radio\" name=\"$tag_name\" value=\"$key\" class=\"plradio\" tabindex=\"{$tag_tabindex}\"{$checked}/>{$val}<br/>\n";
+				$safe_key = pl_html_escape($key);
+				$safe_val = pl_html_escape_label($val);
+				
+				$x .= "<input type=\"radio\" name=\"{$safe_tag_name}\" value=\"{$safe_key}\" class=\"plradio\" tabindex=\"{$safe_tabindex}\"{$checked}/>{$safe_val}<br/>\n";
 			}
 			
 			break;
@@ -4228,11 +4960,15 @@ function pl_template_sub($str, $template_data)
 			case 'option':
 			$x = "";
 			
+			/*	This was "$x .- ..." , a minus sign where the append operator
+				belongs. It threw the option away on PHP 5 and 7, and on PHP 8
+				it is a fatal TypeError ("Unsupported operand types: string -
+				string"), so every template using mode=option white-screened.
+			*/
 			foreach ($menu_array as $key => $val)
 			{
-				$clean_key = $key;
-				$clean_val = $val;
-				$x .- "<option value=\"{$clean_key}\">{$clean_val}</option>\n";
+				$x .= "<option value=\"" . pl_html_escape($key) . "\">"
+					. pl_html_escape_label($val) . "</option>\n";
 			}
 			
 			break;
@@ -4576,18 +5312,56 @@ function pl_timestamp_unmogrify($x)
 
 function pl_tmp_path()
 {
-	if (isset($_ENV['TEMP']))
-	{
-		$tmp_path = $_ENV['TEMP'];
-	}
-	
-	else
-	{
-		$tmp_path = '/tmp';
-	}
-	
-	return $tmp_path;
+	/*	sys_get_temp_dir() reads TMPDIR, TEMP and TMP through PHP's own
+		lookup rather than trusting $_ENV directly. Under some CGI and
+		FastCGI setups $_ENV carries values derived from the request, so
+		reading $_ENV['TEMP'] here let the request choose where temporary
+		files were written.
+	*/
+	return sys_get_temp_dir();
 }
+
+/**
+ * @return int
+ * @param int $user_id the user whose sessions are to be ended
+ * @param string|null $keep_session_id a session id to leave alone, or null to
+ * end every session for the user
+ * @desc End every live session for a user except one. A session row with
+ * logout = 1 is refused by pikaAuth::authenticate() on the next request, so
+ * the other browser is returned to the login form without waiting for the
+ * session timeout. Returns how many sessions were ended, counted before the
+ * update so that rows that were already logged out are not counted again.
+ */
+function pl_user_sessions_invalidate_others($user_id, $keep_session_id = null)
+{
+	if (!is_numeric($user_id))
+	{
+		return 0;
+	}
+	
+	$where = 'user_id = ? AND (logout IS NULL OR logout = 0)';
+	$params = array($user_id);
+	
+	if (!is_null($keep_session_id) && strlen((string) $keep_session_id) > 0)
+	{
+		$where .= ' AND session_id <> ?';
+		$params[] = (string) $keep_session_id;
+	}
+	
+	$result = DB::preparedQuery('SELECT COUNT(*) AS session_count FROM user_sessions WHERE ' . $where, $params);
+	$row = DBResult::fetchRow($result);
+	$ended = (is_array($row) && isset($row['session_count'])) ? (int) $row['session_count'] : 0;
+	
+	if ($ended < 1)
+	{
+		return 0;
+	}
+	
+	DB::preparedQuery('UPDATE user_sessions SET logout = 1 WHERE ' . $where, $params);
+	
+	return $ended;
+}
+
 
 function pl_process_comma_vals($str)
 {

@@ -41,10 +41,7 @@ if (!pika_authorize("system", $dummy))
 
 $r_format = array(	'pdf' => 'PDF',
 					'html' => 'HTML');
-$font_size = array(	'Small' => 'Small',
-					'Medium' => 'Medium',
-					'Large' => 'Large',
-					'Super Size' => 'Super Size');
+$font_size = array_combine(pikaDefPrefs::fontSizes(), pikaDefPrefs::fontSizes());
 
 $ical_interval = array(	'7' => '7 Days',
 						'14' => '14 Days',
@@ -61,11 +58,21 @@ $rss_interval = array(	'1' => '1 Day',
 switch ($action)
 {
 	case 'update_prefs':
+		/*	save() writes these values into a .php file that every request
+			includes, and they also become the starting $_SESSION values
+			for every user, so a value that is not something the preference
+			may hold is dropped and the current one kept.
+		*/
 		foreach ($prefs as $pref_name => $pref_value)
 		{
 			if(isset($_POST[$pref_name]) && $_POST[$pref_name] != $prefs[$pref_name])
 			{
-				$prefs[$pref_name] = $_POST[$pref_name];
+				$new_value = pikaDefPrefs::filterValue($pref_name, $_POST[$pref_name]);
+				
+				if (!is_null($new_value))
+				{
+					$prefs[$pref_name] = $new_value;
+				}
 			}
 		}
 		$prefs->save();

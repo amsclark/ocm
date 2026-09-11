@@ -8,12 +8,22 @@
 require_once('pika-danio.php');
 pika_init();
 
-// Every POST to this handler must carry the per-session CSRF token.
-// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
-if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
-{
-	pl_csrf_check();
-}
+// Unconditional, not wrapped in a REQUEST_METHOD === 'POST' test like most
+// of the other handlers, because this page dispatches a mutating action out
+// of the query string: ?action=update runs
+// UPDATE outcome_goals SET active = 0 before it reads the submitted list,
+// so a request carrying no values deactivates every goal for the problem.
+//
+// pl_csrf_check() does two different jobs. On a POST it validates the
+// per-session token. On any other method it falls through to
+// pl_request_cross_site_verdict() and refuses a 'cross' verdict, which is
+// the only defence a GET-dispatched write has. Wrapping the call in a POST
+// test removes exactly that half.
+//
+// A typed URL, a bookmark and an emailed link all read as 'unknown' and are
+// still allowed through, so this costs nothing a user would notice. See
+// pl_csrf_check() in cms/app/lib/pl.php.
+pl_csrf_check();
 require_once('plFlexList.php');
 require_once('pikaTempLib.php');
 require_once('pikaMenu.php');
@@ -55,6 +65,9 @@ switch ($action)
 		$outcome = DB::escapeString($outcome);
 		$main_html['content'] = "<a href=\"{$base_url}/system-outcomes.php\">Return to Outcome Goals Listing</a>";
 		$main_html['content'] .= "<form action=\"{$base_url}/system-outcomes.php?action=update&outcome={$outcome}\" method=\"POST\">";
+		// Same as transfers.php: the update POST goes back to this file, which
+		// enforces the token, so saving the goal list needs one in the body.
+		$main_html['content'] .= pl_csrf_hidden_input();
 		$main_html['content'] .= "<textarea name=\"values\" rows=\"18\" class=\"input-xxlarge\">";
 		$sql = "SELECT * FROM outcome_goals WHERE active = 1 AND problem ";
 		$sql .= " = '{$outcome}' ORDER BY outcome_goal_order ASC";
@@ -79,10 +92,14 @@ switch ($action)
 		$values = pl_grab_post('values');
 		$new_goals = explode("\n",$values);
 		$old_goals = array();
-				
-		echo "<pre>";
-		print_r($new_goals);
-
+		
+		/*	A print_r() of the submitted and the stored goal lists used to be
+			echoed here, wrapped in a <pre>. It was left-over debugging: it
+			printed the data to the browser, and because it wrote output
+			before the header("Location: ...") at the end of this case, the
+			redirect never fired and the admin was left looking at the dump
+			instead of the edit screen.
+		*/
 		$sql = "SELECT * FROM outcome_goals WHERE problem='{$outcome}'";
 		$result = DB::query($sql);
 		
@@ -90,8 +107,6 @@ switch ($action)
 		{
 			$old_goals[$row['outcome_goal_id']] = $row['goal'];
 		}
-		
-		print_r($old_goals);
 		
 		// This code should be moved to an object eventually.
 		$sql = "UPDATE outcome_goals SET active = 0, outcome_goal_order = NULL WHERE problem='{$outcome}'";

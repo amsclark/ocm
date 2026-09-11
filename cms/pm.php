@@ -24,9 +24,39 @@ pika_init();
 $package_str = str_replace($_SERVER['SCRIPT_NAME'], "", $_SERVER['PHP_SELF']); 
 // Now '/project/form.php'
 
+/*	Decode before stripping, then refuse anything that still holds '..'.
+
+	The single str_replace() this file used to rely on runs once, so a
+	sequence written to survive it - '...//' collapses to '..//' - walked
+	through. Strip, then check: if a traversal sequence is still there after
+	the strip, the request was built to defeat the strip and there is nothing
+	to salvage. The urldecode() is for a SAPI that hands PHP_SELF over
+	without decoding it; where PHP_SELF is already decoded, decoding again is
+	harmless because every path segment is then held to the character set
+	below.
+*/
+$package_str = urldecode($package_str);
 $package_str = str_replace('..', '', $package_str);
 
+if (strpos($package_str, '..') !== false)
+{
+	trigger_error("Path traversal detected.");
+}
+
 $uri = explode('/', $package_str);
+
+/*	An extension directory or file name is a plain name. Refuse a segment
+	holding anything else, so a name cannot carry a separator, a quote, a null
+	byte or the comma that separates entries in the 'extensions' setting.
+*/
+foreach ($uri as $uri_segment)
+{
+	if ('' !== $uri_segment && preg_match('/[^a-zA-Z0-9._\-]/', $uri_segment))
+	{
+		trigger_error("Invalid path component.");
+	}
+}
+
 /*
 var_dump($uri);
 pika_exit();
@@ -50,7 +80,12 @@ if (sizeof($uri) == 3)
 */
 else if ($uri[1] == 'reports')
 {
-	$enabled_extensions = array_map('trim', explode(',', (string) pl_settings_get('extensions')));
+	/*	array_filter() drops the empty entry that explode() returns for an
+		unset setting, so a request naming no extension at all cannot match
+		it.
+	*/
+	$enabled_extensions = array_filter(
+		array_map('trim', explode(',', (string) pl_settings_get('extensions'))), 'strlen');
 	
 	if (sizeof($uri) == 4 || sizeof($uri) == 5)
 	{
@@ -88,8 +123,22 @@ else
 	$filepath = array_shift($uri);
 	$filename = array_shift($uri);
 	
-	//if (array_search($filepath, pl_settings_get('extensions')) === false)
-	if (strpos(pl_settings_get('extensions'), $filepath) === false)
+	/*	Match the extension name against the 'extensions' setting exactly.
+		
+		strpos() asked whether the requested name appears anywhere in the
+		setting, so with 'extensions' set to 'billing' a request for the
+		directory 'bill' passed the check, and with two entries the whole
+		string 'billing,intake' passed as one name. The reports branch above
+		already compares against the parsed list; do the same here.
+	*/
+	/*	array_filter() drops the empty entry that explode() returns for an
+		unset setting, so a request naming no extension at all cannot match
+		it.
+	*/
+	$enabled_extensions = array_filter(
+		array_map('trim', explode(',', (string) pl_settings_get('extensions'))), 'strlen');
+	
+	if (!in_array($filepath, $enabled_extensions, true))
 	{
 		trigger_error("Extension '{$filepath}':'{$filename}' is either not enabled or not installed.");
 	}
@@ -103,5 +152,10 @@ else
 	require(pl_custom_directory() . "/extensions/{$filepath}/{$filename}");
 }
 
-pika_exit();
+/*	pika_exit() takes the page body to print. Called with no argument it
+	raised ArgumentCountError, so every extension that loaded successfully
+	printed its output and then ended the request with HTTP 500. The
+	extension has already printed whatever it wanted, so pass an empty body.
+*/
+pika_exit('');
 ?>

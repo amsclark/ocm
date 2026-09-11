@@ -1,0 +1,34 @@
+-- add_sso_single_logout.sql -- end the identity provider's session too.
+--
+-- Signing out of this application clears its own session row and nothing
+-- else. If the account authenticates through single sign-on, the identity
+-- provider still holds a live session, so the next click on "Sign In"
+-- returns the user straight back in without a prompt. On a shared machine
+-- that is the whole problem: the person at the keyboard signed out, and the
+-- next person gets their account.
+--
+-- With this setting on, logout also sends the browser to the provider's
+-- end_session_endpoint, which is the OpenID Connect RP-Initiated Logout
+-- endpoint published in the provider's discovery document.
+--
+-- OFF by default, and that is deliberate:
+--
+--   * The provider must be told, in advance, which URL it is allowed to
+--     return the browser to. On Microsoft Entra ID that means registering
+--     this deployment's base URL as a post-logout redirect URI on the app
+--     registration. Until somebody does that, Entra shows an error page
+--     instead of returning the user, so turning this on by itself would
+--     make sign-out look broken.
+--
+--   * Not every provider publishes end_session_endpoint. Google does not.
+--     Where it is absent the logout stays local; see
+--     pl_sso_end_session_url() in cms/app/lib/pikaSsoOidc.php.
+--
+--   * Ending the provider session is not always wanted. On a provider that
+--     covers other applications as well, signing out of this one would sign
+--     the user out of those too.
+--
+-- Only accounts whose auth_method is 'sso' are ever redirected. A
+-- password account signs out exactly as before.
+
+INSERT IGNORE INTO settings (label, value) VALUES ('sso_single_logout', '0');

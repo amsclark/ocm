@@ -37,6 +37,20 @@ if (!pika_authorize('system',array()))
 	pika_exit($buffer);
 }
 
+/*	The settings page holds the security controls themselves: password
+	policy, session timeout, single sign-on. A borrowed session that can
+	rewrite them can weaken every other defence at once, so ask the
+	administrator for their password again first.
+	
+	The second test catches the answer to the challenge itself, for the
+	case where the action did not survive into the carried body.
+*/
+if ('update' == $action
+	|| (isset($_POST['_reauth_scope']) && 'settings' === $_POST['_reauth_scope']))
+{
+	pl_reauth_required('settings');
+}
+
 $tzs = array('-7' => '7 Hours Behind',
 			'-6' => '6 Hours Behind',
 			'-5' => '5 Hours Behind',
@@ -104,9 +118,21 @@ $expire = array('0' => "Unlimited",
 $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression',
 	'enable_benchmark', 'autonumber_on_new_case',
 	'owner_name', 'admin_email', 'act_interval',
-	'time_zone', 'time_zone_offset', 'session_timeout', 'pass_min_strength',
+	'time_zone', 'time_zone_offset', 'session_timeout', 'session_ip_pin',
+	'pass_min_strength',
 	'pass_min_length', 'password_expire', 'force_https', 'autofill_time_funding',
+	/*	Breach checking. password_breach_api_url is deliberately NOT in this
+		list and has no field on this form -- it exists for a test harness
+		and is set by direct SQL only.
+	*/
+	'password_breach_policy',
 	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
+	/*	Document downloads. cms/documents.php already refuses to serve a
+		stored document inline unless its type cannot execute script; this
+		makes every document an attachment instead, for organisations that
+		would rather have no in-browser preview at all.
+	*/
+	'doc_force_download',
 	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
 		it is handled on its own below so that a blank field leaves the
 		stored secret alone. sso_allow_insecure_transport is not here either
@@ -115,7 +141,7 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	*/
 	'sso_enabled', 'sso_provider', 'sso_tenant_id', 'sso_hosted_domain',
 	'sso_issuer_url', 'sso_discovery_url', 'sso_client_id',
-	'sso_autobind_by_email', 'sso_autobind_domains',
+	'sso_autobind_by_email', 'sso_autobind_domains', 'sso_single_logout',
 	/*	Peer case transfer. peer_transfer_shared_secret is deliberately NOT in
 		this list, for the same reason as the SSO client secret: it is handled
 		on its own below so that a blank field keeps the stored value.
@@ -220,6 +246,8 @@ switch ($action)
 	default:
 
 		$html = pl_settings_get_all();
+		$session_ip_pin = isset($html['session_ip_pin']) ? (string) $html['session_ip_pin'] : '';
+		$html['session_ip_pin'] = in_array($session_ip_pin, array('off', '0'), true) ? 'off' : 'network';
 		
 		// AMW - do not transmit the database password, that field stays blank.
 		$html['db_password'] = '';
@@ -283,6 +311,15 @@ switch ($action)
 		$template->addMenu('pass_min_strength',$pass_min_strength);
 		$template->addMenu('pass_min_length',$pass_min_length);
 		$template->addMenu('password_expire', $expire);
+		$template->addMenu('session_ip_pin', array(
+			'network' => 'Same network as sign-in (recommended)',
+			'off'     => 'Do not check the address'
+		));
+		$template->addMenu('password_breach_policy', array(
+			'off'   => 'Off',
+			'warn'  => 'Warn, but allow the password',
+			'block' => 'Refuse the password'
+		));
 		$template->addMenu('sso_provider', array(
 			''        => 'None',
 			'google'  => 'Google Workspace',

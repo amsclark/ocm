@@ -93,10 +93,27 @@ class pikaAuth
 				$this->setMessage('0102',$msgstr,__FILE__,__LINE__);
 				
 			}
-			elseif($row['enabled'] && ($row['ip_address'] == $this->ip_address || $row['user_agent'] == $this->user_agent))
+			elseif($row['enabled']
+				&& pl_session_ip_pin_allows($row['ip_address'], $this->ip_address)
+				&& $row['user_agent'] == $this->user_agent)
 			{
-				// Verify IP or User Agent is the same (measure against spoofing)
-				// Needs to be one or other as many mobile phones operate through cache proxies (meaning multiple ips)
+				/*	Verify the address and the user agent are both still the
+					same, as a measure against session hijacking.
+					
+					This used to accept either one. A user agent string is
+					not a secret: it is sent to every site the browser
+					visits and it is one header to set, so anyone holding a
+					stolen session cookie could satisfy the test from
+					anywhere. Requiring both leaves the address as the part
+					an attacker cannot copy from the outside.
+					
+					The address test compares networks rather than exact
+					hosts, so a caseworker whose address rotates mid-session
+					is not signed out. pl_session_ip_pin_allows() wraps it
+					so an org whose public address will not hold still can
+					turn the address half off with the session_ip_pin
+					setting.
+				*/
 				$this->is_authorized = true;
 				
 				$session = new pikaUserSession($row['user_session_id']);
@@ -269,4 +286,3 @@ class pikaAuth
 		return $this->messages;
 	}
 }
-

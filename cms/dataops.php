@@ -1081,13 +1081,31 @@ switch($action)
 	
 	case 'save_prefs':
 	
-	$_SESSION['def_office'] =  pl_grab_var('def_office', null, 'POST');
-	$_SESSION['intake'] =  pl_grab_var('intake', null, 'POST');
-	$_SESSION['paging'] =  pl_grab_var('paging', null, 'POST', 'number');
-	$_SESSION['font_size'] =  pl_grab_var('font_size', null, 'POST');
-	$_SESSION['popup'] =  pl_grab_var('popup', null, 'POST', 'boolean');
-	$_SESSION['theme'] = pl_grab_var('theme', null, 'POST');
-	$_SESSION['r_format'] = pl_grab_var('r_format', null, 'POST');
+	/*	Same values, and the same reason to check them, as
+		cms/ops/update_prefs.php: the theme names a file cms/pika_cms.php
+		includes and the paging count is interpolated into a LIMIT clause.
+		A value the preference may not hold leaves the session value alone.
+	*/
+	require_once('pikaDefPrefs.php');
+	
+	$pref_names = array('def_office',
+						'intake',
+						'paging',
+						'font_size',
+						'popup',
+						'theme',
+						'r_format');
+	
+	foreach ($pref_names as $pref_name)
+	{
+		$pref_value = pikaDefPrefs::filterValue($pref_name, pl_grab_var($pref_name, null, 'POST'));
+		
+		if (!is_null($pref_value))
+		{
+			$_SESSION[$pref_name] = $pref_value;
+		}
+	}
+	
 	session_write_close();
 	header("Location: prefs.php?user_id={$auth_row['user_id']}");
 	//pl_session_freeze();

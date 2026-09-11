@@ -201,9 +201,12 @@ function draw(container)
 {
 	var file_list_container = document.getElementById(container);
 	
-	// Parse the response text and append it as nodes
+	// Parse the response text and replace what the container already holds.
+	// This used to append, so opening a second folder left the first folder's
+	// rows above the new ones and the list grew with every click.
   var parser = new DOMParser();
   var doc = parser.parseFromString(xmlHttp.responseText, 'text/html');
+  file_list_container.innerHTML = '';
   Array.from(doc.body.childNodes).forEach(function(node) {
     file_list_container.appendChild(node);
   });	

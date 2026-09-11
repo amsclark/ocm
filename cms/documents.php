@@ -141,28 +141,25 @@ switch($action) {
 		$doc_data = gzuncompress(stripslashes($doc->doc_data));
 		//$doc_data = stripslashes($doc->doc_data);
 		
-		/*	The uploader chooses the file name, and it went into two response
-			headers unfiltered. A name holding a carriage return or newline
-			splits the header block and lets the uploader write headers of
-			their own, or a whole second response, into the download of any
-			user who opens the file. Strip the line breaks and the quote that
-			would end the filename argument early.
+		/*	Headers built in one place, shared with cms/ops/docgen.php.
+			
+			It strips the line breaks out of the file name -- the uploader
+			chooses that, and a name holding a carriage return splits the
+			header block -- and it refuses to serve anything the browser
+			would run. The stored MIME type is chosen by whoever uploaded the
+			file, and a document uploaded as text/html used to come back as
+			text/html and inline, so it executed on this application's origin
+			in the reader's session. See sendDownloadHeaders() in
+			cms/app/lib/pikaDocument.php.
 		*/
-		$safe_mime_type = str_replace(array("\r","\n"),'',(string) $doc->mime_type);
-		$safe_doc_name = str_replace(array("\r","\n",'"'),'',(string) $doc->doc_name);
-		
-		header("Pragma: public");
-		header("Cache-Control: cache, must-revalidate");
-		header("Content-type: application/force-download");
-		header("Content-Type: {$safe_mime_type}");
-		header("Content-Disposition: inline; filename=\"{$safe_doc_name}\"");
+		pikaDocument::sendDownloadHeaders($doc->mime_type,$doc->doc_name);
 		
 		/*	I'm not sure how determine the Content Length if GZIP is being used,
 			and Firefox 33 doesn't like it when I send the uncompressed size
 			(see bug id 1083090.) */
 		//if (pl_settings_get("enable_compression") == false)
 		//{
-		//	header("Content-Length: " . mb_strlen($doc_data));
+		//	header("Content-Length: " . strlen($doc_data));
 		//}
 		
 		echo $doc_data;
@@ -217,7 +214,17 @@ switch($action) {
 		$doc = new pikaDocument($doc_id);
 		
 		$html['doc_type'] = $doc->doc_type;
-		$html['doc_name'] = $doc->doc_name;
+		/*	subtemplates/documents.html asks for this one as a plain
+			%%[doc_name]%% inside <i>...</i>, and a plain tag is substituted
+			raw -- unlike the %%[doc_name,input_text]%% on the edit fragment,
+			which the input_text plugin escapes. The name comes from
+			$_FILES['doc_upload']['name'], which no input filter touches, so
+			an upload named <img src=x onerror=...> ran in the browser of
+			whoever opened the delete confirmation. Escaped here rather than
+			in the template because a per-org custom template directory
+			commonly replaces this file.
+		*/
+		$html['doc_name'] = pl_html_escape($doc->doc_name);
 		$html['description'] = $doc->description;
 		$html['folder_ptr'] =  $doc->folder_ptr;
 		$html['case_id'] = $doc->case_id;

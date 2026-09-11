@@ -8,12 +8,21 @@
 require_once('pika-danio.php');
 pika_init();
 
-// Every POST to this handler must carry the per-session CSRF token.
-// See pl_csrf_check() in cms/app/lib/pl.php for the framework.
-if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
-{
-	pl_csrf_check();
-}
+// Unconditional, not wrapped in a REQUEST_METHOD === 'POST' test like most
+// of the other handlers, because this page dispatches a mutating action out
+// of the query string: ?action=update_pba mass-assigns $_GET onto a
+// pb_attorneys row and can reset that attorney's password.
+//
+// pl_csrf_check() does two different jobs. On a POST it validates the
+// per-session token. On any other method it falls through to
+// pl_request_cross_site_verdict() and refuses a 'cross' verdict, which is
+// the only defence a GET-dispatched write has. Wrapping the call in a POST
+// test removes exactly that half.
+//
+// A typed URL, a bookmark and an emailed link all read as 'unknown' and are
+// still allowed through, so this costs nothing a user would notice. See
+// pl_csrf_check() in cms/app/lib/pl.php.
+pl_csrf_check();
 require_once('plFlexList.php');
 require_once('pikaMisc.php');
 require_once('pikaTempLib.php');
@@ -184,10 +193,6 @@ else
 			$row['number']= 'No Case #';
 		} 
 		
-		if ($_SESSION['popup'] == true){
-			$row['link_target'] = " target=\"_blank\"";
-		}
-		
 		$row['client_name'] = pl_text_name($row,'contacts.');
 		$row['user_id'] = pl_array_lookup($row['user_id'],$staff_array);
 		
@@ -199,6 +204,23 @@ else
 		
 		$row['open_date'] = pl_date_unmogrify($row['open_date']);
 		$row['close_date'] = pl_date_unmogrify($row['close_date']);
+		
+		/*	Same addHtmlRow() escaping boundary as cms/case_list.php.
+			subtemplates/pb_attorneys.html writes %%[number]%% as element
+			text and again inside href="...&number=%%[number]%%", and puts
+			%%[client_name]%% in a <td>, all without escaping, so a case
+			number holding markup ran on this page too.
+			
+			The link_target block used to sit above the data assignments. It
+			moved below this line because it is markup (` target="_blank"`)
+			and would come out as ` target=&quot;_blank&quot;` if it were
+			still set before the escape. Nothing reads it in between.
+		*/
+		$row = pl_clean_html_array($row);
+		
+		if ($_SESSION['popup'] == true){
+			$row['link_target'] = " target=\"_blank\"";
+		}
 		
 		if ($row['unread_sms'] > 0)
 		{

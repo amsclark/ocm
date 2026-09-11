@@ -1077,7 +1077,7 @@ CREATE TABLE `user_sessions` (
   `user_id` int(11) NOT NULL,
   `logout` tinyint(1) DEFAULT NULL,
   `session_id` varchar(32) NOT NULL,
-  `ip_address` varchar(15) DEFAULT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
   `user_agent` varchar(255) DEFAULT NULL,
   `created` int NULL DEFAULT NULL,
   `last_updated` int NULL DEFAULT NULL,

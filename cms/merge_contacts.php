@@ -65,32 +65,74 @@ switch ($action) {
 		$contact_list = new plFlexList();
 		$contact_list->template_file = 'subtemplates/merge_contacts.html';
 		
+		/*	Every display column on this page goes out through addHtmlRow(),
+			which does not escape. That is the documented contract of the
+			"html" tier of plFlexList, not an oversight -- the caller owns its
+			escaping. This caller was not doing any.
+			
+			What kept it safe was pl_clean_form_input(), which rewrites < and
+			> on every GET and POST value, so a contact typed in through a web
+			form cannot carry markup. Nothing else that writes the contacts
+			table goes through that filter: the migration and import scripts
+			under app/scripts, an admin working directly in the database, and
+			any site-local tooling all write the column as given. A contact
+			whose address holds `<svg onload=...>` renders as live markup in
+			the session of whoever opens the merge-duplicates screen.
+			
+			The two render blocks below were duplicates, so they collapse into
+			one closure. Two details in it are load-bearing:
+			
+			- text_address in output=html mode interleaves <br/> and &nbsp;
+			  with the raw column values, so the finished string CANNOT be
+			  escaped -- that would show the line breaks as a literal
+			  &lt;br/&gt;. The components are escaped on the way in instead.
+			  text_phone emits no markup of its own, so there the finished
+			  string is escaped, which reads better.
+			- The address components are copied under an isset() guard.
+			  text_address treats any truthy value as a line, so handing it a
+			  key that was not in the row would print a spurious line.
+		*/
+		$decorate = function ($row)
+		{
+			$row['full_phone'] = pl_html_escape(pikaTempLib::plugin('text_phone','phone',$row,null,array('notes')));
+			$row['full_alt_phone'] = pl_html_escape(pikaTempLib::plugin('text_phone','alt_phone',$row,null,array('area_code=area_code_alt','phone=phone_alt','notes')));
+			
+			$addr = array();
+			
+			foreach (array('org','address','address2','city','state','zip') as $part)
+			{
+				if (isset($row[$part]))
+				{
+					$addr[$part] = pl_html_escape($row[$part]);
+				}
+			}
+			
+			$row['full_address'] = pikaTempLib::plugin('text_address','full_address',$addr,null,array('output=html'));
+			
+			if (isset($row['ssn']))
+			{
+				$row['ssn'] = pl_html_escape($row['ssn']);
+			}
+			
+			$row['full_name'] = pl_html_escape(pikaTempLib::plugin('text_name','contact_name',$row,null,array('order=last')));
+			$row['birth_date'] = pl_date_unmogrify($row['birth_date']);
+			
+			return $row;
+		};
+		
 		if(DBResult::numRows($result) > 0) {
 			$i = 2;
 			$row = $contact->getValues();
 			$row['row_class'] = $i;	
 			$row['selected_checkbox'] = '';
-			$row['full_name'] = pikaTempLib::plugin('text_name','contact_name',$row,null,array('order=last'));
-			$row['full_address'] = pikaTempLib::plugin('text_address','full_address',$row,null,array('output=html'));
-			$row['full_phone'] = pikaTempLib::plugin('text_phone','phone',$row,null,array('notes'));
-			$row['full_alt_phone'] = pikaTempLib::plugin('text_phone','alt_phone',$row,null,array('area_code=area_code_alt','phone=phone_alt','notes'));
-			$row['birth_date'] = pl_date_unmogrify($row['birth_date']);
-			$contact_list->addHtmlRow($row);
+			$contact_list->addHtmlRow($decorate($row));
 			$i = 1;
 			while ($row = DBResult::fetchRow($result)) {
 				$row['row_class'] = $i;
 				if ($i > 1){$i = 1;}
 				else {$i++;}
 				$row['selected_checkbox'] = pikaTempLib::plugin('checkbox','merge_these[]',$row['contact_id'],null,array('no_hidden',"default_value={$row['contact_id']}"));
-				$row['full_name'] = pikaTempLib::plugin('text_name','contact_name',$row,null,array('order=last'));
-				$row['full_address'] = pikaTempLib::plugin('text_address','full_address',$row,null,array('output=html'));
-				/*if($row['address2']) {
-					$row['full_address'] .= "&nbsp;&nbsp;" . $row['address2'];
-				}*/
-				$row['full_phone'] = pikaTempLib::plugin('text_phone','phone',$row,null,array('notes'));
-				$row['full_alt_phone'] = pikaTempLib::plugin('text_phone','alt_phone',$row,null,array('area_code=area_code_alt','phone=phone_alt','notes'));
-				$row['birth_date'] = pl_date_unmogrify($row['birth_date']);
-				$contact_list->addHtmlRow($row);
+				$contact_list->addHtmlRow($decorate($row));
 			}
 			
 		} 

@@ -25,6 +25,7 @@ require_once('pikaGroup.php');
 require_once('app/lib/pikaCrypto.php');
 require_once('app/lib/pikaSsoOidc.php');
 require_once('app/lib/pikaUserAdminControls.php');
+require_once('app/lib/pikaPasswordChange.php');
 
 // Menus
 
@@ -79,6 +80,32 @@ if (!pika_authorize('users', $a))
 	pika_exit($buffer);
 }
 
+/*	Editing an account is how a borrowed session turns itself into a
+	permanent one: reset a password, raise a group, enable a disabled
+	user. Ask the administrator for their own password again before any
+	of that is written.
+	
+	The second test catches the answer to the challenge itself, for the
+	case where the action did not survive into the carried body.
+*/
+$was_reauth_post = isset($_POST['_reauth_scope']) && 'user_admin' === $_POST['_reauth_scope'];
+if ('update' == $action && strlen((string) pl_grab_post('password')) > 0)
+{
+	// The challenge drops passwords. Carry only a request to reopen the form.
+	$_POST['_reauth_edit_again'] = '1';
+}
+if ('update' == $action || $was_reauth_post)
+{
+	pl_reauth_required('user_admin');
+}
+
+if ($was_reauth_post && isset($_POST['_reauth_edit_again']) && '1' === $_POST['_reauth_edit_again'])
+{
+	header("Location: {$base_url}/system-users.php?action=edit&user_id="
+		. rawurlencode((string) $user_id) . '&reauth=1', true, 303);
+	exit();
+}
+
 $result = pikaGroup::getGroupsDB();
 $groups = array();
 while ($row = DBResult::fetchRow($result)) {
@@ -129,6 +156,12 @@ switch ($action)
 		$template->addMenu('p_len',$menu_pass_length);
 		$template->addMenu('p_method',$menu_pass_method);
 		$main_html['content'] = $template->draw();
+		if ('1' === pl_grab_get('reauth'))
+		{
+			$main_html['content'] = pikaTempLib::plugin('success_flag', 'success_flag',
+				'Identity verified. No changes were saved. Enter the account changes and password again, then save.')
+				. $main_html['content'];
+		}
 		$name = pikaTempLib::plugin('text_name','name',$a,array(),array("nomiddle","noextra"));
 		$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
 							 <a href=\"{$base_url}/site_map.php\">Site Map</a> &gt;
@@ -231,7 +264,44 @@ switch ($action)
 				// An admin set this user's password; self-service changes
 				// land in password.php as password.self_change.
 				pl_audit('user.password_admin_reset', 'user', $target_user_id, array('username' => $target_username));
+				
+				/*	An administrator resets a password to lock an account
+					holder's attacker out. That only works if the sessions the
+					old password opened end with it. An admin who resets their
+					own password here keeps the session they are working in,
+					the same way password.php does.
+				*/
+				$keep_session_id = null;
+				
+				if (isset($auth_row['user_id']) && (string) $auth_row['user_id'] === (string) $target_user_id)
+				{
+					$keep_session_id = pl_csrf_session_id();
+				}
+				
+				$ended = pl_user_sessions_invalidate_others($target_user_id, $keep_session_id);
+				
+				if ($ended > 0)
+				{
+					pl_audit('user.password_admin_reset_invalidated_sessions', 'user', $target_user_id, array(
+						'username'        => $target_username,
+						'sessions_ended'  => $ended,
+					));
+				}
 			}
+		}
+		
+		/*	A password an administrator typed is a credential two people
+			know, and only one of them is accountable for what is done with
+			it. Mark the account so the holder has to replace it at the next
+			sign-in before they can reach anything else. Set on a new account
+			too: the administrator chose that first password as well.
+			
+			See cms/app/lib/pikaPasswordChange.php for the gate that enforces
+			it.
+		*/
+		if (strlen((string) $password) > 0)
+		{
+			pl_password_change_set($target_user_id, true);
 		}
 		
 		/*	MFA. This form carries the requirement flag and a reset
@@ -349,6 +419,12 @@ switch ($action)
 							"UPDATE users SET password = '', password_expire = 0 WHERE user_id = ? LIMIT 1",
 							array($target_user_id)
 						);
+						/*	And the forced-change flag with them. An account
+							that signs in at the identity provider has no
+							password here to change, so leaving the flag set
+							would point it at a form that cannot clear it.
+						*/
+						pl_password_change_set($target_user_id, false);
 					}
 					
 					if ($posted_method !== $prev_method)

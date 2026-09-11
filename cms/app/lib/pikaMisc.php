@@ -145,6 +145,38 @@ class pikaMisc
 	}
 	
 	
+	/*	Does the cases table have this column?
+	
+		Several of the filters getCases() accepts name columns that only some
+		installations have: supervisor, closer, unit and subunit were each
+		added for one organisation. A request that sets one of those filters on
+		an installation without the column used to build SQL naming it, and the
+		query failed - which this application answers with HTTP 500 and an
+		empty body, so the case list simply stopped working for anyone who
+		followed a link carrying the parameter. Ask the schema first.
+		
+		The answer is cached for the request: getCases() is called once or
+		twice per page, and each call tests several columns.
+	*/
+	protected static function casesHasColumn($column)
+	{
+		static $known = array();
+		
+		if (!preg_match('/^[a-z_]+$/', $column))
+		{
+			return false;
+		}
+		
+		if (!array_key_exists($column, $known))
+		{
+			$result = DB::query("SHOW COLUMNS FROM cases LIKE '{$column}'");
+			$known[$column] = ($result && DBResult::numRows($result) > 0);
+		}
+		
+		return $known[$column];
+	}
+	
+	
 	public static function getCases($filter, &$row_count, $order_field='',
 	$order='ASC', $first_row='0', $list_length='100')
 	{
@@ -176,7 +208,11 @@ class pikaMisc
 
 		if (isset($filter['case_id']) && $filter['case_id'])
 		{
-			$sql .= " AND cases.case_id={$filter['case_id']}";
+			/*	Quoted. DB::escapeString() above escapes the quote characters
+				in a value, which does nothing for a value that lands in SQL
+				without any quotes around it.
+			*/
+			$sql .= " AND cases.case_id='{$filter['case_id']}'";
 		}
 
 		if (isset($filter['last_name']) && $filter['last_name'])
@@ -198,12 +234,14 @@ class pikaMisc
 		
 		// MDF 2/11/10
 		
-		if (isset($filter["supervisor"]) && $filter["supervisor"])
+		if (isset($filter["supervisor"]) && $filter["supervisor"]
+			&& self::casesHasColumn('supervisor'))
 		{
 						$sql .= " AND cases.supervisor = '{$filter['supervisor']}'";
 		}
 		
-		if (isset($filter["closer"]) && $filter["closer"])
+		if (isset($filter["closer"]) && $filter["closer"]
+			&& self::casesHasColumn('closer'))
 		{
 						$sql .= " AND cases.closer = '{$filter['closer']}'";
 		}
@@ -211,12 +249,14 @@ class pikaMisc
 		// End
 		
 		// 06-29-2012 - caw - added additional search criteria
-		if (isset($filter["unit"]) && $filter["unit"])
+		if (isset($filter["unit"]) && $filter["unit"]
+			&& self::casesHasColumn('unit'))
 		{
 						$sql .= " AND cases.unit = '{$filter['unit']}'";
 		}
 
-		if (isset($filter["subunit"]) && $filter["subunit"])
+		if (isset($filter["subunit"]) && $filter["subunit"]
+			&& self::casesHasColumn('subunit'))
 		{
 						$sql .= " AND cases.subunit = '{$filter['subunit']}'";
 		}               
@@ -297,7 +337,8 @@ class pikaMisc
 		}
 
 		// AMW 2014-07-23 - Added for SMRLS and ILCM
-        if (isset($filter["supervisor"]) && $filter["supervisor"])
+        if (isset($filter["supervisor"]) && $filter["supervisor"]
+            && self::casesHasColumn('supervisor'))
         {
                 $sql .= " AND cases.supervisor = '{$filter['supervisor']}'";
         }
@@ -353,8 +394,7 @@ class pikaMisc
 
 		// Determine whether to use the supervisor field.
 		$sup = "";
-		$sresult = DB::query("DESCRIBE cases supervisor");
-		if (DBResult::numRows($sresult) == 1)
+		if (self::casesHasColumn('supervisor'))
 		{
 			$sup = " cases.supervisor,";
 		}
@@ -1116,7 +1156,18 @@ class pikaMisc
 		$filter['area_code'] = pl_grab_get('area_code');
 		$filter['phone'] = pl_grab_get('phone');
 		// These are not used for SQL filtering, but are needed on the pager's get_url.
+		/*	case_id is also written straight into value="%%[case_id]%%" hidden
+			inputs in all three contact-list subtemplates. A case id is always
+			an integer, so normalise it here, at the read, and every use below
+			-- render, pager URL and SQL alike -- is safe by construction. An
+			absent case_id stays absent, so the address-book and intake renders
+			are unchanged.
+		*/
 		$filter['case_id'] = pl_grab_get('case_id');
+		if (null !== $filter['case_id'] && '' !== $filter['case_id'])
+		{
+			$filter['case_id'] = (int) $filter['case_id'];
+		}
 		$filter['number'] = pl_grab_get('number');
 		$filter['relation_code'] = pl_grab_get('relation_code');
 		
@@ -1125,6 +1176,46 @@ class pikaMisc
 		$content_t['search_list'] = '';
 		$content_t['ab_list'] = '';
 		$content_t['birth_date'] = pl_date_unmogrify($content_t['birth_date']);
+		
+		/*	Every key copied out of $filter above is rendered into a quoted
+			HTML attribute -- value="%%[first_name]%%" and friends -- and
+			pikaTempLib substitutes a placeholder with a raw str_replace.
+			
+			pl_clean_form_input(), which pl_grab_get() runs, turns < and >
+			into entities but leaves quotes alone. A single double quote is
+			enough on its own: first_name=zz" autofocus onfocus="alert(1)
+			closes the value attribute and adds an event handler to the
+			search box, which fires with no user interaction. The same held
+			for middle_name, last_name, extra_name, ssn, area_code, phone,
+			number and relation_code on addressbook.php, intake2.php and
+			case_contact.php.
+			
+			Escaping happens on $content_t, the render copy, and not on
+			$filter, which is still handed to the SQL helpers below. Those
+			need the value the user actually typed; escaping there would make
+			a search for O'Brian look for O&#039;Brian and find nothing.
+			
+			The quotes are escaped and nothing else, rather than running the
+			whole value through pl_html_escape() or pl_html_escape_label().
+			pl_grab_get() has already written < and > as &lt; and &gt;, and
+			it leaves a bare & alone. htmlspecialchars() over that would
+			turn &lt; into &amp;lt;, so a user who typed "a<b & c" would get
+			"a&lt;b & c" back in the box. Escaping only " and ' leaves what
+			the browser renders in the field exactly as it was before this
+			change, and adds the one thing that was missing.
+			
+			search_list and ab_list are assembled HTML, not user input, and
+			are emptied above and appended to below, so they are untouched
+			here either way.
+		*/
+		foreach ($content_t as $ct_key => $ct_val)
+		{
+			if (is_string($ct_val))
+			{
+				$content_t[$ct_key] = str_replace(array('"', "'"),
+					array('&quot;', '&#039;'), $ct_val);
+			}
+		}
 		/* The offset specified by the user if they viewed this page
 		by clicking on the pager from a previous page.
 		*/
@@ -1501,8 +1592,17 @@ class pikaMisc
 			
 			while ($r = DBResult::fetchArray($result))
 			{
-				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_text_name($r) 
-				. " (" . $r['role'] . ")&nbsp;&nbsp;&nbsp;";
+				/*	Same escape-consistency gap as the conflict panel below:
+					the contact name and the role are user-typed free text, and
+					the SSN and telephone blocks earlier in this function run
+					pl_clean_html_array() over their rows while these two did
+					not. No template in this repo renders case_contacts or
+					case_conflicts today, so this is not currently reachable
+					output -- it is escaped so that adding the tag back to
+					subtemplates/case_contact_list.html is not a new XSS.
+				*/
+				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_html_escape(pl_text_name($r)) 
+				. " (" . pl_html_escape($r['role']) . ")&nbsp;&nbsp;&nbsp;";
 			}
 			
 			if($intake->resetConflictStatus(false))
@@ -1514,9 +1614,13 @@ class pikaMisc
 				foreach($cons as $z)
 				{
 					//var_dump($z);
-					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id={$z['contact_id']}\">" 
-					. pl_text_name($z) . "</a> was a(n) {$z['role']} on "
-					. "<a href=\"{$base_url}/case_id={$z['case_id']}\">{$z['number']}</a>\n<br>";
+					/*	The contact name, the role and cases.number are all
+						user-typed free text. Escape the text cells and cast
+						the two link ids.
+					*/
+					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id=" . (int) $z['contact_id'] . "\">" 
+					. pl_html_escape(pl_text_name($z)) . "</a> was a(n) " . pl_html_escape($z['role']) . " on "
+					. "<a href=\"{$base_url}/case_id=" . (int) $z['case_id'] . "\">" . pl_html_escape($z['number']) . "</a>\n<br>";
 				}
 				
 				$content_t['case_conflicts'] .= "<br>";
