@@ -38,6 +38,7 @@ pika_init();
 
 require_once('pikaSsoOidc.php');
 require_once('pikaAuthSso.php');
+require_once('pikaSsoReauth.php');
 
 /*	The code arrives on a redirect, which is a GET. A POST here is either a
 	provider configured for form_post -- which this client never asks for --
@@ -90,6 +91,13 @@ if ('' === $code || '' === $state)
 $expected_state = pl_sso_state_get('state');
 $nonce          = pl_sso_state_get('nonce');
 $verifier       = pl_sso_state_get('code_verifier');
+
+/*	The step-up re-auth intent, if this session asked for one before it
+	left. It is read here, with the rest of the handshake, because
+	pl_sso_state_clear() below removes every row for this session.
+	Taking it also deletes it, so it is good for one callback only.
+*/
+$reauth_intent = pl_sso_reauth_take_intent();
 
 pl_sso_state_clear();
 
@@ -159,6 +167,51 @@ catch (Exception $e)
 		refused sign-in, not a stack trace on an unauthenticated page.
 	*/
 	pl_sso_bail(503, 'callback_failed', $e->getMessage());
+}
+
+/*	Step-up re-auth, finished.
+	
+	When this session asked for a re-auth round trip before it left, that
+	is what this callback completes -- not a new sign-in. The intent was
+	written server-side by login.php and is single-use, and the grant is
+	only issued when the subject that just came back is the one already
+	bound to the session's user, so a token returning for some other
+	account escalates nothing.
+*/
+if (!is_null($reauth_intent))
+{
+	$sub = (isset($claims['sub']) && is_string($claims['sub'])) ? $claims['sub'] : '';
+	
+	if ('' === $sub)
+	{
+		pl_sso_bail(403, 'reauth_missing_sub_claim');
+	}
+	
+	$reauth_user = pl_sso_reauth_session_user();
+	
+	if (is_null($reauth_user))
+	{
+		pl_sso_bail(403, 'reauth_no_live_session');
+	}
+	
+	/*	Signed in at the provider as somebody other than the owner of this
+		session. Refuse rather than quietly swapping identities.
+	*/
+	if ('sso' !== $reauth_user['auth_method']
+		|| !is_string($reauth_user['sso_subject'])
+		|| !hash_equals((string) $reauth_user['sso_subject'], $sub))
+	{
+		pl_sso_bail(403, 'reauth_subject_mismatch');
+	}
+	
+	pl_sso_reauth_grant(pl_sso_reauth_session_id(), $reauth_intent['scope'], (int) $reauth_user['user_id']);
+	
+	$origin = pl_canonical_origin();
+	$base   = rtrim((string) pl_settings_get('base_url'), '/');
+	
+	header('Cache-Control: no-store');
+	header('Location: ' . $origin . $base . $reauth_intent['return']);
+	exit();
 }
 
 /*	The identity is proven. Whether it belongs to an account here is

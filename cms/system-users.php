@@ -79,6 +79,20 @@ if (!pika_authorize('users', $a))
 	pika_exit($buffer);
 }
 
+/*	Editing an account is how a borrowed session turns itself into a
+	permanent one: reset a password, raise a group, enable a disabled
+	user. Ask the administrator for their own password again before any
+	of that is written.
+	
+	The second test catches the answer to the challenge itself, for the
+	case where the action did not survive into the carried body.
+*/
+if ('update' == $action
+	|| (isset($_POST['_reauth_scope']) && 'user_admin' === $_POST['_reauth_scope']))
+{
+	pl_reauth_required('user_admin');
+}
+
 $result = pikaGroup::getGroupsDB();
 $groups = array();
 while ($row = DBResult::fetchRow($result)) {

@@ -33,6 +33,35 @@ $html['pass_min_length'] = $pass_min_length =
 $html['flags'] = '';
 
 $action = pl_grab_post('action');
+
+/*	Changing a password is the first thing an attacker on a borrowed
+	session does, because it locks the account holder out. Ask for the
+	current password again before the change takes effect.
+	
+	The challenge form deliberately does not carry password fields
+	forward, so the POST that comes back out of it has an action but no
+	passwords. Redirect instead of letting it fall through: without this
+	the handler would run against an empty body, answer "New password
+	cannot be blank", and leave the user in a loop with no way out.
+*/
+$was_reauth_post = isset($_POST['_reauth_scope']) && 'password_change' === $_POST['_reauth_scope'];
+
+if ('update' == $action || $was_reauth_post)
+{
+	pl_reauth_required('password_change');
+}
+
+if ($was_reauth_post)
+{
+	header("Location: {$base_url}/password.php?reauth=1", true, 303);
+	exit();
+}
+
+if ('1' === pl_grab_get('reauth'))
+{
+	$html['flags'] .= pikaTempLib::plugin('success_flag', 'success_flag',
+		'Identity verified &mdash; enter your new password to finish.');
+}
 $menu_pass_strength = array('' => 'None - No Strength Requirement',
 							'0' => 'None - No Strength Requirement',
 							'1' => '(1) Light',

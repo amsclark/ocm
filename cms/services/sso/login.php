@@ -39,15 +39,30 @@ pika_init();
 
 require_once('pikaSsoOidc.php');
 
-/*	A sign-in starts with the browser following a link. Anything else is a
-	caller that has confused this endpoint for the callback.
+require_once('pikaSsoReauth.php');
+
+/*	A sign-in starts with the browser following a link. The one POST this
+	endpoint accepts is the step-up re-auth challenge in pl.php, which
+	sends a signed-in SSO user back to the provider to prove who they are
+	before a sensitive change goes through. Anything else is a caller that
+	has confused this endpoint for the callback.
 */
-if (isset($_SERVER['REQUEST_METHOD']) && 'GET' !== $_SERVER['REQUEST_METHOD'])
+$method = isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET';
+
+if ('GET' !== $method && 'POST' !== $method)
 {
 	header('HTTP/1.1 405 Method Not Allowed');
-	header('Allow: GET');
+	header('Allow: GET, POST');
 	header('Content-Type: text/plain; charset=utf-8');
-	exit("GET only.\n");
+	exit("GET or POST only.\n");
+}
+
+if ('POST' === $method && !isset($_POST['reauth_scope']))
+{
+	header('HTTP/1.1 405 Method Not Allowed');
+	header('Allow: GET, POST');
+	header('Content-Type: text/plain; charset=utf-8');
+	exit("GET or POST only.\n");
 }
 
 $reason = '';
@@ -60,6 +75,51 @@ $config = pl_sso_config();
 if (!pl_sso_ready($config, $reason))
 {
 	pl_sso_bail(404, $reason);
+}
+
+/*	Step-up re-auth intent, present only when pl_reauth_required() sent a
+	signed-in SSO user here. Everything about it is checked now and kept
+	server-side; none of it survives in the URL, so the value that comes
+	back from the provider cannot be steered by whoever crafted the
+	request.
+*/
+$reauth_scope  = '';
+$reauth_return = '';
+
+if (isset($_POST['reauth_scope']))
+{
+	/*	The CSRF token proves the POST came from this application's own
+		challenge page. Without it any site could bounce a signed-in
+		administrator through their provider and land a re-auth grant in
+		their session.
+	*/
+	pl_csrf_check();
+	
+	$submitted_scope = (string) $_POST['reauth_scope'];
+	
+	if (!in_array($submitted_scope, pl_reauth_scopes(), true))
+	{
+		pl_sso_reauth_refuse('bad_scope', 'That action cannot be re-authenticated.');
+	}
+	
+	/*	The session has to be signed in already, and signed in as an SSO
+		account. Re-auth raises the assurance of a session that exists; it
+		is never a way to create one.
+	*/
+	$session_user = pl_sso_reauth_session_user();
+	
+	if (is_null($session_user))
+	{
+		pl_sso_reauth_refuse('no_live_session', 'Your session has ended. Sign in again.');
+	}
+	
+	if ('sso' !== $session_user['auth_method'] || 0 === strlen((string) $session_user['sso_subject']))
+	{
+		pl_sso_reauth_refuse('not_sso_user', 'This account does not sign in through an identity provider.');
+	}
+	
+	$reauth_scope  = $submitted_scope;
+	$reauth_return = pl_sso_reauth_sanitize_return(isset($_POST['reauth_return']) ? (string) $_POST['reauth_return'] : '');
 }
 
 try
@@ -106,6 +166,25 @@ try
 	if ('google' === $config['provider'] && '' !== $config['hosted_domain'])
 	{
 		$params['hd'] = $config['hosted_domain'];
+	}
+	
+	if ('' !== $reauth_scope)
+	{
+		/*	Record the intent against this session, beside the state and
+			nonce written above. callback.php reads it back and refuses to
+			act on it unless the subject that returns is the one already
+			attached to this session.
+		*/
+		pl_sso_reauth_store_intent($reauth_scope, $reauth_return);
+		
+		/*	prompt=login tells the provider to authenticate the user
+			afresh instead of replaying its own session. Without it a
+			step-up check on a browser that already holds a provider
+			session is a silent round trip that proves nothing. Google and
+			Entra both honour it, and Entra applies the tenant's MFA and
+			conditional-access policy on the re-authentication.
+		*/
+		$params['prompt'] = 'login';
 	}
 	
 	$separator = (false === strpos($discovery['authorization_endpoint'], '?')) ? '?' : '&';

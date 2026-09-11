@@ -19,4 +19,5 @@ add_groups_intake.sql
 add_totp.sql
 add_sso.sql
 add_peer_transfer.sql
+add_reauth_grants.sql
 add_shared_calendars.sql

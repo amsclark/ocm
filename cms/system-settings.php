@@ -37,6 +37,20 @@ if (!pika_authorize('system',array()))
 	pika_exit($buffer);
 }
 
+/*	The settings page holds the security controls themselves: password
+	policy, session timeout, single sign-on. A borrowed session that can
+	rewrite them can weaken every other defence at once, so ask the
+	administrator for their password again first.
+	
+	The second test catches the answer to the challenge itself, for the
+	case where the action did not survive into the carried body.
+*/
+if ('update' == $action
+	|| (isset($_POST['_reauth_scope']) && 'settings' === $_POST['_reauth_scope']))
+{
+	pl_reauth_required('settings');
+}
+
 $tzs = array('-7' => '7 Hours Behind',
 			'-6' => '6 Hours Behind',
 			'-5' => '5 Hours Behind',
