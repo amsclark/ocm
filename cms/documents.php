@@ -214,7 +214,17 @@ switch($action) {
 		$doc = new pikaDocument($doc_id);
 		
 		$html['doc_type'] = $doc->doc_type;
-		$html['doc_name'] = $doc->doc_name;
+		/*	subtemplates/documents.html asks for this one as a plain
+			%%[doc_name]%% inside <i>...</i>, and a plain tag is substituted
+			raw -- unlike the %%[doc_name,input_text]%% on the edit fragment,
+			which the input_text plugin escapes. The name comes from
+			$_FILES['doc_upload']['name'], which no input filter touches, so
+			an upload named <img src=x onerror=...> ran in the browser of
+			whoever opened the delete confirmation. Escaped here rather than
+			in the template because a per-org custom template directory
+			commonly replaces this file.
+		*/
+		$html['doc_name'] = pl_html_escape($doc->doc_name);
 		$html['description'] = $doc->description;
 		$html['folder_ptr'] =  $doc->folder_ptr;
 		$html['case_id'] = $doc->case_id;

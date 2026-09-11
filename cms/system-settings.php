@@ -127,6 +127,12 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 	*/
 	'password_breach_policy',
 	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
+	/*	Document downloads. cms/documents.php already refuses to serve a
+		stored document inline unless its type cannot execute script; this
+		makes every document an attachment instead, for organisations that
+		would rather have no in-browser preview at all.
+	*/
+	'doc_force_download',
 	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
 		it is handled on its own below so that a blank field leaves the
 		stored secret alone. sso_allow_insecure_transport is not here either

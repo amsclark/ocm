@@ -9262,5 +9262,220 @@ fi
 
 
 echo
+echo "61. how a stored document is served back"
+
+# ── 61. Stored documents: content type, disposition and the file name ───────
+#
+# A document's content type is whatever the uploading browser claimed in
+# $_FILES['doc_upload']['type']; pikaDocument::uploadDoc() stores it verbatim.
+# cms/documents.php echoed it back with Content-Disposition: inline, so a
+# caseworker who may upload to one case could store an .html file and have it
+# served as text/html from the application's own origin -- running script in
+# the session of every user who opened it. CWE-79 by way of CWE-434.
+#
+# Inline is now kept only for types that render but cannot execute script in
+# our origin: application/pdf, text/plain, and image/* except image/svg+xml.
+# The doc_force_download setting drops even those to attachment.
+#
+# Separately, the delete confirmation rendered the file name through a plain
+# %%[doc_name]%% tag, which is substituted raw, and no input filter touches an
+# uploaded file name.
+if [ "$HAVE_DB" = 1 ]; then
+	DLJAR="$(mktemp)"
+
+	cleanup_dl() {
+		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZDL%' OR description = 'ZZDL upload'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-DL-1'" >/dev/null
+		adb "UPDATE settings SET value = '${DLFORCE:-0}' WHERE label = 'doc_force_download'" >/dev/null
+		rm -f "$DLJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dl' EXIT
+
+	# Remember the operator's own setting before the checks move it about.
+	DLFORCE="$(adb "SELECT value FROM settings WHERE label = 'doc_force_download'")"
+	cleanup_dl
+
+	dl_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	dl_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	DLCASE="$(dl_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${DLCASE}, 'ZZ-DL-1', 1, 'ZZDLOF', '1', 1)" >/dev/null
+	dl_bump_counter cases "$DLCASE"
+
+	# doc_data is gzcompress()ed binary, so PHP inside the container writes the
+	# UPDATE and mariadb reads it back rather than passing it through a shell.
+	dl_seed_body() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+			file_put_contents("/tmp/zzdldoc.sql",
+				"UPDATE doc_storage SET doc_data=\x27"
+				. addslashes(gzcompress($argv[2]))
+				. "\x27 WHERE doc_id=" . $argv[1] . ";");
+		' "$1" "$2" </dev/null
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			sh -c 'cat /tmp/zzdldoc.sql' </dev/null > "$BODY"
+		docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
+			mariadb -uroot "$DB_NAME" < "$BODY"
+	}
+
+	# dl_seed_doc <doc_name> <mime_type> <body> -> doc_id
+	dl_seed_doc() {
+		_id="$(dl_next_id doc_storage doc_id)"
+		adb "INSERT INTO doc_storage (doc_id, doc_name, doc_type, description, created, case_id, user_id, folder, mime_type)
+			VALUES (${_id}, '${1}', 'C', 'ZZDL fixture', CURDATE(), ${DLCASE}, 1, 0, '${2}')" >/dev/null
+		dl_bump_counter doc_storage "$_id"
+		dl_seed_body "$_id" "$3" >/dev/null 2>&1
+		printf '%s' "$_id"
+	}
+
+	# The Content-Disposition word for one document, or the empty string.
+	dl_disp() {
+		curl -sL --max-time 30 -b "$COOKIES" -D - -o /dev/null \
+			"$OCM_URL/documents.php?doc_id=${1}&action=download" 2>/dev/null \
+			| tr -d '\r' | grep -i '^content-disposition:' \
+			| head -1 | sed -E 's/^[Cc]ontent-[Dd]isposition:[[:space:]]*([a-zA-Z]+).*/\1/'
+	}
+
+	dl_token() {
+		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" "$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	# 61a. The premise: the client picks the content type and it is kept.
+	# The name carries markup too, which check 61i reads back.
+	DLUP="$(mktemp)"
+	printf '<script>document.title="ZZDL-XSS"</script>\n' > "$DLUP"
+	DLTOKEN="$(dl_token)"
+	curl -sL --max-time 60 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+		-F "doc_upload=@${DLUP};filename=ZZDL<img src=x onerror=alert(1)>.html;type=text/html" \
+		-F 'doc_type=C' -F "case_id=${DLCASE}" -F 'description=ZZDL upload' \
+		-F "_csrf=${DLTOKEN}" \
+		"$OCM_URL/ops/upload_document.php" >/dev/null
+	rm -f "$DLUP"
+	DLHTML="$(adb "SELECT doc_id FROM doc_storage WHERE description = 'ZZDL upload' ORDER BY doc_id DESC LIMIT 1")"
+	DLMIME="$(adb "SELECT mime_type FROM doc_storage WHERE doc_id = '${DLHTML:-0}'")"
+	if [ "$DLMIME" = "text/html" ]; then
+		ok "an uploader's declared content type is stored verbatim (text/html)"
+	else
+		bad "could not seed the uploaded document (doc_id='${DLHTML:-}', mime_type='${DLMIME:-}')"
+	fi
+
+	DLPDF="$(dl_seed_doc 'ZZDLfile.pdf'  'application/pdf'  'ZZDL-PDF-BODY')"
+	DLSVG="$(dl_seed_doc 'ZZDLfile.svg'  'image/svg+xml'    '<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>')"
+	DLPNG="$(dl_seed_doc 'ZZDLfile.png'  'image/png'        'ZZDL-PNG-BODY')"
+
+	# 61b. The vulnerability itself.
+	if [ -n "${DLHTML:-}" ] && [ "$(dl_disp "$DLHTML")" = "attachment" ]; then
+		ok "an HTML document downloads instead of rendering in the origin"
+	else
+		bad "AN UPLOADED text/html DOCUMENT IS SERVED INLINE — stored XSS in the app origin (CWE-79/CWE-434)"
+	fi
+
+	# 61c. And the fix must not have broken the download itself.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/documents.php?doc_id=${DLHTML:-0}&action=download" >/dev/null
+	if grep -q 'ZZDL-XSS' "$BODY"; then
+		ok "the document's bytes still come back intact"
+	else
+		bad "the document body did not come back — the download path is broken"
+	fi
+
+	# 61d. An <svg> may carry <script> that runs same-origin, so image/ alone
+	# is not enough of a reason to render one inline.
+	if [ "$(dl_disp "$DLSVG")" = "attachment" ]; then
+		ok "an SVG downloads rather than rendering (it can carry script)"
+	else
+		bad "AN image/svg+xml DOCUMENT IS SERVED INLINE — an <svg> can run script in this origin"
+	fi
+
+	# 61e/61f. Controls: preview is what the application is for, and the two
+	# types staff actually preview must still open in the browser.
+	if [ "$(dl_disp "$DLPDF")" = "inline" ]; then
+		ok "a PDF still previews in the browser"
+	else
+		bad "a PDF no longer previews — the allowlist is too narrow"
+	fi
+
+	if [ "$(dl_disp "$DLPNG")" = "inline" ]; then
+		ok "a raster image still previews in the browser"
+	else
+		bad "a raster image no longer previews — the allowlist is too narrow"
+	fi
+
+	# 61g. The declared type is still the uploader's word, so the response says
+	# not to sniff the body. documents.php sets this itself rather than relying
+	# on the vhost, because this is the one response whose body is user bytes.
+	if curl -sL --max-time 30 -b "$COOKIES" -D - -o /dev/null \
+		"$OCM_URL/documents.php?doc_id=${DLPNG}&action=download" 2>/dev/null \
+		| tr -d '\r' | grep -qi '^x-content-type-options:[[:space:]]*nosniff'; then
+		ok "the download response carries X-Content-Type-Options: nosniff"
+	else
+		bad "the download response has no nosniff header — a lying content type may be sniffed"
+	fi
+
+	# 61h. The strict posture, for an organisation that wants no preview at all.
+	adb "DELETE FROM settings WHERE label = 'doc_force_download'" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('doc_force_download', '1')" >/dev/null
+	if [ "$(dl_disp "$DLPDF")" = "attachment" ]; then
+		ok "doc_force_download makes even a PDF an attachment"
+	else
+		bad "doc_force_download did not force the download"
+	fi
+
+	# 61i. And a missing row is the ordinary install, not the strict one: the
+	# allowlist is what closes the hole, so absent must not mean "no preview".
+	adb "DELETE FROM settings WHERE label = 'doc_force_download'" >/dev/null
+	if [ "$(dl_disp "$DLPDF")" = "inline" ]; then
+		ok "a missing doc_force_download row leaves the allowlist in charge"
+	else
+		bad "a missing doc_force_download row changed the disposition"
+	fi
+	adb "INSERT INTO settings (label, value) VALUES ('doc_force_download', '${DLFORCE:-0}')" >/dev/null
+
+	# 61j. The delete confirmation prints the file name through a plain
+	# %%[doc_name]%% tag, and nothing filters an uploaded file name.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/documents.php?doc_id=${DLHTML:-0}&action=confirm_delete" >/dev/null
+	if grep -q 'ZZDL' "$BODY" && ! grep -qF '<img src=x onerror=' "$BODY"; then
+		ok "the delete confirmation escapes markup in a file name"
+	else
+		bad "THE DELETE CONFIRMATION RENDERS AN UPLOADED FILE NAME RAW — stored XSS (CWE-79)"
+	fi
+
+	# 61k. The operator can find the setting.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
+	if grep -q 'doc_force_download' "$BODY"; then
+		ok "system-settings.php offers the document download control"
+	else
+		bad "system-settings.php has no doc_force_download control"
+	fi
+
+	# 61l. And the container sends the header globally, not only on downloads.
+	# httpd-config/ocm.conf documented these for a hand-rolled Apache; the
+	# image shipped without them.
+	curl -sL --max-time 30 -b "$COOKIES" -D - -o /dev/null "$OCM_URL/case_list.php" 2>/dev/null \
+		| tr -d '\r' > "$BODY"
+	if grep -qi '^x-content-type-options:[[:space:]]*nosniff' "$BODY" \
+		&& grep -qi '^x-frame-options:' "$BODY"; then
+		ok "the server sends nosniff and X-Frame-Options on ordinary pages"
+	else
+		bad "ordinary pages carry no nosniff / X-Frame-Options header"
+	fi
+
+	cleanup_dl
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the stored-document download checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

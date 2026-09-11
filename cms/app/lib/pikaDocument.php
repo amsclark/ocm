@@ -158,6 +158,11 @@ class pikaDocument extends plBase
 		{
 			$name = 'document';
 		}
+
+		if ('1' === (string) pl_settings_get('doc_force_download'))
+		{
+			$disposition = 'attachment';
+		}
 		
 		header("Pragma: public");
 		header("Cache-Control: cache, must-revalidate");
