@@ -61,10 +61,41 @@ class plCsvReport
 	}
 	
 	public function display(){
-		$buffer = '"' . addslashes($this->title) . '",' . "\n";
+		/*	The report title and the filter-parameter lines are the two
+			lines of the export that plCsvReportTable never sees, and
+			they were assembled here by hand with addslashes(). Same pair
+			of defects the table class had:
+			
+			  - addslashes() emits \" where CSV requires "". PHP's own
+			    str_getcsv() treats that as an escape, which is why it
+			    reads as cosmetic, but RFC 4180 has no backslash escape,
+			    so Excel, LibreOffice and Sheets end the field at that
+			    quote. A filter value carrying a quote and a comma opens
+			    a fresh cell, and that cell is free to begin '=' -- which
+			    is how a filter value becomes a live formula in spite of
+			    the literal "Name: " sitting in front of it. It also
+			    backslashes apostrophes, so every O'Brien left in an
+			    export with a stray backslash in it.
+			  - Neither line ran the formula guard. Report titles are
+			    mostly literals under cms/reports, but the filter
+			    parameters are whatever the user typed into the report
+			    form.
+			
+			Written through plCsvReportTable::format_csv_cell() rather
+			than a second copy of the quoting rules, so the preamble and
+			the rows cannot drift apart again. That also keeps the
+			one-column-plus-trailing-comma shape these two lines have
+			always had.
+		*/
+		$writer = count($this->tables)
+			? $this->tables[0]
+			: new plCsvReportTable();
+		
+		$buffer = $writer->format_csv_cell($this->title) . "\n";
 		foreach ($this->parameters as $parameter) {
 			if(isset($parameter['name']) && $parameter['name'] && isset($parameter['param'])) {
-				$buffer .= '"' . addslashes($parameter['name']) . ': ' . addslashes($parameter['param']) . '",' . "\n";
+				$buffer .= $writer->format_csv_cell(
+					$parameter['name'] . ': ' . $parameter['param']) . "\n";
 			}
 		}
 		

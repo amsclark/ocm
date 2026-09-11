@@ -6450,5 +6450,145 @@ else
 fi
 
 echo
+echo "46. CSV export: formula guard and RFC 4180 quoting"
+
+# Every report under cms/reports that offers a CSV format builds it with
+# plCsvReport and plCsvReportTable. The data rows went through fputcsv(),
+# which produces correct CSV -- and correct CSV is the problem: Excel,
+# LibreOffice and Sheets all evaluate a cell whose text begins with = + - @
+# when the file is opened. Exports are routinely mailed to funders, so the
+# spreadsheet that evaluates a client's name is often outside the org.
+#
+# The report title, the filter-parameter lines and the per-table title were a
+# separate defect. They were assembled by hand with addslashes(), which emits
+# \" where CSV requires "". Excel, LibreOffice and Sheets end the field at
+# that quote, so a filter value carrying a quote and a comma opens a fresh
+# cell -- and that cell is free to begin '=', which is how a filter value
+# becomes a live formula in spite of the literal "Office Code: " in front of
+# it.
+#
+# The report driven here is cms/reports/daily_intake, which puts a contact
+# last name and a case number straight into a data row and echoes the office
+# filter into the preamble.
+#
+# Not covered: the Content-Length line in plCsvReport::display() counted
+# UTF-8 code points with mb_strlen() instead of bytes, which truncates a
+# download that carries any multi-byte character. It is fixed, but this stack
+# cannot show it: Apache recomputes Content-Length from the buffered body, so
+# the short value PHP sets never reaches the client here. Verified with a
+# throwaway script that declared 13 for a 16-byte body and went out as 16.
+if [ "$HAVE_DB" = 1 ]; then
+	CSVDATE='2019-03-04'
+	CSVDATEP='03/04/2019'
+
+	cleanup_csv() {
+		adb "DELETE FROM cases WHERE judge_name = 'ZZCSV'" >/dev/null
+		adb "DELETE FROM contacts WHERE first_name = 'ZZCSV'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_csv' EXIT
+	cleanup_csv
+
+	csv_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	csv_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# One client whose stored last name is a formula, and one ordinary client.
+	# The case numbers carry the other half of the check: a negative number
+	# must NOT be quoted as text, or every financial total in every export
+	# silently breaks, which is the damage this guard must not cause.
+	CSVC1="$(csv_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${CSVC1}, 'ZZCSV', '=HYPERLINK(\"http://x\",1)')" >/dev/null
+	csv_bump_counter contacts "$CSVC1"
+	CSVC2="$(csv_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${CSVC2}, 'ZZCSV', 'Zzcsvplain')" >/dev/null
+	csv_bump_counter contacts "$CSVC2"
+
+	CSVK1="$(csv_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, client_id, user_id, office, status, open_date, intake_user_id, judge_name)
+		VALUES (${CSVK1}, '-1500.00', ${CSVC1}, 1, 'ZZC', '1', '${CSVDATE}', 1, 'ZZCSV')" >/dev/null
+	csv_bump_counter cases "$CSVK1"
+	CSVK2="$(csv_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, client_id, user_id, office, status, open_date, intake_user_id, judge_name)
+		VALUES (${CSVK2}, '-1,500.00', ${CSVC2}, 1, 'ZZC', '1', '${CSVDATE}', 1, 'ZZCSV')" >/dev/null
+	csv_bump_counter cases "$CSVK2"
+
+	csv_export() {
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
+		csv_token="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed 's/.*value="//;s/"//')"
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			--data-urlencode "report_format=csv" \
+			--data-urlencode "date=${CSVDATEP}" \
+			--data-urlencode "office=${1}" \
+			--data-urlencode "_csrf=${csv_token}" \
+			"$OCM_URL/reports/daily_intake/report.php" >/dev/null
+	}
+
+	csv_export 'ZZC'
+
+	if grep -qF 'ZZC' "$BODY" && grep -qF 'HYPERLINK' "$BODY"; then
+		ok "the daily intake export contains the fixture rows"
+
+		# fputcsv doubles the inner quotes; the leading ' is the guard.
+		if grep -qF "\"'=HYPERLINK(\"\"http://x\"\",1)\"" "$BODY"; then
+			ok "a client name that is a formula is neutralised in the export"
+		else
+			bad "a client name beginning with = is exported as a live formula"
+		fi
+
+		# -1500.00 is a number, so it must pass through untouched. A blanket
+		# prefix here would turn every negative figure in every financial
+		# report into text.
+		if grep -qF "'-1500.00" "$BODY"; then
+			bad "the export quotes -1500.00 as text - financial totals will not sum"
+		elif grep -qF -- '-1500.00' "$BODY"; then
+			ok "a negative number is exported as a number, not as text"
+		else
+			bad "the negative-number fixture is not in the export"
+		fi
+
+		if grep -qF "'-1,500.00" "$BODY"; then
+			bad "the export quotes -1,500.00 as text - a formatted negative is still a number"
+		elif grep -qF -- '-1,500.00' "$BODY"; then
+			ok "a negative number with a thousands separator is exported as a number"
+		else
+			bad "the formatted negative-number fixture is not in the export"
+		fi
+	else
+		bad "the daily intake export is missing the fixture rows - section 46 proves nothing"
+	fi
+
+	# The preamble. addslashes() emitted a\"b; CSV requires a""b.
+	csv_export 'a"b'
+	if grep -qF 'Office Code: a\"b' "$BODY"; then
+		bad "the export escapes a quote in a filter value with a backslash - the field ends early"
+	elif grep -qF 'Office Code: a""b' "$BODY"; then
+		ok "a quote in a filter value is doubled, as RFC 4180 requires"
+	else
+		bad "the export did not echo the office filter into the preamble"
+	fi
+
+	# The report title line keeps the shape it has always had, so a consumer
+	# that skips the preamble by counting one-column rows still works.
+	if head -1 "$BODY" | grep -qF '"Daily Intake Report",'; then
+		ok "the report title line keeps its one-column shape"
+	else
+		bad "the report title line changed shape"
+	fi
+
+	cleanup_csv
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the CSV export checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

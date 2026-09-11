@@ -2828,7 +2828,15 @@ function pl_prepare_dir($fs_dir_path)
 		$parent_dir = implode('/', $b);	
 		pl_prepare_dir($parent_dir);
 		
-		if (!mkdir($fs_dir_path, 0700))
+		/*	Mode 0700 keeps the directory private to the web-server user.
+			
+			The is_dir() check above and this mkdir() are two steps, so a
+			second request can create the directory in between and this
+			one then fails on a directory that exists. Suppress the
+			warning and ask again: a concurrent creator is the expected
+			case under any amount of load, not an error.
+		*/
+		if (!@mkdir($fs_dir_path, 0700) && !is_dir($fs_dir_path))
 		{
 			trigger_error('');
 		}
@@ -5169,17 +5177,13 @@ function pl_timestamp_unmogrify($x)
 
 function pl_tmp_path()
 {
-	if (isset($_ENV['TEMP']))
-	{
-		$tmp_path = $_ENV['TEMP'];
-	}
-	
-	else
-	{
-		$tmp_path = '/tmp';
-	}
-	
-	return $tmp_path;
+	/*	sys_get_temp_dir() reads TMPDIR, TEMP and TMP through PHP's own
+		lookup rather than trusting $_ENV directly. Under some CGI and
+		FastCGI setups $_ENV carries values derived from the request, so
+		reading $_ENV['TEMP'] here let the request choose where temporary
+		files were written.
+	*/
+	return sys_get_temp_dir();
 }
 
 /**
