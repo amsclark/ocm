@@ -3716,6 +3716,145 @@ else
 	printf '  skip the guideline and password policy checks (needs the database)\n'
 fi
 
+# ---------------------------------------------------------------------------
+# 32. cms/transfers.php and cms/system-outcomes.php build their POST forms in
+# PHP rather than in a template, and both files enforce pl_csrf_check() on
+# POST, but neither emitted a token. So both forms were dead: the holding-tank
+# Accept and Reject buttons and the outcome-goal save were all refused with a
+# CSRF error. Section 7b did not catch it because its page list is fixed and
+# both of these forms need state to render at all.
+#
+# The transfer payload is JSON that a PEER installation sent us. It never went
+# through pl_clean_form_input(), and this page wrote it straight into the
+# markup, so a peer could store script in a client name and run it in the
+# browser of whoever reviewed the transfer.
+echo
+echo "== 32. the two hand-built POST forms =="
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	TX_ID=""
+	TX_XSS='<script>zzTxXss()</script>'
+
+	cleanup_tx() {
+		if [ -n "${TX_ID:-}" ]; then
+			adb "DELETE FROM transfers WHERE transfer_id = ${TX_ID}" >/dev/null 2>&1
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tx' EXIT
+
+	# A pending transfer is accepted = 2. The payload carries the tag in a
+	# field the list page prints and in a field only the detail page prints.
+	TX_ID="$(adb "SELECT COALESCE(MAX(transfer_id),0)+1 FROM transfers")"
+	TX_JSON="$(printf '%s' '{"client":{"last_name":"ZZTX<script>zzTxXss()</script>","first_name":"Zz&Amp","county":"zz","city":"zz","problem_code":"zz"},"notes":{"notes0":"ZZTXNOTE<script>zzTxXss()</script>"},"case":{},"op":{},"opa":{}}' \
+		| sed "s/'/''/g")"
+	adb "INSERT INTO transfers (transfer_id, user_id, json_data, created, accepted)
+		VALUES (${TX_ID}, 1, '${TX_JSON}', NOW(), 2)" >/dev/null 2>&1
+
+	if [ -z "$TX_ID" ]; then
+		bad "could not seed a pending transfer fixture"
+	else
+		: > "$COOKIES"
+		curl -s --max-time 30 -c "$COOKIES" -o /dev/null "$OCM_URL/index.php"
+		curl -s --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+			-X POST -d "login_user=admin&login_pass=${OCM_PASSWORD}&auth_id=1" \
+			"$OCM_URL/index.php"
+
+		# 32a. The holding-tank list must not print the peer's tag raw.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/transfers.php" >/dev/null
+		if ! grep -q 'ZZTX' "$BODY"; then
+			bad "the pending transfer is not on the holding-tank list at all"
+		elif grep -qF '<script>zzTxXss()</script>' "$BODY"; then
+			bad "THE HOLDING-TANK LIST PRINTS A PEER'S SCRIPT TAG RAW"
+		elif grep -qF 'Zz&Amp' "$BODY"; then
+			bad "a bare ampersand in a peer field reaches the page unescaped"
+		elif grep -qF 'ZZTX&lt;script&gt;' "$BODY"; then
+			ok "the holding-tank list escapes the peer-supplied client name"
+		else
+			bad "the peer-supplied name is neither raw nor escaped on the list page"
+		fi
+
+		# 32b. Same for the detail page, which prints every payload field.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/transfers.php?transfer_id=${TX_ID}" >/dev/null
+		if ! grep -q 'ZZTXNOTE' "$BODY"; then
+			bad "the transfer detail page does not show the payload notes"
+		elif grep -qF '<script>zzTxXss()</script>' "$BODY"; then
+			bad "THE TRANSFER DETAIL PAGE PRINTS A PEER'S SCRIPT TAG RAW"
+		else
+			ok "the transfer detail page escapes every peer-supplied field"
+		fi
+
+		# 32c. The Accept/Reject form has to carry a token, or both buttons are
+		# refused by the check at the top of the same file.
+		TX_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		if [ "${#TX_TOKEN}" -eq 64 ]; then
+			ok "the Accept/Reject form carries a 64-hex CSRF token"
+		else
+			bad "the Accept/Reject form has no usable token (got ${#TX_TOKEN} chars)"
+		fi
+
+		# 32d. transfer_id is an int primary key. A tag in it used to be
+		# decoded back to < and > and printed in the heading.
+		curl -sLG --max-time 30 -b "$COOKIES" -o "$BODY" \
+			--data-urlencode 'transfer_id=<script>zzTxXss()</script>' \
+			"$OCM_URL/transfers.php" >/dev/null
+		if grep -qF '<script>zzTxXss()</script>' "$BODY"; then
+			bad "A TAG IN transfer_id IS REFLECTED INTO THE TRANSFER PAGE"
+		elif grep -q 'not a transfer record number' "$BODY"; then
+			ok "a transfer_id that is not a number is refused"
+		else
+			bad "a non-numeric transfer_id was neither refused nor reflected"
+		fi
+
+		# 32e. Reject with no token: refused. Reject with the token: it lands.
+		code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			-X POST -d "transfer_id=${TX_ID}&reject=Reject" "$OCM_URL/transfers.php")"
+		still_pending="$(adb "SELECT accepted FROM transfers WHERE transfer_id = ${TX_ID}")"
+		if [ "$code" = 403 ] && [ "$still_pending" = 2 ]; then
+			ok "a Reject with no token is refused and the transfer stays pending"
+		else
+			bad "a tokenless Reject was not refused (status $code, accepted=$still_pending)"
+		fi
+
+		# The refused POST above hands back the recovery form, which carries a
+		# fresh token, so the one scraped earlier is stale by now.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/transfers.php?transfer_id=${TX_ID}" >/dev/null
+		TX_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-X POST -d "_csrf=${TX_TOKEN}&transfer_id=${TX_ID}&reject=Reject" \
+			"$OCM_URL/transfers.php" >/dev/null
+		# 0 is rejected. It used to land as NULL, which is the column default
+		# and so indistinguishable from a row nobody had touched.
+		if [ "$(adb "SELECT accepted FROM transfers WHERE transfer_id = ${TX_ID}")" = 0 ]; then
+			ok "a Reject carrying the form's own token goes through and records a 0"
+		else
+			bad "REJECT IS STILL BROKEN WITH THE TOKEN THE FORM SUPPLIED"
+		fi
+
+		# 32f. The outcome-goal editor is the same bug in a second file.
+		TX_OUTCOME="$(adb "SELECT problem FROM outcome_goals WHERE active = 1 LIMIT 1")"
+		if [ -z "$TX_OUTCOME" ]; then
+			TX_OUTCOME=01
+		fi
+		curl -sLG --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-d action=edit --data-urlencode "outcome=${TX_OUTCOME}" \
+			"$OCM_URL/system-outcomes.php" >/dev/null
+		if grep -qE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY"; then
+			ok "the outcome-goal editor carries a CSRF token so the save can work"
+		else
+			bad "the outcome-goal editor has no token - saving goals returns 403"
+		fi
+	fi
+
+	cleanup_tx
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the hand-built POST form checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"

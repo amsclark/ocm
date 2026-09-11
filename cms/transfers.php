@@ -15,6 +15,23 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 	pl_csrf_check();
 }
 
+/*	The transfer payload is JSON that a PEER installation sent us over
+	ops/peer-transfer.php. It is not our data and it has never been through
+	pl_clean_form_input(), so both the keys and the values are escaped here
+	before they reach the page. Casting first because a nested object in the
+	payload arrives as an array, and htmlspecialchars() on an array is a
+	TypeError in PHP 8.
+*/
+function transfer_cell($value)
+{
+	if (is_array($value) || is_object($value))
+	{
+		$value = json_encode($value);
+	}
+
+	return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
 /*	One line of the conflict report.
 	
 	The names come out of the contacts table, which is typed in at intake or
@@ -75,7 +92,7 @@ function potential_conflicts($row, $relation_code, $description)
 	$lim = 10000;
 	$tmp_row = array();
 	$conflict_array = array();
-	
+
 	// Match by metaphone name/birth date
 	$name_clause = '';
 	$params = array($relation_code,$mp_last);
@@ -154,12 +171,12 @@ function potential_conflicts($row, $relation_code, $description)
 			$z .= conflict_match_html($tmp_row,$base_url);
 		}
 	}
-	
+
 	if (sizeof($conflict_array) < 1)
 	{
 		$z .= "<p>Nothing found.</p>";
 	}
-	
+
 	return $z;
 }
 
@@ -175,9 +192,9 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 	require_once('pikaTransfer.php');
 	$tx = new pikaTransfer($safe_transfer_id);	
 	$x = json_decode($tx->getValue('json_data'), 1);
-	
+
 	require_once('pikaContact.php');
-	
+
 	/*	The JSON here is what a remote installation sent us. setValues()
 		writes any column of the row that the JSON names, so a sending
 		organisation - or anyone who can get a record into our transfer
@@ -193,7 +210,7 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 		'language','gender','ethnicity','marital','residence',
 		'disabled','notes'
 		);
-	
+
 	// Same rule for the case row: without it the sender could set user_id
 	// and hand one of our staff a case they never took.
 	$case_allowed = array(
@@ -203,11 +220,11 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 		'income','income_type0','annual0',
 		'intake_type'
 		);
-	
+
 	$client = new pikaContact();
 	$client->setValues(pl_array_only($x['client'],$contact_allowed));
 	$client->save();
-	
+
 	require_once('pikaCase.php');
 	$case0 = new pikaCase();
 	$case0->setValues(pl_array_only($x['case'],$case_allowed));
@@ -236,7 +253,7 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 	if (isset($x['notes']))
 	{
 		require_once('pikaActivity.php');
-		
+
 		for ($i = 0; $i < 10; $i++)
 		{
 			if (isset($x['notes']['notes' . $i]))
@@ -249,10 +266,11 @@ if (strlen((string) pl_grab_post('accept')) > 0)
 			}
 		}
 	}
-	
-	$tx->setValue('accepted', true);
+
+	// 1 = accepted. See the reject branch for why this is written as an int.
+	$tx->setValue('accepted', 1);
 	$tx->save();
-	
+
 	header("Location:  {$base_url}/case.php?case_id={$case0->case_id}&screen=elig");
 	exit();
 }
@@ -262,9 +280,13 @@ else if (strlen((string) pl_grab_post('reject')) > 0)
 	$safe_transfer_id = DB::escapeString(pl_grab_post('transfer_id'));
 	require_once('pikaTransfer.php');
 	$tx = new pikaTransfer($safe_transfer_id);
-	$tx->setValue('accepted', false);
+	/*	transfers.accepted is a tinyint where 2 means pending. A PHP false
+		reached the column as NULL, which is also the column default, so a
+		rejected transfer looked exactly like a row nobody had touched.
+	*/
+	$tx->setValue('accepted', 0);
 	$tx->save();
-	
+
 	$z .= "case rejected.";
 }
 
@@ -273,18 +295,11 @@ else if (!$transfer_id)
 	$z .= "<table class=\"table\">";
 		$z .= "<thead><tr><th></th><th>Record ID</th><th>Last Name</th><th>First Name</th><th>County</th><th>City</th><th>Problem Code</th><th>Date Received</th></tr></thead><tbody>";
 	$result = DB::query("SELECT * FROM transfers WHERE accepted = '2'");
-	
+
 	while ($row = DBResult::fetchArray($result))
 	{
 		$j = json_decode($row['json_data'], true);
-		
-		/*
-		foreach ($j as $key => $val)
-		{
-			$j[$key] = pl_clean_html($val);
-		}
-		*/
-		
+
 		$safe_transfer_id = pl_clean_html($row['transfer_id']);
 
 		$safe_date = '';
@@ -297,90 +312,130 @@ else if (!$transfer_id)
 
 		$z .= "<tr><td><a href=\"{$base_url}/transfers.php?transfer_id={$safe_transfer_id}\" class=\"btn\">";
 		$z .= "Review</a></td><td>{$safe_transfer_id}</td>";
-		$z .= "<td>{$j['client']['last_name']}</td>";
-		$z .= "<td>{$j['client']['first_name']}</td>";
-		$z .= "<td>{$j['client']['county']}</td>";
-		$z .= "<td>{$j['client']['city']}</td>";
-		$z .= "<td>{$j['client']['problem_code']}</td>";
+		$z .= "<td>" . transfer_cell($j['client']['last_name'] ?? '') . "</td>";
+		$z .= "<td>" . transfer_cell($j['client']['first_name'] ?? '') . "</td>";
+		$z .= "<td>" . transfer_cell($j['client']['county'] ?? '') . "</td>";
+		$z .= "<td>" . transfer_cell($j['client']['city'] ?? '') . "</td>";
+		$z .= "<td>" . transfer_cell($j['client']['problem_code'] ?? '') . "</td>";
 		$z .= "<td>{$safe_date}</td></tr>";
 	}
-	
+
 	$z .= "</tbody></table>";
+}
+
+/*	transfers.transfer_id is an int primary key, so anything else is not a
+	request this page can serve. Refusing also closes a reflected XSS: the id
+	was escaped by pl_grab_get() and then run back through
+	html_entity_decode(), which put the < and > characters back before it
+	reached the <h1> and the hidden input further down.
+*/
+else if (!ctype_digit((string) $transfer_id))
+{
+	$z .= "<h1>Incoming Transfer</h1>";
+	$z .= "<p>That is not a transfer record number.</p>";
 }
 
 else
 {
-	$safe_transfer_id = DB::escapeString($transfer_id);
+	$safe_transfer_id = (int) $transfer_id;
 	$result = DB::query("SELECT * FROM transfers WHERE transfer_id = '{$safe_transfer_id}'");
 	$single_row = DBResult::fetchArray($result);
-	$safe_transfer_id = html_entity_decode($safe_transfer_id);
-	
-	$x = json_decode($single_row['json_data'], 1);
-	$z .= "<h1>Incoming Transfer &#35;{$safe_transfer_id}</h1>";
-	$z .= "<div class=\"row\">\n";
-	$z .= "<div class=\"span4\">\n";
-	$z .= "<h2>Client, Notes, and Case Info</h2>";
-	$z .= "<table class=\"table\">";
-	foreach ($x['client'] as $key => $value)
-	{
-		$z .= "<tr><td>$key</td><td>$value</td></tr>";
-	}
-	
-	foreach ($x['notes'] as $key => $value)
-	{
-		$z .= "<tr><td>notes.$key</td><td>$value</td></tr>";
-	}
-	
-	foreach ($x['case'] as $key => $value)
-	{
-		$z .= "<tr><td>$key</td><td>$value</td></tr>";
-	}
 
-	$z .= "</table>";
-	$z .= "</div>\n";
-  $z .= "<div class=\"span4\">\n";
-	$z .= "<h2>Opposing Party</h2>";
-	$z .= "<table class=\"table\">";
-	
-	foreach ($x['op'] as $key => $value)
+	// A transfer_id that names no row used to reach every loop below with a
+	// null payload, which is a warning per section and an empty page.
+	if (!is_array($single_row))
 	{
-		$z .= "<tr><td>opposing_party.$key</td><td>$value</td></tr>";
+		$z .= "<h1>Incoming Transfer</h1>";
+		$z .= "<p>There is no transfer record with that number.</p>";
 	}
-	
-	$z .= "</table>";
-	$z .= "</div>\n";
-  $z .= "<div class=\"span4\">\n";
-	$z .= "<h2>Opposing Party's Attorney</h2>";
-	$z .= "<table class=\"table\">";
-	
-	foreach ($x['opa'] as $key => $value)
+	else
 	{
-		$z .= "<tr><td>opposing_party_attorney.$key</td><td>$value</td></tr>";
+		$x = json_decode($single_row['json_data'], 1);
+
+		// Same reason: a payload this installation cannot read is not a page.
+		if (!is_array($x))
+		{
+			$x = array();
+		}
+
+		foreach (array('client', 'notes', 'case', 'op', 'opa') as $transfer_section)
+		{
+			if (!isset($x[$transfer_section]) || !is_array($x[$transfer_section]))
+			{
+				$x[$transfer_section] = array();
+			}
+		}
+
+		$z .= "<h1>Incoming Transfer &#35;{$safe_transfer_id}</h1>";
+		$z .= "<div class=\"row\">\n";
+		$z .= "<div class=\"span4\">\n";
+		$z .= "<h2>Client, Notes, and Case Info</h2>";
+		$z .= "<table class=\"table\">";
+		foreach ($x['client'] as $key => $value)
+		{
+			$z .= "<tr><td>" . transfer_cell($key) . "</td><td>" . transfer_cell($value) . "</td></tr>";
+		}
+
+		foreach ($x['notes'] as $key => $value)
+		{
+			$z .= "<tr><td>notes." . transfer_cell($key) . "</td><td>" . transfer_cell($value) . "</td></tr>";
+		}
+
+		foreach ($x['case'] as $key => $value)
+		{
+			$z .= "<tr><td>" . transfer_cell($key) . "</td><td>" . transfer_cell($value) . "</td></tr>";
+		}
+
+		$z .= "</table>";
+		$z .= "</div>\n";
+	  $z .= "<div class=\"span4\">\n";
+		$z .= "<h2>Opposing Party</h2>";
+		$z .= "<table class=\"table\">";
+
+		foreach ($x['op'] as $key => $value)
+		{
+			$z .= "<tr><td>opposing_party." . transfer_cell($key) . "</td><td>" . transfer_cell($value) . "</td></tr>";
+		}
+
+		$z .= "</table>";
+		$z .= "</div>\n";
+	  $z .= "<div class=\"span4\">\n";
+		$z .= "<h2>Opposing Party's Attorney</h2>";
+		$z .= "<table class=\"table\">";
+
+		foreach ($x['opa'] as $key => $value)
+		{
+			$z .= "<tr><td>opposing_party_attorney." . transfer_cell($key) . "</td><td>" . transfer_cell($value) . "</td></tr>";
+		}
+
+		$z .= "</table>";
+		$z .= "</div>\n";
+		$z .= "</div>\n";
+
+
+		$z .= "<div class=\"row\">\n";
+		$z .= "<div class=\"span4\">\n";
+		$z .= potential_conflicts($x['client'], 1, 'Client');
+		$z .= "</div>\n";
+		$z .= "<div class=\"span4\">\n";
+		$z .= potential_conflicts($x['op'], 2, 'Opposing Party');
+		$z .= "</div>\n";
+		$z .= "<div class=\"span4\">\n";
+		$z .= potential_conflicts($x['opa'], 3, 'Opposing Party\'s Attorney');
+		$z .= "</div>\n";
+		$z .= "</div>\n";
+
+		$z .= "<div class=\"well\">\n";
+		$z .= "<form method=\"POST\" action=\"{$base_url}/transfers.php\">";
+		// This file calls pl_csrf_check() on POST, so Accept and Reject need a
+		// token in the body. Without it the whole holding tank was unusable:
+		// either button was refused by the check.
+		$z .= pl_csrf_hidden_input();
+		$z .= "<input type=\"hidden\" name=\"transfer_id\" value=\"{$safe_transfer_id}\">";
+		$z .= "<input type=\"submit\" name=\"accept\" value=\"Accept\" class=\"btn btn-success\">&nbsp;";
+		$z .= "<input type=\"submit\" name=\"reject\" value=\"Reject\" class=\"btn\"></form>";
+		$z .= "</div>\n";
 	}
-
-	$z .= "</table>";
-	$z .= "</div>\n";
-	$z .= "</div>\n";
-	
-	
-	$z .= "<div class=\"row\">\n";
-	$z .= "<div class=\"span4\">\n";
-	$z .= potential_conflicts($x['client'], 1, 'Client');
-	$z .= "</div>\n";
-	$z .= "<div class=\"span4\">\n";
-	$z .= potential_conflicts($x['op'], 2, 'Opposing Party');
-	$z .= "</div>\n";
-	$z .= "<div class=\"span4\">\n";
-	$z .= potential_conflicts($x['opa'], 3, 'Opposing Party\'s Attorney');
-	$z .= "</div>\n";
-	$z .= "</div>\n";
-
-	$z .= "<div class=\"well\">\n";
-	$z .= "<form method=\"POST\" action=\"{$base_url}/transfers.php\">";
-	$z .= "<input type=\"hidden\" name=\"transfer_id\" value=\"{$safe_transfer_id}\">";
-	$z .= "<input type=\"submit\" name=\"accept\" value=\"Accept\" class=\"btn btn-success\">&nbsp;";
-	$z .= "<input type=\"submit\" name=\"reject\" value=\"Reject\" class=\"btn\"></form>";
-	$z .= "</div>\n";
 }
 
 $plTemplate["content"] = '<div id="page_content" class="container">' . $z . '</div>';
