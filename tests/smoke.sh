@@ -6890,6 +6890,184 @@ else
 	printf '  skip the stored preference checks (needs the database)\n'
 fi
 
+echo
+echo "57. a syndicated feed cannot write the home page"
+
+# cms/index.php draws every enabled row in rss_feeds on the home page. The
+# channel title went into an <h2> as it arrived, the entry link went into an
+# unquoted href= attribute, and the body was filtered with
+# strip_tags($content,'<a><ul><ol><li><p>') - which keeps every attribute on
+# the tags it keeps, so a feed could ship onmouseover= on an allowed <a> and
+# point its href at javascript:. A feed with a title and no items reached
+# count(null) in pikaRssFeed::parseRSS() and answered the whole home page
+# with an empty HTTP 500. And updateFeeds() handed feed_url straight to
+# file_get_contents(), so file:// read a local file and drew it on the page.
+if [ "$HAVE_DB" = 1 ]; then
+
+	RSSID=9057
+	RSSFILE=/tmp/zzrss_local.xml
+
+	cleanup_rss() {
+		adb "DELETE FROM rss_feeds WHERE feed_id = ${RSSID}" >/dev/null
+		if [ "$HAVE_COMPOSE" = 1 ]; then
+			docker compose "${COMPOSE_ARGS[@]}" exec -T app rm -f "$RSSFILE" >/dev/null 2>&1
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rss' EXIT
+	cleanup_rss
+
+	rss_set() {
+		# $1 = feed_url, $2 = feed_cache, $3 = last_modified expression
+		adb "DELETE FROM rss_feeds WHERE feed_id = ${RSSID}" >/dev/null
+		adb "INSERT INTO rss_feeds (feed_id, name, feed_url, feed_cache, feed_type,
+			enabled, list_limit, last_modified, created)
+			VALUES (${RSSID}, 'ZZRSSFEED', '${1}', '${2}', 1, 1, 5, ${3}, NOW())" >/dev/null
+	}
+
+	rss_home() {
+		curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/index.php"
+	}
+
+	# An unreachable port on the loopback interface, so nothing in this
+	# section can reach the network. NOW() keeps updateFeeds() from trying.
+	RSSDEAD='http://127.0.0.1:1/none.xml'
+
+	# 1. Every scriptable piece of a feed at once: markup in the channel
+	#    title, an attribute breakout in the link, and a body carrying an
+	#    event handler, a javascript: href and a <script> element.
+	rss_set "$RSSDEAD" \
+		'<?xml version="1.0"?><rss version="2.0"><channel><title>ZZRSSTITLE&lt;img src=x onerror=zzrsspwn&gt;</title><item><title>ZZRSSITEM</title><link>x onmouseover=zzrsspwn</link><description>&lt;a href="javascript:zzrsspwn"&gt;ZZRSSBODY&lt;/a&gt;&lt;script&gt;zzrsspwn&lt;/script&gt;&lt;p onclick="zzrsspwn"&gt;ZZRSSPARA&lt;/p&gt;</description></item></channel></rss>' \
+		'NOW()'
+
+	RSSCODE="$(rss_home)"
+	if [ "$RSSCODE" = 200 ]; then
+		ok "the home page still draws with a feed enabled"
+	else
+		bad "the home page answered $RSSCODE with a feed enabled"
+	fi
+
+	if grep -q 'ZZRSSTITLE' "$BODY"; then
+		ok "the feed title reaches the home page"
+	else
+		bad "the feed title is missing - this section is testing nothing"
+	fi
+
+	if grep -qF '<img src=x onerror=' "$BODY"; then
+		bad "a feed channel title puts a live <img> tag on the home page"
+	else
+		ok "a feed channel title cannot put a tag on the home page"
+	fi
+
+	# The link is drawn inside href="...". An unquoted attribute let the
+	# value end it and add one of its own.
+	if grep -qE '<a href=[^"]' "$BODY"; then
+		bad "the feed link is drawn into an unquoted href attribute"
+	else
+		ok "the feed link is drawn into a quoted href attribute"
+	fi
+
+	if grep -qF 'onmouseover=' "$BODY"; then
+		bad "a feed link breaks out of the href attribute and adds a handler"
+	else
+		ok "a feed link cannot break out of the href attribute"
+	fi
+
+	if grep -qF 'javascript:' "$BODY"; then
+		bad "a feed body keeps a javascript: link"
+	else
+		ok "a feed body cannot keep a javascript: link"
+	fi
+
+	if grep -qF 'onclick="zzrsspwn"' "$BODY"; then
+		bad "a feed body keeps an event handler on an allowed tag"
+	else
+		ok "a feed body cannot keep an event handler on an allowed tag"
+	fi
+
+	# The words survive even though the markup does not - the allowed tags
+	# are a feature, and dropping the text would be a regression.
+	if grep -q 'ZZRSSBODY' "$BODY" && grep -q 'ZZRSSPARA' "$BODY"; then
+		ok "the feed body text still reaches the home page"
+	else
+		bad "the feed body text was dropped - the sanitizer is too tight"
+	fi
+
+	# 2. A feed with a channel title and no items.
+	rss_set "$RSSDEAD" \
+		'<?xml version="1.0"?><rss version="2.0"><channel><title>ZZRSSEMPTY</title></channel></rss>' \
+		'NOW()'
+
+	RSSCODE="$(rss_home)"
+	if [ "$RSSCODE" = 200 ]; then
+		ok "a feed with no items does not break the home page"
+	else
+		bad "a feed with no items answered $RSSCODE - count() on a missing key"
+	fi
+
+	# 3. A feed carrying a DOCTYPE. The parser has to refuse the document:
+	#    a DOCTYPE can declare an entity that reads a file or that expands
+	#    until the request runs out of memory.
+	rss_set "$RSSDEAD" \
+		'<?xml version="1.0"?><!DOCTYPE rss><rss version="2.0"><channel><title>ZZRSSDOCTYPE</title><item><title>t</title><link>http://example.com/</link><description>d</description></item></channel></rss>' \
+		'NOW()'
+
+	RSSCODE="$(rss_home)"
+	if [ "$RSSCODE" = 200 ] && ! grep -q 'ZZRSSDOCTYPE' "$BODY"; then
+		ok "a feed declaring a DOCTYPE is refused"
+	else
+		bad "a feed declaring a DOCTYPE is parsed anyway (http $RSSCODE)"
+	fi
+
+	# 4. A feed URL naming a local file. The stale last_modified makes
+	#    updateFeeds() fetch it.
+	if [ "$HAVE_COMPOSE" = 1 ]; then
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app sh -c \
+			"printf '%s' '<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>ZZRSSLOCALFILE</title><item><title>t</title><link>http://example.com/</link><description>d</description></item></channel></rss>' > $RSSFILE" >/dev/null 2>&1
+
+		rss_set "file://${RSSFILE}" '' "'2000-01-01 00:00:00'"
+
+		RSSCODE="$(rss_home)"
+		if [ "$RSSCODE" = 200 ] && ! grep -q 'ZZRSSLOCALFILE' "$BODY"; then
+			ok "a feed URL cannot name a local file"
+		else
+			bad "a feed URL read a local file onto the home page (http $RSSCODE)"
+		fi
+
+		if [ "$(adb "SELECT LENGTH(feed_cache) FROM rss_feeds WHERE feed_id = ${RSSID}")" = 0 ]; then
+			ok "a rejected feed URL is never fetched"
+		else
+			bad "a rejected feed URL was fetched into the feed cache"
+		fi
+	else
+		printf '  skip the local file feed checks (needs docker compose)\n'
+	fi
+
+	# 5. A well formed feed over http still draws its markup, so the
+	#    hardening did not turn the feature off.
+	rss_set "$RSSDEAD" \
+		'<?xml version="1.0"?><rss version="2.0"><channel><title>ZZRSSGOOD</title><item><title>ZZRSSGOODITEM</title><link>http://example.com/story</link><description>&lt;p&gt;ZZRSSGOODTEXT &lt;a href="http://example.com/more"&gt;ZZRSSGOODLINK&lt;/a&gt;&lt;/p&gt;</description></item></channel></rss>' \
+		'NOW()'
+
+	RSSCODE="$(rss_home)"
+	if [ "$RSSCODE" = 200 ] && grep -qF '<a href="http://example.com/story">ZZRSSGOODITEM</a>' "$BODY"; then
+		ok "a good feed entry still links to its story"
+	else
+		bad "a good feed entry lost its link (http $RSSCODE)"
+	fi
+
+	if grep -qF '<p>ZZRSSGOODTEXT <a href="http://example.com/more">ZZRSSGOODLINK</a></p>' "$BODY"; then
+		ok "a good feed body keeps its allowed markup"
+	else
+		bad "a good feed body lost the markup the feature allows"
+	fi
+
+	cleanup_rss
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the syndicated feed checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
