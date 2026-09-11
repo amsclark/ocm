@@ -3855,6 +3855,128 @@ else
 	printf '  skip the hand-built POST form checks (needs the database)\n'
 fi
 
+echo
+echo "33. the menu editor refuses duplicate values"
+
+# A menu table has no primary key on `value`, so nothing in the database
+# stops two rows sharing one. The classic editor keyed its parse array by
+# value, so a value typed twice overwrote the earlier line and the menu came
+# back shorter than what was submitted, with no message. The item editor had
+# the matching hole: pikaMenu::save() deletes old_value and inserts the new
+# one, so renaming an item onto a value already in use left two identical
+# values and no way to tell them apart.
+if [ "$HAVE_DB" = 1 ]; then
+	MN_NAME='zzmn'
+	MN_TABLE="menu_${MN_NAME}"
+
+	cleanup_mn() {
+		adb "DROP TABLE IF EXISTS \`${MN_TABLE}\`" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mn' EXIT
+	cleanup_mn
+
+	adb "CREATE TABLE \`${MN_TABLE}\` (
+		\`value\` char(8) NOT NULL DEFAULT '',
+		\`label\` char(65) NOT NULL DEFAULT '',
+		\`menu_order\` tinyint(4) NOT NULL DEFAULT 0,
+		KEY \`label\` (\`label\`),
+		KEY \`val\` (\`value\`),
+		KEY \`menu_order\` (\`menu_order\`)
+	)" >/dev/null
+
+	# The classic editor posts to system-menus.php, which enforces the token,
+	# so scrape a fresh one off the page that carries the form. A refused POST
+	# hands back a recovery page with a different token, so re-read the form
+	# page before each submit rather than reusing one.
+	mn_token() {
+		curl -sL --max-time 30 -b "$COOKIES" \
+			"$OCM_URL/system-menus.php?action=edit_menu_classic&menu_name=${MN_NAME}" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	# $1 is the textarea body. Response lands in $BODY.
+	mn_save_classic() {
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+			--data-urlencode "_csrf=$(mn_token)" \
+			--data-urlencode "values=$1" \
+			"$OCM_URL/system-menus.php?action=update_classic&menu_name=${MN_NAME}" >/dev/null
+	}
+
+	mn_rows() { adb "SELECT COUNT(*) FROM \`${MN_TABLE}\`"; }
+
+	# 33a. A clean save is still a save, and the blank lines a textarea always
+	# sends no longer become a menu row with an empty value and empty label.
+	mn_save_classic 'ZZA | Alpha
+
+ZZB | Bravo
+'
+	if [ "$(mn_rows)" = 2 ] \
+		&& [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZB'")" = 'Bravo' ]; then
+		ok "the classic menu editor saves and drops the blank lines"
+	else
+		bad "the classic menu editor lost a row or kept a blank one ($(mn_rows) rows)"
+	fi
+
+	# 33b. Two lines with the same value are refused, and nothing is written.
+	mn_save_classic 'ZZA | Alpha
+ZZB | Bravo
+ZZA | Alpha Again'
+	if grep -q 'Duplicate value' "$BODY"; then
+		ok "the classic menu editor names the duplicate value"
+	else
+		bad "the classic menu editor accepted a duplicate value with no message"
+	fi
+	if [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZA'")" = 'Alpha' ]; then
+		ok "the refused classic save left the menu alone"
+	else
+		bad "the refused classic save still rewrote the menu"
+	fi
+
+	# 33c. The refusal page hands the submitted text back so the edit is not
+	# lost. Without this the admin retypes the whole menu.
+	if grep -q 'Alpha Again' "$BODY"; then
+		ok "the refusal page keeps the submitted menu text"
+	else
+		bad "the refusal page threw away what the admin typed"
+	fi
+
+	# 33d. Renaming one item onto a value another item already holds is
+	# refused, and neither row moves.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/system-menus.php?action=update&menu_name=${MN_NAME}&old_value=ZZB&value=ZZA&label=Bravo" >/dev/null
+	if grep -q 'already exists' "$BODY"; then
+		ok "the item editor refuses a rename onto an existing value"
+	else
+		bad "the item editor renamed an item onto a value already in use"
+	fi
+	if [ "$(mn_rows)" = 2 ] \
+		&& [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZA'")" = 'Alpha' ] \
+		&& [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZB'")" = 'Bravo' ]; then
+		ok "the refused rename left both menu items where they were"
+	else
+		bad "the refused rename still changed the menu"
+	fi
+
+	# 33e. A rename to a value nobody holds, and a label-only edit, both still
+	# go through. The guard only fires when the value is changing.
+	curl -sL --max-time 30 -b "$COOKIES" -o /dev/null \
+		"$OCM_URL/system-menus.php?action=update&menu_name=${MN_NAME}&old_value=ZZB&value=ZZC&label=Bravo" >/dev/null
+	curl -sL --max-time 30 -b "$COOKIES" -o /dev/null \
+		"$OCM_URL/system-menus.php?action=update&menu_name=${MN_NAME}&old_value=ZZA&value=ZZA&label=Alpha%20Edited" >/dev/null
+	if [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZC'")" = 'Bravo' ] \
+		&& [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZA'")" = 'Alpha Edited' ]; then
+		ok "a free rename and a label-only edit both still save"
+	else
+		bad "the duplicate guard blocked an edit it should have let through"
+	fi
+
+	cleanup_mn
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the menu editor checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
