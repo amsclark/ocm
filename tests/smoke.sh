@@ -3977,6 +3977,188 @@ else
 	printf '  skip the menu editor checks (needs the database)\n'
 fi
 
+echo
+echo "34. calendar time entries and the activity backdating lock"
+
+# Two faults in the same handler. The Calendar entry form (act_type 'C',
+# subtemplates/activityC.html) captures Start Time and End Time and has no
+# hours field, and ops/update_activity.php read hours straight out of the
+# POST - so calendar-entered time saved as 0 hours and was invisible on
+# every timekeeping total. And activity.php greyed out the date, funding
+# and hours fields once a record passed activity_lock_max_days, but that
+# was a disabled attribute in the markup with nothing behind it: a POST
+# that did not come from that form saved whatever date it liked.
+if [ "$HAVE_DB" = 1 ]; then
+	LKGROUP='zz_lk_grp'
+	LKUSER='zz_lk_user'
+	LKPASS='zz-Lk-Passw0rd'
+	LKJAR="$(mktemp)"
+	LK_TODAY="$(date +%Y-%m-%d)"
+	LK_OLD="$(date -d '-30 days' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d)"
+	LK_FUTURE="$(date -d '+3 days' +%Y-%m-%d 2>/dev/null || date -v+3d +%Y-%m-%d)"
+
+	cleanup_lk() {
+		adb "DELETE FROM activities WHERE summary LIKE 'ZZLK%'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${LKUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${LKGROUP}'" >/dev/null
+		adb "DELETE FROM settings WHERE label = 'activity_lock_max_days'" >/dev/null
+		if [ -n "${LK_OLD_LOCK:-}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('activity_lock_max_days', '${LK_OLD_LOCK}')" >/dev/null
+		fi
+		rm -f "$LKJAR"
+	}
+	LK_OLD_LOCK="$(adb "SELECT value FROM settings WHERE label = 'activity_lock_max_days'")"
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_lk' EXIT
+
+	adb "DELETE FROM activities WHERE summary LIKE 'ZZLK%'" >/dev/null
+	adb "DELETE FROM users WHERE username = '${LKUSER}'" >/dev/null
+	adb "DELETE FROM \`groups\` WHERE group_id = '${LKGROUP}'" >/dev/null
+
+	# A user who may edit activities but is not in the 'system' group, which
+	# is the group the lock exempts.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${LKGROUP}', NULL, 1, NULL, 1, 0, 0, 0, 0, NULL)" >/dev/null
+	LKHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$LKPASS" </dev/null 2>/dev/null)"
+	LKUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${LKUID}, '${LKUSER}', '${LKHASH}', 1, '${LKGROUP}', 0)" >/dev/null
+
+	: > "$LKJAR"
+	curl -sL --max-time 30 -c "$LKJAR" -b "$LKJAR" -o /dev/null \
+		-X POST -d "login_user=${LKUSER}&login_pass=${LKPASS}&auth_id=1" \
+		"$OCM_URL/" >/dev/null
+
+	# ops/update_activity.php enforces the token, and a refused POST hands
+	# back a page carrying a different one, so read a fresh token off the
+	# entry form before every save.
+	lk_token() {
+		curl -sL --max-time 30 -b "$1" "$OCM_URL/activity.php?act_type=C" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	# $1 cookie jar, $2.. extra -d arguments. Prints the status code.
+	lk_save() {
+		lk_jar="$1"
+		shift
+		curl -s --max-time 30 -b "$lk_jar" -o "$BODY" -w '%{http_code}' -X POST \
+			--data-urlencode "_csrf=$(lk_token "$lk_jar")" \
+			-d "act_type=C" -d "close_act=1" -d "user_id=${LKUID}" \
+			"$@" "$OCM_URL/ops/update_activity.php"
+	}
+
+	lk_hours() { adb "SELECT hours FROM activities WHERE summary = '$1'"; }
+
+	if [ -z "$LKHASH" ]; then
+		bad "could not seed the activity lock fixtures"
+	else
+		# 34a. A calendar entry with a start and an end and no hours field
+		# now records the span it covers.
+		lk_save "$LKJAR" -d "act_date=${LK_TODAY}" -d "act_time=09:00" \
+			-d "act_end_time=11:30" --data-urlencode "summary=ZZLK span" >/dev/null
+		if [ "$(lk_hours 'ZZLK span')" = '2.50' ]; then
+			ok "a calendar time entry records the hours between start and end"
+		else
+			bad "a calendar time entry saved $(lk_hours 'ZZLK span') hours, not 2.50"
+		fi
+
+		# 34b. An hours value the user typed is never overwritten. plBase has
+		# __get but no __isset, so a guard written with isset() on the magic
+		# property would silently lose this.
+		lk_save "$LKJAR" -d "act_date=${LK_TODAY}" -d "act_time=09:00" \
+			-d "act_end_time=11:30" -d "hours=0.75" \
+			--data-urlencode "summary=ZZLK explicit" >/dev/null
+		if [ "$(lk_hours 'ZZLK explicit')" = '0.75' ]; then
+			ok "an hours value the user typed wins over the derived one"
+		else
+			bad "the derived hours overwrote what the user typed ($(lk_hours 'ZZLK explicit'))"
+		fi
+
+		# 34c. A future date with a time range is an appointment, not work
+		# that has been done, so nothing is derived onto it.
+		lk_save "$LKJAR" -d "act_date=${LK_FUTURE}" -d "act_time=09:00" \
+			-d "act_end_time=11:30" --data-urlencode "summary=ZZLK future" >/dev/null
+		if [ "$(lk_hours 'ZZLK future')" = '0.00' ]; then
+			ok "a future appointment does not derive hours"
+		else
+			bad "a future appointment derived $(lk_hours 'ZZLK future') hours"
+		fi
+
+		# The lock is off until the setting is on, which is the default.
+		adb "DELETE FROM settings WHERE label = 'activity_lock_max_days'" >/dev/null
+		adb "INSERT INTO settings (label, value) VALUES ('activity_lock_max_days', '5')" >/dev/null
+
+		# 34d. A backdated new record is refused by the handler, not just
+		# greyed out in the form.
+		lk_status="$(lk_save "$LKJAR" -d "act_date=${LK_OLD}" -d "act_time=09:00" \
+			-d "act_end_time=10:00" --data-urlencode "summary=ZZLK backdated")"
+		if [ "$(adb "SELECT COUNT(*) FROM activities WHERE summary = 'ZZLK backdated'")" = 0 ]; then
+			ok "the handler refuses a backdated activity (status ${lk_status})"
+		else
+			bad "a backdated activity was saved past the lock"
+		fi
+
+		# 34e. And a record already inside the locked window cannot be
+		# dragged forward to a date that is not locked.
+		LKACT="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+		adb "INSERT INTO activities (act_id, act_type, act_date, act_time, hours, summary, user_id, completed)
+			VALUES (${LKACT}, 'C', '${LK_OLD}', '09:00:00', 1.00, 'ZZLK old record', ${LKUID}, 1)" >/dev/null
+		lk_save "$LKJAR" -d "act_id=${LKACT}" -d "act_date=${LK_TODAY}" -d "hours=8.00" \
+			--data-urlencode "summary=ZZLK moved" >/dev/null
+		if [ "$(adb "SELECT summary FROM activities WHERE act_id = ${LKACT}")" = 'ZZLK old record' ]; then
+			ok "a locked activity cannot be edited onto an unlocked date"
+		else
+			bad "a locked activity was edited past the lock"
+		fi
+
+		# 34f. The refusal says why. Without the banner the form simply
+		# comes back empty and the user retypes it.
+		curl -sL --max-time 30 -b "$LKJAR" -o "$BODY" \
+			"$OCM_URL/activity.php?date_lock_error=1&act_type=C" >/dev/null
+		if grep -q 'locked for editing' "$BODY"; then
+			ok "the refusal page says the date is locked"
+		else
+			bad "the refusal page gives no reason"
+		fi
+
+		# 34g. The read side still greys the fields out, and still exempts
+		# the system group. Both come from the same helper now.
+		curl -sL --max-time 30 -b "$LKJAR" -o "$BODY" \
+			"$OCM_URL/activity.php?act_id=${LKACT}&act_type=C" >/dev/null
+		if grep -q 'disabled name="act_date"' "$BODY"; then
+			ok "a locked activity still renders with the date field disabled"
+		else
+			bad "the locked activity form is no longer greyed out"
+		fi
+
+		# 34h. The system group is exempt on both sides.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/activity.php?act_id=${LKACT}&act_type=C" >/dev/null
+		if grep -q 'disabled name="act_date"' "$BODY"; then
+			bad "the lock greys the form out for a system user"
+		else
+			ok "the lock exempts the system group on the read side"
+		fi
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+			--data-urlencode "_csrf=$(lk_token "$COOKIES")" \
+			-d "act_type=C" -d "close_act=1" -d "user_id=${LKUID}" \
+			-d "act_id=${LKACT}" -d "act_date=${LK_OLD}" -d "hours=8.00" \
+			--data-urlencode "summary=ZZLK admin edit" \
+			"$OCM_URL/ops/update_activity.php" >/dev/null
+		if [ "$(adb "SELECT summary FROM activities WHERE act_id = ${LKACT}")" = 'ZZLK admin edit' ]; then
+			ok "a system user still saves inside the locked window"
+		else
+			bad "the lock also refuses the system group, which it must not"
+		fi
+	fi
+
+	cleanup_lk
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the calendar hours and activity lock checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"

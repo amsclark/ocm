@@ -293,21 +293,31 @@ $a['content'] = $template->draw();
 		TODO:  also put to code in ops/update_activity.php to help enforce this.
 		*/
 
-$lock_max_days = pl_settings_get('activity_lock_max_days');
-
-if ($lock_max_days > 0 && $auth_row['group_id'] != 'system')
+/*	The rule itself now lives in pika_activity_date_locked() so that
+	ops/update_activity.php can ask the same question and refuse the save.
+	Until then this greyed the fields out and nothing stood behind it: a
+	POST that did not come from this form wrote whatever date it liked.
+*/
+if (pika_activity_date_locked($act_row['act_date']))
 {
 	$act_buffer = $a['content'];
 	
-	if ((time() - strtotime($act_row['act_date']))  / (60 * 60 * 24) > $lock_max_days)
-	{
-		$act_buffer = str_replace('onclick="openCalendar(', 'disabled onclick="openCalendar(', $act_buffer);
-		$act_buffer = str_replace('name="act_date"', 'disabled name="act_date"', $act_buffer);
-		$act_buffer = str_replace('name="funding"', 'disabled name="funding"', $act_buffer);
-		$act_buffer = str_replace('name="hours"', 'disabled name="hours"', $act_buffer);
-	}
-
+	$act_buffer = str_replace('onclick="openCalendar(', 'disabled onclick="openCalendar(', $act_buffer);
+	$act_buffer = str_replace('name="act_date"', 'disabled name="act_date"', $act_buffer);
+	$act_buffer = str_replace('name="funding"', 'disabled name="funding"', $act_buffer);
+	$act_buffer = str_replace('name="hours"', 'disabled name="hours"', $act_buffer);
+	
 	$a['content'] = $act_buffer;
+}
+
+/*	ops/update_activity.php sends the user back here when it refuses a save
+	on the lock. Say so, or the form simply reappears with the typed values
+	gone and no reason given.
+*/
+if (pl_grab_get('date_lock_error'))
+{
+	$a['content'] = '<div class="alert alert-danger">That activity date is locked for editing.'
+		. ' Ask your administrator if it needs to change.</div>' . $a['content'];
 }
 
 /*	End of the activity lock section. */
