@@ -1,0 +1,30 @@
+-- add_ical_token.sql -- an opaque bearer token for the iCal subscription URL.
+--
+-- cms/ical-subscribe.php used to build the subscription link out of the
+-- account's own credentials: serialize(array($username, $password)), base64
+-- encoded, in the query string. $user->password is the stored hash, so the
+-- page printed a copy-and-paste URL with the account's bcrypt hash inside it,
+-- and told the user to paste it into a calendar program.
+--
+-- That URL then lives in the calendar client's configuration file, in the
+-- browser history, in whatever the user pastes it into when the subscription
+-- stops working, and in the access log of every proxy between the two. A
+-- bcrypt hash is not a password, but it is the thing an offline attack runs
+-- against, and for an account that still carries a pre-bcrypt md5 row it is
+-- a few seconds of work.
+--
+-- The link now carries a value that is only a bearer token: 32 random bytes,
+-- hex encoded. It says nothing about the password, it can be revoked by
+-- clearing this column without changing the password, and it grants exactly
+-- one thing -- a read of that user's own appointments.
+--
+-- NULL means the account has never opened the subscription page. The token is
+-- created on first visit and kept after that, so a link already pasted into a
+-- phone keeps working.
+--
+-- One clause per statement: MariaDB applies NONE of the clauses in a
+-- multi-clause "ALTER ... ADD COLUMN IF NOT EXISTS" once any single clause is
+-- already satisfied, so a re-run after a partial upgrade silently skips the
+-- rest.
+
+ALTER TABLE `users` ADD COLUMN IF NOT EXISTS `cal_token` VARCHAR(64) DEFAULT NULL;

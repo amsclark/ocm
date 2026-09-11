@@ -4,39 +4,45 @@
 chdir("../");
 require_once ('pika-danio.php');
 
-// Token Based Authorization - Optional
-// For clients w/o HTTP authorization built-in
-if(isset($_GET['token']) && $_GET['token']) {
-	$auth = base64_decode($_GET['token']);
+/*	Token based authorization - optional, for calendar clients that cannot do
+	HTTP authentication.
 	
-	$auth_array = array();
-	$x = explode("\"", $auth);
-	$auth_array[] = $x[1];
-	$auth_array[] = $x[3];
+	The token used to be base64(serialize(array($username, $password_hash))),
+	pulled apart with explode('"'), pushed into PHP_AUTH_USER/PHP_AUTH_PW and
+	handed to pikaAuthDb. Two things were wrong with that:
 	
-	$_SERVER['PHP_AUTH_USER'] = $auth_array[0];
-	$_SERVER['PHP_AUTH_PW'] = $auth_array[1];
+	  * The subscription URL carried the account's password hash, which ends
+	    up in the calendar client's config file on disk, in browser history,
+	    and in every proxy log on the way here.
+	    
+	  * It never worked. pikaAuthDb compares a submitted password against the
+	    stored hash, so the hash never matched itself and this file answered
+	    401 to the exact URL cms/ical-subscribe.php produced.
+	
+	It is an opaque token now, checked with hash_equals() against
+	users.cal_token. A token that does not verify gets a 401 and nothing else:
+	there is no fallback to another credential and no message saying which
+	part was wrong. See cms/app/lib/pikaCalToken.php.
+*/
+if (isset($_GET['token']) && $_GET['token']) {
 	define('PL_DISABLE_SECURITY',true);
 	pika_init();
-	require_once('app/lib/pikaAuthHttp.php');
-	require_once('app/lib/pikaAuthDb.php');
-	$auth = pikaAuthHttp::getInstance();
-	$authdb = new pikaAuthDb('users','username','password');
-	$auth->authenticate($authdb);
-	$auth_row = pikaAuthHttp::getInstance()->getAuthRow();
+	require_once('app/lib/pikaCalToken.php');
+	
+	$auth_row = pl_cal_token_verify(
+		isset($_GET['user_id']) ? $_GET['user_id'] : null,
+		$_GET['token']);
+	
+	if (false === $auth_row) {
+		header('HTTP/1.1 401 Unauthorized');
+		header('Content-Type: text/plain; charset=utf-8');
+		exit("Invalid calendar subscription token.\n");
+	}
 }
 else {
 	define('PL_HTTP_SECURITY',true);
 	pika_init();
 }
-
-
-
-$auth = '';
-$auth_array = array();
-
-
-
 
 require_once ('plFlexList.php');
 
@@ -65,9 +71,19 @@ if(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == TRUE) {
 	$cal_url= "https://".$_SERVER['HTTP_HOST'].$base_url;
 }else { $cal_url= "http://".$_SERVER['HTTP_HOST'].$base_url; }
 
+/*	The HTTP path fills $auth_row through pikaAuthHttp; the token path above
+	has already filled it. Re-reading it unconditionally, which is what this
+	did, threw the token path's row away and left $user_id empty -- so the
+	feed's WHERE user_id='' matched nothing and the subscription came back as
+	an empty calendar rather than an error.
+*/
 require_once('pikaAuth.php');
-$auth_row = pikaAuthHttp::getInstance()->getAuthRow();
-$user_id = $auth_row['user_id'];
+
+if (!isset($auth_row) || !is_array($auth_row) || !isset($auth_row['user_id'])) {
+	$auth_row = pikaAuthHttp::getInstance()->getAuthRow();
+}
+
+$user_id = (int) $auth_row['user_id'];
 
 pl_menu_get('act_type');
 pl_menu_get('category');

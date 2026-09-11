@@ -24,4 +24,5 @@ add_session_ip_pin.sql
 add_must_change_password.sql
 add_sso_single_logout.sql
 add_password_breach_policy.sql
+add_ical_token.sql
 add_shared_calendars.sql
