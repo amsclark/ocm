@@ -121,6 +121,22 @@ if($action == 'update')
 		$user->password = password_hash($newpass1, PASSWORD_DEFAULT);
 		$user->save();	
 		pl_audit('password.self_change', 'user', $auth_row['user_id']);
+		
+		/*	A password change has to end the sessions the old password opened,
+			or a stolen session cookie keeps working after the account holder
+			has done the one thing they are told to do about it. This session
+			stays signed in; every other one is returned to the login form on
+			its next request.
+		*/
+		$ended = pl_user_sessions_invalidate_others($auth_row['user_id'], pl_csrf_session_id());
+		
+		if ($ended > 0)
+		{
+			pl_audit('password.self_change_invalidated_sessions', 'user', $auth_row['user_id'], array(
+				'sessions_ended' => $ended,
+			));
+			$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Your other sessions have been signed out ({$ended})");
+		}
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Password updated successfully");
 	}
 	else 

@@ -4352,6 +4352,145 @@ else
 	printf '  skip the advanced calendar checks (needs the database)\n'
 fi
 
+echo
+echo "38. a password change ends the account's other sessions"
+
+# A stolen session cookie used to survive the one thing an account holder is
+# told to do about it. cms/password.php and the administrator reset in
+# cms/system-users.php now call pl_user_sessions_invalidate_others(), which
+# marks every other user_sessions row logout = 1; pikaAuth::authenticate()
+# refuses a row in that state on the next request.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	PWUSER='zz_pw_user'
+	PWPASS='zz-pw-Passw0rd'
+	PWNEW='zz-pw-N3wPassw0rd'
+	PWJARA="$(mktemp)"
+	PWJARB="$(mktemp)"
+
+	cleanup_pw() {
+		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username = '${PWUSER}')" >/dev/null
+		adb "DELETE FROM users WHERE username = '${PWUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = 'zz_pw_grp'" >/dev/null
+		rm -f "$PWJARA" "$PWJARB"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pw' EXIT
+	cleanup_pw
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('zz_pw_grp', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	# password_expire is an int-ish column. A date literal truncates to its
+	# leading digits and the account reads as expired, so the login below
+	# would fail for a reason that has nothing to do with this section.
+	PWHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$PWPASS" </dev/null 2>/dev/null)"
+	PWUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${PWUID}, '${PWUSER}', '${PWHASH}', 1, 'zz_pw_grp', 0)" >/dev/null
+
+	pw_login() {
+		: > "$1"
+		curl -sL --max-time 30 -c "$1" -b "$1" -o /dev/null \
+			-X POST -d "login_user=${PWUSER}&login_pass=${2}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+	}
+
+	# The login form is what an evicted session gets back, and it is the only
+	# page in this flow that carries a login_pass field.
+	pw_signed_in() {
+		curl -sL --max-time 30 -c "$1" -b "$1" -o "$BODY" "$OCM_URL/password.php" >/dev/null
+		! grep -q 'name="login_pass"' "$BODY"
+	}
+
+	pw_token() {
+		curl -sL --max-time 30 -c "$1" -b "$1" "$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	if [ -z "$PWHASH" ] || [ -z "${PWUID:-}" ]; then
+		bad "could not seed the password change fixtures"
+	else
+		pw_login "$PWJARA" "$PWPASS"
+		pw_login "$PWJARB" "$PWPASS"
+
+		if pw_signed_in "$PWJARA" && pw_signed_in "$PWJARB"; then
+			ok "the throwaway user holds two sessions at once"
+		else
+			bad "the throwaway user could not open two sessions - section 38 is untested"
+		fi
+
+		# Count the audit rows first. user_id values are reused once the
+		# fixture user is deleted, so a row left behind by an earlier run of
+		# this section would make the assertion below pass on its own.
+		PWAUDIT0="$(adb "SELECT COUNT(*) FROM audit_log WHERE action = 'password.self_change_invalidated_sessions' AND object_id = '${PWUID}'")"
+
+		PWTOK="$(pw_token "$PWJARA")"
+		curl -sL --max-time 30 -c "$PWJARA" -b "$PWJARA" -o "$BODY" -X POST \
+			-d "_csrf=${PWTOK}&action=update&oldpass=${PWPASS}&newpass1=${PWNEW}&newpass2=${PWNEW}" \
+			"$OCM_URL/password.php" >/dev/null
+		if sed 's/&nbsp;/ /g' "$BODY" | grep -q 'Password updated successfully'; then
+			ok "the self-service password change is accepted"
+		else
+			bad "the self-service password change was refused - section 38 is untested"
+		fi
+
+		if ! pw_signed_in "$PWJARB"; then
+			ok "the other session is signed out by the password change"
+		else
+			bad "A SESSION OPENED WITH THE OLD PASSWORD SURVIVED THE PASSWORD CHANGE"
+		fi
+
+		# The session that made the change has to stay: signing the account
+		# holder out of their own browser is not the fix, and a helper that
+		# logs out everybody would pass the assertion above for free.
+		if pw_signed_in "$PWJARA"; then
+			ok "the session that changed the password stays signed in"
+		else
+			bad "the password change signed the account holder out of their own session"
+		fi
+
+		PWAUDIT1="$(adb "SELECT COUNT(*) FROM audit_log WHERE action = 'password.self_change_invalidated_sessions' AND object_id = '${PWUID}'")"
+		if [ "${PWAUDIT1:-0}" -gt "${PWAUDIT0:-0}" ]; then
+			ok "the evicted sessions are recorded in the audit log"
+		else
+			bad "no audit row for the sessions the password change ended"
+		fi
+
+		# The administrator reset is the other half. It runs against a user
+		# who is not the administrator, so every session that user holds has
+		# to go, not all but one.
+		pw_login "$PWJARB" "$PWNEW"
+		if pw_signed_in "$PWJARB"; then
+			ok "the throwaway user signs back in with the new password"
+		else
+			bad "the throwaway user cannot sign in with the new password"
+		fi
+
+		ADMTOK="$(pw_token "$COOKIES")"
+		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" -X POST \
+			-d "_csrf=${ADMTOK}&action=update&user_id=${PWUID}&username=${PWUSER}&group_id=zz_pw_grp&enabled=1&password=zz-pw-Adm1nReset" \
+			"$OCM_URL/system-users.php" >/dev/null
+
+		if [ "$(adb "SELECT COUNT(*) FROM user_sessions WHERE user_id = ${PWUID} AND logout = 0")" = 0 ]; then
+			ok "an administrator password reset ends every session the user holds"
+		else
+			bad "A SESSION SURVIVED AN ADMINISTRATOR PASSWORD RESET"
+		fi
+
+		if pw_signed_in "$COOKIES"; then
+			ok "the administrator keeps their own session through the reset"
+		else
+			bad "the administrator was signed out by resetting somebody else's password"
+		fi
+	fi
+
+	cleanup_pw
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the password change session checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
