@@ -27,6 +27,146 @@ class pikaDocument extends plBase
 	}
 	
 	
+	/*	The MIME types a stored document is allowed to claim.
+		
+		uploadDoc() used to keep whatever the multipart part said the file
+		was. That value is written by the uploading client, not by this
+		application and not by the browser's own inspection of the bytes, so
+		it was a free-text field an uploader controlled that later went
+		straight into a response header.
+		
+		Anything not on this list is stored as application/octet-stream. The
+		list is the set of things legal aid offices actually file on a case:
+		court papers, correspondence, spreadsheets, scans, and the audio and
+		video that comes off a phone.
+	*/
+	public static function allowedMimeTypes()
+	{
+		return array(
+			'application/pdf',
+			'application/msword',
+			'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+			'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+			'application/vnd.ms-excel',
+			'application/vnd.ms-powerpoint',
+			'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+			'application/rtf',
+			'application/zip',
+			'text/plain',
+			'text/csv',
+			'text/html',
+			'image/jpeg',
+			'image/jpg',
+			'image/png',
+			'image/gif',
+			'image/tiff',
+			'image/webp',
+			'audio/mpeg',
+			'audio/ogg',
+			'audio/amr',
+			'video/mp4',
+			'video/3gpp',
+			'video/quicktime',
+			'application/octet-stream'
+			);
+	}
+	
+	
+	/*	The MIME types this application will let a browser render in place.
+		
+		Deliberately much shorter than allowedMimeTypes(). A type belongs here
+		only if a browser showing it cannot be made to run anything: no
+		script, no plugin, no external fetch under the document's control.
+		
+		text/html and image/svg+xml are absent on purpose. Both are perfectly
+		reasonable things to file on a case and both stay uploadable; they are
+		simply handed to the browser as a download instead of a preview.
+	*/
+	public static function inlineSafeMimeTypes()
+	{
+		return array(
+			'application/pdf',
+			'image/bmp',
+			'image/gif',
+			'image/jpeg',
+			'image/jpg',
+			'image/png',
+			'image/tiff',
+			'image/webp',
+			'text/plain'
+			);
+	}
+	
+	
+	/*	Send the response headers for handing a stored document to the
+		browser.
+		
+		Shared by cms/documents.php and cms/ops/docgen.php, which each built
+		these headers by hand from $doc->mime_type and $doc->doc_name and had
+		drifted apart. Three things it does that the hand-built versions did
+		not:
+		
+		1.	The stored type no longer decides whether the browser will run
+			the file. It was attacker-chosen -- uploadDoc() took it from the
+			multipart part, which the uploading client writes -- and it came
+			back out as "Content-Type: text/html" with "Content-Disposition:
+			inline", so a document uploaded as HTML ran its script on this
+			application's own origin with the viewer's session. On a legal
+			aid installation the uploader can be an intake worker with rights
+			on a single case and the viewer an administrator.
+			
+			Only a type on inlineSafeMimeTypes() is served as itself, inline.
+			Everything else is answered as application/octet-stream with
+			"Content-Disposition: attachment", so the browser saves it rather
+			than rendering it. The bytes are unchanged and the file still
+			opens in whatever application handles it; only the in-page
+			preview is refused.
+			
+		2.	X-Content-Type-Options: nosniff. Without it a browser is free to
+			decide an octet-stream body "looks like" HTML and render it
+			anyway, which would undo point 1.
+			
+		3.	Carriage returns and newlines are stripped from both values, and
+			the double quote from the file name. The uploader chooses the
+			file name, and a name holding a line break ends the header block
+			and lets them write headers -- or a whole second response -- into
+			another user's download.
+		
+		The old "Content-type: application/force-download" line is gone. It
+		was overwritten by the next header() call on every request, so it
+		never reached a client; leaving it in only suggested a protection
+		that was not there.
+	*/
+	public static function sendDownloadHeaders($mime_type = null, $doc_name = null)
+	{
+		$type = strtolower(trim((string) $mime_type));
+		$type = str_replace(array("\r","\n"),'',$type);
+		$name = str_replace(array("\r","\n",'"'),'',(string) $doc_name);
+		
+		if (in_array($type,self::inlineSafeMimeTypes(),true))
+		{
+			$disposition = 'inline';
+		}
+		
+		else
+		{
+			$type = 'application/octet-stream';
+			$disposition = 'attachment';
+		}
+		
+		if ('' === $name)
+		{
+			$name = 'document';
+		}
+		
+		header("Pragma: public");
+		header("Cache-Control: cache, must-revalidate");
+		header("X-Content-Type-Options: nosniff");
+		header("Content-Type: {$type}");
+		header("Content-Disposition: {$disposition}; filename=\"{$name}\"");
+	}
+	
+	
 	/* Returns array of items in reverse order from current folder
 	*  Used for pretty document tree
 	*/
@@ -205,8 +345,49 @@ class pikaDocument extends plBase
 			$this->description = $description;
 			$this->case_id = $case_id;
 			$this->doc_name = $file_array['name'];
-			if ($file_array['type'] != 'text/plain') {
-				$this->mime_type = $file_array['type'];
+			
+			/*	Settle the MIME type here rather than trusting the multipart
+				part.
+				
+				The declared type is preferred when it is on the allowlist,
+				because the browser gets the office formats right and the
+				server does not: libmagic reads a .docx as application/zip,
+				which would file every Word document as a zip archive and
+				break opening it from the document list.
+				
+				Detection is the fallback, for the case the declared type is
+				missing or is something this application does not file. If
+				that also comes back with nothing recognisable the document is
+				stored as application/octet-stream -- it is still downloadable,
+				it simply carries no claim about what it is.
+				
+				This is a narrowing of what can be stored, not the defence
+				against the file being rendered. text/html is on the allowlist
+				and stays there; sendDownloadHeaders() is what stops it being
+				run.
+			*/
+			$allowed_mime_types = self::allowedMimeTypes();
+			$declared_type = isset($file_array['type']) ? strtolower(trim((string) $file_array['type'])) : '';
+			$detected_type = '';
+			
+			if (function_exists('mime_content_type') && !empty($file_array['tmp_name']))
+			{
+				$detected_type = strtolower((string) @mime_content_type($file_array['tmp_name']));
+			}
+			
+			if ($declared_type && in_array($declared_type,$allowed_mime_types,true))
+			{
+				$this->mime_type = $declared_type;
+			}
+			
+			elseif ($detected_type && in_array($detected_type,$allowed_mime_types,true))
+			{
+				$this->mime_type = $detected_type;
+			}
+			
+			else
+			{
+				$this->mime_type = 'application/octet-stream';
 			}
 			$this->doc_type = $doc_type;
 			$this->doc_size = $file_array['size'];
