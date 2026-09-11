@@ -9817,5 +9817,20 @@ for rq_action in save_questionnaire add_questionnaire toggle_questionnaires diag
 done
 
 echo
+# ── 64. OCM9 lookup and report backports ───────────────────────────────────
+echo "64. bound case/contact lookups and HTML reports"
+if [ "$HAVE_DB" = 1 ]; then
+	if docker compose "${COMPOSE_ARGS[@]}" exec -T app php \
+		< "${SMOKE_DIR}/fixtures/zz_test_ocm9_backports.php" > "$BODY" 2>&1; then
+		ok "OCM9 lookup and report regression fixture passes"
+	else
+		bad "OCM9 lookup and report regression fixture failed"
+		cat "$BODY"
+	fi
+else
+	printf '  skip the OCM9 regression fixture (needs the app container)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

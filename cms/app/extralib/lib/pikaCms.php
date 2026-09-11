@@ -19,17 +19,17 @@ class pikaCms
 	{
 		if($number)
 		{
-			$sql = "SELECT * FROM cases WHERE number='$number' LIMIT 1";
+			$sql = "SELECT * FROM cases WHERE number=? LIMIT 1";
+			$params = array($number);
 		}
 		
 		else
 		{
-			$sql = "SELECT * FROM cases WHERE case_id='$case_id' LIMIT 1";
+			$sql = "SELECT * FROM cases WHERE case_id=? LIMIT 1";
+			$params = array($case_id);
 		}
 		
-		// echo $sql;
-		
-		return DB::query($sql);
+		return DB::preparedQuery($sql, $params);
 	}
 	
 	
@@ -383,8 +383,8 @@ class pikaCms
 
 		if ($a["zip"] && (!$a["city"] || !$a["state"] || !$a["county"]))
 		{
-			$sql = "SELECT * FROM zip_codes WHERE zip='{$a["zip"]}'";
-			$result = DB::query($sql);
+			$sql = "SELECT * FROM zip_codes WHERE zip=?";
+			$result = DB::preparedQuery($sql, array($a['zip']));
 			
 			if (DBResult::numRows($result) >= 1)
 			{
@@ -403,13 +403,8 @@ class pikaCms
 		
 		else if (!$a['zip'])
 		{
-			/*
-			$city = pl_rm_control($a["city"]);
-			$state = pl_rm_control($a["state"]);
-			$sql = "SELECT * FROM zip_codes WHERE city='{$city}' AND state='{$state}'";
-			*/
-			$sql = "SELECT * FROM zip_codes WHERE city='{$a["city"]}' AND state='{$a["state"]}'";
-			$result = DB::query($sql);
+			$sql = "SELECT * FROM zip_codes WHERE city=? AND state=?";
+			$result = DB::preparedQuery($sql, array($a['city'], $a['state']));
 			
 			// if there's more than one zip code in that city, don't auto-fill
 			if (DBResult::numRows($result) == 1)
@@ -480,8 +475,8 @@ class pikaCms
 			// Weed out 9 digit ZIP codes
 			$five_digit_zip = substr($a['zip'], 0, 5);
 			
-			$sql = "SELECT * FROM zip_codes WHERE zip='{$five_digit_zip}'";
-			$result = DB::query($sql);
+			$sql = "SELECT * FROM zip_codes WHERE zip=?";
+			$result = DB::preparedQuery($sql, array($five_digit_zip));
 			
 			if (DBResult::numRows($result) >= 1)
 			{
@@ -500,13 +495,8 @@ class pikaCms
 		
 		else if (!$a['zip'])
 		{
-			/*
-			$city = pl_rm_control($a["city"]);
-			$state = pl_rm_control($a["state"]);
-			$sql = "SELECT * FROM zip_codes WHERE city='{$city}' AND state='{$state}'";
-			*/
-			$sql = "SELECT * FROM zip_codes WHERE city='{$a["city"]}' AND state='{$a["state"]}'";
-			$result = DB::query($sql);
+			$sql = "SELECT * FROM zip_codes WHERE city=? AND state=?";
+			$result = DB::preparedQuery($sql, array($a['city'], $a['state']));
 			
 			// if there's more than one zip code in that city, don't auto-fill
 			if (DBResult::numRows($result) == 1)
