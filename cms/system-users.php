@@ -25,6 +25,7 @@ require_once('pikaGroup.php');
 require_once('app/lib/pikaCrypto.php');
 require_once('app/lib/pikaSsoOidc.php');
 require_once('app/lib/pikaUserAdminControls.php');
+require_once('app/lib/pikaPasswordChange.php');
 
 // Menus
 
@@ -271,6 +272,20 @@ switch ($action)
 			}
 		}
 		
+		/*	A password an administrator typed is a credential two people
+			know, and only one of them is accountable for what is done with
+			it. Mark the account so the holder has to replace it at the next
+			sign-in before they can reach anything else. Set on a new account
+			too: the administrator chose that first password as well.
+			
+			See cms/app/lib/pikaPasswordChange.php for the gate that enforces
+			it.
+		*/
+		if (strlen((string) $password) > 0)
+		{
+			pl_password_change_set($target_user_id, true);
+		}
+		
 		/*	MFA. This form carries the requirement flag and a reset
 			request, never a secret: the secret is minted by the account
 			holder on enroll_mfa.php. The columns are written with their
@@ -386,6 +401,12 @@ switch ($action)
 							"UPDATE users SET password = '', password_expire = 0 WHERE user_id = ? LIMIT 1",
 							array($target_user_id)
 						);
+						/*	And the forced-change flag with them. An account
+							that signs in at the identity provider has no
+							password here to change, so leaving the flag set
+							would point it at a form that cannot clear it.
+						*/
+						pl_password_change_set($target_user_id, false);
 					}
 					
 					if ($posted_method !== $prev_method)

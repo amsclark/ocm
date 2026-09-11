@@ -21,4 +21,5 @@ add_sso.sql
 add_peer_transfer.sql
 add_reauth_grants.sql
 add_session_ip_pin.sql
+add_must_change_password.sql
 add_shared_calendars.sql

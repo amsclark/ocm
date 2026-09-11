@@ -187,11 +187,22 @@ if [ -z "$(mysql_run -N -B -e "SELECT password FROM users WHERE user_id=1" 2>/de
 	fi
 	mysql_run -e "UPDATE users SET username='${ADMIN_USER}', password='${HASH}', group_id='system', enabled=1 WHERE user_id=1"
 	if [ "$generated" = 1 ]; then
+		# A generated password is printed below, and a container log is kept,
+		# copied and shipped to people who are not the account holder. Mark
+		# the account so this value has to be replaced at the first sign-in
+		# and is not a working credential for as long as the log survives.
+		#
+		# A password the operator chose in .env is not marked: it was never
+		# printed here, and forcing a change on it would surprise anyone
+		# scripting a deployment.
+		mysql_run -e "UPDATE users SET must_change_password=1 WHERE user_id=1"
 		echo "entrypoint: ================================================="
 		echo "entrypoint: generated admin login"
 		echo "entrypoint:   username: ${ADMIN_USER}"
 		echo "entrypoint:   password: ${ADMIN_PASSWORD}"
-		echo "entrypoint: Set ADMIN_PASSWORD in .env to choose your own."
+		echo "entrypoint: You will be asked to set your own password at the"
+		echo "entrypoint: first sign-in. Set ADMIN_PASSWORD in .env to skip"
+		echo "entrypoint: that and choose your own now."
 		echo "entrypoint: ================================================="
 	else
 		echo "entrypoint: admin user is '${ADMIN_USER}', password from ADMIN_PASSWORD"
