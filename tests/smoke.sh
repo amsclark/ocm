@@ -118,6 +118,36 @@ sm_reauth_post() {
 
 echo "smoke: $OCM_URL as $OCM_USER"
 
+# Confirm a fixture's identity before testing a different password rule.
+# Do not carry candidate passwords into the challenge response.
+sm_auth_grant() {
+	local jar="$1" password="$2" scope="$3" url="$4" token
+	curl -sL --max-time 30 -c "$jar" -b "$jar" -o "$BODY" "$OCM_URL/password.php" >/dev/null
+	token="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+		| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+	curl -sL --max-time 30 -c "$jar" -b "$jar" -o "$BODY" \
+		--data-urlencode "_csrf=${token}" --data-urlencode "_reauth_scope=${scope}" \
+		--data-urlencode "_reauth_password=${password}" "$url" >/dev/null
+}
+
+# Submit the password form, answer its challenge without candidate secrets,
+# then reenter the original form with the new CSRF token.
+sm_password_post() {
+	local jar="$1" password="$2" token
+	shift 2
+	curl -sL --max-time 30 -c "$jar" -b "$jar" -o "$BODY" "$@" >/dev/null
+	if grep -q 'name="_reauth_scope" value="password_change"' "$BODY"; then
+		if grep -qE 'name="(oldpass|newpass1|newpass2)"' "$BODY"; then
+			bad "the password-change challenge carries a password field"
+		fi
+		sm_auth_grant "$jar" "$password" password_change "$OCM_URL/password.php"
+		token="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		curl -sL --max-time 30 -c "$jar" -b "$jar" -o "$BODY" "$@" \
+			--data-urlencode "_csrf=${token}" >/dev/null
+	fi
+}
+
 # ── 1. The login page is served ────────────────────────────────────────────
 code="$(curl -s -o "$BODY" -w '%{http_code}' "$OCM_URL/")"
 if [ "$code" = 200 ] && grep -q 'login_pass' "$BODY"; then
@@ -3712,7 +3742,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			bad "$1: password.php rendered no CSRF token"
 			return
 		fi
-		curl -sL --max-time 30 -b "$PW_JAR" -o "$BODY" \
+		sm_password_post "$PW_JAR" "$2" \
 			--data-urlencode "action=update" \
 			--data-urlencode "oldpass=$2" \
 			--data-urlencode "newpass1=$3" \
@@ -4474,7 +4504,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		PWAUDIT0="$(adb "SELECT COUNT(*) FROM audit_log WHERE action = 'password.self_change_invalidated_sessions' AND object_id = '${PWUID}'")"
 
 		PWTOK="$(pw_token "$PWJARA")"
-		curl -sL --max-time 30 -c "$PWJARA" -b "$PWJARA" -o "$BODY" -X POST \
+		sm_password_post "$PWJARA" "$PWPASS" \
 			-d "_csrf=${PWTOK}&action=update&oldpass=${PWPASS}&newpass1=${PWNEW}&newpass2=${PWNEW}" \
 			"$OCM_URL/password.php" >/dev/null
 		if sed 's/&nbsp;/ /g' "$BODY" | grep -q 'Password updated successfully'; then
@@ -4515,6 +4545,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			bad "the throwaway user cannot sign in with the new password"
 		fi
 
+		ADMTOK="$(pw_token "$COOKIES")"
+		sm_auth_grant "$COOKIES" "$OCM_PASSWORD" user_admin "$OCM_URL/system-users.php"
 		ADMTOK="$(pw_token "$COOKIES")"
 		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" -X POST \
 			-d "_csrf=${ADMTOK}&action=update&user_id=${PWUID}&username=${PWUSER}&group_id=zz_pw_grp&enabled=1&password=zz-pw-Adm1nReset" \
@@ -4789,6 +4821,22 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		fi
 
 		# Now clear it the way a person does.
+		sm_auth_grant "$MCPJAR" "$MCPPASS" password_change "$OCM_URL/password.php"
+		MCPTOK="$(mcp_token)"
+		MCPBEFORE="$(adb "SELECT password FROM users WHERE user_id = ${MCPUID}")"
+		curl -sL --max-time 30 -b "$MCPJAR" -c "$MCPJAR" -o "$BODY" \
+			-d "action=update" -d "_csrf=${MCPTOK}" \
+			--data-urlencode "oldpass=${MCPPASS}" \
+			--data-urlencode "newpass1=${MCPPASS}" \
+			--data-urlencode "newpass2=${MCPPASS}" "$OCM_URL/password.php" >/dev/null
+		if [ -n "$MCPBEFORE" ] \
+			&& [ "$(adb "SELECT password FROM users WHERE user_id = ${MCPUID}")" = "$MCPBEFORE" ] \
+			&& [ "$(adb "SELECT must_change_password FROM users WHERE user_id = ${MCPUID}")" = 1 ] \
+			&& ! sed 's/&nbsp;/ /g' "$BODY" | grep -q 'Password updated successfully'; then
+			ok "reusing a forced-change password leaves the hash and flag unchanged"
+		else
+			bad "reusing the current password cleared the forced-change flag or changed the hash"
+		fi
 		curl -sL --max-time 30 -b "$MCPJAR" -c "$MCPJAR" -o "$BODY" \
 			"$OCM_URL/password.php" >/dev/null
 		MCPTOK="$(mcp_token)"
@@ -4799,7 +4847,11 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			--data-urlencode "newpass2=${MCPNEW}" \
 			"$OCM_URL/password.php" >/dev/null
 
-		if [ "$(adb "SELECT must_change_password FROM users WHERE user_id = ${MCPUID}")" = 0 ]; then
+		MCPAFTER="$(adb "SELECT password FROM users WHERE user_id = ${MCPUID}")"
+		MCPNEWOK="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			php -r 'echo password_verify($argv[1], $argv[2]) ? "1" : "0";' "$MCPNEW" "$MCPAFTER" </dev/null 2>/dev/null)"
+		if [ "$(adb "SELECT must_change_password FROM users WHERE user_id = ${MCPUID}")" = 0 ] \
+			&& [ "$MCPAFTER" != "$MCPBEFORE" ] && [ "$MCPNEWOK" = 1 ]; then
 			ok "changing the password clears the flag"
 		else
 			bad "the flag survived a password change - the account is stuck on the password page"
@@ -4816,6 +4868,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 
 		# And the other half: an administrator setting somebody's password
 		# has to raise the flag, or the admin-known value stays in service.
+		sm_auth_grant "$COOKIES" "$OCM_PASSWORD" user_admin "$OCM_URL/system-users.php"
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/system-users.php?action=edit&user_id=${MCPUID}" >/dev/null
 		MCPTOK="$(mcp_token)"
@@ -6649,9 +6702,16 @@ echo "56. a stored preference cannot name a file, reach SQL, or become PHP"
 if [ "$HAVE_DB" = 1 ]; then
 	PRSD=""
 	PRDEF=""
+	PRCASE=""
+	PRCASEOWNED=0
+	PRCASEMARK="ZZPRPREFS$$"
 	PRDEFFILE=/var/www/html/cms-custom/config/default_prefs.php
 
 	cleanup_pr() {
+		if [ "$PRCASEOWNED" = 1 ]; then
+			adb "DELETE FROM cases WHERE case_id = ${PRCASE} AND number = '${PRCASEMARK}'" >/dev/null
+			PRCASEOWNED=0
+		fi
 		if [ -n "$PRSD" ]; then
 			adb "UPDATE users SET session_data = '${PRSD}' WHERE user_id = 1" >/dev/null
 		fi
@@ -6762,19 +6822,23 @@ if [ "$HAVE_DB" = 1 ]; then
 	# pika_get_attorneys(). assign_atty.php needs a case, a field and one
 	# filter before it runs the search, and the offset comes off the query
 	# string, so this is the request that used to answer 500 with no body.
-	PRCASE="$(adb "SELECT case_id FROM cases ORDER BY case_id LIMIT 1")"
+	# Use our own row so this check also runs on an empty database.
+	PRCASE="$(adb "SELECT GREATEST(
+		COALESCE((SELECT MAX(case_id) FROM cases), 0),
+		COALESCE((SELECT count FROM counters WHERE id = 'cases'), 0)) + 1")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${PRCASE}, '${PRCASEMARK}', 1, 'ZZO', '1', 1)" >/dev/null
+	PRCASEOWNED=1
+	adb "UPDATE counters SET count = GREATEST(count, ${PRCASE}) WHERE id = 'cases'" >/dev/null
 
-	if [ -z "$PRCASE" ]; then
-		printf '  skip the attorney paging check (no case rows)\n'
+	PRCODE="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/assign_atty.php?case_id=${PRCASE}&field=pba_id&last_name=a&offset=abc")"
+
+	if [ "$PRCODE" = 200 ] && grep -qF 'Assign an Attorney' "$BODY" \
+		&& ! grep -qE 'Need more information\.|Access denied' "$BODY"; then
+		ok "an offset that is not a number does not break the attorney search"
 	else
-		PRCODE="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
-			"$OCM_URL/assign_atty.php?case_id=${PRCASE}&field=pba_id&last_name=a&offset=abc")"
-
-		if [ "$PRCODE" = 200 ] && [ -s "$BODY" ]; then
-			ok "an offset that is not a number does not break the attorney search"
-		else
-			bad "assign_atty.php answered ${PRCODE} for a non-numeric offset"
-		fi
+		bad "assign_atty.php answered ${PRCODE} for a non-numeric offset"
 	fi
 
 	# ops/update_prefs.php writes the same names straight into the session.
@@ -7229,9 +7293,9 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		fi
 
 		# 58d. confirm_delete is offered only to a group that can delete.
-		curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" \
-			"$OCM_URL/case.php?case_id=${CPREAD}&screen=confirm_delete" >/dev/null
-		if grep -q 'permission to delete this case' "$BODY"; then
+		CPCODE="$(curl -sL --max-time 30 -b "$CPJAR" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/case.php?case_id=${CPREAD}&screen=confirm_delete")"
+		if [ "$CPCODE" = 403 ] && grep -qE '(permission|authorized) to delete this case' "$BODY"; then
 			ok "the delete confirmation screen refuses a user without delete_case"
 		elif grep -q 'ops/delete_case.php' "$BODY"; then
 			bad "THE DELETE CONFIRMATION SCREEN OPENS TO ANY USER WHO CAN READ THE CASE"
@@ -8346,8 +8410,14 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	RAPASS='zz-ra-Passw0rd'
 	RANEW='zz-ra-N3wPassw0rd'
 	RAJAR="$(mktemp)"
+	RATARGETJAR="$(mktemp)"
+	RATARGETPASS='zz-ra-Target1!'
+	RATARGETNEW='zz-ra-Target2!'
 
 	cleanup_ra() {
+		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username IN ('zz_ra_reset','zz_ra_create'))" >/dev/null
+		adb "DELETE FROM users WHERE username IN ('zz_ra_reset','zz_ra_create')" >/dev/null
+		rm -f "$RATARGETJAR"
 		adb "DELETE FROM reauth_grants WHERE action_scope IN ('user_admin','password_change','settings')" >/dev/null
 		adb "DELETE FROM audit_log WHERE action LIKE 'reauth.%'" >/dev/null
 		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username = '${RAUSER}')" >/dev/null
@@ -8496,6 +8566,98 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	else
 		bad "an expired grant still let the change through"
 	fi
+
+	# Reset and create both need a second edit after confirmation. The
+	# challenge must not carry the chosen password or save a partial user.
+	for RAMODE in reset create; do
+		RATARGET="zz_ra_${RAMODE}"
+		RATARGETID=''
+		if [ "$RAMODE" = reset ]; then
+			RATARGETHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$RATARGETPASS" </dev/null 2>/dev/null)"
+			RATARGETID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+			adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire, must_change_password, first_name)
+				VALUES (${RATARGETID}, '${RATARGET}', '${RATARGETHASH}', 1, '${RAGROUP}', 0, 0, 'ZZRA Before')" >/dev/null
+			: > "$RATARGETJAR"
+			curl -sL --max-time 30 -c "$RATARGETJAR" -b "$RATARGETJAR" -o /dev/null \
+				-d "login_user=${RATARGET}&login_pass=${RATARGETPASS}&auth_id=1" "$OCM_URL/" >/dev/null
+			RALIVE="$(adb "SELECT COUNT(*) FROM user_sessions WHERE user_id = ${RATARGETID} AND (logout IS NULL OR logout = 0)")"
+			if [ "${RALIVE:-0}" -gt 0 ]; then
+				ok "the reset target has a live session before its password changes"
+			else
+				bad "the reset target has no live session to invalidate"
+			fi
+		fi
+		RABEFOREROW="$(adb "SELECT * FROM users WHERE username = '${RATARGET}'")"
+		adb "DELETE FROM reauth_grants WHERE session_id IN
+			(SELECT session_id FROM user_sessions WHERE user_id = ${RAUID}) AND action_scope = 'user_admin'" >/dev/null
+		RATOK="$(ra_token "$RAJAR")"
+		curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" \
+			-d "_csrf=${RATOK}&action=update&user_id=${RATARGETID}&username=${RATARGET}&group_id=${RAGROUP}&enabled=1" \
+			--data-urlencode 'first_name=ZZRA After' \
+			--data-urlencode "password=${RATARGETNEW}" "$OCM_URL/system-users.php" >/dev/null
+		if grep -q 'name="_reauth_scope" value="user_admin"' "$BODY" \
+			&& grep -q 'name="_reauth_edit_again" value="1"' "$BODY" \
+			&& ! grep -q 'name="password"' "$BODY" \
+			&& ! grep -qF "$RATARGETNEW" "$BODY" \
+			&& [ "$(adb "SELECT * FROM users WHERE username = '${RATARGET}'")" = "$RABEFOREROW" ]; then
+			ok "${RAMODE}: the challenge omits the password and leaves the user unchanged"
+		else
+			bad "${RAMODE}: the challenge leaked a password, lost its edit marker or wrote the user"
+		fi
+
+		# Send only the safe fields the challenge actually carried.
+		RATOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		RAHEAD="$(curl -s --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" -D - \
+			-d "_csrf=${RATOK}&_reauth_scope=user_admin&_reauth_edit_again=1&action=update&user_id=${RATARGETID}" \
+			-d "username=${RATARGET}&group_id=${RAGROUP}&enabled=1" \
+			--data-urlencode 'first_name=ZZRA After' \
+			--data-urlencode "_reauth_password=${RANEW}" "$OCM_URL/system-users.php")"
+		RARETURN="$(printf '%s' "$RAHEAD" | tr -d '\r' | sed -n 's/^[Ll]ocation: *//p')"
+		if printf '%s' "$RAHEAD" | grep -q '303' \
+			&& printf '%s' "$RARETURN" | grep -q 'system-users.php?action=edit' \
+			&& [ "$(adb "SELECT * FROM users WHERE username = '${RATARGET}'")" = "$RABEFOREROW" ] \
+			&& { [ "$RAMODE" != reset ] || [ "$(adb "SELECT COUNT(*) FROM user_sessions WHERE user_id = ${RATARGETID:-0} AND (logout IS NULL OR logout = 0)")" = "$RALIVE" ]; }; then
+			ok "${RAMODE}: confirmation returns to edit without a partial save"
+		else
+			bad "${RAMODE}: confirmation did not return to edit or changed the user"
+		fi
+		# Follow only this fixture's local edit route.
+		curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" \
+			"$OCM_URL/system-users.php?action=edit&user_id=${RATARGETID}&reauth=1" >/dev/null
+		if grep -q 'name="password"' "$BODY" && grep -q 'name="username"' "$BODY" \
+			&& ! grep -q 'name="_reauth_scope"' "$BODY"; then
+			ok "${RAMODE}: the edit screen lets the administrator reenter the password"
+		else
+			bad "${RAMODE}: the edit screen did not return after confirmation"
+		fi
+		RATOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" \
+			-d "_csrf=${RATOK}&action=update&user_id=${RATARGETID}&username=${RATARGET}&group_id=${RAGROUP}&enabled=1" \
+			--data-urlencode 'first_name=ZZRA After' \
+			--data-urlencode "password=${RATARGETNEW}" "$OCM_URL/system-users.php" >/dev/null
+		RATARGETID="$(adb "SELECT user_id FROM users WHERE username = '${RATARGET}'")"
+		RANEWHASH="$(adb "SELECT password FROM users WHERE username = '${RATARGET}'")"
+		RAPWOK="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			php -r 'echo password_verify($argv[1], $argv[2]) ? "1" : "0";' "$RATARGETNEW" "$RANEWHASH" </dev/null 2>/dev/null)"
+		if [ -n "$RATARGETID" ] && [ "$RAPWOK" = 1 ] \
+			&& [ "$(adb "SELECT first_name FROM users WHERE username = '${RATARGET}'")" = 'ZZRA After' ] \
+			&& [ "$(adb "SELECT must_change_password FROM users WHERE username = '${RATARGET}'")" = 1 ]; then
+			ok "${RAMODE}: reentering the form saves the password and requires its replacement"
+		else
+			bad "${RAMODE}: the second edit did not save the password, fields and forced-change flag"
+		fi
+		if [ "$RAMODE" = reset ]; then
+			if [ -n "$RATARGETID" ] \
+				&& [ "$(adb "SELECT COUNT(*) FROM user_sessions WHERE user_id = ${RATARGETID:-0} AND (logout IS NULL OR logout = 0)")" = 0 ]; then
+				ok "the confirmed administrator reset ends the target's old sessions"
+			else
+				bad "an old session survived the confirmed administrator reset"
+			fi
+		fi
+	done
 
 	cleanup_ra
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
@@ -8738,7 +8900,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			"$OCM_URL/password.php"
 		HIBP_TOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
 			| head -1 | sed 's/.*value="//;s/"//')"
-		curl -sL --max-time 30 -c "$HIBP_JAR" -b "$HIBP_JAR" -o "$BODY" \
+		sm_password_post "$HIBP_JAR" "$1" \
 			-X POST -d "action=update" -d "oldpass=$1" \
 			-d "newpass1=$2" -d "newpass2=$2" -d "_csrf=${HIBP_TOK}" \
 			"$OCM_URL/password.php"

@@ -121,6 +121,13 @@ if($action == 'update')
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Error: Old Password incorrect");
 		$is_authorized = false;
 	}
+	elseif (pl_password_change_required($auth_row['user_id'])
+		&& (password_verify($newpass1, $user->password) || hash_equals((string) $user->password, md5($newpass1))))
+	{
+		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',
+			'Error: Choose a new password that differs from your current password.');
+		$is_authorized = false;
+	}
 	else 
 	{
 		/*	Both settings hold a menu code, and both were compared against a

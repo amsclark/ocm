@@ -88,10 +88,22 @@ if (!pika_authorize('users', $a))
 	The second test catches the answer to the challenge itself, for the
 	case where the action did not survive into the carried body.
 */
-if ('update' == $action
-	|| (isset($_POST['_reauth_scope']) && 'user_admin' === $_POST['_reauth_scope']))
+$was_reauth_post = isset($_POST['_reauth_scope']) && 'user_admin' === $_POST['_reauth_scope'];
+if ('update' == $action && strlen((string) pl_grab_post('password')) > 0)
+{
+	// The challenge drops passwords. Carry only a request to reopen the form.
+	$_POST['_reauth_edit_again'] = '1';
+}
+if ('update' == $action || $was_reauth_post)
 {
 	pl_reauth_required('user_admin');
+}
+
+if ($was_reauth_post && isset($_POST['_reauth_edit_again']) && '1' === $_POST['_reauth_edit_again'])
+{
+	header("Location: {$base_url}/system-users.php?action=edit&user_id="
+		. rawurlencode((string) $user_id) . '&reauth=1', true, 303);
+	exit();
 }
 
 $result = pikaGroup::getGroupsDB();
@@ -144,6 +156,12 @@ switch ($action)
 		$template->addMenu('p_len',$menu_pass_length);
 		$template->addMenu('p_method',$menu_pass_method);
 		$main_html['content'] = $template->draw();
+		if ('1' === pl_grab_get('reauth'))
+		{
+			$main_html['content'] = pikaTempLib::plugin('success_flag', 'success_flag',
+				'Identity verified. No changes were saved. Enter the account changes and password again, then save.')
+				. $main_html['content'];
+		}
 		$name = pikaTempLib::plugin('text_name','name',$a,array(),array("nomiddle","noextra"));
 		$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
 							 <a href=\"{$base_url}/site_map.php\">Site Map</a> &gt;
