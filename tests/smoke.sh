@@ -6483,6 +6483,151 @@ else
 	printf '  skip the extension loader checks (needs the database and the container)\n'
 fi
 
+echo
+echo "55. the case transfer page"
+
+# cms/transfer.php printed three values into the page without encoding them.
+# case_id came straight out of the query string and landed inside the href of
+# the breadcrumb link and inside two value="..." attributes in
+# subtemplates/transfer.html; pl_clean_form_input() encodes < and > but not
+# quotes, and pl_template_sub() substitutes the value as it stands, so a quote
+# closed the attribute early and the rest of the parameter became markup. An
+# event handler needs no tag of its own, so autofocus onfocus= ran on load.
+# MySQL reads the leading digits when it compares an int column against a
+# string, so a payload beginning with a real case id still found the case and
+# the page still rendered. case_id and transfer_option_id are now read in
+# 'number' mode.
+#
+# The stored values had the same problem: cases.number and
+# transfer_options.label are both typed by a user and both were printed as
+# they stood. Each is now encoded once, where it is read.
+#
+# Loading the page also used to consume a case number. pikaCase treats a null
+# id as a new case and gives a new case its number straight away, which draws
+# the next value from the 'case_number' counter - and nothing here saves the
+# case, so the number was simply lost. The lookup now only runs when the
+# request named a case.
+#
+# Needs the database: the checks read a seeded case number and agency label
+# back out of the rendered page, and watch the counter.
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_tr() {
+		adb "DELETE FROM cases WHERE number = 'ZZ-TR<b>zz'" >/dev/null
+		adb "DELETE FROM transfer_options WHERE label = 'ZZTR<b>opt'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tr' EXIT
+	cleanup_tr
+
+	# Ids come from the `counters` row as well as from MAX(), because
+	# plBase::getNextID hands out the next primary key from counters.
+	tr_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+
+	tr_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# The case number and the agency label both carry a tag. cases.number is
+	# varchar(24), so the marker is short enough to survive the insert whole.
+	TRCASE="$(tr_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, open_date)
+		VALUES (${TRCASE}, 'ZZ-TR<b>zz', 1, CURDATE())" >/dev/null
+	tr_bump_counter cases "$TRCASE"
+
+	TROPT="$(tr_next_id transfer_options transfer_option_id)"
+	adb "INSERT INTO transfer_options (transfer_option_id, label, url, transfer_mode)
+		VALUES (${TROPT}, 'ZZTR<b>opt', 'http://127.0.0.1/zztr', 1)" >/dev/null
+	tr_bump_counter transfer_options "$TROPT"
+
+	# GET the transfer page with a query string and report the status code.
+	tr_get() {
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/transfer.php?$1"
+	}
+
+	if [ -z "$(adb "SELECT case_id FROM cases WHERE number = 'ZZ-TR<b>zz'")" ]; then
+		bad "could not seed the case transfer fixtures"
+	else
+		# The counter has to stand still across a request that names no case
+		# and a request that names something that is not a case id.
+		TRCOUNT_BEFORE="$(adb "SELECT count FROM counters WHERE id = 'case_number'")"
+
+		code="$(tr_get '')"
+		if [ "$code" = 200 ] && grep -qF 'No Case #' "$BODY"; then
+			ok "transfer.php with no case says 'No Case #'"
+		else
+			bad "transfer.php with no case answers ${code} without 'No Case #'"
+		fi
+
+		code="$(tr_get 'case_id=zznotanumber')"
+		if [ "$code" = 200 ] && grep -qF 'No Case #' "$BODY"; then
+			ok "transfer.php with a non-numeric case_id says 'No Case #'"
+		else
+			bad "transfer.php with a non-numeric case_id answers ${code} without 'No Case #'"
+		fi
+
+		TRCOUNT_AFTER="$(adb "SELECT count FROM counters WHERE id = 'case_number'")"
+		if [ "$TRCOUNT_BEFORE" = "$TRCOUNT_AFTER" ]; then
+			ok "the transfer page does not consume a case number"
+		else
+			bad "the transfer page consumed case numbers (${TRCOUNT_BEFORE} -> ${TRCOUNT_AFTER})"
+		fi
+
+		# A quote in case_id used to break out of the breadcrumb href.
+		code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			-G --data-urlencode "case_id=${TRCASE}\" onfocus=\"zztralert()\" autofocus x=\"" \
+			"$OCM_URL/transfer.php")"
+		if [ "$code" = 200 ] && ! grep -qF 'onfocus' "$BODY"; then
+			ok "a quote in case_id does not reach the page"
+		else
+			bad "a quote in case_id answers ${code} and reaches the page as an event handler"
+		fi
+
+		# The stored case number, in the breadcrumb and in the page body.
+		code="$(tr_get "case_id=${TRCASE}")"
+		if [ "$code" = 200 ] && grep -qF 'ZZ-TR&lt;b&gt;zz' "$BODY"; then
+			ok "the case number is encoded on the transfer page"
+		else
+			bad "the case number is not encoded on the transfer page (${code})"
+		fi
+
+		if grep -qF 'ZZ-TR<b>zz' "$BODY"; then
+			bad "the case number reaches the transfer page as markup"
+		else
+			ok "the case number does not reach the transfer page as markup"
+		fi
+
+		if grep -qF 'ZZTR&lt;b&gt;opt' "$BODY"; then
+			ok "the agency label is encoded in the transfer option list"
+		else
+			bad "the agency label is not encoded in the transfer option list"
+		fi
+
+		# The confirmation screen, which prints the label twice.
+		code="$(tr_get "case_id=${TRCASE}&action=pika&transfer_option_id=${TROPT}")"
+		if [ "$code" = 200 ] && ! grep -qF 'ZZTR<b>opt' "$BODY"; then
+			ok "the agency label is encoded on the confirmation screen"
+		else
+			bad "the agency label reaches the confirmation screen as markup (${code})"
+		fi
+
+		code="$(tr_get "case_id=${TRCASE}&action=pika&transfer_option_id=zznotanumber")"
+		if [ "$code" = 200 ]; then
+			ok "a non-numeric transfer_option_id still renders the page"
+		else
+			bad "a non-numeric transfer_option_id answers ${code}"
+		fi
+	fi
+
+	cleanup_tr
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the case transfer checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
