@@ -8589,8 +8589,10 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			fi
 		fi
 		RABEFOREROW="$(adb "SELECT * FROM users WHERE username = '${RATARGET}'")"
-		adb "DELETE FROM reauth_grants WHERE session_id IN
-			(SELECT session_id FROM user_sessions WHERE user_id = ${RAUID}) AND action_scope = 'user_admin'" >/dev/null
+		if ! adb "DELETE FROM reauth_grants WHERE BINARY session_id IN
+			(SELECT BINARY session_id FROM user_sessions WHERE user_id = ${RAUID}) AND action_scope = 'user_admin'" >/dev/null; then
+			bad "could not clear the fixture's user-admin grant before ${RAMODE}"
+		fi
 		RATOK="$(ra_token "$RAJAR")"
 		curl -sL --max-time 30 -c "$RAJAR" -b "$RAJAR" -o "$BODY" \
 			-d "_csrf=${RATOK}&action=update&user_id=${RATARGETID}&username=${RATARGET}&group_id=${RAGROUP}&enabled=1" \
