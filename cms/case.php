@@ -37,6 +37,7 @@ function pl_warning($str)
 */
 function pl_case_not_viewable($base_url)
 {
+	http_response_code(403);
 	$main_html = array();
 	$main_html['page_title'] = 'Case';
 	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php/\">Cases</a>";
@@ -193,6 +194,7 @@ if ('confirm_delete' == $clean_screen)
 {
 	if (!pika_authorize('delete_case', $case_row))
 	{
+		http_response_code(403);
 		$main_html['content'] = "You are not authorized to delete this case.";
 		$default_template = new pikaTempLib('templates/default.html',$main_html);
 		$buffer = $default_template->draw();
@@ -251,6 +253,7 @@ if ($year_opened >= 2008)
 
 // CASE CONTACTS LISTING	
 $clients = array();
+$raw_clients = array();
 $opposings = array();
 $others = array();
 
@@ -266,6 +269,7 @@ $result = $case1->getContactsDb();
 while ($row = DBResult::fetchRow($result))
 {
 	$contact_ids[] = $row['contact_id'];
+	$dirty_row = $row;
 	$row['full_name'] = pl_text_name($row);
 	$row['full_phone'] = pl_text_phone($row);
 	
@@ -302,7 +306,9 @@ while ($row = DBResult::fetchRow($result))
 		so hex-encode them: the value is then safe in a script block and inside
 		an attribute.
 	*/
-	$row['cnp_info_js'] = json_encode($row['cnp_info_js'],
+	$cnp_info_js = $row['cnp_info_js'];
+	$row = pl_clean_html_array($row);
+	$row['cnp_info_js'] = json_encode($cnp_info_js,
 		JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
 	// End custom template variable for client.
 	
@@ -323,6 +329,7 @@ while ($row = DBResult::fetchRow($result))
 	if ($row["relation_code"] == 1)
 	{
 		$clients[$row['contact_id']] = $row;
+		$raw_clients[$row['contact_id']] = $dirty_row;
 		
 		if ($row['contact_id'] == $case_row['client_id'])
 		{
@@ -340,7 +347,7 @@ while ($row = DBResult::fetchRow($result))
 				than closing a live hole.
 			*/
 			$confirm_js = 'return confirm(' . json_encode(
-				'Are you sure you want to remove ' . pl_text_name($row) . ' from this case?',
+				'Are you sure you want to remove ' . pl_text_name($dirty_row) . ' from this case?',
 				JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ');';
 			
 			$clients_html .= "<img src=\"images/point.gif\" alt=\"Arrow\"/> "
@@ -382,7 +389,7 @@ if ($case1->unread_sms > 0)
 		pointed at "<base_url>\case.php" and did not resolve.
 	*/
 	$case_row['client'] = "<p><a href=\"{$base_url}/case.php?"
-		. "case_id=" . (int) $case1->case_id . "&screen=sms\"><span class=\"badge badge-info\">"
+		. "case_id=" . (int) $case1->case_id . "&amp;screen=sms\"><span class=\"badge badge-info\">"
 		. (int) $case1->unread_sms . "</span> new SMS messages</a></p>" . $case_row['client'];
 }
 
@@ -461,7 +468,7 @@ if (array_key_exists('client_id', $case_row)
 	&& array_key_exists($case_row['client_id'], $clients))
 {
 	$case_row['client_name'] = pl_text_name($clients[$case_row['client_id']]);
-	$case_row['client_address'] = pl_html_address($clients[$case_row['client_id']]);
+	$case_row['client_address'] = pl_html_address($raw_clients[$case_row['client_id']]);
 	$case_row['client_phone'] = pl_text_phone($clients[$case_row['client_id']]);
 	$case_row['birth_date'] = pl_date_unmogrify($clients[$case_row['client_id']]['birth_date']);
 	$case_row['phone_notes'] = pl_html_text($case_row['phone_notes']);
@@ -494,9 +501,10 @@ $custom_dir = pl_custom_directory() . "/";
 pl_menu_set_temp('user_id', pikaMisc::fetchStaffArray());
 pl_menu_set_temp('case_handlers', pikaMisc::getCaseHandlerArray($case1->getValue('user_id'), $case1->getValue('cocounsel1'), $case1->getValue('cocounsel2')));
 // End GARBAGE.
-/*	Use $screen to look for a custom or stock tab module to include, otherwise 
-	give an error message.
-	Remove any naughty control characters before attempting to include the file.
+/*	Use $clean_screen to look for a custom or stock tab module to include,
+	otherwise give an error message. The name was reduced to
+	/^[A-Za-z0-9_-]+$/ where it was read; the pattern is asserted again here
+	so a later change to that line cannot quietly reach include().
 */
 /*	Belt and braces: $clean_screen was allowlisted where it was assigned and
 	is not written to in between, but these four lines are the ones that put it
@@ -507,7 +515,7 @@ if (!preg_match('/^[A-Za-z0-9_-]+$/', (string) $clean_screen))
 	$clean_screen = 'act';
 }
 
-if (file_exists("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php")){	
+if (file_exists("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php")){
 	include("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php");
 }elseif (file_exists("{$custom_dir}/modules/case-{$clean_screen}.php")){	
 	include("{$custom_dir}/modules/case-{$clean_screen}.php");
