@@ -1592,12 +1592,14 @@ class pikaMisc
 			
 			while ($r = DBResult::fetchArray($result))
 			{
-				/*	Contact name and role are free text a user typed, and the
-					SSN and phone match blocks further down this file already
-					run pl_clean_html_array() over the same kind of value.
-					This block did not, so a contact stored with markup in a
-					name or role field ran on the case-contact screen of every
-					user who opened that case.
+				/*	Same escape-consistency gap as the conflict panel below:
+					the contact name and the role are user-typed free text, and
+					the SSN and telephone blocks earlier in this function run
+					pl_clean_html_array() over their rows while these two did
+					not. No template in this repo renders case_contacts or
+					case_conflicts today, so this is not currently reachable
+					output -- it is escaped so that adding the tag back to
+					subtemplates/case_contact_list.html is not a new XSS.
 				*/
 				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_html_escape(pl_text_name($r)) 
 				. " (" . pl_html_escape($r['role']) . ")&nbsp;&nbsp;&nbsp;";
@@ -1612,10 +1614,9 @@ class pikaMisc
 				foreach($cons as $z)
 				{
 					//var_dump($z);
-					/*	Same gap as the case-contacts loop above: name, role
-						and cases.number are all user-typed free text and went
-						in raw. The two ids are integers, so cast them rather
-						than escaping, which also keeps the href a valid URL.
+					/*	The contact name, the role and cases.number are all
+						user-typed free text. Escape the text cells and cast
+						the two link ids.
 					*/
 					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id=" . (int) $z['contact_id'] . "\">" 
 					. pl_html_escape(pl_text_name($z)) . "</a> was a(n) " . pl_html_escape($z['role']) . " on "

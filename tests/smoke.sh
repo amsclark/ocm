@@ -7302,6 +7302,188 @@ else
 fi
 
 
+echo
+echo "59. case_contact.php authorization and case_id validation"
+# ── 59. case_contact.php authorization and case_id validation ──────────────
+# case_contact.php had no case_id validation and no authorization check of any
+# kind, and pikaMisc::htmlContactList('case_contact') does not merely read:
+# it builds a pikaCase out of the query string and calls
+# resetConflictStatus(false), which ends in $this->save().
+#
+#  a) With a case_id the caller could not read, the request wrote
+#     cases.poten_conflicts on that case.
+#  b) With no case_id at all, `new pikaCase(null)` is a NEW record, so the
+#     save INSERTed a case row -- and plBase::getNextID() had already taken the
+#     next case number out of `counters` to build it, so every hit also
+#     consumed a case number from the organisation's numbering sequence.
+#
+# The page now validates case_id as a positive integer and authorizes
+# edit_case, which is what ops/add_case_contact.php -- the handler behind this
+# form -- already checks.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	KCGROUP='zz_kc_grp'
+	KCUSER='zz_kc_user'
+	KCPASS='zz-kc-Passw0rd'
+	KCJAR="$(mktemp)"
+
+	cleanup_kc() {
+		adb "DELETE FROM conflict WHERE contact_id IN
+			(SELECT contact_id FROM contacts WHERE last_name = 'ZZKCCONTACT')" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = 'ZZKCCONTACT'" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-KC-1'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${KCUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${KCGROUP}'" >/dev/null
+		rm -f "$KCJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_kc' EXIT
+	cleanup_kc
+
+	kc_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	kc_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# A group with nothing at all, and a case with a handler and an office so
+	# that neither the intake branch nor read_office can reach it.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${KCGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	KCHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$KCPASS" </dev/null 2>/dev/null)"
+	KCUID="$(kc_next_id users user_id)"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${KCUID}, '${KCUSER}', '${KCHASH}', 1, '${KCGROUP}', 0)" >/dev/null
+	kc_bump_counter users "$KCUID"
+
+	KCCASE="$(kc_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, poten_conflicts)
+		VALUES (${KCCASE}, 'ZZ-KC-1', 1, 'ZZKCOFF', '1', 0)" >/dev/null
+	kc_bump_counter cases "$KCCASE"
+
+	# One contact on two roles on the same case, so fuzzyConflictCheck finds a
+	# potential conflict and resetConflictStatus() actually has a value to
+	# write. Without this the flag would stay 0 for the harmless reason.
+	KCCON="$(kc_next_id contacts contact_id)"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${KCCON}, 'Zz', 'ZZKCCONTACT')" >/dev/null
+	kc_bump_counter contacts "$KCCON"
+	KCK1="$(kc_next_id conflict conflict_id)"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+		VALUES (${KCK1}, ${KCCASE}, ${KCCON}, 1)" >/dev/null
+	kc_bump_counter conflict "$KCK1"
+	KCK2="$(kc_next_id conflict conflict_id)"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+		VALUES (${KCK2}, ${KCCASE}, ${KCCON}, 2)" >/dev/null
+	kc_bump_counter conflict "$KCK2"
+
+	if [ -z "$KCHASH" ] || [ -z "${KCCASE:-}" ]; then
+		bad "could not seed the case_contact fixtures (hash/case/contact)"
+	else
+		: > "$KCJAR"
+		curl -sL --max-time 30 -c "$KCJAR" -b "$KCJAR" -o "$BODY" \
+			-X POST -d "login_user=${KCUSER}&login_pass=${KCPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway case_contact user could not log in - section 59 is untested"
+		else
+			ok "the throwaway no-permission user can log in"
+
+			# The case has to be out of reach, or 59a proves nothing.
+			curl -sL --max-time 30 -b "$KCJAR" -o "$BODY" \
+				"$OCM_URL/case.php?case_id=${KCCASE}" >/dev/null
+			if grep -q 'This case is not viewable' "$BODY"; then
+				ok "the seeded case is out of the throwaway user's reach"
+			else
+				bad "the seeded case is readable by the throwaway user - 59a proves nothing"
+			fi
+
+			# 59a. The refused request must not write to the case row.
+			adb "UPDATE cases SET poten_conflicts = 0 WHERE case_id = ${KCCASE}" >/dev/null
+			curl -sL --max-time 30 -b "$KCJAR" -o "$BODY" \
+				"$OCM_URL/case_contact.php?case_id=${KCCASE}" >/dev/null
+
+			if grep -q 'This case is not viewable' "$BODY"; then
+				ok "case_contact.php refuses a case the user cannot edit"
+			else
+				bad "CASE_CONTACT.PHP HAS NO AUTHORIZATION CHECK (CWE-862)"
+			fi
+
+			KCFLAG="$(adb "SELECT COALESCE(poten_conflicts, 'NULL') FROM cases WHERE case_id = ${KCCASE}")"
+			if [ "$KCFLAG" = '0' ]; then
+				ok "the refused request did not write cases.poten_conflicts"
+			else
+				bad "A REFUSED case_contact.php REQUEST WROTE cases.poten_conflicts (${KCFLAG})"
+			fi
+
+			# 59b. No case_id must not create a case, and must not burn a case
+			# number out of the counters table.
+			KCBEFORE="$(adb "SELECT COUNT(*) FROM cases")"
+			KCCOUNTER="$(adb "SELECT COALESCE(count, 0) FROM counters WHERE id = 'cases'")"
+			KCCODE="$(curl -s --max-time 30 -b "$KCJAR" -o /dev/null -w '%{http_code}' \
+				"$OCM_URL/case_contact.php")"
+			KCAFTER="$(adb "SELECT COUNT(*) FROM cases")"
+			KCCOUNTER2="$(adb "SELECT COALESCE(count, 0) FROM counters WHERE id = 'cases'")"
+
+			if [ "$KCCODE" = '302' ]; then
+				ok "case_contact.php with no case_id redirects"
+			else
+				bad "case_contact.php with no case_id answered ${KCCODE}, not a redirect"
+			fi
+
+			if [ "$KCBEFORE" = "$KCAFTER" ]; then
+				ok "case_contact.php with no case_id does not create a case row"
+			else
+				bad "CASE_CONTACT.PHP WITH NO case_id CREATED A CASE (${KCBEFORE} -> ${KCAFTER})"
+			fi
+
+			if [ "$KCCOUNTER" = "$KCCOUNTER2" ]; then
+				ok "case_contact.php with no case_id does not consume a case number"
+			else
+				bad "CASE_CONTACT.PHP CONSUMED A CASE NUMBER (counters.cases ${KCCOUNTER} -> ${KCCOUNTER2})"
+			fi
+
+			# 59c. The page still works for a user who may edit the case, or
+			# the gate has replaced a vulnerability with an outage. $COOKIES
+			# is the admin session, which is in the `system` group.
+			KCCODE="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+				"$OCM_URL/case_contact.php?case_id=${KCCASE}")"
+			if [ "$KCCODE" = '200' ] && ! grep -q 'This case is not viewable' "$BODY" \
+				&& grep -q 'case_contact.php' "$BODY"; then
+				ok "an authorized user still gets the add-contact form"
+			else
+				bad "the authorized add-contact form is broken (${KCCODE}, $(wc -c < "$BODY") bytes)"
+			fi
+
+			# And the write it is supposed to do still happens for that user.
+			KCFLAG="$(adb "SELECT COALESCE(poten_conflicts, 'NULL') FROM cases WHERE case_id = ${KCCASE}")"
+			if [ "$KCFLAG" = '1' ]; then
+				ok "an authorized request still sets cases.poten_conflicts"
+			else
+				bad "an authorized request no longer sets cases.poten_conflicts (got '${KCFLAG}')"
+			fi
+
+			# A non-numeric case_id must not reach `new pikaCase()` either.
+			KCCODE="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -w '%{http_code}' \
+				"$OCM_URL/case_contact.php?case_id=abc")"
+			if [ "$KCCODE" = '302' ]; then
+				ok "a non-numeric case_id redirects instead of building a case"
+			else
+				bad "case_contact.php?case_id=abc answered ${KCCODE}, not a redirect"
+			fi
+		fi
+	fi
+
+	cleanup_kc
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the case_contact authorization checks (needs the database and compose)\n'
+fi
+
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
