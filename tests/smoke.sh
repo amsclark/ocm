@@ -4838,6 +4838,154 @@ else
 	printf '  skip the forced password change (needs the database and compose)\n'
 fi
 
+echo
+echo "44. the case lookup service answers only for cases the caller may read"
+
+# services/cases-lookup-ajax.php asked pika_authorize('read_case', ...) and
+# then emitted the whole case row either way -- the else branch was a copy of
+# the branch above it. Any signed-in user could walk case_id from 1 upwards
+# and read every field of every case, whatever their office or assignment.
+#
+# cases.office and cases.funding are char(3), and CI runs a non-strict
+# sql_mode, so a longer marker in either column is silently cut to three
+# characters and an assertion looking for the whole marker passes without
+# testing anything. The markers below live in cases.number, which is
+# varchar(24).
+if [ "$HAVE_DB" = 1 ]; then
+	CLGROUP='zz_cl_grp'
+	CLUSER='zz_cl_user'
+	CLPASS='zz-cl-Passw0rd'
+	CLJAR="$(mktemp)"
+
+	cleanup_cl() {
+		adb "DELETE FROM audit_log WHERE action = 'case.read_denied'" >/dev/null
+		adb "DELETE FROM cases WHERE number IN ('ZZ-CL-SECRET', 'ZZ-CL-OTHER', 'ZZ-CL-MINE')" >/dev/null
+		adb "DELETE FROM users WHERE username = '${CLUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${CLGROUP}'" >/dev/null
+		rm -f "$CLJAR" "${BODY}.cl"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cl' EXIT
+	cleanup_cl
+
+	# Every flag off: this user may reach its own cases and nothing else.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${CLGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	CLHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$CLPASS" </dev/null 2>/dev/null)"
+	CLUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${CLUID}, '${CLUSER}', '${CLHASH}', 1, '${CLGROUP}', 0)" >/dev/null
+
+	cl_seed_case() {
+		# $1 case number, $2 owning user_id -> echoes the new case_id
+		local cid
+		cid="$(adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(case_id) FROM cases), 0),
+			COALESCE((SELECT count FROM counters WHERE id = 'cases'), 0)) + 1")"
+		adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+			VALUES (${cid}, '${1}', ${2}, 'ZZO', '1', 1)" >/dev/null
+		adb "UPDATE counters SET count = GREATEST(count, ${cid}) WHERE id = 'cases'" >/dev/null
+		echo "$cid"
+	}
+
+	# Two cases owned by somebody else and one owned by the caller.
+	CLSECRET="$(cl_seed_case ZZ-CL-SECRET 1)"
+	CLOTHER="$(cl_seed_case ZZ-CL-OTHER 1)"
+	CLMINE="$(cl_seed_case ZZ-CL-MINE "$CLUID")"
+
+	cl_lookup() {
+		curl -sL --max-time 30 -b "$2" -o "$BODY" \
+			"$OCM_URL/services/cases-lookup-ajax.php?case_id=${1}" >/dev/null
+	}
+
+	if [ -z "$CLHASH" ] || [ -z "${CLSECRET:-}" ] || [ -z "${CLOTHER:-}" ] || [ -z "${CLMINE:-}" ]; then
+		bad "could not seed the case lookup fixtures"
+	else
+		: > "$CLJAR"
+		curl -sL --max-time 30 -c "$CLJAR" -b "$CLJAR" -o "$BODY" \
+			-X POST -d "login_user=${CLUSER}&login_pass=${CLPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway lookup user could not log in - section 44 is untested"
+		else
+			ok "the throwaway lookup user can log in"
+
+			# 44a. The case this user owns still answers, so the fix did not
+			# simply turn the endpoint off.
+			cl_lookup "$CLMINE" "$CLJAR"
+			if grep -q 'ZZ-CL-MINE' "$BODY"; then
+				ok "a case the caller owns still returns its fields"
+			else
+				bad "the caller's own case no longer returns anything"
+			fi
+
+			# 44b. The case this user has no claim on must give up nothing.
+			cl_lookup "$CLSECRET" "$CLJAR"
+			if grep -q 'ZZ-CL-SECRET' "$BODY"; then
+				bad "a case the caller cannot read returned its case number"
+			else
+				ok "a case the caller cannot read gives up no case number"
+			fi
+			if grep -qE '<(client_id|intake_user_id|user_id)>' "$BODY"; then
+				bad "a case the caller cannot read returned case fields"
+			else
+				ok "a case the caller cannot read returns no case fields at all"
+			fi
+
+			# 44c. Still XML, so the caller's parser does not choke.
+			if grep -q '<pikaCase' "$BODY"; then
+				ok "the refusal is still a parseable pikaCase document"
+			else
+				bad "the refusal is not a pikaCase document"
+			fi
+
+			# 44d. Two different refused cases answer with the same bytes, so
+			# the body carries nothing about which case was asked for.
+			cp "$BODY" "${BODY}.cl"
+			cl_lookup "$CLOTHER" "$CLJAR"
+			if cmp -s "$BODY" "${BODY}.cl"; then
+				ok "two different refused cases answer with identical bytes"
+			else
+				bad "the refusal body differs between two refused cases"
+			fi
+			rm -f "${BODY}.cl"
+
+			# 44e. Both attempts are recorded, against the id that was asked for.
+			if [ "$(adb "SELECT COUNT(*) FROM audit_log
+					WHERE action = 'case.read_denied'
+						AND object_id = ${CLSECRET}")" -ge 1 ] \
+				&& [ "$(adb "SELECT COUNT(*) FROM audit_log
+					WHERE action = 'case.read_denied'
+						AND object_id = ${CLOTHER}")" -ge 1 ]; then
+				ok "audit_log recorded case.read_denied for both refused cases"
+			else
+				bad "audit_log has no case.read_denied row for a refused case"
+			fi
+			if [ "$(adb "SELECT COUNT(*) FROM audit_log
+					WHERE action = 'case.read_denied'
+						AND object_id = ${CLMINE}")" = 0 ]; then
+				ok "the case the caller owns is not recorded as a refusal"
+			else
+				bad "reading an allowed case was recorded as a refusal"
+			fi
+
+			# 44f. The administrator reads any case, as before.
+			cl_lookup "$CLSECRET" "$COOKIES"
+			if grep -q 'ZZ-CL-SECRET' "$BODY"; then
+				ok "the admin still reads the case the other user cannot"
+			else
+				bad "the admin can no longer read the case - the gate is too tight"
+			fi
+		fi
+	fi
+
+	cleanup_cl
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the case lookup checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
