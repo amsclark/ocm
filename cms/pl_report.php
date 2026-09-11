@@ -2,13 +2,6 @@
 
 $output_format = 'html';
 
-// determine the format the report will be displayed in
-if ($output_format != 'html' && $output_format != 'pdf' && $output_format != 'rtf')
-{
-	$output_format = 'pdf';
-}
-
-
 function pl_report_headers($filename, $file_desc='')
 {
 	global $output_format;
@@ -59,7 +52,7 @@ function pl_process_comma_vals($str)
 
 class pikaReport
 {
-	var $format = 'pdf';
+	var $format = 'html';
 	var $align = 'landscape';
 	var $filename = 'pika-file';
 	
@@ -81,112 +74,7 @@ class pikaReport
 
 	function display($buffer)
 	{
-		global $plSettings;
-		
-		$rand_str = substr(md5(microtime()), 0, 5);
-		// doesn't seem to help
-		// header('Cache-control: private');
-		
-		// PDF will crash netscape 4.x on win32 test system
-		// But this is taking out IE 6 as well.
-		/*
-		if (strstr($_SERVER['HTTP_USER_AGENT'], 'Mozilla/4.'))
-		{
-			$this->format = 'html';
-		}
-		*/
-
-		if ('pdf' == $this->format)
-		{
-			$fp = fopen(PL_TMP_PATH . "/csr-$rand_str.html", 'w');
-			fputs($fp, $buffer);
-			fclose($fp);
-
-			$pdf_command = "htmldoc -t pdf \
-									--{$this->align} --no-links \
-									--webpage --gray --textfont courier --headingfont courier\
-									--header \"   \" --footer \"   \" \
-									--fontsize 10 --top 0.5in --bottom 0.5in \
-									--left 0.5in --right 0.5in " . PL_TMP_PATH . "/csr-$rand_str.html";
-
-			
-			// Dropbox method.
-			/*
-			$pdf_buffer = shell_exec("$pdf_command");
-
-			$fp = fopen("dropbox/{$this->filename}-$rand_str.pdf", 'w');
-			fputs($fp, $pdf_buffer);
-			fclose($fp);
-			
-			header("Location: {$plSettings['base_url']}/dropbox/{$this->filename}-$rand_str.pdf");
-			*/
-			
-			
-			// Passthru-echo method.
-			$pdf_buffer = shell_exec($pdf_command);
-			
-			header("Pragma: cache");
-			header('Content-Type: application/pdf');
-			
-			// AMW - 2004-01-02
-			//header("Accept-Ranges: bytes"); 
-
-			header('Content-Disposition: inline; filename="file.pdf"');
-			
-			// AMW - 2004-02-17
-			//flush();
-
-			echo $pdf_buffer;
-			
-			
-			/*
-			// Passthru-flush method.
-			header("Content-Type: application/pdf");
-			header('Content-Disposition: inline; filename="file.pdf"');
-		    flush();
-		    passthru($pdf_command);
-			*/
-			
-			//passthru($pdf_command);
-
-			/*
-			if (strstr($HTTP_USER_AGENT, 'MSIE'))
-			{
-				$attachment = ' inline';
-			}
-
-			else
-			{
-				$attachment = ' attachment;';
-			}
-			*/
-			// header( "Content-Disposition:$attachment filename={$this->filename}.{$this->output_format}" );
-			// header( "Content-Description: $file_desc" );
-				
-			/*
-			NOTE: In Internet Explorer, the Content-Disposition header is important, otherwise it will be 
-			inline. 'Content-Disposition: attachment' will ALWAYS make IE download it.
-
-			NOTE: In Netscape, if you want to force it to be a download (i.e. not inline), use 
-			header('Content-Type: application/octet-stream').
-			*/
-			//$buffer = str_replace("'", "\'", $buffer);
-
-			unlink(PL_TMP_PATH . "/csr-$rand_str.html");
-			exit();
-		}
-
-		else if ('rtf' == $this->format)
-		{
-			$fp = fopen("dropbox/{$this->filename}-$rand_str.rtf", 'w');
-			fputs($fp, $buffer);
-			fclose($fp);
-			
-			header("Location: {$plSettings['base_url']}/dropbox/{$this->filename}-$rand_str.rtf");
-			exit();
-		}
-
-		else if ('html' == $this->format)
+		if ('html' == $this->format)
 		{
 			echo $buffer;
 		}
