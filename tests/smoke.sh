@@ -4516,6 +4516,151 @@ else
 	printf '  skip the password change session checks (needs the database)\n'
 fi
 
+# ── 40. The session address pin ────────────────────────────────────────────
+# A signed-in session is tied to the browser and the network it was made
+# from. The 2019 code accepted either one on its own, and a user agent
+# string is not a secret, so a stolen cookie was enough. These checks drive
+# the pin through a real session: the fixture signs in, the stored address
+# on its own user_sessions row is rewritten, and the next request says
+# whether the session survived.
+echo
+echo "40. the session address pin"
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	PINGROUP="zz_pin_grp"
+	PINUSER="zz_pin_user"
+	PINPASS="zz-pin-Passw0rd"
+	PINJAR="$(mktemp)"
+	PINMODE="$(adb "SELECT value FROM settings WHERE label = 'session_ip_pin'")"
+
+	cleanup_pin() {
+		adb "DELETE FROM user_sessions WHERE user_id = ${PINUID:-0}" >/dev/null
+		adb "DELETE FROM users WHERE username = '${PINUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${PINGROUP}'" >/dev/null
+		adb "UPDATE settings SET value = '${PINMODE:-network}' WHERE label = 'session_ip_pin'" >/dev/null
+		rm -f "$PINJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pin' EXIT
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${PINGROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	PINHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$PINPASS" </dev/null 2>/dev/null)"
+	PINUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${PINUID}, '${PINUSER}', '${PINHASH}', 1, '${PINGROUP}', 0)" >/dev/null
+
+	# Sign the fixture in and hand back the user_sessions row it minted.
+	# $1 is the user agent to sign in with.
+	pin_login() {
+		: > "$PINJAR"
+		curl -s --max-time 30 -c "$PINJAR" -b "$PINJAR" -o /dev/null -A "$1" "$OCM_URL/" >/dev/null
+		curl -sL --max-time 30 -c "$PINJAR" -b "$PINJAR" -o /dev/null -A "$1" \
+			-d "login_user=${PINUSER}&login_pass=${PINPASS}&auth_id=1" "$OCM_URL/" >/dev/null
+		adb "SELECT user_session_id FROM user_sessions
+			WHERE user_id = ${PINUID} AND (logout IS NULL OR logout = 0)
+			ORDER BY user_session_id DESC LIMIT 1"
+	}
+
+	# Make one more request on the fixture's session and say whether it is
+	# still signed in. "yes" means the application answered; "no" means it
+	# put the login form up instead. $1 is the user agent.
+	pin_still_in() {
+		curl -sL --max-time 30 -c "$PINJAR" -b "$PINJAR" -o "$BODY" -A "$1" \
+			"$OCM_URL/password.php" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			printf 'no\n'
+		else
+			printf 'yes\n'
+		fi
+	}
+
+	if [ -z "$PINHASH" ] || [ -z "${PINUID:-}" ]; then
+		bad "could not seed the session pin fixtures (hash/user)"
+	else
+		# 40a. The ordinary case. An address that moves inside the network
+		# the session was made on is not a hijack, and signing people out
+		# for it is what makes an office turn the whole control off.
+		PINSID="$(pin_login 'smoke-pin-agent')"
+		PINIP="$(adb "SELECT ip_address FROM user_sessions WHERE user_session_id = ${PINSID}")"
+		PINNET="$(printf '%s' "$PINIP" | cut -d. -f1-3)"
+		adb "UPDATE user_sessions SET ip_address = '${PINNET}.222' WHERE user_session_id = ${PINSID}" >/dev/null
+		if [ "$(pin_still_in 'smoke-pin-agent')" = yes ]; then
+			ok "a session continues from another address on the same network"
+		else
+			bad "a session was refused for moving inside its own network"
+		fi
+
+		# 40b. A different network is refused even though the user agent
+		# still matches. This is the half the old rule gave away: it
+		# accepted a matching address OR a matching user agent, and a user
+		# agent string is one header to copy, so a stolen cookie replayed
+		# from anywhere was enough.
+		PINSID="$(pin_login 'smoke-pin-agent')"
+		adb "UPDATE user_sessions SET ip_address = '10.99.99.99' WHERE user_session_id = ${PINSID}" >/dev/null
+		if [ "$(pin_still_in 'smoke-pin-agent')" = no ]; then
+			ok "a session from a different network is refused"
+		else
+			bad "a session was accepted from a different network"
+		fi
+
+		# 40c. And the other half: the right address is not enough either.
+		PINSID="$(pin_login 'smoke-pin-agent')"
+		if [ "$(pin_still_in 'smoke-pin-other-agent')" = no ]; then
+			ok "a matching address alone does not carry a session"
+		else
+			bad "a matching address alone still carries a session"
+		fi
+
+		# 40d. An office whose public address will not hold still has to be
+		# able to turn the address half off, or it turns off sign-in
+		# security altogether by other means.
+		adb "UPDATE settings SET value = 'off' WHERE label = 'session_ip_pin'" >/dev/null
+		PINSID="$(pin_login 'smoke-pin-agent')"
+		adb "UPDATE user_sessions SET ip_address = '10.99.99.99' WHERE user_session_id = ${PINSID}" >/dev/null
+		if [ "$(pin_still_in 'smoke-pin-agent')" = yes ]; then
+			ok "session_ip_pin=off lets a moved address through"
+		else
+			bad "session_ip_pin=off did not turn the address check off"
+		fi
+
+		# 40e. The user agent pin is not part of the setting, so it still
+		# applies with the address check off.
+		PINSID="$(pin_login 'smoke-pin-agent')"
+		if [ "$(pin_still_in 'smoke-pin-other-agent')" = no ]; then
+			ok "session_ip_pin=off leaves the user agent pin in place"
+		else
+			bad "session_ip_pin=off also turned the user agent pin off"
+		fi
+		adb "UPDATE settings SET value = 'network' WHERE label = 'session_ip_pin'" >/dev/null
+
+		# 40f. The column has to hold an address. At VARCHAR(15) an IPv6
+		# client's address is silently cut to its first 15 characters, the
+		# next request compares the piece against the whole, and the user
+		# is bounced back to the sign-in page every time they sign in.
+		PINSID="$(pin_login 'smoke-pin-agent')"
+		PINV6='2001:0db8:85a3:0000:0000:8a2e:0370:7334'
+		adb "UPDATE user_sessions SET ip_address = '${PINV6}' WHERE user_session_id = ${PINSID}" >/dev/null
+		if [ "$(adb "SELECT ip_address FROM user_sessions WHERE user_session_id = ${PINSID}")" = "$PINV6" ]; then
+			ok "user_sessions.ip_address holds a full IPv6 address"
+		else
+			bad "user_sessions.ip_address truncates an IPv6 address"
+		fi
+
+		# 40g. An administrator has to be able to find the switch.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
+		if grep -q 'name="session_ip_pin"' "$BODY"; then
+			ok "system-settings.php offers the session address pin control"
+		else
+			bad "system-settings.php has no session address pin control"
+		fi
+	fi
+
+	cleanup_pin
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the session address pin checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"

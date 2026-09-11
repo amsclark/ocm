@@ -118,7 +118,8 @@ $expire = array('0' => "Unlimited",
 $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression',
 	'enable_benchmark', 'autonumber_on_new_case',
 	'owner_name', 'admin_email', 'act_interval',
-	'time_zone', 'time_zone_offset', 'session_timeout', 'pass_min_strength',
+	'time_zone', 'time_zone_offset', 'session_timeout', 'session_ip_pin',
+	'pass_min_strength',
 	'pass_min_length', 'password_expire', 'force_https', 'autofill_time_funding',
 	'open_outcomes', 'multi_outcomes', 'ca_iolta_outcomes',
 	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
@@ -297,6 +298,10 @@ switch ($action)
 		$template->addMenu('pass_min_strength',$pass_min_strength);
 		$template->addMenu('pass_min_length',$pass_min_length);
 		$template->addMenu('password_expire', $expire);
+		$template->addMenu('session_ip_pin', array(
+			'network' => 'Same network as sign-in (recommended)',
+			'off'     => 'Do not check the address'
+		));
 		$template->addMenu('sso_provider', array(
 			''        => 'None',
 			'google'  => 'Google Workspace',
