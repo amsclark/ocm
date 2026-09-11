@@ -266,10 +266,39 @@ H2, H4 { font-size: 19px;	}\n
 /* The theme file will declare a string variable $pikaTheme, which contains whatever CSS code needed
 to implement the theme.
 */
-include("themes/{$_SESSION['theme']}.php");
+/*	The theme name is a stored user preference, so it cannot be trusted to
+	name a file. cms/prefs.php writes the preferences into
+	users.session_data, and pikaDefPrefs::initPrefs() puts them back in the
+	session on every request, so a name holding '../' was included from
+	wherever it pointed - any .php file on the server ran as part of the
+	page. Hold the name to a plain word, require the file to be one that is
+	really in themes/, and fall back to a theme that ships with the
+	application.
+*/
+$pika_theme_name = isset($_SESSION['theme']) ? (string) $_SESSION['theme'] : '';
+
+if (!preg_match('/^[A-Za-z0-9_ -]+$/', $pika_theme_name)
+	|| !is_file(__DIR__ . "/themes/{$pika_theme_name}.php"))
+{
+	$pika_theme_name = 'Blue';
+}
+
+include(__DIR__ . "/themes/{$pika_theme_name}.php");
+
+/*	The font size preference is an array key, and a key that is not there is
+	a PHP warning - which this application answers with its error page, so a
+	preference holding anything but one of the four names below used to take
+	every page that loads this file with it.
+*/
+$pika_font_size = isset($_SESSION['font_size']) ? (string) $_SESSION['font_size'] : '';
+
+if (!isset($pikaFontSizes[$pika_font_size]))
+{
+	$pika_font_size = 'Medium';
+}
 
 // Include theme, font size CSS code in the HTML header
-$plTemplate['header'] = "-->\n<style type='text/css'><!--\n{$pikaTheme}\n{$pikaFontSizes[$_SESSION['font_size']]}\n--></style>\n<!--";
+$plTemplate['header'] = "-->\n<style type='text/css'><!--\n{$pikaTheme}\n{$pikaFontSizes[$pika_font_size]}\n--></style>\n<!--";
 
 // more TEMPLATE VALUES
 $plTemplate["timestamp"] = date('g:i A * M j, Y');
@@ -1316,14 +1345,28 @@ function pika_get_attorneys($filter, &$pba_count, $first_row="", $list_length=""
 	
 	else
 	{
+		/*	Both of these end up in the SQL below unquoted. $first_row is the
+			offset out of the query string and $list_length is the paging
+			preference, so neither is a number because it was asked for -
+			assign_atty.php?offset=abc put the word abc where MySQL expected
+			a row count and the query threw, which this application answers
+			with HTTP 500 and an empty body. LIMIT takes integers.
+			
+			$sql_limit also has to start as a string: when there is no limit
+			to apply neither branch below assigned it, and it was read anyway.
+		*/
+		$sql_limit = "";
+		$first_row = (int) $first_row;
+		$list_length = (int) $list_length;
+		
 		if ($first_row && $list_length)
 		{
-			$sql_limit = " LIMIT $first_row, $list_length";
+			$sql_limit = " LIMIT {$first_row}, {$list_length}";
 		}
 		
 		else if ($list_length)
 		{
-			$sql_limit = " LIMIT $list_length";
+			$sql_limit = " LIMIT {$list_length}";
 		}
 		
 		// handle filter options

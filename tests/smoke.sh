@@ -6628,6 +6628,268 @@ else
 	printf '  skip the case transfer checks (needs the database)\n'
 fi
 
+echo
+echo "56. a stored preference cannot name a file, reach SQL, or become PHP"
+
+# A preference is a request value that is stored and then used with nothing
+# checking it again. cms/prefs.php wrote whatever the request offered into
+# users.session_data, pikaDefPrefs::initPrefs() put that back into $_SESSION
+# on every later request, and cms/pika_cms.php then include()d
+# themes/<theme>.php and interpolated the paging count straight into a LIMIT
+# clause - so a theme name holding '../' ran any .php file on the server as
+# part of the page, a font size that was not one of the four names took every
+# page with it, and a paging count that was not a number made the attorney
+# search answer HTTP 500 with an empty body.
+#
+# cms/system-default_prefs.php writes the same values into
+# cms-custom/config/default_prefs.php, which every request includes.
+# pikaFileArray::array2Php() built the PHP literals by hand, so a value
+# holding a double quote closed its own string and added an expression of its
+# own to that file.
+if [ "$HAVE_DB" = 1 ]; then
+	PRSD=""
+	PRDEF=""
+	PRDEFFILE=/var/www/html/cms-custom/config/default_prefs.php
+
+	cleanup_pr() {
+		if [ -n "$PRSD" ]; then
+			adb "UPDATE users SET session_data = '${PRSD}' WHERE user_id = 1" >/dev/null
+		fi
+		if [ "$HAVE_COMPOSE" = 1 ] && [ -n "$PRDEF" ]; then
+			printf '%s' "$PRDEF" | docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				sh -c "base64 -d > ${PRDEFFILE}" >/dev/null 2>&1
+			docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				rm -f /tmp/zzpr_pwned.txt >/dev/null 2>&1
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pr' EXIT
+
+	# The admin's own preferences, and the defaults file, are what these
+	# checks overwrite. Keep both so the stack is handed back as it was.
+	PRSD="$(adb "SELECT session_data FROM users WHERE user_id = 1")"
+
+	pr_token() {
+		curl -sL --max-time 30 -b "$COOKIES" "$OCM_URL/prefs.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	pr_session_data() {
+		adb "SELECT session_data FROM users WHERE user_id = 1"
+	}
+
+	# A theme name that walks out of themes/, a font size that is not one of
+	# the four the application draws, and a paging count that is not a number.
+	PRTOK="$(pr_token)"
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+		--data-urlencode "action=update_prefs" \
+		--data-urlencode "_csrf=${PRTOK}" \
+		--data-urlencode "theme=../themes/Red" \
+		--data-urlencode "font_size=zzjunk" \
+		--data-urlencode "paging=abc" \
+		"$OCM_URL/prefs.php" >/dev/null
+
+	PRSTORED="$(pr_session_data)"
+
+	case "$PRSTORED" in
+		*"../"*) bad "prefs.php stored a theme name that walks out of themes/" ;;
+		*) ok "prefs.php refuses a theme name that walks out of themes/" ;;
+	esac
+
+	case "$PRSTORED" in
+		*zzjunk*) bad "prefs.php stored a font size the application cannot draw" ;;
+		*) ok "prefs.php refuses a font size the application cannot draw" ;;
+	esac
+
+	case "$PRSTORED" in
+		*abc*) bad "prefs.php stored a paging count that is not a number" ;;
+		*) ok "prefs.php refuses a paging count that is not a number" ;;
+	esac
+
+	# Positive control. A filter that threw everything away would pass the
+	# three checks above without the preferences screen working at all.
+	PRTOK="$(pr_token)"
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+		--data-urlencode "action=update_prefs" \
+		--data-urlencode "_csrf=${PRTOK}" \
+		--data-urlencode "theme=Red" \
+		--data-urlencode "font_size=Large" \
+		--data-urlencode "paging=25" \
+		"$OCM_URL/prefs.php" >/dev/null
+
+	PRSTORED="$(pr_session_data)"
+
+	if printf '%s' "$PRSTORED" | grep -qF '"Red"' \
+		&& printf '%s' "$PRSTORED" | grep -qF '"Large"' \
+		&& printf '%s' "$PRSTORED" | grep -qF '"25"'; then
+		ok "prefs.php still stores a theme, font size and paging count that are real"
+	else
+		bad "prefs.php no longer stores valid preferences: ${PRSTORED}"
+	fi
+
+	# The screen is not the only way a value gets into the session: one stored
+	# before this fix is still there. Write the traversal straight into
+	# users.session_data, the way pikaDefPrefs::initPrefs() will hand it back,
+	# and load a page that includes cms/pika_cms.php.
+	#
+	# '../themes/Red' names a file that exists, so following it is visible in
+	# the page: themes/Red.php is the only theme that paints #990000. A theme
+	# that is refused falls back to Blue, which adds no CSS of its own.
+	adb "UPDATE users SET session_data = 'a:2:{s:5:\"theme\";s:13:\"../themes/Red\";s:9:\"font_size\";s:6:\"zzjunk\";}' WHERE user_id = 1" >/dev/null
+
+	PRCODE="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/cal_day.php")"
+
+	if grep -qF '#990000' "$BODY"; then
+		bad "a theme name holding ../ was included from outside themes/"
+	else
+		ok "a theme name holding ../ is not included"
+	fi
+
+	if [ "$PRCODE" = 200 ] && grep -q 'Pika Home' "$BODY"; then
+		ok "a page falls back to a theme that ships with the application"
+	else
+		bad "cal_day.php answered ${PRCODE} with a theme name it could not include"
+	fi
+
+	if grep -qiE 'failed to open stream|include\(|Undefined (array key|index)' "$BODY"; then
+		bad "the theme and font size fallbacks left a PHP error on the page"
+	else
+		ok "no PHP error reaches the page from the theme or font size preference"
+	fi
+
+	# The paging preference is the second argument of a LIMIT clause in
+	# pika_get_attorneys(). assign_atty.php needs a case, a field and one
+	# filter before it runs the search, and the offset comes off the query
+	# string, so this is the request that used to answer 500 with no body.
+	PRCASE="$(adb "SELECT case_id FROM cases ORDER BY case_id LIMIT 1")"
+
+	if [ -z "$PRCASE" ]; then
+		printf '  skip the attorney paging check (no case rows)\n'
+	else
+		PRCODE="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/assign_atty.php?case_id=${PRCASE}&field=pba_id&last_name=a&offset=abc")"
+
+		if [ "$PRCODE" = 200 ] && [ -s "$BODY" ]; then
+			ok "an offset that is not a number does not break the attorney search"
+		else
+			bad "assign_atty.php answered ${PRCODE} for a non-numeric offset"
+		fi
+	fi
+
+	# ops/update_prefs.php writes the same names straight into the session.
+	# It has to survive junk rather than carry it.
+	PRTOK="$(pr_token)"
+	PRCODE="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' -X POST \
+		--data-urlencode "_csrf=${PRTOK}" \
+		--data-urlencode "theme=../themes/Red" \
+		--data-urlencode "paging=1 UNION SELECT 1" \
+		--data-urlencode "font_size=zzjunk" \
+		"$OCM_URL/ops/update_prefs.php")"
+
+	PRCODE2="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/prefs.php")"
+
+	if { [ "$PRCODE" = 302 ] || [ "$PRCODE" = 200 ]; } \
+		&& [ "$PRCODE2" = 200 ] && grep -q 'Pika Home' "$BODY"; then
+		ok "ops/update_prefs.php takes junk without carrying it into the session"
+	else
+		bad "ops/update_prefs.php answered ${PRCODE} and left prefs.php at ${PRCODE2}"
+	fi
+
+	# The defaults file is PHP source that every request includes, so the
+	# screen that writes it is a code execution sink if a value can stop being
+	# a string. These checks need the container to read the file back.
+	if [ "$HAVE_COMPOSE" = 1 ]; then
+		PRDEF="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			base64 -w 0 "$PRDEFFILE" </dev/null 2>/dev/null)"
+
+		if [ -z "$PRDEF" ]; then
+			printf '  skip the default preferences checks (cannot read the defaults file)\n'
+		else
+			PRTOK="$(pr_token)"
+			curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+				--data-urlencode "action=update_prefs" \
+				--data-urlencode "_csrf=${PRTOK}" \
+				--data-urlencode 'theme=Purple" . file_put_contents("/tmp/zzpr_pwned.txt", "pwned") . "' \
+				"$OCM_URL/system-default_prefs.php" >/dev/null
+
+			# The file is included on the next request, not on the one that
+			# wrote it, so load a page before looking for the payload. The
+			# sleep is opcache: validate_timestamps checks a file it has
+			# already compiled at most once every revalidate_freq seconds, so
+			# a request made immediately after the write can still run the
+			# copy from before it.
+			sleep 3
+			curl -sL --max-time 30 -b "$COOKIES" -o /dev/null "$OCM_URL/" >/dev/null
+
+			if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				test -f /tmp/zzpr_pwned.txt </dev/null >/dev/null 2>&1; then
+				bad "a default preference ran as PHP out of the defaults file"
+			else
+				ok "a default preference does not run as PHP out of the defaults file"
+			fi
+
+			if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				grep -qF 'file_put_contents' "$PRDEFFILE" </dev/null >/dev/null 2>&1; then
+				bad "the defaults file holds an expression a request put there"
+			else
+				ok "the defaults file holds no expression a request put there"
+			fi
+
+			# A quote in a preference the application does not recognise still
+			# has to leave the file as valid PHP that means the string given.
+			PRTOK="$(pr_token)"
+			curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+				--data-urlencode "action=update_prefs" \
+				--data-urlencode "_csrf=${PRTOK}" \
+				--data-urlencode 'def_office=Z'"'"'"\ZZ' \
+				"$OCM_URL/system-default_prefs.php" >/dev/null
+
+			if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				php -l "$PRDEFFILE" </dev/null >/dev/null 2>&1; then
+				ok "a quote in a default preference leaves the defaults file valid PHP"
+			else
+				bad "a quote in a default preference broke the defaults file"
+			fi
+
+			# Past the opcache window again, so this reads the file that was
+			# just written rather than the one before it.
+			sleep 3
+			PRCODE="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+				"$OCM_URL/")"
+
+			if [ "$PRCODE" = 200 ] && grep -q 'Pika Home' "$BODY"; then
+				ok "the application still starts after that default is written"
+			else
+				bad "the home page answered ${PRCODE} after a quote was stored in the defaults"
+			fi
+
+			# Positive control for the same screen.
+			PRTOK="$(pr_token)"
+			curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+				--data-urlencode "action=update_prefs" \
+				--data-urlencode "_csrf=${PRTOK}" \
+				--data-urlencode "theme=Clover" \
+				"$OCM_URL/system-default_prefs.php" >/dev/null
+
+			if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+				grep -qF 'Clover' "$PRDEFFILE" </dev/null >/dev/null 2>&1; then
+				ok "a real theme name still saves as a default preference"
+			else
+				bad "a real theme name no longer saves as a default preference"
+			fi
+		fi
+	else
+		printf '  skip the default preferences checks (needs docker compose)\n'
+	fi
+
+	cleanup_pr
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the stored preference checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
