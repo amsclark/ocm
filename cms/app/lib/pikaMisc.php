@@ -1116,7 +1116,18 @@ class pikaMisc
 		$filter['area_code'] = pl_grab_get('area_code');
 		$filter['phone'] = pl_grab_get('phone');
 		// These are not used for SQL filtering, but are needed on the pager's get_url.
+		/*	case_id is also written straight into value="%%[case_id]%%" hidden
+			inputs in all three contact-list subtemplates. A case id is always
+			an integer, so normalise it here, at the read, and every use below
+			-- render, pager URL and SQL alike -- is safe by construction. An
+			absent case_id stays absent, so the address-book and intake renders
+			are unchanged.
+		*/
 		$filter['case_id'] = pl_grab_get('case_id');
+		if (null !== $filter['case_id'] && '' !== $filter['case_id'])
+		{
+			$filter['case_id'] = (int) $filter['case_id'];
+		}
 		$filter['number'] = pl_grab_get('number');
 		$filter['relation_code'] = pl_grab_get('relation_code');
 		
@@ -1125,6 +1136,46 @@ class pikaMisc
 		$content_t['search_list'] = '';
 		$content_t['ab_list'] = '';
 		$content_t['birth_date'] = pl_date_unmogrify($content_t['birth_date']);
+		
+		/*	Every key copied out of $filter above is rendered into a quoted
+			HTML attribute -- value="%%[first_name]%%" and friends -- and
+			pikaTempLib substitutes a placeholder with a raw str_replace.
+			
+			pl_clean_form_input(), which pl_grab_get() runs, turns < and >
+			into entities but leaves quotes alone. A single double quote is
+			enough on its own: first_name=zz" autofocus onfocus="alert(1)
+			closes the value attribute and adds an event handler to the
+			search box, which fires with no user interaction. The same held
+			for middle_name, last_name, extra_name, ssn, area_code, phone,
+			number and relation_code on addressbook.php, intake2.php and
+			case_contact.php.
+			
+			Escaping happens on $content_t, the render copy, and not on
+			$filter, which is still handed to the SQL helpers below. Those
+			need the value the user actually typed; escaping there would make
+			a search for O'Brian look for O&#039;Brian and find nothing.
+			
+			The quotes are escaped and nothing else, rather than running the
+			whole value through pl_html_escape() or pl_html_escape_label().
+			pl_grab_get() has already written < and > as &lt; and &gt;, and
+			it leaves a bare & alone. htmlspecialchars() over that would
+			turn &lt; into &amp;lt;, so a user who typed "a<b & c" would get
+			"a&lt;b & c" back in the box. Escaping only " and ' leaves what
+			the browser renders in the field exactly as it was before this
+			change, and adds the one thing that was missing.
+			
+			search_list and ab_list are assembled HTML, not user input, and
+			are emptied above and appended to below, so they are untouched
+			here either way.
+		*/
+		foreach ($content_t as $ct_key => $ct_val)
+		{
+			if (is_string($ct_val))
+			{
+				$content_t[$ct_key] = str_replace(array('"', "'"),
+					array('&quot;', '&#039;'), $ct_val);
+			}
+		}
 		/* The offset specified by the user if they viewed this page
 		by clicking on the pager from a previous page.
 		*/
@@ -1501,8 +1552,15 @@ class pikaMisc
 			
 			while ($r = DBResult::fetchArray($result))
 			{
-				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_text_name($r) 
-				. " (" . $r['role'] . ")&nbsp;&nbsp;&nbsp;";
+				/*	Contact name and role are free text a user typed, and the
+					SSN and phone match blocks further down this file already
+					run pl_clean_html_array() over the same kind of value.
+					This block did not, so a contact stored with markup in a
+					name or role field ran on the case-contact screen of every
+					user who opened that case.
+				*/
+				$content_t['case_contacts'] .= "<i class=\"icon-user\"></i> " . pl_html_escape(pl_text_name($r)) 
+				. " (" . pl_html_escape($r['role']) . ")&nbsp;&nbsp;&nbsp;";
 			}
 			
 			if($intake->resetConflictStatus(false))
@@ -1514,9 +1572,14 @@ class pikaMisc
 				foreach($cons as $z)
 				{
 					//var_dump($z);
-					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id={$z['contact_id']}\">" 
-					. pl_text_name($z) . "</a> was a(n) {$z['role']} on "
-					. "<a href=\"{$base_url}/case_id={$z['case_id']}\">{$z['number']}</a>\n<br>";
+					/*	Same gap as the case-contacts loop above: name, role
+						and cases.number are all user-typed free text and went
+						in raw. The two ids are integers, so cast them rather
+						than escaping, which also keeps the href a valid URL.
+					*/
+					$content_t['case_conflicts'] .= "<a href=\"{$base_url}/contacts.php?contact_id=" . (int) $z['contact_id'] . "\">" 
+					. pl_html_escape(pl_text_name($z)) . "</a> was a(n) " . pl_html_escape($z['role']) . " on "
+					. "<a href=\"{$base_url}/case_id=" . (int) $z['case_id'] . "\">" . pl_html_escape($z['number']) . "</a>\n<br>";
 				}
 				
 				$content_t['case_conflicts'] .= "<br>";

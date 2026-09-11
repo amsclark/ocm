@@ -329,6 +329,18 @@ switch($action) {
 		$result = pikaFlags::getFlagsDB();
 		
 		while ($row = DBResult::fetchRow($result)) {
+			/*	addHtmlRow() does not escape, and
+				subtemplates/system-red_flags.html emits %%[name]%% and
+				%%[description]%% straight into <td>s. Both are free text off
+				the red-flag admin form. Authoring them already needs system
+				access, so this is hardening rather than a privilege boundary,
+				but it is still stored HTML rendered to every user who trips
+				the flag.
+				
+				Safe to escape the whole row: the only derived field is
+				enable_text, which is one of two fixed literals below.
+			*/
+			$row = pl_clean_html_array($row);
 			$row['enable_text'] = 'Enable';
 			if(isset($menu_enable[$row['enabled']])) {
 				$row['enable_text'] = $menu_enable[$row['enabled']];
