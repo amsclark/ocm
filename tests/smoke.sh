@@ -5649,6 +5649,194 @@ else
 	printf '  skip the output encoding checks (needs the database)\n'
 fi
 
+echo
+echo "50. the iCalendar feeds escape their TEXT values"
+
+# cms/services/calendar.php and cms/services/calendar-4.php each carried their
+# own ical_text_mogrify(): it deleted CR and turned LF into a literal \n, and
+# stopped there. RFC 5545 section 3.3.11 reserves backslash, semicolon and
+# comma as well, and case notes are prose - most contain a comma, which a
+# reader that parses the property as a value list truncates the note at.
+# Worse, four of the values assembled into DESCRIPTION never went through
+# mogrify at all: the three menu labels and the case number. A case number
+# holding a line ending therefore closed the DESCRIPTION property and opened a
+# forged one, which is calendar-feed injection, not just malformed output.
+# Escaping now lives in cms/app/lib/plIcalText.php so the two feeds share one
+# copy of the rule.
+if [ "$HAVE_DB" = 1 ]; then
+	IC_BODY="${BODY}.ical"
+
+	cleanup_ic() {
+		adb "DELETE FROM activities WHERE summary LIKE 'ZZ50%'" >/dev/null
+		adb "DELETE FROM cases WHERE number LIKE 'ZZ50%'" >/dev/null
+		adb "DELETE FROM menu_funding WHERE value = 'Z7'" >/dev/null
+		rm -f "$IC_BODY"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ic' EXIT
+	cleanup_ic
+
+	ic_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	ic_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# A funding label with a comma in it. Menu labels are prose too, and this
+	# one is written into DESCRIPTION through pl_array_lookup().
+	adb "INSERT INTO menu_funding (value, label, menu_order)
+		VALUES ('Z7', 'ZZ50,fundlabel', 97)" >/dev/null
+
+	# The case number carries a CRLF followed by what looks like a calendar
+	# property. On the unfixed feed this reaches the client as a real line
+	# ending, so X-INJ:1 arrives as a property of the event.
+	ICCASE="$(ic_next_id cases case_id)"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, intake_user_id)
+		VALUES (${ICCASE}, CONCAT('ZZ50,C', CHAR(13), CHAR(10), 'X-INJ:1'), 1, 'ZZO', '1', 1)" >/dev/null
+	ic_bump_counter cases "$ICCASE"
+
+	# act_type has to be C or K: cms/services/calendar.php only publishes
+	# appointments and tickles. The summary and the notes between them cover
+	# every character the escape set has to handle, including a lone CR, which
+	# the old code deleted rather than folded.
+	ICUID="$(adb "SELECT user_id FROM users WHERE username = '${OCM_USER}'")"
+	ICAID="$(ic_next_id activities act_id)"
+	adb "INSERT INTO activities
+			(act_id, act_date, act_time, act_end_time, hours, completed,
+			 act_type, funding, case_id, user_id, summary, notes, last_changed)
+		VALUES (${ICAID}, CURDATE(), '09:00:00', '10:00:00', 1.0, 1,
+			'C', 'Z7', ${ICCASE}, ${ICUID},
+			CONCAT('ZZ50SUM,semi;back', CHAR(92), 'slash'),
+			CONCAT('ZZ50NOTE,comma;semi C:', CHAR(92), 'temp',
+				CHAR(13), 'CRLINE', CHAR(10), 'LFLINE'),
+			NOW())" >/dev/null
+	ic_bump_counter activities "$ICAID"
+
+	# The feed authenticates over HTTP basic auth (PL_HTTP_SECURITY). debug=1
+	# suppresses the attachment headers and nothing else.
+	curl -s --max-time 30 -u "${OCM_USER}:${OCM_PASSWORD}" -o "$IC_BODY" \
+		"$OCM_URL/services/calendar.php?debug=1" >/dev/null
+
+	if grep -qa 'ZZ50SUM' "$IC_BODY"; then
+		ok "the calendar feed publishes the test appointment"
+	else
+		bad "the calendar feed does not carry the test appointment - the rest of this section proves nothing"
+	fi
+
+	if grep -qaF -- 'SUMMARY:ZZ50SUM\,semi\;back\\slash' "$IC_BODY"; then
+		ok "SUMMARY escapes comma, semicolon and backslash"
+	else
+		bad "SUMMARY does not escape comma, semicolon or backslash"
+	fi
+
+	if grep -qaF -- 'SUMMARY:ZZ50SUM,semi' "$IC_BODY"; then
+		bad "SUMMARY still carries a raw comma"
+	else
+		ok "SUMMARY carries no raw comma"
+	fi
+
+	if grep -qaF -- 'ZZ50NOTE\,comma\;semi C:\\temp' "$IC_BODY"; then
+		ok "the notes escape comma, semicolon and backslash in DESCRIPTION"
+	else
+		bad "the notes reach DESCRIPTION with reserved characters unescaped"
+	fi
+
+	# A lone CR used to be deleted, which joined the two lines into one word.
+	if grep -qaF -- 'temp\nCRLINE\nLFLINE' "$IC_BODY"; then
+		ok "a lone CR folds to an escaped newline"
+	else
+		bad "a lone CR is dropped instead of folded - two lines arrive as one word"
+	fi
+
+	if grep -qaF -- 'tempCRLINE' "$IC_BODY"; then
+		bad "the CR was deleted and glued two lines together"
+	else
+		ok "no two lines were glued together"
+	fi
+
+	if grep -qaF -- 'Funding: ZZ50\,fundlabel' "$IC_BODY"; then
+		ok "a menu label with a comma is escaped in DESCRIPTION"
+	else
+		bad "a menu label reaches DESCRIPTION with a raw comma"
+	fi
+
+	if grep -qaF -- 'Case: ZZ50\,C\nX-INJ:1' "$IC_BODY"; then
+		ok "the case number is escaped, line ending and all"
+	else
+		bad "the case number is not escaped into the DESCRIPTION value"
+	fi
+
+	# The point of the previous check: on the unfixed feed the CRLF in the case
+	# number ends the DESCRIPTION line, and X-INJ:1 becomes a property of the
+	# event rather than part of a value.
+	if grep -qa '^X-INJ:1' "$IC_BODY"; then
+		bad "a case number forged a calendar property - the feed is injectable"
+	else
+		ok "no value forged a calendar property"
+	fi
+
+	# The values that must NOT be escaped: the timestamps and the link. An
+	# escape here would break the property, not protect it.
+	if grep -qaE '^DTSTART;TZID=[^:]+:[0-9]{8}T[0-9]{6}' "$IC_BODY"; then
+		ok "DTSTART is still a plain iCalendar date-time"
+	else
+		bad "DTSTART is malformed"
+	fi
+
+	if grep -qa "act_id=${ICAID}" "$IC_BODY"; then
+		ok "the activity link is still intact"
+	else
+		bad "the activity link was mangled"
+	fi
+
+	if [ "$HAVE_COMPOSE" = 1 ]; then
+		# pl_ical_text_escape() by itself. The order of the replacements is the
+		# part that is easy to get wrong: backslash has to be escaped before
+		# the characters whose escapes introduce backslashes of their own, or
+		# a comma comes out as \\, and the reader sees a literal backslash
+		# followed by an unescaped comma.
+		docker compose "${COMPOSE_ARGS[@]}" exec -T -w /var/www/html/cms app \
+			php -r '
+				require_once("app/lib/plIcalText.php");
+				echo "A:[", pl_ical_text_escape("a" . chr(92) . ",b"), "]\n";
+				echo "B:[", pl_ical_text_escape(null), "]\n";
+				echo "C:[", pl_ical_text_escape("x\r\ny"), "]\n";
+				echo "D:[", pl_ical_text_escape(42), "]\n";
+			' </dev/null > "$IC_BODY" 2>/dev/null
+
+		if grep -qaF -- 'A:[a\\\,b]' "$IC_BODY"; then
+			ok "pl_ical_text_escape escapes the backslash before the comma"
+		else
+			bad "pl_ical_text_escape escapes in the wrong order - it double-escapes its own backslashes"
+		fi
+
+		if grep -qaF -- 'B:[]' "$IC_BODY"; then
+			ok "pl_ical_text_escape turns null into an empty value"
+		else
+			bad "pl_ical_text_escape does not handle a null column"
+		fi
+
+		if grep -qaF -- 'C:[x\ny]' "$IC_BODY"; then
+			ok "CRLF folds to one escaped newline, not two"
+		else
+			bad "CRLF folds to two escaped newlines"
+		fi
+
+		if grep -qaF -- 'D:[42]' "$IC_BODY"; then
+			ok "pl_ical_text_escape accepts a non-string column"
+		else
+			bad "pl_ical_text_escape mangles a non-string column"
+		fi
+	fi
+
+	cleanup_ic
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the iCalendar escaping checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"
