@@ -6232,6 +6232,138 @@ else
 	printf '  skip the alias authorization checks (needs the database)\n'
 fi
 
+echo
+echo "53. the case list filters"
+
+# cms/case_list.php builds its filter array straight out of the query string and
+# hands it to pikaMisc::getCases(). Four of the filters - supervisor, closer,
+# unit and subunit - name columns that only some installations have, and a
+# request that set one of them on an installation without the column produced
+# SQL naming a column that is not there. The query threw, which this
+# application answers with HTTP 500 and an empty body, so the whole case list
+# stopped working for anyone who followed a link carrying the parameter.
+# getCases() now asks the schema first.
+#
+# The same request also decides the type of every value that reaches the SQL
+# builder. user_id and show_cases name integer columns and are now read in
+# 'number' mode; office, status, funding and sp_problem are char columns
+# holding letter codes and are deliberately not, because 'number' mode nulls a
+# letter code and the filter would silently drop, listing every case instead of
+# the ones asked for.
+#
+# Needs the database: the checks count rows in the rendered list, so they need
+# two cases with known filter values.
+if [ "$HAVE_DB" = 1 ]; then
+	cleanup_cl() {
+		adb "DELETE FROM cases WHERE number IN ('ZZ-CL-A', 'ZZ-CL-B')" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cl' EXIT
+	cleanup_cl
+
+	# Ids come from the `counters` row as well as from MAX(). plBase::getNextID
+	# hands out the next primary key from counters, not from the table, so a
+	# fixture inserted at MAX()+1 alone can sit on an id the application is
+	# about to allocate.
+	cl_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+
+	cl_bump_counter() {
+		adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null
+	}
+
+	# Two open cases owned by the admin user, differing in every char filter.
+	# close_date stays NULL so both appear under the default list mode, which
+	# asks getCases() for open cases only.
+	CLCASEA="$(cl_next_id cases case_id)"
+	CLCASEB="$((CLCASEA + 1))"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, funding, sp_problem, open_date)
+		VALUES (${CLCASEA}, 'ZZ-CL-A', 1, 'ZZA', 'A', 'ZZA', 'ZZA', CURDATE()),
+			(${CLCASEB}, 'ZZ-CL-B', 1, 'ZZB', 'B', 'ZZB', 'ZZB', CURDATE())" >/dev/null
+	cl_bump_counter cases "$CLCASEB"
+
+	if [ -z "${CLCASEA:-}" ] || [ -z "$(adb "SELECT case_id FROM cases WHERE number = 'ZZ-CL-A'")" ]; then
+		bad "could not seed the case list fixtures"
+	else
+		# GET the case list with a query string and report the status code.
+		cl_get() {
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+				"$OCM_URL/case_list.php?$1"
+		}
+
+		# Each of the four optional columns used to end the request with a 500
+		# and an empty body.
+		for cl_col in supervisor closer unit subunit; do
+			code="$(cl_get "${cl_col}=1")"
+			if [ "$code" = 200 ]; then
+				ok "case_list.php?${cl_col}=1 answers 200"
+			else
+				bad "case_list.php?${cl_col}=1 answers ${code}"
+			fi
+
+			if grep -q 'ZZ-CL-A' "$BODY"; then
+				ok "case_list.php?${cl_col}=1 still lists cases"
+			else
+				bad "case_list.php?${cl_col}=1 lists no cases"
+			fi
+		done
+
+		# The char filters have to keep filtering. 'number' mode would null
+		# each of these values and the WHERE clause would never be built.
+		for cl_pair in 'office=ZZA' 'status=A' 'funding=ZZA' 'sp_problem=ZZA'; do
+			code="$(cl_get "$cl_pair")"
+			if [ "$code" = 200 ] && grep -q 'ZZ-CL-A' "$BODY" \
+				&& ! grep -q 'ZZ-CL-B' "$BODY"; then
+				ok "case_list.php?${cl_pair} lists only the matching case"
+			else
+				bad "case_list.php?${cl_pair} did not filter (${code})"
+			fi
+		done
+
+		# A quote in a char filter must not widen the result set.
+		code="$(cl_get "office=ZZA%27+OR+%271%27%3D%271")"
+		if [ "$code" = 200 ] && ! grep -q 'ZZ-CL-' "$BODY"; then
+			ok "a quoted OR in the office filter matches nothing"
+		else
+			bad "a quoted OR in the office filter widened the list (${code})"
+		fi
+
+		# user_id names an int column. A non-numeric value now arrives as null
+		# and the filter drops, instead of being compared against the column as
+		# text.
+		code="$(cl_get 'user_id=abc')"
+		if [ "$code" = 200 ] && grep -q 'ZZ-CL-A' "$BODY"; then
+			ok "case_list.php?user_id=abc lists cases"
+		else
+			bad "case_list.php?user_id=abc lists nothing (${code})"
+		fi
+
+		# Positive control: a numeric user_id still selects on the owner.
+		code="$(cl_get 'user_id=999999')"
+		if [ "$code" = 200 ] && ! grep -q 'ZZ-CL-' "$BODY"; then
+			ok "case_list.php?user_id=999999 lists no cases"
+		else
+			bad "the user_id filter no longer selects on the owner (${code})"
+		fi
+
+		# An absent column alongside a real filter leaves the real one working.
+		code="$(cl_get 'supervisor=1&office=ZZA')"
+		if [ "$code" = 200 ] && grep -q 'ZZ-CL-A' "$BODY" \
+			&& ! grep -q 'ZZ-CL-B' "$BODY"; then
+			ok "an absent column filter does not disturb the office filter"
+		else
+			bad "supervisor=1 with office=ZZA did not filter (${code})"
+		fi
+	fi
+
+	cleanup_cl
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the case list filter checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"

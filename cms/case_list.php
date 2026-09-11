@@ -19,13 +19,25 @@ $base_url = pl_settings_get('base_url');
 $warnings = '';  // HTML text for the red flags.
 $user_id = $auth_row['user_id'];
 
-// Inititalize $filter array
-$filter['user_id'] = pl_grab_get('user_id');
+/*	Inititalize $filter array
+
+	user_id and show_cases name integer columns, so ask pl_grab_get() for a
+	number and let a non-numeric value arrive as null instead of reaching the
+	SQL builder as text.
+
+	office, status, funding and sp_problem are deliberately NOT put through
+	'number' mode: they are char(3), char(1), char(3) and char(3) columns
+	holding letter codes, and 'number' mode nulls a letter code, which would
+	silently drop the filter and list every case instead of the ones asked for.
+	pikaMisc::getCases() runs DB::escapeString() over every filter value and
+	quotes each one it interpolates.
+*/
+$filter['user_id'] = pl_grab_get('user_id', null, 'number');
 $filter['office'] = pl_grab_get('office');
 $filter['status'] = pl_grab_get('status');
 $filter['funding'] = pl_grab_get('funding');
 $filter['client_name'] = pl_grab_get('client_name');
-$filter['show_cases'] = pl_grab_get('show_cases', 0);
+$filter['show_cases'] = pl_grab_get('show_cases', 0, 'number');
 $filter['sp_problem'] = pl_grab_get('sp_problem');
 
 // MDF 2/11/10

@@ -145,6 +145,38 @@ class pikaMisc
 	}
 	
 	
+	/*	Does the cases table have this column?
+	
+		Several of the filters getCases() accepts name columns that only some
+		installations have: supervisor, closer, unit and subunit were each
+		added for one organisation. A request that sets one of those filters on
+		an installation without the column used to build SQL naming it, and the
+		query failed - which this application answers with HTTP 500 and an
+		empty body, so the case list simply stopped working for anyone who
+		followed a link carrying the parameter. Ask the schema first.
+		
+		The answer is cached for the request: getCases() is called once or
+		twice per page, and each call tests several columns.
+	*/
+	protected static function casesHasColumn($column)
+	{
+		static $known = array();
+		
+		if (!preg_match('/^[a-z_]+$/', $column))
+		{
+			return false;
+		}
+		
+		if (!array_key_exists($column, $known))
+		{
+			$result = DB::query("SHOW COLUMNS FROM cases LIKE '{$column}'");
+			$known[$column] = ($result && DBResult::numRows($result) > 0);
+		}
+		
+		return $known[$column];
+	}
+	
+	
 	public static function getCases($filter, &$row_count, $order_field='',
 	$order='ASC', $first_row='0', $list_length='100')
 	{
@@ -176,7 +208,11 @@ class pikaMisc
 
 		if (isset($filter['case_id']) && $filter['case_id'])
 		{
-			$sql .= " AND cases.case_id={$filter['case_id']}";
+			/*	Quoted. DB::escapeString() above escapes the quote characters
+				in a value, which does nothing for a value that lands in SQL
+				without any quotes around it.
+			*/
+			$sql .= " AND cases.case_id='{$filter['case_id']}'";
 		}
 
 		if (isset($filter['last_name']) && $filter['last_name'])
@@ -198,12 +234,14 @@ class pikaMisc
 		
 		// MDF 2/11/10
 		
-		if (isset($filter["supervisor"]) && $filter["supervisor"])
+		if (isset($filter["supervisor"]) && $filter["supervisor"]
+			&& self::casesHasColumn('supervisor'))
 		{
 						$sql .= " AND cases.supervisor = '{$filter['supervisor']}'";
 		}
 		
-		if (isset($filter["closer"]) && $filter["closer"])
+		if (isset($filter["closer"]) && $filter["closer"]
+			&& self::casesHasColumn('closer'))
 		{
 						$sql .= " AND cases.closer = '{$filter['closer']}'";
 		}
@@ -211,12 +249,14 @@ class pikaMisc
 		// End
 		
 		// 06-29-2012 - caw - added additional search criteria
-		if (isset($filter["unit"]) && $filter["unit"])
+		if (isset($filter["unit"]) && $filter["unit"]
+			&& self::casesHasColumn('unit'))
 		{
 						$sql .= " AND cases.unit = '{$filter['unit']}'";
 		}
 
-		if (isset($filter["subunit"]) && $filter["subunit"])
+		if (isset($filter["subunit"]) && $filter["subunit"]
+			&& self::casesHasColumn('subunit'))
 		{
 						$sql .= " AND cases.subunit = '{$filter['subunit']}'";
 		}               
@@ -297,7 +337,8 @@ class pikaMisc
 		}
 
 		// AMW 2014-07-23 - Added for SMRLS and ILCM
-        if (isset($filter["supervisor"]) && $filter["supervisor"])
+        if (isset($filter["supervisor"]) && $filter["supervisor"]
+            && self::casesHasColumn('supervisor'))
         {
                 $sql .= " AND cases.supervisor = '{$filter['supervisor']}'";
         }
@@ -353,8 +394,7 @@ class pikaMisc
 
 		// Determine whether to use the supervisor field.
 		$sup = "";
-		$sresult = DB::query("DESCRIBE cases supervisor");
-		if (DBResult::numRows($sresult) == 1)
+		if (self::casesHasColumn('supervisor'))
 		{
 			$sup = " cases.supervisor,";
 		}
