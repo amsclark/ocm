@@ -240,6 +240,8 @@ switch ($action)
 	default:
 
 		$html = pl_settings_get_all();
+		$session_ip_pin = isset($html['session_ip_pin']) ? (string) $html['session_ip_pin'] : '';
+		$html['session_ip_pin'] = in_array($session_ip_pin, array('off', '0'), true) ? 'off' : 'network';
 		
 		// AMW - do not transmit the database password, that field stays blank.
 		$html['db_password'] = '';

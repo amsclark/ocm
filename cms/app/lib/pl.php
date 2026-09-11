@@ -3216,7 +3216,6 @@ function pl_session_set_default($name, $value)
 	  - Otherwise compare the network, not the host: /24 for IPv4, /64 for
 		IPv6. Someone replaying a stolen cookie still has to be on the
 		user's network, which is what the control was for.
-	
 	@param string $stored  ip_address recorded on the user_sessions row
 	@param string $current REMOTE_ADDR for the request being authenticated
 	@return bool true when the session may continue
@@ -3269,7 +3268,7 @@ function pl_session_ip_matches($stored, $current)
 	{
 		$a = explode('.', $stored);
 		$b = explode('.', $current);
-		
+
 		return ($a[0] === $b[0] && $a[1] === $b[1] && $a[2] === $b[2]);
 	}
 	
@@ -3327,7 +3326,7 @@ function pl_session_ip_pin_allows($stored, $current, $mode = null)
 			: null;
 	}
 	
-	if ('off' === (string) $mode)
+	if ('off' === (string) $mode || '0' === (string) $mode)
 	{
 		return true;
 	}

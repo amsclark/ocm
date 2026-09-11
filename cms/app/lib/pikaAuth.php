@@ -286,4 +286,3 @@ class pikaAuth
 		return $this->messages;
 	}
 }
-
