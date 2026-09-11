@@ -45,8 +45,10 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 			if ($tab['file'] == "case-{$field_name}.php"){
 				$current = ' class="active"';
 			}
-			/*	The file column is nullable, so a row saved without a module
-				file reached substr(), strpos() and the sanitiser below as null.
+			/*	The file column is nullable and the New Tab button writes a
+				row without one, so a row saved without a module file reached
+				substr(), strpos() and the sanitiser below as null -- two
+				deprecation notices per tab per case page.
 			*/
 			$screen_name = (string) $tab['file'];
 			if(substr($screen_name,0,5) == 'case-') {

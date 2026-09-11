@@ -3575,6 +3575,147 @@ else
 	printf '  skip the ops authorization checks (needs the database)\n'
 fi
 
+# ── 32. The poverty guideline and the two password policy settings ─────────
+# Both of these are the same mistake in two languages: a value that holds a
+# number is used where the code assumed a number, and a value that does not
+# parse takes the whole screen with it.
+if [ "$HAVE_DB" = 1 ]; then
+	ELIG_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	POV_WAS="$(adb "SELECT label FROM menu_poverty WHERE value = '0'")"
+	PW_USER='zz_pw_user'
+	PW_GROUP='zz_pw_grp'
+	PW_OLD='zz-pw-Passw0rd'
+	PW_NEW='zz-pw-N3wPassword'
+	PW_JAR="$(mktemp)"
+	PWLEN_WAS="$(adb "SELECT value FROM settings WHERE label = 'pass_min_length'")"
+	PWSTR_WAS="$(adb "SELECT value FROM settings WHERE label = 'pass_min_strength'")"
+
+	cleanup_pol() {
+		adb "DELETE FROM cases WHERE number = 'ZZ-ELIG-1'" >/dev/null
+		adb "DELETE FROM users WHERE username = '${PW_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${PW_GROUP}'" >/dev/null
+		adb "DELETE FROM settings WHERE label IN ('pass_min_length', 'pass_min_strength')" >/dev/null
+		if [ -n "${PWLEN_WAS}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('pass_min_length', '${PWLEN_WAS}')" >/dev/null
+		fi
+		if [ -n "${PWSTR_WAS}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('pass_min_strength', '${PWSTR_WAS}')" >/dev/null
+		fi
+		if [ -n "${POV_WAS}" ]; then
+			adb "UPDATE menu_poverty SET label = '${POV_WAS}' WHERE value = '0'" >/dev/null
+		fi
+		rm -f "$PW_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pol' EXIT
+
+	adb "DELETE FROM cases WHERE number = 'ZZ-ELIG-1'" >/dev/null
+	adb "DELETE FROM users WHERE username = '${PW_USER}'" >/dev/null
+	adb "DELETE FROM \`groups\` WHERE group_id = '${PW_GROUP}'" >/dev/null
+
+	# 31a. A poverty guideline typed the way the federal table prints it.
+	# cms/js/case-elig.js is a template, and the menu value is written into its
+	# source, so calc_poverty() read
+	#     g[0] = 9,999;
+	# which is the JavaScript comma operator: g[0] got 999. The Calculate
+	# button then measured every household against a tenth of the real figure.
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${ELIG_CASE}, 'ZZ-ELIG-1', 1, NULL, '1')" >/dev/null
+	adb "UPDATE menu_poverty SET label = '9,999' WHERE value = '0'" >/dev/null
+
+	curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/case.php?case_id=${ELIG_CASE}&screen=elig" >/dev/null
+	if ! grep -q 'calc_poverty' "$BODY"; then
+		bad "the eligibility tab did not render its script ($(wc -c < "$BODY") bytes)"
+	elif grep -qE 'g\[0\] = 9,999;' "$BODY"; then
+		bad "the poverty guideline reaches the page unquoted - a comma in the value breaks the calculation"
+	elif grep -qF '(""+"9,999")' "$BODY"; then
+		ok "a comma-formatted poverty guideline reaches the page as a string"
+	else
+		bad "the poverty guideline is not on the eligibility tab in either form"
+	fi
+
+	adb "UPDATE menu_poverty SET label = '${POV_WAS}' WHERE value = '0'" >/dev/null
+
+	# 31b. The two password policy settings hold a menu code, and password.php
+	# compared each against a number the code produces. A settings row that
+	# holds the display label instead - which a hand-written UPDATE or a row
+	# restored from an older schema can leave behind - made PHP 8 compare an
+	# integer against a non-numeric string as strings: 4 < 'Strong' is true, so
+	# no password could satisfy the form and the only thing on the screen was
+	# the strength complaint, over and over.
+	PW_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$PW_OLD" </dev/null 2>/dev/null)"
+	PW_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${PW_GROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${PW_UID}, '${PW_USER}', '${PW_HASH}', 1, '${PW_GROUP}', 0)" >/dev/null
+
+	# $1 label, $2 old password, $3 new password, $4 pass|fail
+	pw_change() {
+		: > "$PW_JAR"
+		curl -sL --max-time 30 -c "$PW_JAR" -b "$PW_JAR" -o /dev/null \
+			-X POST -d "login_user=${PW_USER}&login_pass=$2&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		curl -sL --max-time 30 -b "$PW_JAR" -o "$BODY" "$OCM_URL/password.php" >/dev/null
+		pw_token="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+			| head -n 1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+		if [ -z "$pw_token" ]; then
+			bad "$1: password.php rendered no CSRF token"
+			return
+		fi
+		curl -sL --max-time 30 -b "$PW_JAR" -o "$BODY" \
+			--data-urlencode "action=update" \
+			--data-urlencode "oldpass=$2" \
+			--data-urlencode "newpass1=$3" \
+			--data-urlencode "newpass2=$3" \
+			--data-urlencode "_csrf=${pw_token}" \
+			"$OCM_URL/password.php" >/dev/null
+		# pikaTempLib's red_flag plugin replaces every space with &nbsp;, so
+		# the message has to be read with the entities turned back into spaces.
+		sed 's/&nbsp;/ /g' "$BODY" > "${BODY}.txt"
+		if grep -qF 'Password updated successfully' "${BODY}.txt"; then
+			if [ "$4" = pass ]; then
+				ok "$1: the password change went through"
+			else
+				bad "$1: THE PASSWORD CHANGE WENT THROUGH AND SHOULD NOT HAVE"
+			fi
+		elif grep -qF 'does not meet' "${BODY}.txt"; then
+			if [ "$4" = fail ]; then
+				ok "$1: refused by the policy"
+			else
+				bad "$1: the policy refused a password that satisfies it"
+			fi
+		else
+			bad "$1: neither outcome on the page ($(wc -c < "$BODY") bytes)"
+		fi
+		rm -f "${BODY}.txt"
+	}
+
+	if [ -z "$PW_HASH" ] || [ -z "${PW_UID:-}" ]; then
+		bad "could not seed the password policy fixtures (hash/user)"
+	else
+		# The requirement still bites when the setting holds the code it is
+		# supposed to hold. Without this the cast below would pass by turning
+		# the policy off.
+		adb "DELETE FROM settings WHERE label IN ('pass_min_length', 'pass_min_strength')" >/dev/null
+		adb "INSERT INTO settings (label, value) VALUES ('pass_min_length', '8')" >/dev/null
+		pw_change "a short password against a length of 8" "$PW_OLD" 'zz-1' fail
+
+		# The same policy, spelled as the label. This is the state that locked
+		# every user out of their own password.
+		adb "DELETE FROM settings WHERE label IN ('pass_min_length', 'pass_min_strength')" >/dev/null
+		adb "INSERT INTO settings (label, value)
+			VALUES ('pass_min_length', '8 or More'), ('pass_min_strength', 'Strong')" >/dev/null
+		pw_change "a good password against policy settings holding labels" "$PW_OLD" "$PW_NEW" pass
+	fi
+
+	cleanup_pol
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the guideline and password policy checks (needs the database)\n'
+fi
+
 # ── 29. Case tabs, the id counter, transfers and duplicate matching ────────
 echo
 echo "29. case tabs, the id counter and duplicate matching"

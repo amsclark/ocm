@@ -25,7 +25,11 @@ $main_html = $html = array();
 
 $settings = pikaSettings::getInstance();
 $base_url = $settings['base_url'];
-$html['pass_min_length'] = $pass_min_length = $settings['pass_min_length'];
+/*	Neither policy row has to exist. A new installation has no settings row
+	for either of them until somebody saves the System Settings screen.
+*/
+$html['pass_min_length'] = $pass_min_length =
+	isset($settings['pass_min_length']) ? $settings['pass_min_length'] : '';
 $html['flags'] = '';
 
 $action = pl_grab_post('action');
@@ -45,7 +49,9 @@ $menu_pass_method = array(	'1' => "Lowercase Letters &amp Numbers",
 							'3' => "All Characters");
 $html['p_len'] = '10';
 $html['p_method'] = '1';
-$html['pass_min_strength_label'] = $pass_min_strength_label = pl_array_lookup($settings['pass_min_strength'],$menu_pass_strength);
+$html['pass_min_strength_label'] = $pass_min_strength_label = pl_array_lookup(
+	isset($settings['pass_min_strength']) ? $settings['pass_min_strength'] : '',
+	$menu_pass_strength);
 $html['pass_min_length_label'] = $pass_min_length_label = "None - No Length Requirement";
 if($pass_min_length)
 {
@@ -73,12 +79,29 @@ if($action == 'update')
 	}
 	else 
 	{
-		if(isset($settings['pass_min_strength']) && $settings['pass_min_strength'] && pikaUser::passStrength($newpass1) < $settings['pass_min_strength'])
+		/*	Both settings hold a menu code, and both were compared against a
+			value the code produces as a number. The System Settings screen
+			writes a code, but the settings table is a label/value pair that a
+			hand-written UPDATE, or a restored row from an older schema, can
+			leave holding the display label instead - 'Strong', or
+			'8 or More'. PHP 8 compares an integer against a string that is
+			not numeric as a string, so 4 < 'Strong' is true and no password
+			the user can type will ever satisfy the form. There is no error to
+			read on that screen either, only "does not meet strength
+			requirement" over and over.
+			
+			Casting makes a value that is not a number mean 0, which these two
+			settings already spell as "no requirement".
+		*/
+		$min_strength = (int) (isset($settings['pass_min_strength']) ? $settings['pass_min_strength'] : 0);
+		$min_length = (int) (isset($settings['pass_min_length']) ? $settings['pass_min_length'] : 0);
+		
+		if($min_strength > 0 && pikaUser::passStrength($newpass1) < $min_strength)
 		{
 			$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Error: New password does not meet strength requirement ({$pass_min_strength_label})");
 			$is_authorized = false;
 		}
-		if(isset($settings['pass_min_length']) && $settings['pass_min_length'] && strlen($newpass1) < $settings['pass_min_length'])
+		if($min_length > 0 && strlen($newpass1) < $min_length)
 		{
 			$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Error: New password does not meet length requirement ({$pass_min_length})");
 			$is_authorized = false;
