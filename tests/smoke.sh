@@ -3485,6 +3485,24 @@ if [ "$HAVE_DB" = 1 ]; then
 				bad "no CSRF token for the ops user - section 28 is untested"
 			fi
 
+			# Retired questionnaire actions must not bypass the system gate.
+			# The legacy gate does not echo its permission template. Its only
+			# output is the benchmark table when benchmarking is enabled.
+			rq_bench_pattern='^<br><table align=center width=500><tr><td><pre>Execution Speed:  [0-9]+([.][0-9]+)? seconds<br>File Size:  [0-9]+([.][0-9]+)?K<br></pre></td></tr></table>$'
+			for rq_action in save_questionnaire add_questionnaire toggle_questionnaires diag update_answers; do
+				AZTOK="$(az_token "$AZJAR")"
+				code="$(curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -w '%{http_code}' \
+					--data-urlencode "action=${rq_action}" -d "_csrf=${AZTOK}" \
+					"$OCM_URL/system-ops.php")"
+				rq_denial_body="$(tr -d '\r\n' < "$BODY")"
+				if [ "${#AZTOK}" -eq 64 ] && [ "$code" = 200 ] \
+					&& { [ -z "$rq_denial_body" ] || [[ "$rq_denial_body" =~ $rq_bench_pattern ]]; }; then
+					ok "$rq_action remains denied to a non-admin user"
+				else
+					bad "$rq_action did not reach the system permission gate (status $code)"
+				fi
+			done
+
 			# 28a. duplicate_case.php copies the whole case record into a new
 			# one the caller then owns.
 			curl -sL --max-time 30 -b "$AZJAR" -o "$BODY" \
@@ -9757,6 +9775,46 @@ if [ "$HAVE_DB" = 1 ]; then
 else
 	printf '  skip the stored-document download checks (needs the database)\n'
 fi
+
+echo
+# ── 63. Retired legacy questionnaire actions ───────────────────────────────
+echo "63. retired questionnaire actions are rejected"
+
+# Include the old forms' fields so an accidentally restored handler cannot
+# pass just because its input is missing. Negative IDs avoid real records.
+for rq_action in save_questionnaire add_questionnaire toggle_questionnaires diag update_answers; do
+	curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/password.php" >/dev/null
+	rq_token="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+		| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+	if [ "${#rq_token}" -ne 64 ]; then
+		bad "$rq_action cannot be checked: no admin CSRF token"
+		continue
+	fi
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		--data-urlencode "action=${rq_action}" -d "_csrf=${rq_token}" \
+		--data-urlencode "title=ZZ retired questionnaire's title" \
+		--data-urlencode "values=ZZ retired questionnaire's question" \
+		-d 'code=01&sp_code=&questionnaire=-1&questionnaire_id=-1&init=1' \
+		-d 'q[-1]=1&todo=deactivate&completed_id=-1' \
+		--data-urlencode "answers[-1]=ZZ retired questionnaire's answer | 1" \
+		--data-urlencode 'resp[probe]=ZZ-RETIRED-QUESTIONNAIRE-DEBUG' \
+		"$OCM_URL/system-ops.php")"
+	if [ "$code" = 200 ] && grep -q 'invalid action was specified' "$BODY" \
+		&& ! grep -qiE 'Fatal error|Warning:|SQLSTATE|SQL syntax|q_questionnaires|q_questions|q_answers|ZZ-RETIRED-QUESTIONNAIRE-DEBUG|CSRF validation failed|Confirm your save' "$BODY"; then
+		ok "$rq_action is an invalid action without SQL or debug output"
+	else
+		bad "$rq_action was not cleanly rejected as an invalid action (status $code)"
+	fi
+
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		--data-urlencode "action=${rq_action}" "$OCM_URL/system-ops.php")"
+	if [ "$code" = 403 ] && grep -q 'CSRF validation failed' "$BODY"; then
+		ok "$rq_action still requires a CSRF token"
+	else
+		bad "$rq_action bypassed the CSRF gate (status $code)"
+	fi
+done
 
 echo
 echo "smoke: $pass passed, $fail failed"
