@@ -40,8 +40,30 @@ $result=curl_exec($c);
 curl_close ($c);
 $result = json_decode($result);
 
+/*	json_decode() returns null for a body that is not JSON at all, and the
+	foreach below was reached either way: on PHP 8 that is a warning on every
+	failed run and no other sign that the download did nothing.
+*/
+if (!is_array($result))
+{
+	die("The server did not return a list of tables.\n");
+}
+
 foreach ($result as $v)
 {
+	/*	$v is a table name read out of the answer the far end sent, and the
+		path below puts a separator in front of it. A server answering this
+		request could therefore name a table '../../../../etc/cron.d/x' and
+		have this script -- which runs from the operator's cron, as the
+		operator -- write a file of the server's choosing anywhere that user
+		can write. Hold the name to the shape a table name has.
+	*/
+	if (!preg_match('/^[A-Za-z0-9_]+$/', (string) $v))
+	{
+		echo "Skipped a table name that is not a plain identifier.\n";
+		continue;
+	}
+	
 	echo "Table {$v} ";
 	$c = curl_init();
 	curl_setopt($c, CURLOPT_URL, $url . '/services/csv.php?action=' . $v);

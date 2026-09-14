@@ -11602,6 +11602,117 @@ else
 	ok "the report parser leaves entity substitution off"
 fi
 
+# 76j. Static. The same generated download script reads a list of table
+# names out of the answer the far end sends, and writes one file per name
+# into a folder the operator named. The path puts a separator in front of
+# the name, so without a check on its shape the answering server chooses
+# where the operator's cron job writes. Two things are asserted: the name
+# is held to a plain identifier, and the decoded answer is checked to be a
+# list at all before the loop reads it.
+if grep -qF "preg_match('/^[A-Za-z0-9_]+\$/', (string) \$v)" cms/app/scripts/cms-csv-download.php; then
+	ok "the csv download only accepts plain table names"
+else
+	bad "the csv download takes any table name the server sends"
+fi
+
+if grep -qF 'if (!is_array($result))' cms/app/scripts/cms-csv-download.php; then
+	ok "the csv download checks it got a list of tables"
+else
+	bad "the csv download loops over whatever json_decode returned"
+fi
+
+echo
+echo "== 77. Two sql injection sinks in pikaCms =="
+
+# pikaCms::fetchActivity() put $act_id into its WHERE clause exactly as it
+# arrived, and dataops.php reaches it twice with the raw POST body: the
+# 'act_id' field of the delete branch, and the array keys of the 'hours'
+# field of the bulk-save branch. pl_clean_form_input() in its default mode
+# takes out only < and >, so a quote in either closed the string early.
+#
+# pikaCms::fetchCaseList() interpolated its case_id filter unquoted, so that
+# one did not even need a quote: "0 OR 1=1" returned the whole case table.
+#
+# Both columns are int(11), so both are cast now. The positive controls run
+# first; without them a refusal proves only that the fixture is missing.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	sm77_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+
+	SM77_ACT=9931
+	sm77_drop() { adb "DELETE FROM activities WHERE act_id = ${SM77_ACT}" >/dev/null; }
+	sm77_drop
+
+	SM77_CASE="$(adb "SELECT case_id FROM cases ORDER BY case_id LIMIT 1")"
+	SM77_CASE="$(printf '%s' "$SM77_CASE" | tr -d '[:space:]')"
+
+	adb "INSERT INTO activities (act_id, case_id, user_id, act_type, act_date)
+		VALUES (${SM77_ACT}, ${SM77_CASE:-0}, 1, 'C', '2026-01-01')" >/dev/null
+
+	SM77_OUT="$(sm77_dex php -r '
+		define("PL_DISABLE_SECURITY", true);
+		chdir("/var/www/html/cms");
+		require_once("pika-danio.php");
+		pika_init();
+		require_once("lib/pikaCms.php");
+		$pk = new pikaCms();
+		$r = $pk->fetchActivity($argv[1]);
+		$w = $r ? DBResult::fetchRow($r) : null;
+		echo "ACT_PLAIN:" . (is_array($w) ? $w["act_id"] : "NOROW") . "\n";
+		$r = $pk->fetchActivity("0\x27 OR \x271\x27=\x271");
+		$w = $r ? DBResult::fetchRow($r) : null;
+		echo "ACT_INJECT:" . (is_array($w) ? $w["act_id"] : "NOROW") . "\n";
+		$d = 0;
+		$pk->fetchCaseList(array("case_id" => "0 OR 1=1"), $d);
+		echo "CASE_INJECT:" . (int) $d . "\n";
+		$d2 = 0;
+		$pk->fetchCaseList(array("case_id" => $argv[2]), $d2);
+		echo "CASE_PLAIN:" . (int) $d2 . "\n";
+	' "$SM77_ACT" "${SM77_CASE:-0}" </dev/null 2>/dev/null)"
+
+	sm77_drop
+
+	sm77_says() { printf '%s' "$SM77_OUT" | grep -qF "$1"; }
+
+	# 77a. Positive control: the lookup this function exists for still works.
+	if sm77_says "ACT_PLAIN:${SM77_ACT}"; then
+		ok "an activity is still fetched by its own id"
+	else
+		bad "THE ACTIVITY LOOKUP IS BROKEN - the rest of 77 proves nothing [$SM77_OUT]"
+	fi
+
+	# 77b. The injection itself.
+	if sm77_says 'ACT_INJECT:NOROW'; then
+		ok "a quote in an activity id no longer selects another row"
+	else
+		bad "an activity id can still break out of its quotes [$SM77_OUT]"
+	fi
+
+	if [ -n "$SM77_CASE" ]; then
+		# 77c. Positive control for the case list.
+		if sm77_says 'CASE_PLAIN:1'; then
+			ok "a case is still found by its own id"
+		else
+			bad "THE CASE LOOKUP IS BROKEN - 77d proves nothing [$SM77_OUT]"
+		fi
+
+		# 77d. The unquoted filter returned the whole table.
+		if sm77_says 'CASE_INJECT:0'; then
+			ok "a case id filter of \"0 OR 1=1\" now matches nothing"
+		else
+			bad "the case list filter still takes its value as sql [$SM77_OUT]"
+		fi
+	fi
+fi
+
+# 77e. Static. The escape pass at the top of fetchCaseList() covers every
+# other filter in the function, whose values were interpolated raw. It is
+# the thing that makes the function safe for a caller it has not met.
+if grep -qF 'DB::escapeString((string) $filter_value)' cms/app/extralib/lib/pikaCms.php; then
+	ok "the case list escapes every filter it is handed"
+else
+	bad "the case list interpolates filter values unescaped again"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
