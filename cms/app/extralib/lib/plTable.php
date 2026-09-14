@@ -13,6 +13,25 @@ it would bypass the abstraction layer.  And integration with pkCms DB access
 would still require special coding for each particular case (some tables have
 hyperlinked cells, etc.)
 */
+/*	Escaping contract.
+	
+	A cell value is markup on purpose. Callers build links, forms, buttons and
+	checkboxes and hand them to addRow(), so draw() writes $val into the <td>
+	untouched and every caller is responsible for escaping the data it puts
+	inside its own markup.
+	
+	Everything else draw() writes is an HTML attribute or a URL, and none of
+	it is markup: the width, the summary, the CSS class names, the row height,
+	the navigation URL and the column labels. Those were interpolated raw into
+	attributes, and two of the pager's href attributes were not even quoted,
+	so a space in nav_url would have started a new attribute. None of the
+	current callers can reach that -- every label is a literal and the only
+	nav_url in the tree is built from an already validated user id on a table
+	with its pager switched off -- but the class is a library, the next caller
+	need not be so lucky, and an escaped attribute costs nothing.
+	
+	Attributes are escaped here, at the point of use. Cell values are not.
+*/
 class plTable
 {
 	var $cols;  // array
@@ -55,12 +74,45 @@ class plTable
 		$this->rows[] = $rows;
 	}
 	
+	/*	Build one of the column-sort links. The query string is assembled
+		first and escaped once, at the end, so the caller cannot end the
+		href attribute early and the ampersands separating the parameters
+		are written as &amp; the way an HTML attribute requires.
+	*/
+	function sortHref($order_field, $opp_order)
+	{
+		$url = $this->nav_url . 'order_field=' . urlencode((string) $order_field);
+		
+		if (!is_null($opp_order))
+		{
+			$url .= '&order=' . urlencode((string) $opp_order);
+		}
+		
+		return pl_html_escape($url);
+	}
+	
+	/*	Build one of the pager links. Same reasoning as sortHref(): these
+		two attributes were written without any quotes at all, so a space
+		anywhere in nav_url started a new attribute on the anchor.
+	*/
+	function pagerHref($offset)
+	{
+		$url = $this->nav_url . 'offset=' . urlencode((string) $offset);
+		
+		if ($this->sortable)
+		{
+			$url .= '&order_field=' . urlencode((string) $this->order_field)
+				. '&order=' . urlencode((string) $this->order);
+		}
+		
+		return pl_html_escape($url);
+	}
+	
 	function draw()
 	{
 		$class_str = '';
 		$C = '';
 		$style = '';
-		$order_url = '';
 		
 		// If there are no rows provided, create an empty array to avoid errors
 		if (!isset($this->rows[0]) || !is_array($this->rows[0]))
@@ -86,10 +138,13 @@ class plTable
 		
 		if ($this->table_class)
 		{
-			$class_str = " class=\"{$this->table_class}\"";
+			$class_str = ' class="' . pl_html_escape($this->table_class) . '"';
 		}
 		
-		$C .= "<table cellpadding=3 cellspacing=0 border=0 width=\"{$this->width}\" summary=\"{$this->summary}\"$class_str>\n";
+		$safe_width = pl_html_escape($this->width);
+		$safe_summary = pl_html_escape($this->summary);
+		
+		$C .= "<table cellpadding=3 cellspacing=0 border=0 width=\"{$safe_width}\" summary=\"{$safe_summary}\"$class_str>\n";
 		
 		
 		if ($this->show_header)
@@ -109,7 +164,7 @@ class plTable
 				else if (!$this->sortable)  // this column/table is not sortable
 				{
 					// Draw the column label
-					$C .= "{$this->cols[$i]}";
+					$C .= pl_html_escape($this->cols[$i]);
 				}
 				
 				else if (strcmp($col_vals[$i], $this->order_field) == 0)
@@ -126,8 +181,8 @@ class plTable
 					}
 					
 					// Draw the column label
-					$C .= "<a href=\"{$this->nav_url}order_field={$col_vals[$i]}&order=$opp_order\">";
-					$C .= "{$this->cols[$i]}</a>";
+					$C .= '<a href="' . $this->sortHref($col_vals[$i], $opp_order) . '">';
+					$C .= pl_html_escape($this->cols[$i]) . '</a>';
 					
 					// Draw sort arrow
 					if ($this->order == 'ASC')
@@ -145,8 +200,8 @@ class plTable
 				// the table can be sorted by this column, but isn't
 				{
 					// Draw the column label
-					$C .= "<a href=\"{$this->nav_url}order_field={$col_vals[$i]}\">";
-					$C .= "{$this->cols[$i]}</a>";
+					$C .= '<a href="' . $this->sortHref($col_vals[$i], null) . '">';
+					$C .= pl_html_escape($this->cols[$i]) . '</a>';
 				}
 				
 				$C .= "</th>\n";
@@ -159,7 +214,7 @@ class plTable
 		
 		if ($this->td_style)
 		{
-			$style = " class='$this->td_style'";
+			$style = ' class="' . pl_html_escape($this->td_style) . '"';
 		}
 		
 		if (!is_array($this->rows))
@@ -167,7 +222,7 @@ class plTable
 			/* no data to show, just draw one big empty row and let the use know
 			* that there's no data
 			*/
-			$C .= "<tr class=\"$this->rowa_bg\">\n";
+	$C .= '<tr class="' . pl_html_escape($this->rowa_bg) . '">' . "\n";
 			$C .= '<td colspan=' . count($this->cols) . '><p>&nbsp;&nbsp;<i>nothing to display</i></p></td>' . "\n";
 			$C .= '</tr>';
 			$C .= "\n";
@@ -183,12 +238,12 @@ class plTable
 			{
 				if($z % 2 == 0)
 				{
-					$C .= "<tr valign=\"top\" class=\"$this->rowa_bg\">";
+					$C .= '<tr valign="top" class="' . pl_html_escape($this->rowa_bg) . '">';
 				}
 				
 				else
 				{
-					$C .= "<tr valign=\"top\" class=\"$this->rowb_bg\">";
+					$C .= '<tr valign="top" class="' . pl_html_escape($this->rowb_bg) . '">';
 				}
 				
 				$C .= "\n";
@@ -200,7 +255,7 @@ class plTable
 				{
 					if ($q == 0 && $this->min_row_height)
 					{
-						$height = " height={$this->min_row_height}";
+						$height = ' height="' . pl_html_escape($this->min_row_height) . '"';
 					}
 					
 					else
@@ -233,12 +288,7 @@ class plTable
 		{
 			// we're going to need to show a pager
 			
-			if ($this->sortable)
-			{
-				$order_url = "&order_field={$this->order_field}&order={$this->order}";
-			}
-			
-			$C .= "<table width=\"100%\" cellspacing=0 summary='Pager'><tr>\n<td align=left width=100>";
+			$C .= "<table width=\"100%\" cellspacing=0 summary=\"Pager\"><tr>\n<td align=left width=100>";
 			
 			$current_page = (int) ($this->pager_offset / $this->page_size);
 			$last_page = (int) (($this->dataset_size - 1) / $this->page_size);
@@ -246,7 +296,8 @@ class plTable
 			if ($current_page > 0)
 			{
 				$t = ($current_page - 1) * $this->page_size;
-				$C .= "<a href={$this->nav_url}offset=$t$order_url>Previous {$this->page_size}</a>";
+				$C .= '<a href="' . $this->pagerHref($t) . '">Previous '
+					. pl_html_escape($this->page_size) . '</a>';
 			}
 			
 			$C .= "</td>\n<td align=center>";
@@ -267,7 +318,7 @@ class plTable
 					else
 					{
 						$w = $x * $this->page_size;
-						$C .= "<a href={$this->nav_url}offset=$w$order_url> $y </a>&nbsp;";
+						$C .= '<a href="' . $this->pagerHref($w) . '"> ' . $y . ' </a>&nbsp;';
 					}
 				}
 			}
@@ -289,19 +340,19 @@ class plTable
 					else
 					{
 						$w = $x * $this->page_size;
-						$C .= "<a href={$this->nav_url}offset=$w$order_url> $y </a>&nbsp;";
+						$C .= '<a href="' . $this->pagerHref($w) . '"> ' . $y . ' </a>&nbsp;';
 					}
 				}
 				
 				$w = $last_page * $this->page_size;
 				$y = $last_page + 1;
-				$C .= " ... <a href={$this->nav_url}offset=$w$order_url> $y </a>&nbsp;";
+				$C .= ' ... <a href="' . $this->pagerHref($w) . '"> ' . $y . ' </a>&nbsp;';
 			}
 			
 			// show the last 10 pages
 			else if ($current_page > ($last_page - 11))
 			{
-				$C .= "<a href={$this->nav_url}offset=0> 1 </a> ... ";
+				$C .= '<a href="' . $this->pagerHref(0) . '"> 1 </a> ... ';
 				
 				for($x = $last_page - 9; $x <= $last_page; $x++)
 				{
@@ -315,14 +366,14 @@ class plTable
 					else
 					{
 						$w = $x * $this->page_size;
-						$C .= "<a href={$this->nav_url}offset=$w$order_url> $y </a>&nbsp;";
+						$C .= '<a href="' . $this->pagerHref($w) . '"> ' . $y . ' </a>&nbsp;';
 					}
 				}
 			}
 			
 			else // stuck in the middle...
 			{
-				$C .= "<a href={$this->nav_url}offset=0> 1 </a> ... ";
+				$C .= '<a href="' . $this->pagerHref(0) . '"> 1 </a> ... ';
 				
 				for($x = $current_page; $x < $current_page + 10; $x++)
 				{
@@ -336,13 +387,13 @@ class plTable
 					else
 					{
 						$w = $x * $this->page_size;
-						$C .= "<a href={$this->nav_url}offset=$w$order_url> $y </a>&nbsp;";
+						$C .= '<a href="' . $this->pagerHref($w) . '"> ' . $y . ' </a>&nbsp;';
 					}
 				}
 				
 				$w = $last_page * $this->page_size;
 				$y = $last_page + 1;
-				$C .= " ... <a href={$this->nav_url}offset=$w> $y </a>&nbsp;";
+				$C .= ' ... <a href="' . $this->pagerHref($w) . '"> ' . $y . ' </a>&nbsp;';
 			}
 			
 			
@@ -351,7 +402,8 @@ class plTable
 			if ($current_page < $last_page)
 			{
 				$t = ($current_page + 1) * $this->page_size;
-				$C .= "<a href={$this->nav_url}offset=$t$order_url>Next {$this->page_size}</a>";
+				$C .= '<a href="' . $this->pagerHref($t) . '">Next '
+					. pl_html_escape($this->page_size) . '</a>';
 			}
 			
 			$C .= "</td>\n</tr></table>\n";
