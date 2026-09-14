@@ -10340,5 +10340,198 @@ else
 fi
 
 echo
+echo "== 70. document assembly: the debug dump, and the settings a template may read =="
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	DG_CASE=""
+	DG_DOC=""
+	DG_TOTP_SAVED=""
+	DG_SSO_SAVED=""
+
+	DG_TOTP_HAD=0
+	DG_SSO_HAD=0
+
+	# Restore the row, not just the value. sso_client_secret is seeded by
+	# add_sso.sql and section 26 sets it with an UPDATE, so a row deleted here
+	# and re-INSERTed only when it held something would leave that section
+	# updating nothing at all.
+	cleanup_docgen() {
+		[ -n "${DG_DOC:-}" ] && adb "DELETE FROM doc_storage WHERE doc_id = ${DG_DOC}" >/dev/null 2>&1
+		[ -n "${DG_CASE:-}" ] && adb "DELETE FROM cases WHERE case_id = ${DG_CASE}" >/dev/null 2>&1
+		if [ "${DG_TOTP_HAD:-0}" = 1 ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('totp_encryption_key', '${DG_TOTP_SAVED}')
+				ON DUPLICATE KEY UPDATE value = '${DG_TOTP_SAVED}'" >/dev/null 2>&1
+		else
+			adb "DELETE FROM settings WHERE label = 'totp_encryption_key'" >/dev/null 2>&1
+		fi
+		if [ "${DG_SSO_HAD:-0}" = 1 ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('sso_client_secret', '${DG_SSO_SAVED}')
+				ON DUPLICATE KEY UPDATE value = '${DG_SSO_SAVED}'" >/dev/null 2>&1
+		else
+			adb "DELETE FROM settings WHERE label = 'sso_client_secret'" >/dev/null 2>&1
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_docgen' EXIT
+
+	DG_TOTP_HAD="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'totp_encryption_key'")"
+	DG_SSO_HAD="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'sso_client_secret'")"
+	DG_TOTP_SAVED="$(adb "SELECT value FROM settings WHERE label = 'totp_encryption_key'")"
+	DG_SSO_SAVED="$(adb "SELECT value FROM settings WHERE label = 'sso_client_secret'")"
+
+	adb "INSERT INTO settings (label, value) VALUES ('totp_encryption_key', 'ZZTOTPKEY')
+		ON DUPLICATE KEY UPDATE value = 'ZZTOTPKEY'" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('sso_client_secret', 'ZZSSOSECRET')
+		ON DUPLICATE KEY UPDATE value = 'ZZSSOSECRET'" >/dev/null
+
+	# A case whose number carries a script tag. pl_clean_form_input() turns
+	# < and > into entities on the way in, so a value seeded here is the
+	# honest test of the output side: imports, migrations and direct SQL all
+	# write this column too.
+	DG_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${DG_CASE}, 'ZZDG<script>alert(1)</script>', 1, NULL, '1')" >/dev/null
+
+	# A form template (doc_type = 'F') whose body asks for six settings by
+	# name. doc_data is addslashes(gzcompress(...)), so build it with the
+	# application's own PHP and insert it as hex.
+	DG_BODY='TOTP=[%%[totp_encryption_key]%%] SSO=[%%[sso_client_secret]%%] DBPW=[%%[db_password]%%] DBHOST=[%%[db_host]%%] BASEDIR=[%%[base_directory]%%] BASEURL=[%%[base_url]%%]'
+	DG_HEX="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo bin2hex(addslashes(gzcompress($argv[1], 9)));' "$DG_BODY" </dev/null 2>/dev/null)"
+	DG_DOC="$(adb "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM doc_storage")"
+
+	if [ -z "$DG_HEX" ] || [ -z "${DG_DOC:-}" ] || [ -z "${DG_CASE:-}" ]; then
+		bad "could not seed the document assembly fixtures"
+	else
+		adb "INSERT INTO doc_storage
+			(doc_id, doc_name, doc_data, doc_size, mime_type, doc_type, description, created, case_id, user_id)
+			VALUES (${DG_DOC}, 'zzsmoke-form.txt', UNHEX('${DG_HEX}'), 64, 'text/plain', 'F',
+				'zz smoke form', CURDATE(), 0, 1)" >/dev/null
+
+		: > "$COOKIES"
+		curl -s --max-time 30 -c "$COOKIES" -o /dev/null "$OCM_URL/index.php"
+		curl -s --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+			-X POST -d "login_user=admin&login_pass=${OCM_PASSWORD}&auth_id=1" \
+			"$OCM_URL/index.php"
+
+		# Tokens are per session, not per form, so any page carrying
+		# %%[csrf_field]%% will do.
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php"
+		DG_CSRF="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed 's/.*value="//; s/"//')"
+
+		if [ -z "$DG_CSRF" ]; then
+			bad "could not take a CSRF token for the document assembly checks"
+		else
+			# 70a. The [?] debug dump must escape the case data it lists.
+			curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+				-X POST -d "_csrf=${DG_CSRF}&case_id=${DG_CASE}&form_id=${DG_DOC}&debug=1&recipient=&opposing=&opp_counsel=&autosave=" \
+				"$OCM_URL/ops/docgen.php"
+
+			if grep -q 'ZZDG<script>' "$BODY"; then
+				bad "THE DOCUMENT ASSEMBLY DEBUG DUMP EMITS CASE DATA AS LIVE HTML (CWE-79)"
+			elif grep -q 'ZZDG&lt;script&gt;' "$BODY"; then
+				ok "the document assembly debug dump escapes the case data it lists"
+			else
+				bad "the debug dump showed neither the raw nor the escaped case number ($(wc -c < "$BODY") bytes)"
+			fi
+
+			if grep -q 'Field Name: number' "$BODY"; then
+				ok "the debug dump still lists the field names a form may use"
+			else
+				bad "the debug dump no longer lists any field names"
+			fi
+
+			# 70b. A form template must not resolve a credential.
+			curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+				-X POST -d "_csrf=${DG_CSRF}&case_id=${DG_CASE}&form_id=${DG_DOC}&debug=0&recipient=&opposing=&opp_counsel=&autosave=" \
+				"$OCM_URL/ops/docgen.php"
+
+			if grep -q 'ZZTOTPKEY' "$BODY"; then
+				bad "A FORM TEMPLATE CAN READ THE TOTP ENCRYPTION KEY (CWE-522)"
+			else
+				ok "a form template cannot read the TOTP encryption key"
+			fi
+
+			if grep -q 'ZZSSOSECRET' "$BODY"; then
+				bad "A FORM TEMPLATE CAN READ THE OIDC CLIENT SECRET (CWE-522)"
+			else
+				ok "a form template cannot read the OIDC client secret"
+			fi
+
+			if grep -q 'DBHOST=\[\]' "$BODY"; then
+				ok "a form template cannot read the database host"
+			else
+				bad "a form template can read the database host"
+			fi
+
+			if grep -q 'BASEDIR=\[\]' "$BODY"; then
+				ok "a form template cannot read the installation's base directory"
+			else
+				bad "a form template can read the installation's base directory"
+			fi
+
+			if grep -q 'DBPW=\[\]' "$BODY"; then
+				ok "a form template cannot read the database password"
+			else
+				bad "a form template can read the database password"
+			fi
+
+			# base_url is deliberately NOT blocked: page chrome resolves it
+			# through the same path on every page, so blocking it would blank
+			# the navigation everywhere.
+			if grep -qE 'BASEURL=\[[^]]+\]' "$BODY"; then
+				ok "a template can still resolve base_url"
+			else
+				bad "base_url no longer resolves in a template - page chrome will be blank"
+			fi
+
+			# 70c. Blocking a label must not blank the admin form, which puts
+			# these into its own data array.
+			curl -s --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php"
+
+			if grep -q 'name="dont_use_host" value=""' "$BODY" \
+				|| ! grep -q 'name="dont_use_host"' "$BODY"; then
+				bad "the system settings page no longer shows the database host"
+			else
+				ok "the system settings page still shows the database host"
+			fi
+
+			if grep -q 'name="dont_use_base_directory" value=""' "$BODY" \
+				|| ! grep -q 'name="dont_use_base_directory"' "$BODY"; then
+				bad "the system settings page no longer shows the base directory"
+			else
+				ok "the system settings page still shows the base directory"
+			fi
+
+			if grep -q 'ZZTOTPKEY\|ZZSSOSECRET' "$BODY"; then
+				bad "the system settings page prints a stored credential"
+			else
+				ok "the system settings page prints no stored credential"
+			fi
+		fi
+	fi
+
+	# 70d. Static: neither blocklist may name a label that no longer exists.
+	if grep -q "pl_settings_template_blocked" cms/template_plugins/setting.php \
+		&& ! grep -q "blocked_array = array" cms/template_plugins/setting.php; then
+		ok "the setting template plugin uses the one blocklist"
+	else
+		bad "the setting template plugin still carries its own stale blocklist"
+	fi
+
+	if grep -q "pl_settings_template_blocked" cms/app/lib/pikaTempLib.php \
+		&& ! grep -q "blocked_fields = array" cms/app/lib/pikaTempLib.php; then
+		ok "pikaTempLib::loadSettings uses the one blocklist"
+	else
+		bad "pikaTempLib::loadSettings still carries its own stale blocklist"
+	fi
+
+	cleanup_docgen
+	DG_CASE=""; DG_DOC=""; DG_TOTP_SAVED=""; DG_SSO_SAVED=""
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the document assembly checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

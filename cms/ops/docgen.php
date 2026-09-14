@@ -277,30 +277,52 @@ while ($row = DBResult::fetchRow($result))
 $a['referral_agencies'] = $referral_agencies;
 
 
+/*	The [?] link on the case Documents tab posts debug=1 to list the field
+	names a form template may use, with the value each one currently holds
+	for this case. Every one of those values is case data or client contact
+	data, so none of it may reach the page unescaped.
+
+	It did. The case number, the client's name, an address, a note -- any
+	field a person can type into -- was interpolated straight into HTML
+	here, and again into the navigation line below. Text stored on a case
+	ran as script in the browser of the next person who clicked [?] on it.
+	pl_clean_form_input() turns < and > into entities on the way in, which
+	covers the fields posted through the web forms, but it is not a reason
+	to leave the output raw: doc_storage rows, imports, the migration
+	tooling and direct SQL all write these same columns.
+
+	pl_html_escape() returns an empty string for an array, so the array
+	branch below prints its members instead of silently losing them.
+*/
 if($debug) {
 	
 	$plTemplate['content'] = '';
 	
 	foreach ($a as $key => $val) {
-		//if(!is_array($val)) {
-			$plTemplate['content'] .= "Field Name: {$key} => {$val}<br/>\n";
-		/*} else {
-			$plTemplate['content'] .= "Field Collection: {$key}<br/>\n";
+		if(!is_array($val)) {
+			$plTemplate['content'] .= 'Field Name: ' . pl_html_escape($key)
+				. ' =&gt; ' . pl_html_escape($val) . "<br/>\n";
+		} else {
+			$plTemplate['content'] .= 'Field Collection: ' . pl_html_escape($key) . "<br/>\n";
 			$plTemplate['content'] .= "<blockquote>\n";
 			foreach ($val as $subkey => $subval) {
-				$plTemplate['content'] .= "Field Name: {$subkey} => {$subval}<br/>\n";
+				$plTemplate['content'] .= 'Field Name: ' . pl_html_escape($subkey)
+					. ' =&gt; ' . pl_html_escape($subval) . "<br/>\n";
 			}
 			$plTemplate['content'] .= "</blockquote>\n";
-		}*/
+		}
 	}
 	
+	$safe_base_url = pl_html_escape($base_url);
+	$safe_case_id = (int) $case_id;
+	$safe_number = pl_html_escape(isset($a['number']) ? $a['number'] : '');
+	
 	$plTemplate["page_title"] = 'Document Assembly Debug';
-	$plTemplate['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
-							<a href=\"{$base_url}/case.php?case_id={$case_id}&screen=docs\">{$a['number']}</a> &gt;
+	$plTemplate['nav'] = "<a href=\"{$safe_base_url}\">Pika Home</a> &gt;
+							<a href=\"{$safe_base_url}/case.php?case_id={$safe_case_id}&amp;screen=docs\">{$safe_number}</a> &gt;
 							Document Assembly Debug";
 	$template = new pikaTempLib('templates/default.html',$plTemplate);
 	$buffer = $template->draw();
-	//$buffer = pl_template('templates/default.html',$plTemplate);
 	pika_exit($buffer);
 }
 
