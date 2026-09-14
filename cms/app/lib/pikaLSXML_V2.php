@@ -946,6 +946,23 @@ class pikaLSXML
 			}
 			
 			$relation_code = $row['relation_code'];
+			
+			/*	"relation_code != ?" reads as "anybody but somebody in my
+				own seat", which is not what a conflict is. See
+				pl_conflict_opposing_roles(): a client-side party conflicts
+				with prior adverse parties, an adverse party with prior
+				clients, and a role in neither bucket -- a judge, a referral
+				agency -- conflicts with nothing and is skipped here.
+			*/
+			$opposing_roles = pl_conflict_opposing_roles($relation_code);
+			
+			if (empty($opposing_roles))
+			{
+				continue;
+			}
+			
+			$role_placeholders = implode(',',array_fill(0,count($opposing_roles),'?'));
+			
 			$mp_first = $row['mp_first'];
 			$mp_last = $row['mp_last'];
 			$ssn = $row['ssn'];
@@ -954,7 +971,7 @@ class pikaLSXML
 			if (strlen($mp_last) > 0)
 			{
 				$clause = '';
-				$params = array($relation_code,$mp_last);
+				$params = array_merge($opposing_roles,array($mp_last));
 				
 				if (strlen($mp_first) > 0)
 				{
@@ -974,7 +991,7 @@ class pikaLSXML
 						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND aliases.mp_last = ?{$clause}
+						WHERE relation_code IN ({$role_placeholders}) AND aliases.mp_last = ?{$clause}
 						LIMIT {$lim}";
 				pikaCase::collectConflicts($sql,$params,'NAME',$conflict_array,$seen);
 			}
@@ -982,14 +999,14 @@ class pikaLSXML
 			// Match by social security number
 			if (strlen(preg_replace('/\D/','',$ssn)) > 0)
 			{
-				$params = array($relation_code,$ssn,$mp_last);
+				$params = array_merge($opposing_roles,array($ssn,$mp_last));
 				
 				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, cases.status, label AS role
 						FROM contacts
 						LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND contacts.ssn = ?
+						WHERE relation_code IN ({$role_placeholders}) AND contacts.ssn = ?
 						AND contacts.mp_last != ?
 						LIMIT {$lim}";
 				pikaCase::collectConflicts($sql,$params,'SSN',$conflict_array,$seen);
@@ -1000,7 +1017,7 @@ class pikaLSXML
 						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND aliases.ssn = ?
+						WHERE relation_code IN ({$role_placeholders}) AND aliases.ssn = ?
 						AND aliases.mp_last != ?
 						LIMIT {$lim}";
 				pikaCase::collectConflicts($sql,$params,'SSN',$conflict_array,$seen);
