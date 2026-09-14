@@ -10154,6 +10154,191 @@ else
 	printf '  skip the vCalendar export checks (needs the database)\n'
 fi
 
+# ---------------------------------------------------------------------------
+# 69. Two findings from the backport audit of the private tree.
+#
+# a) cms/system-sms.php read the Twilio authentication token and the
+#    SparkPost API key back out of the settings table and rendered each into
+#    the value attribute of a plain text input. The page handed the live
+#    credentials to anybody who could open it, and to anything that could
+#    read the response. system-settings.php already had the right shape for
+#    this -- a password field, an empty value, and a line saying whether one
+#    is stored -- for the OIDC client secret and the peer transfer shared
+#    secret. The SMS page now uses it too, which means it must also not
+#    erase a stored credential when the form is saved with the field blank.
+#
+# b) pl_menu_set() in app/lib/pl.php interpolated its $menu_name straight
+#    into "DELETE FROM menu_$menu_name" and the matching INSERT. Its one
+#    caller, cms/system-ops.php case 'save_menu', takes that name from
+#    $_POST. A table name is not quoted, so DB::escapeString() does nothing
+#    for it; it needs pl_safe_identifier(). Holding the system group is not
+#    the same as holding a database shell.
+echo
+echo "== 69. the SMS provider secrets, and the menu table name =="
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	SMS_TWILIO_SAVED=""
+	SMS_SPARK_SAVED=""
+	SMS_SID_SAVED=""
+
+	cleanup_sms() {
+		adb "DELETE FROM settings WHERE label IN
+			('twilio_auth_token','sparkpost_api_key','twilio_account_sid')" >/dev/null 2>&1
+		if [ -n "${SMS_TWILIO_SAVED:-}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('twilio_auth_token', '${SMS_TWILIO_SAVED}')" >/dev/null 2>&1
+		fi
+		if [ -n "${SMS_SPARK_SAVED:-}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('sparkpost_api_key', '${SMS_SPARK_SAVED}')" >/dev/null 2>&1
+		fi
+		if [ -n "${SMS_SID_SAVED:-}" ]; then
+			adb "INSERT INTO settings (label, value) VALUES ('twilio_account_sid', '${SMS_SID_SAVED}')" >/dev/null 2>&1
+		fi
+		adb "DROP TABLE IF EXISTS menu_zzsmoke" >/dev/null 2>&1
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sms' EXIT
+
+	SMS_TWILIO_SAVED="$(adb "SELECT value FROM settings WHERE label = 'twilio_auth_token'")"
+	SMS_SPARK_SAVED="$(adb "SELECT value FROM settings WHERE label = 'sparkpost_api_key'")"
+	SMS_SID_SAVED="$(adb "SELECT value FROM settings WHERE label = 'twilio_account_sid'")"
+
+	adb "DELETE FROM settings WHERE label IN ('twilio_auth_token','sparkpost_api_key')" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES
+		('twilio_auth_token', 'ZZTWILIOSECRET'),
+		('sparkpost_api_key', 'ZZSPARKKEY')" >/dev/null
+
+	: > "$COOKIES"
+	curl -s --max-time 30 -c "$COOKIES" -o /dev/null "$OCM_URL/index.php"
+	curl -s --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+		-X POST -d "login_user=admin&login_pass=${OCM_PASSWORD}&auth_id=1" \
+		"$OCM_URL/index.php"
+
+	# 69a. Neither credential may appear in the page.
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-sms.php"
+
+	if grep -q 'ZZTWILIOSECRET' "$BODY"; then
+		bad "THE SMS PAGE PRINTS THE STORED TWILIO AUTHENTICATION TOKEN"
+	else
+		ok "the SMS page does not print the stored Twilio token"
+	fi
+
+	if grep -q 'ZZSPARKKEY' "$BODY"; then
+		bad "THE SMS PAGE PRINTS THE STORED SPARKPOST API KEY"
+	else
+		ok "the SMS page does not print the stored SparkPost key"
+	fi
+
+	if grep -q 'A token is stored' "$BODY" && grep -q 'An API key is stored' "$BODY"; then
+		ok "the SMS page says a credential is stored without saying what it is"
+	else
+		bad "the SMS page does not report whether a credential is stored"
+	fi
+
+	sms_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+		| head -1 | sed 's/.*value="//; s/"//')"
+
+	if [ -z "$sms_tok" ]; then
+		bad "the SMS settings form carries no CSRF token"
+	else
+		# 69b. Saving with the fields blank must keep both credentials.
+		curl -s --max-time 30 -b "$COOKIES" -o /dev/null -X POST \
+			--data-urlencode "_csrf=${sms_tok}" \
+			-d 'action=update' -d 'twilio_account_sid=ZZSID' \
+			-d 'twilio_auth_token=' -d 'twilio_number=%2B15550000' \
+			-d 'sparkpost_api_key=' -d 'sparkpost_from_address=zz%40example.org' \
+			"$OCM_URL/system-sms.php"
+
+		if [ "$(adb "SELECT value FROM settings WHERE label = 'twilio_auth_token'")" = "ZZTWILIOSECRET" ] \
+			&& [ "$(adb "SELECT value FROM settings WHERE label = 'sparkpost_api_key'")" = "ZZSPARKKEY" ]; then
+			ok "saving the SMS form with the secret fields blank keeps both credentials"
+		else
+			bad "SAVING THE SMS FORM WITH BLANK SECRET FIELDS ERASED A STORED CREDENTIAL"
+		fi
+
+		if [ "$(adb "SELECT value FROM settings WHERE label = 'twilio_account_sid'")" = "ZZSID" ]; then
+			ok "the non-secret SMS fields still save"
+		else
+			bad "the non-secret SMS fields no longer save"
+		fi
+
+		# 69c. Retyping one must still replace it.
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-sms.php"
+		sms_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+			| head -1 | sed 's/.*value="//; s/"//')"
+		curl -s --max-time 30 -b "$COOKIES" -o /dev/null -X POST \
+			--data-urlencode "_csrf=${sms_tok}" \
+			-d 'action=update' -d 'twilio_account_sid=ZZSID' \
+			-d 'twilio_auth_token=ZZNEWTOKEN' -d 'twilio_number=%2B15550000' \
+			-d 'sparkpost_api_key=' -d 'sparkpost_from_address=zz%40example.org' \
+			"$OCM_URL/system-sms.php"
+
+		if [ "$(adb "SELECT value FROM settings WHERE label = 'twilio_auth_token'")" = "ZZNEWTOKEN" ] \
+			&& [ "$(adb "SELECT value FROM settings WHERE label = 'sparkpost_api_key'")" = "ZZSPARKKEY" ]; then
+			ok "retyping one SMS credential replaces it and leaves the other alone"
+		else
+			bad "retyping an SMS credential did not replace it, or disturbed the other"
+		fi
+	fi
+
+	# 69d. The menu table name.
+	adb "DROP TABLE IF EXISTS menu_zzsmoke" >/dev/null
+	adb "CREATE TABLE menu_zzsmoke (value VARCHAR(20), label VARCHAR(60), menu_order INT)" >/dev/null
+
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php"
+	menu_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+		| head -1 | sed 's/.*value="//; s/"//')"
+
+	if [ -z "$menu_tok" ]; then
+		bad "could not get a CSRF token for the menu save checks"
+	else
+		curl -s --max-time 30 -b "$COOKIES" -o /dev/null -X POST \
+			--data-urlencode "_csrf=${menu_tok}" -d 'action=save_menu' \
+			--data-urlencode 'menu=zzsmoke' \
+			--data-urlencode 'values=a|Alpha
+b|Beta' "$OCM_URL/system-ops.php"
+
+		if [ "$(adb "SELECT COUNT(*) FROM menu_zzsmoke")" = "2" ]; then
+			ok "a valid menu name still saves its items"
+		else
+			bad "a valid menu name no longer saves; the allowlist is too strict"
+		fi
+
+		# A name that is not a bare identifier must be refused outright.
+		curl -s --max-time 30 -b "$COOKIES" -o /dev/null -X POST \
+			--data-urlencode "_csrf=${menu_tok}" -d 'action=save_menu' \
+			--data-urlencode 'menu=zzsmoke WHERE 1=1' \
+			--data-urlencode 'values=c|Gamma' "$OCM_URL/system-ops.php"
+
+		if [ "$(adb "SELECT COUNT(*) FROM menu_zzsmoke")" = "2" ]; then
+			ok "a crafted menu name is refused and the rows are untouched"
+		else
+			bad "A CRAFTED MENU NAME REACHED THE QUERY"
+		fi
+
+		# And an apostrophe in a label must survive exactly once.
+		curl -s --max-time 30 -b "$COOKIES" -o /dev/null -X POST \
+			--data-urlencode "_csrf=${menu_tok}" -d 'action=save_menu' \
+			--data-urlencode 'menu=zzsmoke' \
+			--data-urlencode "values=x|O'Brien" "$OCM_URL/system-ops.php"
+
+		menu_label="$(adb "SELECT label FROM menu_zzsmoke WHERE value = 'x'")"
+
+		case "$menu_label" in
+		"O'Brien")
+			ok "an apostrophe in a menu label is stored once, not escaped twice" ;;
+		"")
+			bad "an apostrophe in a menu label broke the insert" ;;
+		*)
+			bad "a menu label is double-escaped [${menu_label}]" ;;
+		esac
+	fi
+
+	cleanup_sms
+	SMS_TWILIO_SAVED=""; SMS_SPARK_SAVED=""; SMS_SID_SAVED=""
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the SMS credential and menu name checks (needs the database)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
