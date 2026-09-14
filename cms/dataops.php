@@ -1382,67 +1382,22 @@ switch($action)
 	break;
 	
 	
-	//Questionnaire by DTK
-
-	case "save_quest":
-		$user_id = $auth_row["user_id"];
-		$questionnaire_id = pl_grab_var('questionnaire_id', null, 'REQUEST');
-		$completed_id = pl_grab_var('completed_id', null, 'REQUEST');
-		$case_id = pl_grab_var('case_id', null, 'REQUEST');
-		$answer = pl_grab_var('answer', null, 'REQUEST');
-		$answer_id = pl_grab_var('answer_id', null, 'REQUEST');
-		$q_action = pl_grab_var('q_action', null, 'REQUEST');
-		$response_text = pl_grab_var('response_text', null, 'REQUEST');
-		$response_text = addslashes($response_text);
+	/*	The questionnaire module is not part of this release.
 		
-		if (!$completed_id) {
-			$completed_sql  = "SELECT completed_id FROM q_completed WHERE questionnaire_id=$questionnaire_id ";
-			$completed_sql .= "AND case_id=$case_id ORDER BY completed_time DESC LIMIT 1";
-//			echo $completed_sql . "<br>";
-			$results = DB::query($completed_sql);
-			while ($row = DBResult::fetchRow($results)) {
-				$completed_id = $row["completed_id"];
-			}
-
-			if (!$completed_id) {
-				$completed_sql = "INSERT INTO q_completed (questionnaire_id, case_id, user_id, completed_time) ";
-				$completed_sql .= "VALUES ($questionnaire_id, $case_id, $user_id, CURDATE())";
-//				echo $completed_sql . "<br>";
-				DB::query($completed_sql);
-				$completed_sql  = "SELECT completed_id FROM q_completed WHERE questionnaire_id=$questionnaire_id ";
-				$completed_sql .= "AND case_id=$case_id AND user_id=$user_id ORDER BY completed_time DESC LIMIT 1";
-//				echo $completed_sql . "<br>";
-				$results = DB::query($completed_sql);
-				while ($row = DBResult::fetchRow($results)) {
-					$completed_id = $row["completed_id"];
-				}
-			} else {
-				$completed_sql = "UPDATE q_completed SET ";
-				$completed_sql .= "user_id=$user_id, completed_time=CURDATE() WHERE completed_id=$completed_id";
-				DB::query($completed_sql);
-				echo $completed_sql . "<br>";
-			}
-		}
+		The "save_quest" action wrote to q_completed and q_responses and then
+		redirected to quest_answer.php. None of those exist here: the tables
+		are not in cms/app/sql/new_install.sql and the page was never in this
+		tree, so every request that reached this case answered 500 on its first
+		query. The matching system-ops.php actions were removed for the same
+		reason.
 		
-		$response_sql  = "SELECT response_id FROM q_responses WHERE completed_id=$completed_id AND question_id=$question_id ORDER BY response_id DESC LIMIT 1";
-//		echo $response_sql . "<br>";
-		$results = DB::query($response_sql);
-		while ($row = DBResult::fetchRow($results)) {
-			$response_id = $row["response_id"];
-		}
-		
-		if (!$response_id) {
-			$response_sql  = "INSERT INTO q_responses (completed_id, question_id, response_text, answer_id) ";
-			$response_sql .= "VALUES ($completed_id, $question_id, '$response_text', $answer_id) ";
-		} else {
-			$response_sql  = "UPDATE q_responses SET response_text='$response_text', answer_id=$answer_id ";
-			$response_sql .= "WHERE response_id=$response_id";
-		}
-//		echo $response_sql . "<br>";
-		DB::query($response_sql);
-//		echo "<a href=quest_answer.php?case_id=$case_id&questionnaire_id=$questionnaire_id&answer_id=$answer_id&case_id=$case_id&completed_id=$completed_id>Next</a>";
-		header("Location: quest_answer.php?case_id=$case_id&questionnaire_id=$questionnaire_id&answer_id=$answer_id&case_id=$case_id&completed_id=$completed_id");
-	break;
+		It was also a SQL injection sink. questionnaire_id, case_id,
+		completed_id and answer_id came off the request and went into the
+		statements unquoted, $question_id was never assigned at all, and the
+		file-level CSRF check above only covers POST while this action read
+		$_REQUEST. Nothing in this tree links to it, so it is removed rather
+		than repaired and the action now falls through to "invalid action".
+	*/
 
 	
 	default:

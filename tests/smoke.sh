@@ -9832,5 +9832,82 @@ else
 fi
 
 echo
+# ── 65. The retired save_quest data operation ──────────────────────────────
+echo "65. the retired save_quest action is rejected"
+
+# save_quest read $_REQUEST, so it also answered a GET, which the POST-only
+# CSRF gate at the top of dataops.php never covered. Both shapes are checked.
+# The payload carries a quote so a surviving handler would print a SQL error.
+SQ_HEADERS="$(mktemp)"
+SQ_INJECT="-1 UNION SELECT 1--'"
+
+curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" \
+	"$OCM_URL/password.php" >/dev/null
+sq_token="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+	| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+
+if [ "${#sq_token}" -ne 64 ]; then
+	bad "save_quest cannot be checked: no admin CSRF token"
+else
+	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -D "$SQ_HEADERS" \
+		-w '%{http_code}' \
+		-d "action=save_quest&_csrf=${sq_token}" \
+		--data-urlencode "questionnaire_id=${SQ_INJECT}" \
+		--data-urlencode "case_id=${SQ_INJECT}" \
+		--data-urlencode "completed_id=${SQ_INJECT}" \
+		--data-urlencode "answer_id=${SQ_INJECT}" \
+		--data-urlencode 'response_text=ZZ-SAVEQUEST-DEBUG' \
+		-d 'q_action=next&answer=1' \
+		"$OCM_URL/dataops.php")"
+	if [ "$code" = 200 ] && grep -q 'invalid action was specified' "$BODY"; then
+		ok "a POSTed save_quest is an invalid action"
+	else
+		bad "a POSTed save_quest was not rejected as an invalid action (status $code)"
+	fi
+	if grep -q 'invalid action was specified' "$BODY" \
+		&& ! grep -qiE 'Fatal error|Warning:|Notice:|SQLSTATE|SQL syntax|q_completed|q_responses|ZZ-SAVEQUEST-DEBUG' "$BODY"; then
+		ok "the rejection prints no SQL, no warning and no echoed statement"
+	else
+		bad "save_quest still reached the questionnaire tables or printed a diagnostic"
+	fi
+	if grep -q 'invalid action was specified' "$BODY" \
+		&& ! grep -qi 'quest_answer.php' "$SQ_HEADERS" "$BODY"; then
+		ok "nothing redirects to the quest_answer.php page this tree does not have"
+	else
+		bad "save_quest still redirects to quest_answer.php"
+	fi
+fi
+
+# The GET shape, which never needed a token in the first place.
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -D "$SQ_HEADERS" \
+	-w '%{http_code}' -G \
+	--data-urlencode 'action=save_quest' \
+	--data-urlencode "questionnaire_id=${SQ_INJECT}" \
+	--data-urlencode "case_id=${SQ_INJECT}" \
+	"$OCM_URL/dataops.php")"
+if [ "$code" = 200 ] && grep -q 'invalid action was specified' "$BODY"; then
+	ok "a GET save_quest is an invalid action too"
+else
+	bad "a GET save_quest was not rejected as an invalid action (status $code)"
+fi
+if grep -q 'invalid action was specified' "$BODY" \
+	&& ! grep -qiE 'SQLSTATE|SQL syntax|q_completed|q_responses|quest_answer.php' "$BODY" \
+	&& ! grep -qi 'quest_answer.php' "$SQ_HEADERS"; then
+	ok "the GET shape reaches no questionnaire query and no redirect"
+else
+	bad "the GET shape still ran the questionnaire handler"
+fi
+
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	-d 'action=save_quest' "$OCM_URL/dataops.php")"
+if [ "$code" = 403 ] && grep -q 'CSRF validation failed' "$BODY"; then
+	ok "a POSTed save_quest still meets the CSRF gate first"
+else
+	bad "save_quest bypassed the CSRF gate (status $code)"
+fi
+
+rm -f "$SQ_HEADERS"
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
