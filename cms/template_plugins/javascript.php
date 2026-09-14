@@ -29,6 +29,19 @@ function javascript($file_name = null, $field_value = null, $menu_array = null, 
 	if (is_null($file_name) || !$file_name) { // if no file_name specified return blank
 		return $javascript_output;
 	} 
+	/*	The name came out of the template tag and went straight into
+		pl_custom_directory() . "/js/{$file_name}" and
+		getcwd() . "/js/{$file_name}", with nothing checking its shape and
+		nothing rejecting ../ -- so a tag could walk out of the js directory
+		and file_get_contents() anything the web server could read, and with
+		parse on, render it through the template engine. Every js file this
+		application ships is a bare name in one flat directory, which is the
+		shape pl_safe_js_file_name() requires.
+	*/
+	if (!pl_safe_js_file_name($file_name)) {
+		return htmlspecialchars((string) $file_name) . " not found";
+	}
+	
 	// Allow js file overload
 	// Check to see if custom js file has been created
 	$js_file_string = '';
