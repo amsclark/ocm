@@ -2878,6 +2878,30 @@ function pl_menu_set($menu_name, $menu_array)
 {
 	global $plMenus;
 	
+	/*	$menu_name becomes a table name. Its only caller is
+		cms/system-ops.php:74, which takes it straight from $_POST, and a
+		table name is not quoted, so DB::escapeString() would do nothing for
+		it. Allowlist the identifier instead.
+		
+		The page is behind pika_authorize('system') and pl_csrf_check(), but
+		holding the system group is not the same as holding a database shell:
+		"DELETE FROM menu_x" with a crafted x runs whatever the attacker
+		appended, against every table in the schema.
+	*/
+	$menu_name = pl_safe_identifier($menu_name, 'menu name');
+	
+	if (false === $menu_name)
+	{
+		return false;
+	}
+	
+	/*	And the row values. These are single-quoted, so they do need
+		escaping. system-ops.php ran addslashes() over them before calling
+		here, which is not the connection's escaping and is wrong under a
+		multi-byte charset. Escape on the connection instead; the caller's
+		addslashes() is removed in the same change, because escaping twice
+		stored a literal backslash before every apostrophe.
+	*/
 	$plMenus[$menu_name] = array();
 	DB::query("DELETE FROM menu_$menu_name");
 	
@@ -2885,7 +2909,11 @@ function pl_menu_set($menu_name, $menu_array)
 	
 	foreach ($menu_array as $x => $y)
 	{
-		DB::query("INSERT INTO menu_$menu_name SET value='{$y['value']}', label='{$y['label']}', menu_order='$x'");
+		$value = DB::escapeString((string) $y['value']);
+		$label = DB::escapeString((string) $y['label']);
+		$order = (int) $x;
+		
+		DB::query("INSERT INTO menu_$menu_name SET value='{$value}', label='{$label}', menu_order='{$order}'");
 	}
 	
 	return true;

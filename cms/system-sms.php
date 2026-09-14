@@ -42,26 +42,56 @@ switch ($action)
 	case 'update':
 
 		pl_settings_set('twilio_account_sid', pl_grab_post('twilio_account_sid'));
-		pl_settings_set('twilio_auth_token', pl_grab_post('twilio_auth_token'));
 		pl_settings_set('twilio_number', pl_grab_post('twilio_number'));
-		pl_settings_set('sparkpost_api_key', pl_grab_post('sparkpost_api_key'));
 		pl_settings_set('sparkpost_from_address', pl_grab_post('sparkpost_from_address'));
-		/*
-		'twilio_account_sid'
-		'twilio_auth_token'
-		'twilio_number'
-		'sparkpost_api_key'
-		'sparkpost_from_address'
+		
+		/*	The Twilio authentication token and the SparkPost API key are
+			write-only from this form, on the same rule as the OIDC client
+			secret and the peer transfer shared secret in system-settings.php.
+			
+			The field is rendered empty, so an administrator who saves this
+			page without retyping the credential must not thereby erase it:
+			pl_settings_save() is a DELETE-all followed by a re-INSERT of the
+			whole merged array, so a value that is not set is a value that is
+			gone. Clearing one on purpose is done with direct SQL.
 		*/
+		foreach (array('twilio_auth_token', 'sparkpost_api_key') as $sms_secret)
+		{
+			if (isset($_POST[$sms_secret]))
+			{
+				$posted_secret = (string) $_POST[$sms_secret];
+				
+				if ('' !== $posted_secret)
+				{
+					pl_settings_set($sms_secret, $posted_secret);
+				}
+			}
+		}
+		
 		pl_settings_save();
 		
 	default:
 
 		$html['twilio_account_sid'] = pl_settings_get('twilio_account_sid');
-		$html['twilio_auth_token'] = pl_settings_get('twilio_auth_token');
 		$html['twilio_number'] = pl_settings_get('twilio_number');
-		$html['sparkpost_api_key'] = pl_settings_get('sparkpost_api_key');
 		$html['sparkpost_from_address'] = pl_settings_get('sparkpost_from_address');
+		
+		/*	Both credentials were read back out of the settings table and
+			rendered into the value attribute of a plain text input, so the
+			page handed the live Twilio token and the live SparkPost key to
+			anybody who could reach it -- and to anything that could read the
+			response: a browser extension, a cached page, a screenshot, a
+			proxy log. Send whether one is stored, never what it is.
+		*/
+		$html['twilio_auth_token'] = '';
+		$html['twilio_auth_token_status'] = (strlen((string) pl_settings_get('twilio_auth_token')) > 0)
+			? 'A token is stored. Leave this blank to keep it.'
+			: 'No token is stored yet.';
+		
+		$html['sparkpost_api_key'] = '';
+		$html['sparkpost_api_key_status'] = (strlen((string) pl_settings_get('sparkpost_api_key')) > 0)
+			? 'An API key is stored. Leave this blank to keep it.'
+			: 'No API key is stored yet.';
 		
 		$template = new pikaTempLib('subtemplates/system-sms.html',$html);
 		$main_html['content'] = $template->draw();

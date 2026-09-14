@@ -265,14 +265,37 @@ function pl_table_to_array($menu_table_name, $key='value', $val='label', $ord='m
 
 
 
+/*	$menu becomes a table name in both of these, so it goes through the
+	same allowlist pl_table_to_array() above uses. Nothing in the tree calls
+	either one today, but they are part of the legacy surface this fork
+	keeps, and an unguarded identifier does not get safer for being unused.
+*/
 function pl_menu_add_item($menu, $value, $label, $menu_order)
 {
+	$menu = pl_safe_identifier($menu, 'menu table');
+	
+	if (false === $menu)
+	{
+		return false;
+	}
+	
+	$value = DB::escapeString((string) $value);
+	$label = DB::escapeString((string) $label);
+	$menu_order = (int) $menu_order;
+	
 	return pl_query("INSERT INTO menu_$menu SET value='$value', label='$label', menu_order='$menu_order'");
 }
 
 
 function pl_menu_empty($menu)
 {
+	$menu = pl_safe_identifier($menu, 'menu table');
+	
+	if (false === $menu)
+	{
+		return false;
+	}
+	
 	pl_query_cached_rm("menu_$menu");
 	return pl_query("DELETE FROM menu_$menu");
 }

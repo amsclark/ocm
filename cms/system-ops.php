@@ -52,11 +52,16 @@ switch($_POST['action'])
 			$a = explode("\t", $val);
 		}
 
-		$a[0] = addslashes(trim($a[0]));
+		/*	No addslashes() here. pl_menu_set() escapes both fields on the
+			connection now, and escaping twice stored a literal backslash in
+			front of every apostrophe -- O'Brien came back as O\'Brien and
+			grew another backslash on each save.
+		*/
+		$a[0] = trim($a[0]);
 
 		if (isset($a[1]))
 		{
-			$a[1] = addslashes(trim($a[1]));
+			$a[1] = trim($a[1]);
 		}
 
 		else
@@ -71,9 +76,14 @@ switch($_POST['action'])
 		}
 	}
 
-	pl_menu_set($menu, $menu_array);
+	if (!pl_menu_set($menu, $menu_array))
+	{
+		die(pika_error_notice('Invalid menu name',
+			'That menu name is not a valid identifier, so nothing was saved.'));
+	}
 
-	header("Location: system-menus.php?screen=edit&menu=$menu");
+	// $menu is request data going into a URL, so encode it.
+	header('Location: system-menus.php?screen=edit&menu=' . rawurlencode($menu));
 	exit();
 
 	break;
