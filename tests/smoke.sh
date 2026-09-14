@@ -10533,5 +10533,183 @@ else
 fi
 
 echo
+echo "== 71. user accounts: the security level a POST may set =="
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	UG_GROUP='zz_ug_grp'
+	UG_GROUP2='zz_ug_grp2'
+	UG_ADMIN='zz_ug_admin'
+	UG_TARGET='zz_ug_target'
+	UG_SYSUSER='zz_ug_sys'
+	UG_PASS='zz-ug-Pass1!'
+	UG_JAR="$(mktemp)"
+	UG_SYSJAR="$(mktemp)"
+
+	cleanup_ug() {
+		adb "DELETE FROM user_sessions WHERE user_id IN
+			(SELECT user_id FROM users WHERE username IN ('${UG_ADMIN}','${UG_TARGET}','${UG_SYSUSER}'))" >/dev/null 2>&1
+		adb "DELETE FROM users WHERE username IN ('${UG_ADMIN}','${UG_TARGET}','${UG_SYSUSER}')" >/dev/null 2>&1
+		adb "DELETE FROM \`groups\` WHERE group_id IN ('${UG_GROUP}','${UG_GROUP2}')" >/dev/null 2>&1
+		adb "DELETE FROM reauth_grants WHERE action_scope = 'user_admin'" >/dev/null 2>&1
+		adb "DELETE FROM audit_log WHERE action = 'user.group_change_refused'" >/dev/null 2>&1
+		rm -f "$UG_JAR" "$UG_SYSJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ug' EXIT
+	cleanup_ug
+
+	# Two ordinary groups. The users flag is what lets an account reach
+	# system-users.php at all; neither group is 'system', so neither account
+	# below is a superuser.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${UG_GROUP}', NULL, 0, NULL, 0, 1, 0, 0, 0, NULL)" >/dev/null
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${UG_GROUP2}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	UG_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$UG_PASS" </dev/null 2>/dev/null)"
+
+	UG_AUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${UG_AUID}, '${UG_ADMIN}', '${UG_HASH}', 1, '${UG_GROUP}', 0)" >/dev/null
+	UG_TUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${UG_TUID}, '${UG_TARGET}', '${UG_HASH}', 1, '${UG_GROUP}', 0)" >/dev/null
+	UG_SUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${UG_SUID}, '${UG_SYSUSER}', '${UG_HASH}', 1, 'system', 0)" >/dev/null
+
+	if [ -z "$UG_HASH" ] || [ -z "${UG_AUID:-}" ] || [ -z "${UG_TUID:-}" ] || [ -z "${UG_SUID:-}" ]; then
+		bad "could not seed the user security level fixtures"
+	else
+		ug_token() {
+			curl -sL --max-time 30 -c "$1" -b "$1" "$OCM_URL/password.php" \
+				| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+				| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+		}
+
+		# system-users.php's list screen renders no _csrf field, so take the
+		# token from password.php: the token is per session, not per form.
+		# The re-auth answer rides along on every post; the grant lasts five
+		# minutes, so only the first one actually needs it.
+		ug_post() {
+			local jar="$1" pass="$2" tok
+			shift 2
+			tok="$(ug_token "$jar")"
+			curl -sL --max-time 30 -c "$jar" -b "$jar" -o "$BODY" \
+				--data-urlencode "_csrf=${tok}" \
+				-d "_reauth_scope=user_admin" \
+				--data-urlencode "_reauth_password=${pass}" \
+				"$@" "$OCM_URL/system-users.php" >/dev/null
+		}
+
+		ug_group_of() {
+			adb "SELECT group_id FROM users WHERE username = '$1'"
+		}
+
+		: > "$UG_JAR"
+		curl -sL --max-time 30 -c "$UG_JAR" -b "$UG_JAR" -o "$BODY" \
+			-X POST -d "login_user=${UG_ADMIN}&login_pass=${UG_PASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the account maintainer fixture could not sign in"
+		else
+			ok "the account maintainer fixture signed in"
+		fi
+
+		# 71a. The escalation itself. pika_authorize() returns true for the
+		# 'system' group before it looks at the operation at all, so an
+		# account holding only the users flag posting group_id=system would
+		# become a superuser using nothing but its own password.
+		ug_post "$UG_JAR" "$UG_PASS" \
+			-d "action=update&user_id=${UG_TUID}&username=${UG_TARGET}&group_id=system&enabled=1"
+		if [ "$(ug_group_of "$UG_TARGET")" = "${UG_GROUP}" ]; then
+			ok "an account maintainer cannot promote an account to the system security level"
+		else
+			bad "an account maintainer promoted an account to the system security level"
+		fi
+		if grep -q 'Only a member of the system security level may place an account in it' "$BODY"; then
+			ok "the refusal says why the promotion was not saved"
+		else
+			bad "the promotion was refused without saying why"
+		fi
+
+		# 71b. A level that matches no row leaves the account able to do
+		# nothing at all, which reads as a broken account rather than a
+		# misconfigured one.
+		ug_post "$UG_JAR" "$UG_PASS" \
+			-d "action=update&user_id=${UG_TUID}&username=${UG_TARGET}&group_id=zz_no_such_group&enabled=1"
+		if [ "$(ug_group_of "$UG_TARGET")" = "${UG_GROUP}" ]; then
+			ok "a security level that does not exist is not written"
+		else
+			bad "a security level that does not exist was written to the account"
+		fi
+		if grep -q 'That security level does not exist' "$BODY"; then
+			ok "the refusal names the missing security level as the reason"
+		else
+			bad "the missing security level was refused without saying why"
+		fi
+
+		# 71c. Rule 71a is one step short on its own: an account maintainer
+		# who may edit a system account can reset its password and sign in as
+		# it instead.
+		ug_post "$UG_JAR" "$UG_PASS" \
+			-d "action=update&user_id=${UG_SUID}&username=${UG_SYSUSER}&group_id=${UG_GROUP}&enabled=1"
+		if [ "$(ug_group_of "$UG_SYSUSER")" = "system" ]; then
+			ok "an account maintainer cannot take an account out of the system security level"
+		else
+			bad "an account maintainer took an account out of the system security level"
+		fi
+		if grep -q 'Only a member of the system security level may edit an account in it' "$BODY"; then
+			ok "the refusal says the account is a system account"
+		else
+			bad "editing a system account was refused without saying why"
+		fi
+
+		# 71d. Every refusal is recorded, with what was attempted.
+		UG_AUDIT="$(adb "SELECT COUNT(*) FROM audit_log WHERE action = 'user.group_change_refused'")"
+		if [ "${UG_AUDIT:-0}" -ge 3 ]; then
+			ok "each refused security level change is written to the audit log"
+		else
+			bad "refused security level changes are not in the audit log (found ${UG_AUDIT:-0})"
+		fi
+
+		# 71e. The positive control. An ordinary change to a level that does
+		# exist still saves, or this page is simply broken.
+		ug_post "$UG_JAR" "$UG_PASS" \
+			-d "action=update&user_id=${UG_TUID}&username=${UG_TARGET}&group_id=${UG_GROUP2}&enabled=1"
+		if [ "$(ug_group_of "$UG_TARGET")" = "${UG_GROUP2}" ]; then
+			ok "an ordinary security level change is still saved"
+		else
+			bad "an ordinary security level change no longer saves"
+		fi
+
+		# 71f. And a member of the system group is not blocked by any of it.
+		: > "$UG_SYSJAR"
+		curl -sL --max-time 30 -c "$UG_SYSJAR" -b "$UG_SYSJAR" -o "$BODY" \
+			-X POST -d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		ug_post "$UG_SYSJAR" "$OCM_PASSWORD" \
+			-d "action=update&user_id=${UG_TUID}&username=${UG_TARGET}&group_id=system&enabled=1"
+		if [ "$(ug_group_of "$UG_TARGET")" = "system" ]; then
+			ok "a member of the system security level may still place an account in it"
+		else
+			bad "a member of the system security level can no longer place an account in it"
+		fi
+	fi
+
+	# 71g. Static: the allowlist is the page's own group list, not a literal.
+	if grep -qF 'isset($groups[$target_group])' cms/system-users.php; then
+		ok "the security level is checked against the groups the page loaded"
+	else
+		bad "system-users.php no longer checks the posted security level against the groups table"
+	fi
+
+	cleanup_ug
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the user security level checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

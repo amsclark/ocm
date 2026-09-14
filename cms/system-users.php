@@ -205,6 +205,79 @@ switch ($action)
         $a['emp_end_date'] = pl_grab_post('emp_end_date');		
 		
 		$user = new pikaUser($user_id);
+		
+		/*	group_id decides everything this account may do, and it arrived
+			here as a free string. The form offers a menu of the groups that
+			exist, but nothing checked the value that came back, so a POST
+			could carry any text at all.
+			
+			Two things follow from that, and the second one is the serious
+			one.
+			
+			A name that matches no row in `groups` leaves the account in a
+			group that grants nothing. Every page then answers "Access
+			denied" and the account looks broken rather than misconfigured.
+			
+			And 'system' is not an ordinary group: pika_authorize() in
+			pika-danio.php returns true for it before it looks at the
+			operation at all. So an administrator holding only the `users`
+			flag -- the flag that lets somebody maintain staff accounts --
+			could post group_id=system and become a superuser. Confirmed on
+			this codebase before the fix: an account in a group with
+			users = 1 and nothing else promoted itself to 'system' using only
+			its own password at the re-authentication prompt.
+			
+			$groups is the list this page already built from the groups
+			table, so use it as the allowlist. Then keep 'system' to itself,
+			in both directions:
+			
+			  - only somebody already in 'system' may put an account into it,
+			    or take an account out of it; and
+			  - only somebody already in 'system' may edit an account that is
+			    in it at all.
+			
+			The second rule is not decoration. Without it the first one is
+			one step longer to get around: reset the superuser's password on
+			this same screen and sign in as them.
+		*/
+		$actor_is_system = isset($auth_row['group_id']) && 'system' === $auth_row['group_id'];
+		$target_group = (string) $a['group_id'];
+		$prior_group = (string) $user->getValue('group_id');
+		
+		$group_refusal = '';
+		
+		if (!isset($groups[$target_group]))
+		{
+			$group_refusal = 'That security level does not exist, so nothing was saved.';
+		}
+		
+		else if (!$actor_is_system && 'system' === $target_group)
+		{
+			$group_refusal = 'Only a member of the system security level may place an account in it.';
+		}
+		
+		else if (!$actor_is_system && 'system' === $prior_group)
+		{
+			$group_refusal = 'Only a member of the system security level may edit an account in it.';
+		}
+		
+		if ('' !== $group_refusal)
+		{
+			pl_audit('user.group_change_refused', 'user', $user_id, array(
+				'attempted' => $target_group,
+				'prior'     => $prior_group,
+			));
+			
+			$main_html['page_title'] = 'User Accounts';
+			$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt; 
+								<a href=\"{$base_url}/site_map.php\">Site Map</a> &gt;
+								User Accounts";
+			$main_html['content'] = pl_html_escape($group_refusal);
+			
+			$default_template = new pikaTempLib('templates/default.html', $main_html);
+			pika_exit($default_template->draw());
+		}
+		
 		// Capture the prior state of the security-relevant fields so the
 		// audit log carries a focused diff rather than the whole row.
 		$prev_group   = $user->group_id;
