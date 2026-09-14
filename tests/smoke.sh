@@ -10711,5 +10711,125 @@ else
 fi
 
 echo
+echo "== 72. saving a report definition: the answer the browser gets =="
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	SR_GROUP='zz_sr_grp'
+	SR_USER='zz_sr_user'
+	SR_PASS='zz-sr-Pass1!'
+	SR_JAR="$(mktemp)"
+
+	cleanup_sr() {
+		adb "DELETE FROM doc_storage WHERE report_name LIKE 'ZZSR%'" >/dev/null 2>&1
+		adb "DELETE FROM user_sessions WHERE user_id IN
+			(SELECT user_id FROM users WHERE username = '${SR_USER}')" >/dev/null 2>&1
+		adb "DELETE FROM users WHERE username = '${SR_USER}'" >/dev/null 2>&1
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SR_GROUP}'" >/dev/null 2>&1
+		rm -f "$SR_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sr' EXIT
+	cleanup_sr
+
+	sr_token() {
+		curl -sL --max-time 30 -c "$1" -b "$1" "$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	# Post the way js/save_report.js does: a raw text/xml body and the token
+	# in a header, because there is no form encoding for it to travel in.
+	sr_save() {
+		local jar="$1" query="$2" xml="$3" tok
+		tok="$(sr_token "$jar")"
+		curl -s --max-time 30 -b "$jar" -o "$BODY" -w '%{http_code}' -X POST \
+			-H 'Content-Type: text/xml' -H "X-CSRF-Token: ${tok}" \
+			--data-binary "$xml" "$OCM_URL/ops/upload_report.php?${query}"
+	}
+
+	SR_XML='<?xml version="1.0"?><form name="zzsr"></form>'
+
+	# 72a. The one path that stores a document says so, in the exact word the
+	# browser waits for before it reloads the list.
+	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR1&doc_name=ZZSR1.xml' "$SR_XML")"
+	if [ "$SR_CODE" = 200 ] && [ "$(tr -d ' \r\n' < "$BODY")" = 'OK' ]; then
+		ok "a stored report definition is answered with OK"
+	else
+		bad "a stored report definition answered $SR_CODE [$(head -c 60 "$BODY")]"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZSR1'")" = 1 ]; then
+		ok "the OK answer means the definition really was stored"
+	else
+		bad "the handler said OK and stored nothing"
+	fi
+
+	# 72b. A body that is not XML. This is what an interrupted or truncated
+	# request looks like, and it used to be indistinguishable from a save.
+	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR2&doc_name=ZZSR2.xml' 'this is not xml')"
+	if [ "$SR_CODE" = 400 ]; then
+		ok "settings that did not arrive readably are refused with a status"
+	else
+		bad "an unreadable request body answered $SR_CODE, not 400"
+	fi
+	if grep -q 'was not saved' "$BODY" && ! grep -q '<' "$BODY"; then
+		ok "the refusal is one line of plain text the browser can show"
+	else
+		bad "the refusal is not plain text a browser can show"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZSR2'")" = 0 ]; then
+		ok "an unreadable request stores nothing"
+	else
+		bad "an unreadable request stored a report definition anyway"
+	fi
+
+	# 72c. No report to attach it to.
+	SR_CODE="$(sr_save "$COOKIES" 'doc_name=ZZSR3.xml' "$SR_XML")"
+	if [ "$SR_CODE" = 400 ] && grep -q 'which report' "$BODY"; then
+		ok "a request that names no report is refused and says so"
+	else
+		bad "a request naming no report answered $SR_CODE [$(head -c 60 "$BODY")]"
+	fi
+
+	# 72d. The refusal a person is most likely to meet: an account without
+	# system rights. Report definitions are administrator material.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SR_GROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	SR_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SR_PASS" </dev/null 2>/dev/null)"
+	SR_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${SR_UID}, '${SR_USER}', '${SR_HASH}', 1, '${SR_GROUP}', 0)" >/dev/null
+
+	: > "$SR_JAR"
+	curl -sL --max-time 30 -c "$SR_JAR" -b "$SR_JAR" -o /dev/null \
+		-X POST -d "login_user=${SR_USER}&login_pass=${SR_PASS}&auth_id=1" \
+		"$OCM_URL/" >/dev/null
+
+	SR_CODE="$(sr_save "$SR_JAR" 'report_name=ZZSR4&doc_name=ZZSR4.xml' "$SR_XML")"
+	if [ "$SR_CODE" = 403 ]; then
+		ok "a user without system rights is refused with a status, not a blank 200"
+	else
+		bad "a refused report save answered $SR_CODE, not 403"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZSR4'")" = 0 ]; then
+		ok "a user without system rights stores no report definition"
+	else
+		bad "A USER WITHOUT SYSTEM RIGHTS INSTALLED A REPORT DEFINITION"
+	fi
+
+	# 72e. Static: the browser must wait for that answer before it reloads.
+	if grep -q "onreadystatechange" cms/js/save_report.js \
+		&& grep -qF "body=='OK'" cms/js/save_report.js; then
+		ok "save_report.js reloads the list only when the save is confirmed"
+	else
+		bad "save_report.js reloads the saved report list without reading the answer"
+	fi
+
+	cleanup_sr
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the saved report definition checks (needs the database)\n'
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -13,10 +13,25 @@ function srCsrfToken() {
 	return any ? any.value : '';
 }
 
+/*	The save fired and the list was reloaded on the next line, without ever
+	looking at the answer. Nothing waited for the request, so every refusal
+	-- an expired session, a CSRF token that no longer matched, an account
+	without the rights to install a report definition -- looked exactly like
+	a successful save: the list came back, the new entry was simply not in
+	it, and the settings the person had just spent their time on were gone.
+	
+	So wait for the answer. Reload the list only when the handler says the
+	document was stored, and say so plainly when it was not.
+	
+	The request object is local. The one this function used to take was the
+	page-wide xmlHttp that load_report() also reads from in its own callback,
+	so a save started while a load was still in flight replaced the object
+	that callback was about to read.
+*/
 function save_report(form_container,save_as) {
 	
-	xmlHttp=GetXmlHttpObject();
-	if (xmlHttp==null) {
+	var xhr = GetXmlHttpObject();
+	if (xhr==null) {
   		alert ("Your browser does not support AJAX!");
   		return;
 	}
@@ -28,15 +43,44 @@ function save_report(form_container,save_as) {
 	}
 	
 	var url="%%[base_url]%%/ops/upload_report.php?report_name=%%[report_name]%%&doc_name=" + doc_name;
-	//alert(url);
 	var xml=getReportParams(form_container,report_name,save_as);
-	//alert(xml);
-	xmlHttp.open("POST", url, true)
-	xmlHttp.setRequestHeader("Content-type", "text/xml")
-	xmlHttp.setRequestHeader("Content-length", xml.length);
-	xmlHttp.setRequestHeader("X-CSRF-Token", srCsrfToken());
-	xmlHttp.send(xml);
-	reload('saved_reports');
+	
+	xhr.onreadystatechange=function() {
+		if (xhr.readyState!=4 && xhr.readyState!="complete") { return; }
+		
+		var body = xhr.responseText ? xhr.responseText.replace(/^\s+|\s+$/g,'') : '';
+		
+		if (xhr.status==200 && body=='OK') {
+			reload('saved_reports');
+			return;
+		}
+		
+		// Only the handler's own one-line replies are shown to the person.
+		// pl_csrf_check() answers with a whole HTML page, which would be
+		// read out as markup in an alert box.
+		var reason = '';
+		if (body.length && body.length < 200 && body.indexOf('<') < 0) {
+			reason = ' ' + body;
+		}
+		
+		if (xhr.status==0) {
+			alert('This report was not saved: the server could not be reached. Your settings are still on this page.');
+			return;
+		}
+		
+		if (xhr.status==403) {
+			alert('This report was not saved: the site refused the request.' + reason
+				+ ' If you have been signed in for a while, open the report page again and retry.');
+			return;
+		}
+		
+		alert('This report was not saved.' + reason + ' Your settings are still on this page.');
+	}
+	
+	xhr.open("POST", url, true)
+	xhr.setRequestHeader("Content-type", "text/xml")
+	xhr.setRequestHeader("X-CSRF-Token", srCsrfToken());
+	xhr.send(xml);
 }
 
 function load_report(form_container,doc_id) {
