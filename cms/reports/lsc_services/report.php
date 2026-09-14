@@ -135,7 +135,7 @@ $sql_models_used = "SELECT om_code, SUM(ph_measured) AS model_measured, SUM(ph_e
 					WHERE 1 {$extra_sql} 
 					GROUP BY om_code
 					ORDER BY om_code ASC";
-$result = DB::query($sql_models_used) or trigger_error();
+$result = DB::query($sql_models_used) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result))
 {
@@ -262,7 +262,7 @@ $sql_models_missing = "SELECT act_id, act_date, ph_measured, ph_estimated
 					WHERE 1	{$extra_sql_missing} 
 					ORDER BY act_date ASC";
 					
-$result_missing = DB::query($sql_models_missing) or trigger_error();
+$result_missing = DB::query($sql_models_missing) or trigger_error('database query failed', E_USER_ERROR);
 // load associative array
 while ($row = DBResult::fetchRow($result_missing))
 {

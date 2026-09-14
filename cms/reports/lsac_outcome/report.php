@@ -222,7 +222,7 @@ $count_yes = 0;
 $count_no = 0;
 $count_na = 0;
 
-$result = DB::query($results_sql) or trigger_error();
+$result = DB::query($results_sql) or trigger_error('database query failed', E_USER_ERROR);
 // result should be a single row of totals
 while ($row = DBResult::fetchRow($result))
 {
@@ -327,7 +327,7 @@ $t->set_table_title("Annual Benefits Plus Lump Sums");
 $t->display_row_count(false);
 $t->set_header(array('Funding','Yes','$ Federal','$ State','$ Child Support','$ Other'));
 
-$result = DB::query($funding_sql) or trigger_error();
+$result = DB::query($funding_sql) or trigger_error('database query failed', E_USER_ERROR);
 // result should be a single row of totals
 while ($row = DBResult::fetchRow($result))
 {

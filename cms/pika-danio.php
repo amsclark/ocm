@@ -768,6 +768,7 @@ function pika_init()
 	pl_benchmark();
 	// Notify PHP to use the custom Pika error handler.
 	set_error_handler("pl_error_handler");
+set_exception_handler("pl_exception_handler");
 	
 	/* Override the default PHP session handler.*/
 	session_set_save_handler("pl_session_open", "pl_session_close", "pl_session_read", "pl_session_write","pl_session_destroy", "pl_session_gc");

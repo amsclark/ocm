@@ -153,7 +153,7 @@ $t->display_row_count(false);
 $t->set_header($cols);
 
 // execute the SQL statement, format the results, and add to the table object	
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchRow($result))
 {
 	$r = array();
@@ -208,7 +208,7 @@ while ($row = DBResult::fetchRow($result))
 	$sql_con .= " AND conflict.relation_code !=1";
 
 // execute opposing party search
-$result_con = DB::query($sql_con) or trigger_error();
+$result_con = DB::query($sql_con) or trigger_error('database query failed', E_USER_ERROR);
 while ($row_con = DBResult::fetchRow($result_con))
 {
 		$r['client_name'] .= "<br><b>" .pl_array_lookup($row_con['relation_code'],$menu_relation_codes) ."</b>";

@@ -115,7 +115,7 @@ $t->set_header($columns);
 
 
 
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchRow($result))
 {
 	$row['close_date'] = pl_date_unmogrify($row['close_date']);

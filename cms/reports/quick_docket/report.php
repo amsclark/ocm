@@ -78,7 +78,7 @@ $t->title = $report_title;
 $t->set_header(array('Open Date', 'Last Name', 'Status', 'Case Number', 'Counsel',
 					'Co-counsel', 'Co-counsel', 'Office', 'Case Notes'));
 
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchArray($result))
 {
 	$notes = '';

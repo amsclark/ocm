@@ -2106,21 +2106,65 @@ function pl_audit(
     }
 }
 
+/*	The last-resort handler, for an error level pl_error_handler() does not
+	name. It used to print the message, the file path and the line number to
+	the browser, raw and unconditionally: an XSS sink, because the message can
+	carry request data, and a map of the server for anyone who provokes an
+	error. pika_error() was fixed for this; this function is its sibling and
+	was missed.
+
+	Now it matches pika_error(): the operator gets the detail in the server
+	log, always, and the browser gets it only in debug mode, escaped either
+	way.
+*/
 function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline = null)
 {
-	$str = "
-
-<pre>
-<h1>An error has occured</h1>\n
-<center>{$errstr}</center>\n
-
-<p>File: <b>{$errfile}</b>\n
-<p>Line: <b>{$errline}</b>\n
-";
+	pl_log_error('pl_error_fatal', "[{$errno}] {$errstr} in {$errfile}:{$errline}");
+	
+	if (!pl_is_debug_mode())
+	{
+		die('<h1>An error has occured</h1>'
+			. '<p>The server encountered an internal error and could not'
+			. ' complete your request. Please contact your administrator.');
+	}
+	
+	$str = '<pre><h1>An error has occured</h1>'
+		. '<center>' . pl_html_escape($errstr) . '</center>'
+		. '<p>File: <b>' . pl_html_escape($errfile) . '</b>'
+		. '<p>Line: <b>' . pl_html_escape($errline) . '</b>';
+	
 	die($str);
 }
 
 
+
+/*	Uncaught exceptions used to end the request with nothing at all. PHP 8.1
+	made mysqli throw instead of returning false, so every failed query now
+	raises mysqli_sql_exception; nothing in the tree catches it, and with
+	display_errors Off the user got a blank page with status 500. The `or
+	trigger_error(...)` calls after DB::query() all over the tree are the old
+	handling for that case and no longer run.
+
+	Route an uncaught exception to the same place a triggered error goes: the
+	detail to the server log, the generic page to the browser. This only ever
+	sees a request that was already lost, so it cannot change a working path.
+	The exception message is NOT passed to the browser -- it carries the
+	failing SQL.
+*/
+function pl_exception_handler($e)
+{
+	pl_log_error('uncaught_exception',
+		get_class($e) . ': ' . $e->getMessage()
+		. ' in ' . $e->getFile() . ':' . $e->getLine());
+	
+	if (!headers_sent())
+	{
+		http_response_code(500);
+	}
+	
+	pl_error_handler(E_USER_ERROR, 'An unexpected error occurred.',
+		$e->getFile(), $e->getLine());
+}
 
 function pl_error_handler($errno = null, $errstr = null, $errfile = null, $errline = null) {
 	

@@ -131,7 +131,7 @@ $t->display_row_count(false);
 $t->set_header($columns);
 
 
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchRow($result))
 {
 	if ('1' == $row['result'])
