@@ -11189,6 +11189,171 @@ else
 	ok "no conflict query asks for any role but this one"
 fi
 
+# ---------------------------------------------------------------------------
+# 75. Input that is not a scalar, and a User-Agent header that is not there.
+#
+# A request may make any form field an array simply by naming it twice.
+# pl_clean_form_input() walks an array and hands one back whatever filter
+# mode it was asked for, so an array reached code that expected a string:
+#
+#   a) pl_build_sql() called strlen() on it. That is a TypeError on PHP 8,
+#      so GET dataops.php?action=add_activity&act_date[]=x returned a 500.
+#   b) dataops.php also hands $_REQUEST['act_date'] straight to
+#      pl_date_mogrify(), which called strpos() on it.
+#
+# pl_date_mogrify() had two further defects. It put no limit on the length
+# of the string it would explode(), and its fallback ended
+# date("Y-m-d", strtotime($date)) without testing the return, so text it
+# could not read became a date near the epoch rather than being refused.
+# pl_clean_form_input()'s date mode accepted that date, because the year
+# passed its 1800-2099 range test.
+#
+# browser_is_mobile() read $_SERVER['HTTP_USER_AGENT'] three times without
+# checking the header was there, and tested strpos() for truth rather than
+# against false, so a User-Agent beginning "Android" -- which is what
+# several Android browsers send -- was reported as not mobile. pikaAuth
+# read REMOTE_ADDR and HTTP_USER_AGENT the same unguarded way.
+#
+# 75c also asserts that pl_template3() stays removed. It referenced Smarty,
+# which is not in this tree, so it could only ever fatal on its own
+# require_once, and nothing called it.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 75. a form field named twice is an array, and a header may be absent =="
+
+# 75a and 75b. The live behaviour, in one bootstrap. PL_DISABLE_SECURITY
+# first, or pika_init() renders the login page and exits before the echo.
+if [ "$HAVE_COMPOSE" = 1 ]; then
+	DM_OUT="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+		define("PL_DISABLE_SECURITY", true);
+		chdir("/var/www/html/cms");
+		require_once("pika-danio.php");
+		pika_init();
+		// pl_build_sql lives in the other bootstrap and reads the table
+		// definition out of the schema, so it needs both of these.
+		require_once("app/extralib/lib/pl-legacy.php");
+
+		$out = array();
+		$out[] = "good:" . implode(",", array(
+			pl_date_mogrify("9/9/1999"),
+			pl_date_mogrify("1999-09-09"),
+			pl_date_mogrify("Sept 9 1999")));
+
+		try {
+			$out[] = "arr:" . var_export(pl_date_mogrify(array("x")), true);
+		} catch (Throwable $e) {
+			$out[] = "arr:THREW";
+		}
+
+		$out[] = "junk:" . var_export(pl_date_mogrify("not a date at all"), true);
+		$out[] = "long:" . var_export(pl_date_mogrify(str_repeat("9/9/1999 ", 5000)), true);
+
+		// The defect with a missing header was the warning, not the answer,
+		// so count what it raises rather than only what it returns.
+		unset($_SERVER["HTTP_USER_AGENT"]);
+		$noticed = 0;
+		set_error_handler(function ($n, $m) use (&$noticed) { $noticed++; return true; });
+		$mobile = browser_is_mobile();
+		restore_error_handler();
+		$out[] = "noua:" . var_export($mobile, true) . "-" . ($noticed ? "warned" : "quiet");
+		$_SERVER["HTTP_USER_AGENT"] = "Android 13; Mobile";
+		$out[] = "android0:" . var_export(browser_is_mobile(), true);
+		$_SERVER["HTTP_USER_AGENT"] = "Mozilla/5.0 (Windows NT 10.0)";
+		$out[] = "desktop:" . var_export(browser_is_mobile(), true);
+
+		// act_type is the control: a scalar field alongside the array one
+		// has to survive, and the separators around it have to be right.
+		foreach (array(
+			"INSERT" => array("act_date" => array("x"), "act_type" => "T", "notes" => "n"),
+			"UPDATE" => array("act_id" => 1, "act_date" => array("x"), "act_type" => "T", "notes" => "n"))
+			as $verb => $data) {
+			$tag = ("INSERT" === $verb) ? "ins" : "upd";
+
+			try {
+				$s = pl_build_sql($verb, "activities", $data);
+				$bad = (false !== strpos($s, ", ,")) || (false !== strpos($s, "SET ,"))
+					|| (substr(rtrim($s), -1) === ",");
+				$out[] = $tag . ":" . ((false === strpos($s, "act_date")) ? "omitted" : "present")
+					. ((false !== strpos($s, "act_type")) ? "-kept" : "-lost")
+					. ($bad ? "-badcommas" : "-ok");
+			} catch (Throwable $e) {
+				$out[] = $tag . ":THREW";
+			}
+		}
+
+		echo implode(" ", $out);
+	' </dev/null 2>/dev/null)"
+
+	# The positive control comes first. Every refusal below is an assertion
+	# that something returns false, and a function that had stopped reading
+	# dates at all would satisfy all of them.
+	if printf '%s' "$DM_OUT" | grep -qF 'good:1999-09-09,1999-09-09,1999-09-09'; then
+		ok "pl_date_mogrify still reads the date formats this application accepts"
+	else
+		bad "pl_date_mogrify no longer reads a plain date, so the rest of 75a proves nothing [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'arr:false'; then
+		ok "pl_date_mogrify refuses an array rather than raising a TypeError"
+	else
+		bad "an array field still reaches strpos() in pl_date_mogrify [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'junk:false'; then
+		ok "pl_date_mogrify refuses text it cannot read instead of returning the epoch"
+	else
+		bad "pl_date_mogrify still turns unreadable text into a date [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'long:false'; then
+		ok "pl_date_mogrify refuses a string far longer than any date"
+	else
+		bad "pl_date_mogrify still explodes an unbounded string [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'android0:true' \
+		&& printf '%s' "$DM_OUT" | grep -qF 'desktop:false'; then
+		ok "browser_is_mobile detects a User-Agent that begins with Android"
+	else
+		bad "browser_is_mobile still tests strpos() for truth [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'noua:false-quiet'; then
+		ok "browser_is_mobile answers a request that sends no User-Agent"
+	else
+		bad "browser_is_mobile still warns when no User-Agent was sent [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'ins:omitted-kept-ok'; then
+		ok "pl_build_sql leaves an array field out of the INSERT"
+	else
+		bad "pl_build_sql mishandles an array field in an INSERT [$DM_OUT]"
+	fi
+
+	if printf '%s' "$DM_OUT" | grep -qF 'upd:omitted-kept-ok'; then
+		ok "pl_build_sql leaves an array field out of the UPDATE"
+	else
+		bad "pl_build_sql mishandles an array field in an UPDATE [$DM_OUT]"
+	fi
+fi
+
+# 75c. Static. The session values pikaAuth reads cannot be exercised from
+# the command line, and a removal is only provable by looking.
+if grep -qF '$this->user_agent = $_SERVER[' cms/app/lib/pikaAuth.php \
+	|| grep -qF '$this->ip_address = $_SERVER[' cms/app/lib/pikaAuth.php; then
+	bad "pikaAuth still reads a \$_SERVER key without checking it is there"
+else
+	ok "pikaAuth guards both of the \$_SERVER values it reads"
+fi
+
+if grep -qF 'pl_template3' cms/app/lib/pl.php \
+	|| grep -qF 'Smarty.class.php' cms/app/lib/pl.php; then
+	bad "the dead Smarty template function is back in pl.php"
+else
+	ok "the dead Smarty template function stays out of pl.php"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

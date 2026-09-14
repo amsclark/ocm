@@ -530,6 +530,19 @@ function pl_table_autosql_update($table, $data)
 		// make sure the data's column name is valid
 		else if (array_key_exists($key, $data))
 		{
+			/*	An array is not a value for a single column, and a request
+				may make any field an array simply by naming it twice. It
+				reached strlen() below, which is a TypeError on PHP 8.
+				
+				Leave the key out of the UPDATE, so the column keeps the
+				value it already has. See the INSERT builder below for the
+				request that proved this.
+			*/
+			if (is_array($data["$key"]))
+			{
+				continue;
+			}
+			
 			// need commas to separate each key/value pair
 			if ($i != 0)
 			{
@@ -612,6 +625,24 @@ function pl_table_autosql_insert($table, $data)
 	{
 		if (isset($data["$key"]))
 		{
+			/*	A request may make any field an array simply by naming it
+				twice, and pl_clean_form_input() walks an array and hands
+				one back whatever filter mode it was asked for. An array
+				then reached strlen() below, which is a TypeError on PHP 8
+				and a 500 for the page: GET dataops.php?action=add_activity
+				&act_date[]=x returned one.
+				
+				An array is not a value for a single column. Leave the key
+				out of the INSERT altogether, so the column takes the
+				default its schema gives it. Setting it to NULL instead
+				would only turn the TypeError into "Column cannot be null"
+				on any NOT NULL column, which is still a 500.
+			*/
+			if (is_array($data["$key"]))
+			{
+				continue;
+			}
+			
 			// need commas to separate each key/value pair
 			if ($i != 0)
 			{
