@@ -52,6 +52,15 @@
 		%%[enable_system,yes_no,checkbox,label=Enable Logins]%%<br/>
 		%%[force_https,yes_no,checkbox,label=Allow Only Secure (HTTPS) Logins]%%<br/>
 		%%[doc_force_download,yes_no,checkbox,label=Always Download Documents Instead of Previewing Them]%%<br/>
+		Content Security Policy<br/>
+		%%[csp_mode,csp_mode]%%<br/>
+		<em>Tells the browser that this application may load script, style and
+		images only from this server, may not be placed in a frame by another
+		site, and may not post its forms anywhere else. It limits the damage an
+		injected script can do. Turn it off only if a local customisation loads
+		files from another server; use Report only first to see what would
+		break, in the browser's developer console.</em><br/>
+		<br/>
 		%%[enable_compression,yes_no,checkbox,label=Web Accelerator]%%<br/>
 		%%[enable_benchmark,yes_no,checkbox,label=Benchmark]%%<br/>
 	</div>

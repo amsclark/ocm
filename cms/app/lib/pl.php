@@ -2151,6 +2151,94 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	The exception message is NOT passed to the browser -- it carries the
 	failing SQL.
 */
+/*	Emit the Content-Security-Policy header.
+
+	A CSP tells the browser which origins a page may load script, style,
+	images and fonts from, and what it may do with them. It is the control
+	that limits the damage of an injected <script> even when the escaping
+	that should have stopped it failed. The application had no CSP at all.
+
+	What this policy can be today is set by what the 2019 templates do, not
+	by what is ideal:
+
+	  script-src keeps 'unsafe-inline' and 'unsafe-eval'. The tree has 44
+	  inline <script> blocks, 106 inline on* handler attributes, 22
+	  javascript: URLs and 9 eval() calls. Dropping either keyword now would
+	  break the application, so those have to be converted first. Until then
+	  the script directive still blocks the thing worth blocking most:
+	  script loaded from any other origin.
+
+	  style-src keeps 'unsafe-inline' for the 229 style="..." attributes.
+
+	The directives that cost nothing here are the ones that do the work:
+
+	  object-src 'none'      no <object>/<embed> plugin content, a classic
+	                         route to script execution
+	  base-uri 'self'        an injected <base> cannot repoint every
+	                         relative script URL on the page at an attacker
+	  frame-ancestors 'none' nothing may frame the application; the tree
+	                         has no <iframe> of its own. Stricter than the
+	                         SAMEORIGIN in docker/apache.conf, and unlike
+	                         that file this is not baked into the image.
+	  form-action 'self'     an injected <form> cannot post a user's input
+	                         off-site
+	  default-src 'self'     everything not named above is same-origin only
+
+	No CDN origins are allowed because the tree loads none: all 9 external
+	<script src> references are local files.
+
+	csp_mode picks what to do with it. A missing row means 'enforce', so an
+	install that never visits the settings screen is protected:
+
+	  enforce      send Content-Security-Policy (default)
+	  report_only  send Content-Security-Policy-Report-Only instead. The
+	               browser reports violations to its console and enforces
+	               nothing. For an operator with a local overlay who wants
+	               to see what would break before turning it on.
+	  off          send neither
+
+	Emitted from PHP rather than docker/apache.conf so that installs not
+	using the shipped image get it too, and so changing it does not need an
+	image rebuild.
+*/
+function pl_send_csp_header()
+{
+	if (headers_sent())
+	{
+		return;
+	}
+	
+	$mode = pl_settings_get('csp_mode');
+	
+	if ('off' === $mode)
+	{
+		return;
+	}
+	
+	$policy = implode('; ', array(
+		"default-src 'self'",
+		"script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data:",
+		"font-src 'self' data:",
+		"connect-src 'self'",
+		"media-src 'self'",
+		"object-src 'none'",
+		"base-uri 'self'",
+		"form-action 'self'",
+		"frame-ancestors 'none'",
+	));
+	
+	if ('report_only' === $mode)
+	{
+		header('Content-Security-Policy-Report-Only: ' . $policy);
+		
+		return;
+	}
+	
+	header('Content-Security-Policy: ' . $policy);
+}
+
 function pl_exception_handler($e)
 {
 	pl_log_error('uncaught_exception',
