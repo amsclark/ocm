@@ -28,3 +28,4 @@ add_ical_token.sql
 add_doc_force_download.sql
 add_shared_calendars.sql
 drop_rss_feeds.sql
+add_csp_mode.sql

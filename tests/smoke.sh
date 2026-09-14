@@ -9924,5 +9924,98 @@ else
 fi
 
 echo
+# ── 67. The Content-Security-Policy header ─────────────────────────────────
+echo "67. the Content-Security-Policy header"
+
+# The application shipped no CSP at all. pl_send_csp_header() emits one from
+# PHP -- not from docker/apache.conf, which is baked into the image -- so an
+# install that is not using the shipped image gets it too.
+#
+# csp_mode picks enforce / report_only / off. A MISSING row must read as
+# enforce, so an install that never opens the settings screen is protected;
+# that is the case worth a check of its own.
+cleanup_csp() {
+	adb "DELETE FROM settings WHERE label = 'csp_mode'" >/dev/null 2>&1
+	adb "INSERT IGNORE INTO settings (label, value) VALUES ('csp_mode', 'enforce')" \
+		>/dev/null 2>&1
+}
+trap 'rm -f "$COOKIES" "$BODY"; cleanup_csp' EXIT
+
+CSP_HEADERS="$(mktemp)"
+csp_header() {
+	curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D "$CSP_HEADERS" \
+		"$OCM_URL/index.php"
+	grep -i '^content-security-policy' "$CSP_HEADERS" | tr -d '\r'
+}
+
+if [ "$HAVE_DB" != 1 ]; then
+	echo "  skip the CSP checks: no database access"
+else
+	adb "UPDATE settings SET value = 'enforce' WHERE label = 'csp_mode'" >/dev/null
+	csp="$(csp_header)"
+
+	if printf '%s' "$csp" | grep -qi '^content-security-policy:'; then
+		ok "a policy is sent, and it is the enforcing header"
+	else
+		bad "no enforcing Content-Security-Policy header was sent [${csp}]"
+	fi
+
+	# The directives that do the work. Each is checked on its own so a
+	# failure names the one that went missing.
+	for directive in "object-src 'none'" "base-uri 'self'" \
+		"frame-ancestors 'none'" "form-action 'self'" "default-src 'self'"
+	do
+		if printf '%s' "$csp" | grep -qF -- "$directive"; then
+			ok "the policy carries ${directive}"
+		else
+			bad "the policy is MISSING ${directive}"
+		fi
+	done
+
+	# script-src must still allow inline and eval, or the 2019 templates stop
+	# working. This check is here to fail loudly on the day someone tightens
+	# the policy without converting the inline handlers first.
+	if printf '%s' "$csp" | grep -qF "script-src 'self' 'unsafe-inline' 'unsafe-eval'"; then
+		ok "script-src still allows the inline handlers the templates need"
+	else
+		bad "script-src changed; the inline handlers and eval() sites must be converted first"
+	fi
+
+	if printf '%s' "$csp" | grep -qiE "(script|style|img|font|connect)-src[^;]*https?://"; then
+		bad "the policy allows an off-site origin; the tree loads none"
+	else
+		ok "the policy allows no off-site origin"
+	fi
+
+	adb "UPDATE settings SET value = 'report_only' WHERE label = 'csp_mode'" >/dev/null
+	csp="$(csp_header)"
+	if printf '%s' "$csp" | grep -qi '^content-security-policy-report-only:' \
+		&& ! printf '%s' "$csp" | grep -qi '^content-security-policy:'; then
+		ok "report_only sends the Report-Only header and not the enforcing one"
+	else
+		bad "report_only sent the wrong header [${csp}]"
+	fi
+
+	adb "UPDATE settings SET value = 'off' WHERE label = 'csp_mode'" >/dev/null
+	csp="$(csp_header)"
+	if [ -z "$csp" ]; then
+		ok "off sends no policy at all"
+	else
+		bad "off still sent a policy [${csp}]"
+	fi
+
+	adb "DELETE FROM settings WHERE label = 'csp_mode'" >/dev/null
+	csp="$(csp_header)"
+	if printf '%s' "$csp" | grep -qi '^content-security-policy:'; then
+		ok "a missing csp_mode row enforces, so a fresh install is covered"
+	else
+		bad "a missing csp_mode row sent NO ENFORCING POLICY [${csp}]"
+	fi
+
+	cleanup_csp
+	rm -f "$CSP_HEADERS"
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

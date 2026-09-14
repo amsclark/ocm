@@ -768,7 +768,7 @@ function pika_init()
 	pl_benchmark();
 	// Notify PHP to use the custom Pika error handler.
 	set_error_handler("pl_error_handler");
-set_exception_handler("pl_exception_handler");
+	set_exception_handler("pl_exception_handler");
 	
 	/* Override the default PHP session handler.*/
 	session_set_save_handler("pl_session_open", "pl_session_close", "pl_session_read", "pl_session_write","pl_session_destroy", "pl_session_gc");
@@ -839,6 +839,12 @@ set_exception_handler("pl_exception_handler");
 			exit();
 		}
 	}
+	
+	/*	Send the Content-Security-Policy. After the force_https redirect
+		above, which exits, so a redirect does not carry a policy for a page
+		it is not serving; before any output, which has not started yet.
+	*/
+	pl_send_csp_header();
 	
 	// GZIP compression
 	if ($plSettings['enable_compression'] && !defined('PIKA_NO_COMPRESSION'))
