@@ -38,8 +38,17 @@ class pikaAuth
 		{
 			$this->session_id = $_SESSION['SID'];
 		}
-		$this->ip_address = $_SERVER['REMOTE_ADDR'];
-		$this->user_agent = $_SERVER['HTTP_USER_AGENT'];
+		/*	Neither of these is guaranteed to be set: a client may send no
+			User-Agent header, and REMOTE_ADDR is absent under the command
+			line. Both were undefined-index warnings.
+			
+			An absent header becomes the empty string rather than null, so
+			that the session_ip_pin comparison stays a string-to-string
+			test. This does not weaken the pin: a session started without
+			a User-Agent already matched only a request without one.
+		*/
+		$this->ip_address = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+		$this->user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? (string) $_SERVER['HTTP_USER_AGENT'] : '';
 		
 		// Prevent back from re-submitting login
 		if(!isset($_SESSION['auth_id']))

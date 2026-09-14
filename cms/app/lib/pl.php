@@ -1308,11 +1308,35 @@ function pl_date_add($interval, $number, $date)
 */
 function pl_date_mogrify($date_str)
 {
-	$date = $date_str;  // Used to construct the ISO date from the $date_str arg.
 	$x = '';  // The final ISO date string, returned at end of function.
 	$a = array();  // Stores the month, day and (sometimes) year.
 	
-	if (strlen((string) $date_str) < 1)
+	/*	dataops.php hands $_REQUEST['act_date'] straight to this function,
+		and a request may make any field an array simply by naming it
+		act_date[]. str_replace() below then returns an array and strpos()
+		raises a TypeError, which is a 500 for the page. An object is the
+		same story.
+		
+		A date this function cannot read is false. Every caller already
+		handles that, because an empty string has always returned false.
+	*/
+	if (!is_scalar($date_str))
+	{
+		return false;
+	}
+	
+	$date = (string) $date_str;  // Used to construct the ISO date from the $date_str arg.
+	
+	if (strlen($date) < 1)
+	{
+		return false;
+	}
+	
+	/*	A date is a few dozen characters at most. Anything longer is not a
+		date, and explode() on it builds an arbitrarily large array out of
+		one request parameter.
+	*/
+	if (strlen($date) > 100)
 	{
 		return false;
 	}
@@ -1413,7 +1437,20 @@ function pl_date_mogrify($date_str)
 		
 		else
 		{*/
-		$x = date("Y-m-d", strtotime($date));
+		/*	strtotime() returns false for text it cannot read, and
+			date("Y-m-d", false) is the epoch, so "not a date at all" was
+			stored as a date near 1970 rather than refused. Return false,
+			which is what this function already returns for input it
+			cannot use.
+		*/
+		$stamp = strtotime($date);
+		
+		if (false === $stamp)
+		{
+			return false;
+		}
+		
+		$x = date("Y-m-d", $stamp);
 		//}
 	}
 	
@@ -4162,56 +4199,6 @@ end
 '
 */
 
-function fff($in, &$smarty)
-{
-	$out = $in;
-//	$out = str_replace('%%[begin:', '%%[', $out);
-//	$out = str_replace('%%[end:', '%%[', $out);
-	return str_replace('%%[', '%%[$', $out);
-}
-
-function li_repeat($t)
-{
-	$start = strpos($t, "<li repeat>");
-	
-	if ($start != false) 
-	{
-		$end = strpos($t, "</option>") + 9;
-		$repeat_str .= "{foreach from=\$custid item=curr_id}
-  id: {\$curr_id}<br />
-{/foreach}";
-		return substr($t, 0, $start) . $repeat_str . dyn_tables(substr($t, $end));
-	}
-	
-	else 
-	{
-		return $t;
-	}
-}
-
-
-function pl_template3($template_file, $template_data = array(), $subtpl_label = null)
-{
-	require_once('Smarty.class.php');
-	$smarty = new Smarty();
-	
-	$smarty->register_prefilter('fff');
-	$smarty->template_dir = '.';
-	$smarty->compile_dir = 'app/smarty/templates_c';
-	$smarty->cache_dir = 'app/smarty/cache';
-	$smarty->config_dir = 'app/smarty/configs';
-	$smarty->left_delimiter = '%%[';
-	$smarty->right_delimiter = ']%%';
-	
-	foreach ($template_data as $key => $val)
-	{
-		$smarty->assign($key, $val);
-	}
-	
-	$smarty->assign('base_url', '/~aaron/danio');
-	$smarty->display($template_file);
-}
-
 function pl_template_section_handler()
 {
 }
@@ -5734,12 +5721,27 @@ function pl_process_comma_vals($str)
 
 function browser_is_mobile()
 {
+	/*	A client may send no User-Agent header at all, which was an
+		undefined-index warning on each of the three reads below.
+		
+		strpos() returns 0 when the needle is at the start of the string,
+		and 0 is falsy, so a User-Agent beginning "Android" -- which is
+		what several Android browsers send -- was reported as not mobile.
+		Compare against false instead.
+	*/
+	$user_agent = isset($_SERVER['HTTP_USER_AGENT']) ? (string) $_SERVER['HTTP_USER_AGENT'] : '';
+	
+	if (strlen($user_agent) < 1)
+	{
+		return false;
+	}
+	
 	// iOS devices
-	$iphone = strpos($_SERVER['HTTP_USER_AGENT'], "iPhone");
-	$ipod = strpos($_SERVER['HTTP_USER_AGENT'], "iPod");
+	$iphone = strpos($user_agent, "iPhone");
+	$ipod = strpos($user_agent, "iPod");
 	// Android devices
-	$android = strpos($_SERVER['HTTP_USER_AGENT'], "Android");
-	if ($iphone || $android || $ipod)
+	$android = strpos($user_agent, "Android");
+	if (false !== $iphone || false !== $android || false !== $ipod)
 	{
 		return true;
 	}
