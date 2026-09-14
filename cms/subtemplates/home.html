@@ -58,18 +58,6 @@
 	<br/>
 	%%[end:motd]%%
 	
-	%%[begin:rss_feeds]%%
-	<div id="feed">
-		<b><a href="%%[link]%%">%%[title]%%</a></b><br/>
-		<div id="feed-content-%%[feed_id]%%" style="padding:5px;display:none">
-		%%[content]%% ... (<i><a href="#" onclick="toggleFeed(%%[feed_id]%%); return false;">Hide Full Text</a></i>)
-		</div>
-		<div id="feed-summary-%%[feed_id]%%" style="padding:5px">
-		%%[summary_content]%%
-		</div>
-	</div>
-	<br/>
-	%%[end:rss_feeds]%%
 </div>
 <div class="span3">
 	<h2>Learn to Use Pika</h2>
@@ -96,10 +84,6 @@
 function toggleMotd(id) {
 	toggleDiv("motd-summary-"+id);
 	toggleDiv("motd-content-"+id);
-}
-function toggleFeed(id) {
-	toggleDiv("feed-summary-"+id);
-	toggleDiv("feed-content-"+id);
 }
 
 function toggleDiv(id) {

@@ -50,8 +50,8 @@ if (strlen((string) $cal_date) < 1)
 
 $user_id = pl_grab_var('user_id');
 
-// This value is interpolated into a dozen hrefs, into the RSS link and into
-// the activity filter. pl_grab_var() encodes only < and >, so a quote used to
+// This value is interpolated into a dozen hrefs and into the activity
+// filter. pl_grab_var() encodes only < and >, so a quote used to
 // break out of an attribute and run script, and the same value reached the
 // SQL. It has exactly two valid shapes: a numeric user id, or 'office_' plus
 // an office code. Check the shape once here instead of escaping a dozen

@@ -44,7 +44,6 @@ $pref_names = array('def_office',
 					'popup',
 					'theme',
 					'def_ical_interval',
-					'def_rss_interval',
 					'r_format');
 
 foreach ($pref_names as $pref_name)

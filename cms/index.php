@@ -20,7 +20,6 @@ if(isset($_REQUEST['auth_id']) && is_numeric($_REQUEST['auth_id']))
 }
 
 require_once('pikaMotd.php');
-require_once('pikaRssFeed.php');
 require_once('pikaSettings.php');
 require_once('pikaMisc.php');
 
@@ -83,43 +82,6 @@ foreach ($reports as $report)
 }
 $main_html['report_list'] = $y;
 
-$feeds_array = pikaRssFeed::getFeeds();
-$feeds_text = '';
-if(count($feeds_array) >= 1) 
-{
-	foreach ($feeds_array as $feed) {
-		$feeds_text .= "<h2>" . pl_html_escape($feed['title']) . "</h2>\n";
-		
-		foreach ($feed['entries'] as $entry) 
-		{
-			/*	Everything below comes from a third party feed, and
-				pl_template() substitutes a tag value as it is given. So each
-				field is made safe here: the two titles are escaped, the link
-				has to be a scheme a browser can follow, and the body is
-				rebuilt from a parsed tree.
-				
-				strip_tags() used to do the body. It keeps every attribute on
-				the tags it allows, so a feed could put onmouseover= on an
-				allowed <a> and point its href at javascript:.
-			*/
-			$raw_content = $entry['content'];
-			$entry['feed_id'] = rand();
-			$entry['title'] = pl_html_escape($entry['title']);
-			$entry['link'] = pl_html_escape(pikaRssFeed::safeUrl($entry['link']));
-			$entry['content'] = pikaRssFeed::safeHtml($raw_content);
-			$entry['summary_content'] = $entry['content'];
-			if(strlen($raw_content) > 140) 
-			{
-				//	Cut the raw text and rebuild it, so the parser closes the
-				//	tag the cut ran through.
-				$entry['summary_content'] = pikaRssFeed::safeHtml(substr($raw_content,0,140));
-				$entry['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleFeed({$entry['feed_id']});" .
-											 " return false;\">View Full Text</a></i>)";
-			}
-			$feeds_text .= pl_template('subtemplates/home.html',$entry,'rss_feeds');
-		}
-	}
-}
 
 $reports = pikaMisc::reportList(true);
 $y = "";
@@ -132,7 +94,6 @@ foreach ($reports as $z)
 $home_page['report_list'] = $y;
 
 $home_page['motd'] = $messages_text;
-$home_page['rss_feeds'] = $feeds_text;
 $home_page['user_id'] = $auth_row['user_id'];
 
 

@@ -434,11 +434,11 @@ function pika_report_authorize($report_name)
 
 /*	May the current user look at $target_user_id's calendar?
 	
-	cal_day.php, cal_week.php, cal_adv.php and services/cal-rss.php all took a
-	user id off the query string and rendered that user's activities -- summary,
-	notes, case number and hours -- with no check of any kind. Any authenticated
-	user could read any colleague's diary, and cal-rss.php did not even ask for
-	authentication (see the note at the top of that file).
+	cal_day.php, cal_week.php and cal_adv.php all took a user id off the query
+	string and rendered that user's activities -- summary, notes, case number
+	and hours -- with no check of any kind. Any authenticated user could read
+	any colleague's diary. An RSS feed of the same data, services/cal-rss.php,
+	did not even ask for authentication; that feed has since been removed.
 	
 	Open visibility is what most legal aid programs want and what every install
 	of this application has had since 2019, so this does not switch to

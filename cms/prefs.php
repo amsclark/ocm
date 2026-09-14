@@ -72,17 +72,11 @@ $user_prefs = $user->getUserPrefs();
 $r_format = array(	'pdf' => 'PDF',
 					'html' => 'HTML');
 $font_size = array_combine(pikaDefPrefs::fontSizes(), pikaDefPrefs::fontSizes());
-$rss_interval = array(	'1' => '1 Day',
-						'5' => '5 Days',
-						'7' => '7 Days',
-						'14' => '14 Days',
-						'30' => '30 Days');
 						
 // Use single prefs form for both defaults and user prefs (to carry changes easily)
 $prefs_template = new pikaTempLib('subtemplates/prefs_form.html',$user_prefs,'prefs_form');
 $prefs_template->addMenu('r_format',$r_format);
 $prefs_template->addMenu('font_size',$font_size);
-$prefs_template->addMenu('rss_interval',$rss_interval);
 $html['prefs_form'] = $prefs_template->draw();
 
 

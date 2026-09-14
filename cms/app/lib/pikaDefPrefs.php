@@ -140,9 +140,8 @@ class pikaDefPrefs extends pikaFileArray
 			
 			case 'paging':
 			case 'def_ical_interval':
-			case 'def_rss_interval':
-				/*	A row count and two day counts. Digits only: no sign,
-					no space, and nothing that could be read as SQL.
+				/*	A row count and a day count. Digits only: no sign, no
+					space, and nothing that could be read as SQL.
 				*/
 				if (strlen($value) > 0 && ctype_digit($value))
 				{

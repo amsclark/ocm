@@ -33,8 +33,8 @@ if (strlen((string) $cal_date) < 1)
 
 $user_id = pl_grab_var('user_id');
 
-// Same reflected value as cal_week.php, interpolated into the chart <img> src
-// and the RSS <link>. cal_day.php has no office view and never resolved the
+// Same reflected value as cal_week.php, interpolated into the chart <img>
+// src. cal_day.php has no office view and never resolved the
 // 'mine' keyword either, so a user id is the only valid shape and everything
 // else -- 'mine' included -- falls back to the current user below, which is
 // what 'mine' was asking for. See the longer note in cal_week.php.
@@ -662,13 +662,6 @@ $plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> &gt;
 	<a href='cal_day.php'>Calendar</a> &gt; 
 	<a href='cal_day.php?cal_date=$cal_date'>$tmp</a> &gt;
 	Day View &nbsp; ";
-
-$base_url = pl_settings_get('base_url');
-if(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == TRUE) {
-	$cal_url= "https://".$_SERVER['HTTP_HOST'].$base_url;
-}else { $cal_url= "http://".$_SERVER['HTTP_HOST'].$base_url; }
-
-$plTemplate['rss'] = "<link rel=\"alternate\" type=\"application/rss+xml\" title=\"RSS\" href=\"{$cal_url}/services/cal-rss.php?user_id={$user_id}\" />";
 
 echo pl_template($plTemplate, 'templates/default.html');
 echo pl_bench('results');

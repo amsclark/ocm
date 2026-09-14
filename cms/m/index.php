@@ -11,7 +11,6 @@ require_once('pika-danio.php');
 pika_init();
 
 require_once('pikaMotd.php');
-require_once('pikaRssFeed.php');
 
 
 $main_html = array();  // Values for the main HTML template.
@@ -43,29 +42,9 @@ else
 }
 
 
-$feeds_array = pikaRssFeed::getFeeds();
-$feeds_text = '';
-if(count($feeds_array) >= 1) {
-	foreach ($feeds_array as $feed) {
-		$feeds_text .= "<h2>{$feed['title']}</h2>\n";
-		
-		foreach ($feed['entries'] as $entry) {
-			$entry['feed_id'] = rand();
-			$entry['content'] = strip_tags($entry['content'],'<a><ul><ol><li><p>');
-			$entry['summary_content'] = $entry['content'];
-			if(strlen($entry['content']) > 140) {
-				$entry['summary_content'] = substr($entry['content'],0,140);
-				$entry['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleFeed({$entry['feed_id']});" .
-											 " return false;\">View Full Text</a></i>)";
-			}
-			$feeds_text .= pl_template('m/home.html',$entry,'rss_feeds');
-		}
-	}
-}
 
 
 $home_page['motd'] = $messages_text;
-$home_page['rss_feeds'] = $feeds_text;
 $home_page['user_id'] = $auth_row['user_id'];
 
 

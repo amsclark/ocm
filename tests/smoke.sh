@@ -6973,181 +6973,112 @@ else
 fi
 
 echo
-echo "57. a syndicated feed cannot write the home page"
+echo "57. the RSS feed reader is gone"
 
-# cms/index.php draws every enabled row in rss_feeds on the home page. The
-# channel title went into an <h2> as it arrived, the entry link went into an
-# unquoted href= attribute, and the body was filtered with
-# strip_tags($content,'<a><ul><ol><li><p>') - which keeps every attribute on
-# the tags it keeps, so a feed could ship onmouseover= on an allowed <a> and
-# point its href at javascript:. A feed with a title and no items reached
-# count(null) in pikaRssFeed::parseRSS() and answered the whole home page
-# with an empty HTTP 500. And updateFeeds() handed feed_url straight to
-# file_get_contents(), so file:// read a local file and drew it on the page.
-if [ "$HAVE_DB" = 1 ]; then
+# The home page used to render entries fetched from third party feeds, which an
+# administrator subscribed to on system-feeds.php. That reader was the worst
+# input this application accepted: a remote party chose the markup, and it was
+# filtered with strip_tags(), which keeps every attribute on the tags it
+# allows. The whole feature is removed - the reader, the admin page, the
+# pikaRssFeed library, the outbound services/cal-rss.php calendar feed, the
+# rss_feeds table and the per-user feed interval preference.
+#
+# These checks are about absence, so each one also proves it reached a real
+# page: an absence check against a 404 or a login form proves nothing.
 
-	RSSID=9057
-	RSSFILE=/tmp/zzrss_local.xml
-
-	cleanup_rss() {
-		adb "DELETE FROM rss_feeds WHERE feed_id = ${RSSID}" >/dev/null
-		if [ "$HAVE_COMPOSE" = 1 ]; then
-			docker compose "${COMPOSE_ARGS[@]}" exec -T app rm -f "$RSSFILE" >/dev/null 2>&1
-		fi
-	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rss' EXIT
-	cleanup_rss
-
-	rss_set() {
-		# $1 = feed_url, $2 = feed_cache, $3 = last_modified expression
-		adb "DELETE FROM rss_feeds WHERE feed_id = ${RSSID}" >/dev/null
-		adb "INSERT INTO rss_feeds (feed_id, name, feed_url, feed_cache, feed_type,
-			enabled, list_limit, last_modified, created)
-			VALUES (${RSSID}, 'ZZRSSFEED', '${1}', '${2}', 1, 1, 5, ${3}, NOW())" >/dev/null
-	}
-
-	rss_home() {
-		curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
-			"$OCM_URL/index.php"
-	}
-
-	# An unreachable port on the loopback interface, so nothing in this
-	# section can reach the network. NOW() keeps updateFeeds() from trying.
-	RSSDEAD='http://127.0.0.1:1/none.xml'
-
-	# 1. Every scriptable piece of a feed at once: markup in the channel
-	#    title, an attribute breakout in the link, and a body carrying an
-	#    event handler, a javascript: href and a <script> element.
-	rss_set "$RSSDEAD" \
-		'<?xml version="1.0"?><rss version="2.0"><channel><title>ZZRSSTITLE&lt;img src=x onerror=zzrsspwn&gt;</title><item><title>ZZRSSITEM</title><link>x onmouseover=zzrsspwn</link><description>&lt;a href="javascript:zzrsspwn"&gt;ZZRSSBODY&lt;/a&gt;&lt;script&gt;zzrsspwn&lt;/script&gt;&lt;p onclick="zzrsspwn"&gt;ZZRSSPARA&lt;/p&gt;</description></item></channel></rss>' \
-		'NOW()'
-
-	RSSCODE="$(rss_home)"
-	if [ "$RSSCODE" = 200 ]; then
-		ok "the home page still draws with a feed enabled"
+# 1. Neither entry point exists any more.
+for rss_page in system-feeds.php services/cal-rss.php; do
+	code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/${rss_page}")"
+	if [ "$code" = 404 ]; then
+		ok "${rss_page} is not served"
 	else
-		bad "the home page answered $RSSCODE with a feed enabled"
+		bad "${rss_page} still answers $code"
 	fi
+done
 
-	if grep -q 'ZZRSSTITLE' "$BODY"; then
-		ok "the feed title reaches the home page"
-	else
-		bad "the feed title is missing - this section is testing nothing"
-	fi
-
-	if grep -qF '<img src=x onerror=' "$BODY"; then
-		bad "a feed channel title puts a live <img> tag on the home page"
-	else
-		ok "a feed channel title cannot put a tag on the home page"
-	fi
-
-	# The link is drawn inside href="...". An unquoted attribute let the
-	# value end it and add one of its own.
-	if grep -qE '<a href=[^"]' "$BODY"; then
-		bad "the feed link is drawn into an unquoted href attribute"
-	else
-		ok "the feed link is drawn into a quoted href attribute"
-	fi
-
-	if grep -qF 'onmouseover=' "$BODY"; then
-		bad "a feed link breaks out of the href attribute and adds a handler"
-	else
-		ok "a feed link cannot break out of the href attribute"
-	fi
-
-	if grep -qF 'javascript:' "$BODY"; then
-		bad "a feed body keeps a javascript: link"
-	else
-		ok "a feed body cannot keep a javascript: link"
-	fi
-
-	if grep -qF 'onclick="zzrsspwn"' "$BODY"; then
-		bad "a feed body keeps an event handler on an allowed tag"
-	else
-		ok "a feed body cannot keep an event handler on an allowed tag"
-	fi
-
-	# The words survive even though the markup does not - the allowed tags
-	# are a feature, and dropping the text would be a regression.
-	if grep -q 'ZZRSSBODY' "$BODY" && grep -q 'ZZRSSPARA' "$BODY"; then
-		ok "the feed body text still reaches the home page"
-	else
-		bad "the feed body text was dropped - the sanitizer is too tight"
-	fi
-
-	# 2. A feed with a channel title and no items.
-	rss_set "$RSSDEAD" \
-		'<?xml version="1.0"?><rss version="2.0"><channel><title>ZZRSSEMPTY</title></channel></rss>' \
-		'NOW()'
-
-	RSSCODE="$(rss_home)"
-	if [ "$RSSCODE" = 200 ]; then
-		ok "a feed with no items does not break the home page"
-	else
-		bad "a feed with no items answered $RSSCODE - count() on a missing key"
-	fi
-
-	# 3. A feed carrying a DOCTYPE. The parser has to refuse the document:
-	#    a DOCTYPE can declare an entity that reads a file or that expands
-	#    until the request runs out of memory.
-	rss_set "$RSSDEAD" \
-		'<?xml version="1.0"?><!DOCTYPE rss><rss version="2.0"><channel><title>ZZRSSDOCTYPE</title><item><title>t</title><link>http://example.com/</link><description>d</description></item></channel></rss>' \
-		'NOW()'
-
-	RSSCODE="$(rss_home)"
-	if [ "$RSSCODE" = 200 ] && ! grep -q 'ZZRSSDOCTYPE' "$BODY"; then
-		ok "a feed declaring a DOCTYPE is refused"
-	else
-		bad "a feed declaring a DOCTYPE is parsed anyway (http $RSSCODE)"
-	fi
-
-	# 4. A feed URL naming a local file. The stale last_modified makes
-	#    updateFeeds() fetch it.
-	if [ "$HAVE_COMPOSE" = 1 ]; then
-		docker compose "${COMPOSE_ARGS[@]}" exec -T app sh -c \
-			"printf '%s' '<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><title>ZZRSSLOCALFILE</title><item><title>t</title><link>http://example.com/</link><description>d</description></item></channel></rss>' > $RSSFILE" >/dev/null 2>&1
-
-		rss_set "file://${RSSFILE}" '' "'2000-01-01 00:00:00'"
-
-		RSSCODE="$(rss_home)"
-		if [ "$RSSCODE" = 200 ] && ! grep -q 'ZZRSSLOCALFILE' "$BODY"; then
-			ok "a feed URL cannot name a local file"
-		else
-			bad "a feed URL read a local file onto the home page (http $RSSCODE)"
-		fi
-
-		if [ "$(adb "SELECT LENGTH(feed_cache) FROM rss_feeds WHERE feed_id = ${RSSID}")" = 0 ]; then
-			ok "a rejected feed URL is never fetched"
-		else
-			bad "a rejected feed URL was fetched into the feed cache"
-		fi
-	else
-		printf '  skip the local file feed checks (needs docker compose)\n'
-	fi
-
-	# 5. A well formed feed over http still draws its markup, so the
-	#    hardening did not turn the feature off.
-	rss_set "$RSSDEAD" \
-		'<?xml version="1.0"?><rss version="2.0"><channel><title>ZZRSSGOOD</title><item><title>ZZRSSGOODITEM</title><link>http://example.com/story</link><description>&lt;p&gt;ZZRSSGOODTEXT &lt;a href="http://example.com/more"&gt;ZZRSSGOODLINK&lt;/a&gt;&lt;/p&gt;</description></item></channel></rss>' \
-		'NOW()'
-
-	RSSCODE="$(rss_home)"
-	if [ "$RSSCODE" = 200 ] && grep -qF '<a href="http://example.com/story">ZZRSSGOODITEM</a>' "$BODY"; then
-		ok "a good feed entry still links to its story"
-	else
-		bad "a good feed entry lost its link (http $RSSCODE)"
-	fi
-
-	if grep -qF '<p>ZZRSSGOODTEXT <a href="http://example.com/more">ZZRSSGOODLINK</a></p>' "$BODY"; then
-		ok "a good feed body keeps its allowed markup"
-	else
-		bad "a good feed body lost the markup the feature allows"
-	fi
-
-	cleanup_rss
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+# 2. The home page draws, and carries none of the feature's markup.
+code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/index.php")"
+if [ "$code" = 200 ] && grep -q 'Learn to Use Pika' "$BODY"; then
+	ok "the home page still draws"
 else
-	printf '  skip the syndicated feed checks (needs the database)\n'
+	bad "the home page answered $code without its own content"
+fi
+if grep -q 'Learn to Use Pika' "$BODY" \
+	&& ! grep -qiE 'toggleFeed|id="feed|feed-summary-|feed-content-' "$BODY"; then
+	ok "the home page carries no feed markup and no toggleFeed handler"
+else
+	bad "the home page still carries the feed markup"
+fi
+if grep -q 'Learn to Use Pika' "$BODY" \
+	&& ! grep -qiE 'Fatal error|Warning:|Notice:|pikaRssFeed|rss_feeds' "$BODY"; then
+	ok "removing the reader left no warning or undefined reference behind"
+else
+	bad "the home page reports an error after the feed removal"
+fi
+
+# 3. The mobile home page too. It built the same markup from the same feeds.
+code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/m/index.php")"
+if [ "$code" = 200 ] \
+	&& ! grep -qiE 'Fatal error|Warning:|Notice:|pikaRssFeed|toggleFeed' "$BODY"; then
+	ok "the mobile home page draws with no feed code left in it"
+else
+	bad "the mobile home page answered $code or still names the feed reader"
+fi
+
+# 4. No page advertises a feed of OCM's own data. cases-rss.php never existed
+#    in this tree, so case_list.php was advertising a 404 as well.
+for rss_page in "cal_day.php?user_id=1" "case_list.php?mode=open" "m/case_list_mobile.php?mode=open"; do
+	code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/${rss_page}")"
+	if [ "$code" = 200 ] && ! grep -qiE 'application/rss\+xml|cal-rss\.php|cases-rss\.php' "$BODY"; then
+		ok "${rss_page%%\?*} advertises no RSS feed"
+	else
+		bad "${rss_page%%\?*} answered $code or still advertises a feed"
+	fi
+done
+
+# 5. The site map no longer offers the admin page.
+code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/site_map.php")"
+if [ "$code" = 200 ] && grep -qi 'Site Map' "$BODY" \
+	&& ! grep -qiE 'system-feeds\.php|>RSS Feeds<' "$BODY"; then
+	ok "the site map does not link the removed admin page"
+else
+	bad "the site map answered $code or still links RSS Feeds"
+fi
+
+# 6. The preference control is gone and its <head> slot is not left unresolved.
+code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+	"$OCM_URL/prefs.php")"
+if [ "$code" = 200 ] && grep -qi 'Case List Length' "$BODY" \
+	&& ! grep -qiE 'RSS Interval|def_rss_interval' "$BODY"; then
+	ok "the preferences form offers no RSS interval"
+else
+	bad "prefs.php answered $code or still offers the RSS interval"
+fi
+if ! grep -qF '%%[rss]%%' "$BODY" && ! grep -qF '%%[head_extra]%%' "$BODY"; then
+	ok "the renamed <head> slot resolves on a page that does not set it"
+else
+	bad "an unresolved template tag reached the page"
+fi
+
+if [ "$HAVE_DB" = 1 ]; then
+	# 7. The table and its counter row are dropped on an upgraded install.
+	if [ -z "$(adb "SHOW TABLES LIKE 'rss_feeds'")" ]; then
+		ok "the rss_feeds table is dropped"
+	else
+		bad "the rss_feeds table is still present"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM counters WHERE id = 'rss_feeds'")" = 0 ]; then
+		ok "the rss_feeds counter row is dropped"
+	else
+		bad "the rss_feeds counter row survives"
+	fi
+else
+	printf '  skip the rss_feeds schema checks (needs the database)\n'
 fi
 
 echo
@@ -8113,13 +8044,15 @@ else
 fi
 
 # ── 30. Another user's calendar ────────────────────────────────────────────
-# cal_day.php, cal_week.php, cal_adv.php and services/cal-rss.php took a user
-# id off the query string and drew that user's activities, with the summary and
-# the notes, for anyone who asked. cal-rss.php did not even require a login: it
-# set PL_DISABLE_SECURITY, so an unauthenticated GET returned a week of a named
-# user's appointments and case notes as XML.
+# cal_day.php, cal_week.php and cal_adv.php took a user id off the query string
+# and drew that user's activities, with the summary and the notes, for anyone
+# who asked. A fourth page, services/cal-rss.php, did not even require a login:
+# it set PL_DISABLE_SECURITY, so an unauthenticated GET returned a week of a
+# named user's appointments and case notes as XML. That feed has since been
+# removed outright; section 57 checks that it is gone.
 #
-# All four pages now ask pl_can_view_user_calendar() (cms/pika-danio.php):
+# The three remaining pages now ask pl_can_view_user_calendar()
+# (cms/pika-danio.php):
 # your own calendar always, another user's with a read-all group always,
 # another user's without one only while the enable_shared_calendars setting is
 # not 0. A missing setting row reads as open, which is what the application
@@ -8194,15 +8127,18 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		VALUES (${CAL_ACT2}, 1, ${CAL_CASE}, '${CAL_RDATE}', '${CAL_RTIME}', 'ZZ-CAL-REDACT', 'ZZ-CAL-REDACT note', 0)" >/dev/null
 
 	# 30a. The unauthenticated feed. This one needs no fixture user: before the
-	# fix, this exact request returned the row seeded above to anybody on the
-	# network.
-	curl -s --max-time 30 -o "$BODY" "$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
+	# feed was removed, this exact request returned the row seeded above to
+	# anybody on the network. The request is still made, because a deployment
+	# that upgrades by copying files over an old tree can leave the old script
+	# behind, and it must not answer with case data if it does.
+	CAL_RSS_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/services/cal-rss.php?user_id=1")"
 	if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
 		bad "cal-rss.php SERVES A USER'S APPOINTMENTS AND NOTES WITH NO LOGIN (CWE-306)"
-	elif grep -q 'login_pass' "$BODY"; then
-		ok "cal-rss.php asks an anonymous caller to log in ($(wc -c < "$BODY") bytes)"
+	elif [ "$CAL_RSS_CODE" = 404 ]; then
+		ok "the anonymous calendar feed is gone (404)"
 	else
-		bad "cal-rss.php gave neither the feed nor a login form ($(wc -c < "$BODY") bytes)"
+		bad "cal-rss.php answered ${CAL_RSS_CODE}, not 404 ($(wc -c < "$BODY") bytes)"
 	fi
 
 	# A group with no permissions at all: no read_all, no offices, no reports.
@@ -8281,33 +8217,20 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			cal_probe "cal_week with sharing off" "cal_week.php?user_id=1" deny
 			cal_probe "cal_adv with sharing off" "cal_adv.php?user_list%5B%5D=1" deny
 
+			# The same request as a signed-in user with no permissions. The
+			# feed is gone, so this is a second check that it cannot be
+			# reached, not a check of the gate.
 			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
 				"$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
 			if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
 				bad "cal-rss.php SERVES ANOTHER USER'S FEED TO A USER WITH NO PERMISSIONS"
 			else
-				ok "cal-rss.php refuses another user's feed with sharing off"
+				ok "the calendar feed serves nobody another user's appointments"
 			fi
 
-			# The refusal is scoped to other people. Own calendar, and the feed
-			# with no user_id at all, still work with sharing off.
+			# The refusal is scoped to other people: your own calendar still
+			# draws with sharing off.
 			cal_probe "own cal_day with sharing off" "cal_day.php?user_id=${CAL_UID}" allow
-			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
-				"$OCM_URL/services/cal-rss.php" >/dev/null
-			if grep -q '<rss' "$BODY"; then
-				ok "cal-rss.php still serves the caller their own feed"
-			else
-				bad "cal-rss.php does not serve the caller's own feed ($(wc -c < "$BODY") bytes)"
-			fi
-
-			# The feed is XML now, not the text/html it used to claim.
-			CAL_CT="$(curl -s --max-time 30 -b "$CAL_JAR" -o /dev/null -D - \
-				"$OCM_URL/services/cal-rss.php" | tr -d '\r' \
-				| awk 'tolower($1) == "content-type:" { print tolower($2) }' | tail -n 1)"
-			case "$CAL_CT" in
-				application/rss+xml*) ok "cal-rss.php sends Content-Type: $CAL_CT" ;;
-				*) bad "cal-rss.php sends Content-Type: ${CAL_CT:-none}" ;;
-			esac
 
 			# 30d. A read-all group gets the colleague calendars back with
 			# sharing off, which is what calendar_admin resolves to.
@@ -8316,14 +8239,6 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			cal_probe "cal_day, read_all, sharing off" "cal_day.php?user_id=1" allow
 			cal_probe "cal_week, read_all, sharing off" "cal_week.php?user_id=1" allow
 			cal_probe "cal_adv, read_all, sharing off" "cal_adv.php?user_list%5B%5D=1" allow
-
-			curl -s --max-time 30 -b "$CAL_JAR" -o "$BODY" \
-				"$OCM_URL/services/cal-rss.php?user_id=1" >/dev/null
-			if grep -qF 'ZZ-CAL-PRIVATE' "$BODY"; then
-				ok "cal-rss.php serves another user's feed to a read-all group"
-			else
-				bad "a read-all group did NOT get another user's feed ($(wc -c < "$BODY") bytes)"
-			fi
 
 			# 30e. The refusal is on the record either way.
 			CAL_DENIED="$(docker compose "${COMPOSE_ARGS[@]}" logs app 2>/dev/null \

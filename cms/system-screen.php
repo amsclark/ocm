@@ -223,7 +223,7 @@ else
 							 Screen Editor";
 }
 
-$main_html['rss'] = '<link href="css/system-screen.css" rel="stylesheet">';
+$main_html['head_extra'] = '<link href="css/system-screen.css" rel="stylesheet">';
 $main_html['page_title'] = 'Screen Editor';
 $default_template = new pikaTempLib('templates/default.html',$main_html);
 $buffer = $default_template->draw();

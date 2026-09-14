@@ -314,12 +314,6 @@ $main_html['content'] = pl_template('subtemplates/case_list.html', $t_array);
 $main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php?mode=open\">Cases</a> &gt; Current Case List";
 
 
-if(isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == TRUE) {
-	$cal_url= "https://".$_SERVER['HTTP_HOST'].$base_url;
-}else { $cal_url= "http://".$_SERVER['HTTP_HOST'].$base_url; }
-
-$main_html['rss'] = "<link rel=\"alternate\" type=\"application/rss+xml\" title=\"RSS\" href=\"{$cal_url}/services/cases-rss.php?user_id={$user_id}\" />";
-
 $buffer = pl_template('templates/default.html', $main_html);
 pika_exit($buffer);
 
