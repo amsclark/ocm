@@ -74,19 +74,26 @@ function old_scan_extension_folder($subdir, $base_path)
     return $a;
 }
 
-$extension_whitelist = explode(':', pl_settings_get('extensions'));
+$extension_whitelist = pl_enabled_extensions();
 
 $x = scan_extension_folder ("", pl_custom_directory() . "/extensions/");
 sort($x);
 
 $h ="";
+/*	ops/update_extensions.php requires the per-session CSRF token on every
+	POST, and this form did not carry one, so saving the extension list
+	always landed on the token-recovery page instead of saving.
+*/
 $h .= "<form action=\"ops/update_extensions.php\" method=\"POST\">\n";
+$h .= pl_csrf_hidden_input();
 
 foreach($x as $val)
 {
 	//var_dump($val);
 	
-	if (array_search($val[1], $extension_whitelist) === false)
+	// pl_enabled_extensions() drops the leading slash the folder scan put
+	// on $val[1], so drop it here too rather than comparing two shapes.
+	if (array_search(ltrim($val[1], '/'), $extension_whitelist) === false)
 	{
 		$checked = "";
 	}

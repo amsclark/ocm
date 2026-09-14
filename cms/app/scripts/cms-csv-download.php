@@ -25,7 +25,15 @@ curl_setopt($c, CURLOPT_TIMEOUT, 60);
 curl_setopt($c, CURLOPT_RETURNTRANSFER, 1);
 curl_setopt($c, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
 curl_setopt($c, CURLOPT_USERPWD, "$username:$password");
-curl_setopt($c, CURLOPT_SSL_VERIFYPEER, FALSE);
+/*	This request carries the operator's own OCM username and password as
+	HTTP Basic credentials, over a URL the download page builds as https.
+	Peer verification was off, so any host able to answer for that name --
+	anything on the network path, or a DNS answer an attacker controls --
+	could present a certificate of its own, and curl would hand it the
+	password. Verifying the host name while not verifying the certificate
+	that carries it checks nothing at all.
+*/
+curl_setopt($c, CURLOPT_SSL_VERIFYPEER, TRUE);
 curl_setopt($c, CURLOPT_SSL_VERIFYHOST, 2);
 $status_code = curl_getinfo($c, CURLINFO_HTTP_CODE);
 $result=curl_exec($c);
@@ -41,7 +49,8 @@ foreach ($result as $v)
 	curl_setopt($c, CURLOPT_RETURNTRANSFER, 1);
 	curl_setopt($c, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
 	curl_setopt($c, CURLOPT_USERPWD, "$username:$password");
-	curl_setopt($c, CURLOPT_SSL_VERIFYPEER, FALSE);
+	// Same credentials, same reason as the request above.
+	curl_setopt($c, CURLOPT_SSL_VERIFYPEER, TRUE);
 	curl_setopt($c, CURLOPT_SSL_VERIFYHOST, 2);
 	$status_code = curl_getinfo($c, CURLINFO_HTTP_CODE);
 	$result=curl_exec($c);
