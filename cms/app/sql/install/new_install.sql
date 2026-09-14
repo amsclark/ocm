@@ -958,23 +958,6 @@ CREATE TABLE `pb_attorneys` (
 ) ENGINE = INNODB;
 
 --
--- Table structure for table `rss_feeds`
---
-
-CREATE TABLE `rss_feeds` (
-  `feed_id` int(11) NOT NULL default '0',
-  `name` varchar(80) default 'No Name',
-  `feed_url` tinytext,
-  `feed_cache` mediumtext,
-  `feed_type` tinyint(1) default NULL,
-  `enabled` tinyint(1) default '0',
-  `list_limit` tinyint(1) default '5',
-  `last_modified` timestamp NULL default CURRENT_TIMESTAMP on update CURRENT_TIMESTAMP,
-  `created` timestamp NULL default '0000-00-00 00:00:00',
-  PRIMARY KEY  (`feed_id`)
-) ENGINE = INNODB;
-
---
 -- Table structure for table `screens`
 --
 
@@ -1127,7 +1110,6 @@ INSERT INTO counters VALUES ('doc_storage',0);
 INSERT INTO counters VALUES ('flags',12);
 INSERT INTO counters VALUES ('transfer_options',0);
 INSERT INTO counters VALUES ('case_tabs',8);
-INSERT INTO counters VALUES ('rss_feeds',3);
 
 -- 
 -- Dumping data for table `flags`
@@ -1201,9 +1183,6 @@ INSERT INTO `menu_transfer_mode` VALUES (1,'Pika->Pika',0);
 INSERT INTO `menu_undup` VALUES (1,'Unduplicated Service',0),(0,'Duplicated Service',1);
 INSERT INTO `menu_yes_no` VALUES (1,'Yes',0),(0,'No',1);
 
-INSERT INTO `rss_feeds` VALUES (1, 'Pika Software Blog', 'http://pikasoftware.blogspot.com/feeds/posts/default?alt=atom', '', 2, 0, 3, '2009-12-30 10:39:08', '2009-04-10 11:00:00');
-INSERT INTO `rss_feeds` VALUES (2, 'LSNTAP', 'http://lsntap.org/rss.xml', '', 1, 0, 3, '2009-12-30 10:39:21', '2009-04-16 11:36:06');
-INSERT INTO `rss_feeds` VALUES (3, 'Legal Services Corp - LSC Updates', 'http://lsc.gov/lscfeed.xml', '', 1, 0, 3, '2011-09-08 14:27:51', '2011-09-08 14:27:21');
 
 -- 
 -- Dumping data for table `users`

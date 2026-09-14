@@ -48,11 +48,6 @@ $ical_interval = array(	'7' => '7 Days',
 						'30' => '30 Days',
 						'60' => '60 Days');
 
-$rss_interval = array(	'1' => '1 Day',
-						'5' => '5 Days',
-						'7' => '7 Days',
-						'14' => '14 Days',
-						'30' => '30 Days');
 						
 
 switch ($action)
@@ -90,7 +85,6 @@ switch ($action)
 		$prefs_template->addMenu('r_format',$r_format);
 		$prefs_template->addMenu('font_size',$font_size);
 		$prefs_template->addMenu('ical_interval',$ical_interval);
-		$prefs_template->addMenu('rss_interval',$rss_interval);
 		$html['prefs_form'] = $prefs_template->draw();
 		
 		

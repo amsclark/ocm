@@ -597,7 +597,7 @@ $case_row['server_url'] = preg_replace('/[^A-Za-z0-9.:\[\]_-]/', '',
 	(string) (isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : ''));
 
 $main_html['content'] = pl_template('subtemplates/case_screen.html', $case_row);
-$main_html['rss'] = file_get_contents('js/form_save.js');
+$main_html['head_extra'] = file_get_contents('js/form_save.js');
 
 $default_template = new pikaTempLib('templates/default.html',$main_html);
 $buffer = $default_template->draw();
