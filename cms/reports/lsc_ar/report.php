@@ -191,7 +191,7 @@ $total['category'] = "";
 	$total["E"] = "0";
 	$total["total"] = "0";
 	
-$result = DB::query($eth_sql) or trigger_error();
+$result = DB::query($eth_sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchRow($result))
 {
 	$t->add_row($row);
@@ -220,7 +220,7 @@ $t->display_row_count(false);
 $total = 0;
 $vet_sql = "SELECT veteran_household, COUNT(*) AS a FROM cases WHERE 1"
 	. $sql . " GROUP BY veteran_household";
-$result = DB::query($vet_sql) or trigger_error();
+$result = DB::query($vet_sql) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result))
 {
@@ -259,7 +259,7 @@ $t->display_row_count(false);
 $total = 0;
 $vet_sql = "SELECT gender, COUNT(*) AS a FROM cases LEFT JOIN contacts ON cases.client_id=contacts.contact_id WHERE 1"
 	. $sql . " GROUP BY gender";
-$result = DB::query($vet_sql) or trigger_error();
+$result = DB::query($vet_sql) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result))
 {
@@ -308,7 +308,7 @@ $lang_sql = "SELECT CONCAT(IFNULL(language, 'No Code'), ' - ', IFNULL(label, '')
 	LEFT JOIN menu_language ON contacts.language = menu_language.value
 	WHERE 1"
 	. $sql . " GROUP BY language ORDER BY a DESC";
-$result = DB::query($lang_sql) or trigger_error();
+$result = DB::query($lang_sql) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result))
 {

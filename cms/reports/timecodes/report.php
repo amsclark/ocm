@@ -127,7 +127,7 @@ $totals = array('worktotal' => 0,
 
 $act_user = array();
 
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result)) {
 	$act_user[$row['user_id']][] = $row;

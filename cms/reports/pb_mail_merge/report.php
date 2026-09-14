@@ -70,7 +70,7 @@ if ($base_url == '/judicare')
 
 // run the report
 
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchRow($result))
 {
 	$row['last_case'] = pl_date_unmogrify($row['last_case']);

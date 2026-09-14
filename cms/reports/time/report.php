@@ -146,7 +146,7 @@ $cols = array('Date', 'Time', 'Hours', 'Completed', 'Staff', 'Vol. Atty.',
 				'Summary', 'Case Number', 'Office', 'Funding Source');
 				
 // execute the SQL statement, format the results, and add to the table object
-$result = DB::query($sql) or trigger_error();
+$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result)) {
 	if(!$by_pba) {$act_user["{$row['user_id']}"][] = $row; }// Searching by Staff Atty

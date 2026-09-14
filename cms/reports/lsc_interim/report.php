@@ -190,7 +190,7 @@ $total['category'] = "";
 	$total["D"] = "0";
 	$total["total"] = "0";
 	
-$result = DB::query($eth_sql) or trigger_error();
+$result = DB::query($eth_sql) or trigger_error('database query failed', E_USER_ERROR);
 while ($row = DBResult::fetchRow($result))
 {
 	$t->add_row($row);
@@ -224,7 +224,7 @@ $pai_sql = "SELECT SUBSTRING(LPAD(problem, 2, '0'),1,1) AS category,
 	SUM(IF(ISNULL(close_date) OR close_date > '{$clean_calendar_year}-06-30', 1, 0)) AS 'Cases Remaining Open on June 30'
 	FROM cases
 	WHERE status='5'" . $sql . " GROUP BY category";
-$result = DB::query($pai_sql) or trigger_error();
+$result = DB::query($pai_sql) or trigger_error('database query failed', E_USER_ERROR);
 
 while ($row = DBResult::fetchRow($result))
 {

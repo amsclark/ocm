@@ -53,7 +53,7 @@ switch ($action) {
 				url='{$safe_url}', transfer_mode='{$safe_transfer_mode}';";
 		
 		
-		DB::query($sql) or trigger_error();
+		DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 		
 		header("Location: {$base_url}/transfer_options.php");	
 		break;

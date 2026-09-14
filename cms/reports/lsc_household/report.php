@@ -173,7 +173,7 @@ $t->add_row(array('Total Number of all Persons Served', $row['t_persons_helped']
 $t->add_row(array('', ''));
 
 $dv_sql = "SELECT SUM(dom_viol) AS t FROM cases WHERE 1" . $sql;
-$result = DB::query($dv_sql) or trigger_error();
+$result = DB::query($dv_sql) or trigger_error('database query failed', E_USER_ERROR);
 $row = DBResult::fetchRow($result);
 $t->add_row(array('2) Total Number of Cases Involving Domestic Violence', $row['t']));
 

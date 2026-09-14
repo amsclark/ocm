@@ -88,7 +88,7 @@ while ($row = DBResult::fetchRow($result))
 	$sql2 = "SELECT act_date, notes FROM activities 
 				WHERE case_id = '{$row['case_id']}'
 				ORDER BY act_date DESC, act_time DESC, act_id DESC";
-	$resultb = DB::query($sql2) or trigger_error();
+	$resultb = DB::query($sql2) or trigger_error('database query failed', E_USER_ERROR);
 	
 	while ($rb = DBResult::fetchRow($resultb))
 	{

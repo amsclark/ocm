@@ -542,7 +542,7 @@ class pikaDocument extends plBase
 					AND folder = 1 
 					AND doc_id = {$folder_ptr}
 					LIMIT 1";
-			$result = DB::query($sql) or trigger_error();
+			$result = DB::query($sql) or trigger_error('database query failed', E_USER_ERROR);
 			
 			if (DBResult::numRows($result) == 1) { return true;}
 			else { return false; }

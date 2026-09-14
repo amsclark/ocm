@@ -9837,5 +9837,92 @@ fi
 rm -f "$SQ_HEADERS"
 
 echo
+# ── 66. A failed database query ─────────────────────────────────────────────
+echo "66. a failed query answers an error page, not a blank one"
+
+# PHP 8.1 made mysqli throw instead of returning false, so every failed query
+# raises mysqli_sql_exception. Nothing in the tree catches it and there was no
+# exception handler, so the user got status 500 with a zero-byte body and the
+# server log got a PHP fatal rather than a Pika error record. The `or
+# trigger_error()` calls after DB::query() were the old handling and no longer
+# run; the ones written with no argument would have died on an
+# ArgumentCountError if they had.
+#
+# The break is a renamed table, so the restore has to survive an interrupt.
+# This is the last section for that reason: nothing after it depends on the
+# table being there.
+cleanup_exc() {
+	adb "RENAME TABLE outcomes_zzhidden TO outcomes" >/dev/null 2>&1
+}
+trap 'rm -f "$COOKIES" "$BODY"; cleanup_exc' EXIT
+
+EXC_REPORT="reports/outcomes/report.php"
+
+if [ "$HAVE_DB" != 1 ]; then
+	echo "  skip the failed-query checks: no database access"
+else
+	code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/$EXC_REPORT")"
+	if [ "$code" = 200 ]; then
+		ok "the outcomes report renders before the table is taken away"
+	else
+		bad "the outcomes report answered $code before the break; the rest of this section proves nothing"
+	fi
+
+	adb "RENAME TABLE outcomes TO outcomes_zzhidden" >/dev/null
+	exc_code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/$EXC_REPORT")"
+	exc_bytes="$(wc -c < "$BODY")"
+	cleanup_exc
+
+	if [ "$exc_bytes" -gt 0 ]; then
+		ok "a failed query answers a body, not a blank page ($exc_bytes bytes)"
+	else
+		bad "a failed query answered ${exc_code} with a zero-byte body"
+	fi
+
+	if grep -qi 'could not complete your request' "$BODY"; then
+		ok "the failure page carries the generic administrator message"
+	else
+		bad "the failure page does not carry the generic message ($exc_bytes bytes, status $exc_code)"
+	fi
+
+	if [ "$exc_code" = 500 ]; then
+		ok "a failed query still answers 500, not a success code"
+	else
+		bad "a failed query answered ${exc_code}, not 500"
+	fi
+
+	if grep -q 'outcomes_zzhidden' "$BODY"; then
+		bad "the failure page NAMES THE MISSING TABLE (schema disclosure)"
+	else
+		ok "the failure page does not name the missing table"
+	fi
+
+	if grep -qi 'mysqli_sql_exception\|DB\.php' "$BODY"; then
+		bad "the failure page LEAKS THE EXCEPTION CLASS OR THE FAILING FILE"
+	else
+		ok "the failure page leaks neither the exception class nor the failing file"
+	fi
+
+	code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/$EXC_REPORT")"
+	if [ "$code" = 200 ]; then
+		ok "the outcomes report renders again once the table is back"
+	else
+		bad "the outcomes report answered $code after the restore; the table may still be renamed"
+	fi
+
+	if [ "$HAVE_COMPOSE" = 1 ]; then
+		if docker compose "${COMPOSE_ARGS[@]}" logs --tail=200 app 2>&1 \
+			| grep -q 'uncaught_exception'; then
+			ok "the operator still gets the whole detail in the server log"
+		else
+			bad "the failed query left no uncaught_exception record in the server log"
+		fi
+	fi
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
