@@ -861,13 +861,40 @@ function pl_calc_age($dob, $current_date = null)
 /**
 * @return string
 * @param $str string
-* @desc Removes naughty characters (";", ".." and "/") from a user-supplied file name.
+* @desc Reduces a user-supplied file name to a plain name in one directory.
+*/
+/*	These two removed ";", "/" and ".." in one pass each, which is not the
+	same thing as removing them. A single pass over "....//" deletes the two
+	inner dots and the two inner slashes and hands back "../", so the string
+	the caller is told is clean is the one it was trying to refuse.
+	
+	Neither function has a caller today that reaches a filesystem path with
+	its result -- cms/case.php already picks its screen name with an
+	allowlist, and cms/m/activity_list.php feeds an include that has been
+	commented out for years -- so this is not a live hole. It is a pair of
+	functions named "clean" that do not clean, which is exactly the shape of
+	thing the next caller will trust.
+	
+	So allowlist instead of blacklist. A file name keeps letters, digits,
+	dot, dash, underscore and space, and nothing else; a path keeps those
+	plus the forward slash, and then any ".." segment is dropped outright
+	rather than rewritten, so there is no string that survives as a climb.
+	Both refuse a leading slash: the result is always relative.
 */
 function pl_clean_file_name($str)
 {
-	$str = preg_replace("/\;/", "", $str);
-	$str = preg_replace("/\//", "", $str);
-	$str = preg_replace("/\.\./", "", $str);
+	if (!is_string($str))
+	{
+		return '';
+	}
+	
+	$str = preg_replace('/[^A-Za-z0-9 ._-]/', '', $str);
+	
+	// A name of nothing but dots cannot address a parent directory.
+	if (preg_match('/^\.+$/', $str))
+	{
+		return '';
+	}
 	
 	return $str;
 }
@@ -876,13 +903,32 @@ function pl_clean_file_name($str)
 /**
 * @return string
 * @param $str string
-* @desc Removes naughty characters (";" and "..") from a user-supplied file path.
+* @desc Reduces a user-supplied file path to a relative path with no climb.
 */
 function pl_clean_file_path($str)
 {
-	$str = preg_replace("/\;/", "", $str);	
-	$str = preg_replace("/\.\./", "", $str);	
-	return $str;
+	if (!is_string($str))
+	{
+		return '';
+	}
+	
+	$str = preg_replace('/[^A-Za-z0-9 ._\/-]/', '', $str);
+	
+	$clean = array();
+	
+	foreach (explode('/', $str) as $segment)
+	{
+		// Drop the segment, do not rewrite it: rewriting is what let
+		// "....//" survive a single pass as "../".
+		if ('' === $segment || '.' === $segment || preg_match('/^\.+$/', $segment))
+		{
+			continue;
+		}
+		
+		$clean[] = $segment;
+	}
+	
+	return implode('/', $clean);
 }
 
 
@@ -3132,6 +3178,80 @@ if (!function_exists('pl_safe_identifier')) {
 }
 
 /**
+ * Decide whether a template may call a function by name.
+ *
+ * pl_template()'s section feature takes the name inside a [[begin <name>]]
+ * tag and calls it: $section_data = $section_data_src(). The name came
+ * straight out of the template text with nothing but a function_exists()
+ * warning in front of it -- and that warning did not return, so the call
+ * happened either way and a missing function was a fatal error rather than
+ * a skipped section.
+ *
+ * A template is not the same thing as application code. It is a file an
+ * administrator edits, an overlay ships, or in the case of a form template
+ * a person uploads on the Documents tab. So a name that reaches this point
+ * must not be able to name phpinfo, passthru, system, session_destroy or
+ * anything else PHP happens to define.
+ *
+ * Two rules, both cheap. The name has to look like a plain identifier, and
+ * it has to be a function this application defined: everything built into
+ * PHP or loaded from an extension is refused. Every legitimate section
+ * source is by definition declared in app code or in an overlay, so the
+ * feature keeps working and nothing built in can be reached through it.
+ */
+if (!function_exists('pl_template_section_callable')) {
+	function pl_template_section_callable($name)
+	{
+		if (!is_string($name) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name))
+		{
+			return false;
+		}
+		
+		if (!function_exists($name))
+		{
+			return false;
+		}
+		
+		$defined = get_defined_functions();
+		
+		if (!isset($defined['user']) || !is_array($defined['user']))
+		{
+			return false;
+		}
+		
+		return in_array(strtolower($name), $defined['user'], true);
+	}
+}
+
+/**
+ * Decide whether a template may name a file under a js directory.
+ *
+ * The javascript template plugin interpolated the name from the tag
+ * straight into pl_custom_directory() . "/js/{$file_name}" and
+ * getcwd() . "/js/{$file_name}", so a tag could walk out of that directory
+ * with ../ and read any file the web server could read. Every js file this
+ * application ships is a bare name in one flat directory, so require that
+ * shape: letters, digits, dot, dash and underscore, ending in .js, and no
+ * run of dots that could climb.
+ */
+if (!function_exists('pl_safe_js_file_name')) {
+	function pl_safe_js_file_name($name)
+	{
+		if (!is_string($name) || '' === $name || strlen($name) > 128)
+		{
+			return false;
+		}
+		
+		if (!preg_match('/^[A-Za-z0-9_][A-Za-z0-9._-]*\.js$/', $name))
+		{
+			return false;
+		}
+		
+		return false === strpos($name, '..');
+	}
+}
+
+/**
  * Normalise a sort direction to one of the two literals MySQL accepts.
  *
  * The companion to pl_safe_identifier() for the other half of an ORDER BY.
@@ -4567,17 +4687,32 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 		$template_file = pl_custom_directory() . "/{$template_file}";
 	}
 	
-	// Throw an error if the specified file cannot be found.
-	if (!file_exists($template_file))
+	/*	Both of these warned and carried on. A missing file went to
+		fopen() anyway, which warned again and returned false, and false
+		then went to feof(), which is a TypeError on PHP 8: a mistyped
+		template name took the whole page down with a fatal error instead
+		of an empty block.
+		
+		Refuse instead, and say which name was refused. A caller that gets
+		an empty string back renders a page without that block, which is
+		what the warning was always describing.
+	*/
+	$template_real = is_string($template_file) && '' !== $template_file
+		? realpath($template_file)
+		: false;
+	
+	if (false === $template_real || !is_file($template_real))
 	{
-		trigger_error("Invalid template file $template_file");
+		trigger_error("Invalid template file " . (is_string($template_file) ? $template_file : gettype($template_file)));
+		return '';
 	}
-
-	$file = fopen($template_file, 'r');
+	
+	$file = fopen($template_real, 'r');
 
 	if (!$file)
 	{
-		trigger_error('Failed to open template file');
+		trigger_error("Failed to open template file {$template_real}");
+		return '';
 	}
 
 	while (!feof ($file))
@@ -4616,12 +4751,24 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 				{
 					$section_text .= substr($str, 0, $p);
 
-					if (!function_exists($section_data_src))
+					/*	This used to warn and then call the name anyway,
+						so a template naming a function that did not exist
+						was a fatal error rather than a skipped section, and
+						a template naming one that did -- any function PHP
+						had defined, built-in ones included -- ran it.
+						pl_template_section_callable() takes only a plain
+						identifier that this application declared itself.
+					*/
+					if (!pl_template_section_callable($section_data_src))
 					{
-						trigger_error("No function {$section_data_src}.");
+						trigger_error("Template section source refused: {$section_data_src}");
+						$section_data = false;
 					}
 					
-					$section_data = $section_data_src();
+					else
+					{
+						$section_data = $section_data_src();
+					}
 
 					if (is_array($section_data))
 					{

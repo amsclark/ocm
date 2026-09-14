@@ -10831,5 +10831,145 @@ else
 fi
 
 echo
+echo "== 73. what a template may name: a js file, a function, a template file =="
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	TP_CASE=""
+	TP_DOC=""
+
+	cleanup_tp() {
+		[ -n "${TP_DOC:-}" ] && adb "DELETE FROM doc_storage WHERE doc_id = ${TP_DOC}" >/dev/null 2>&1
+		[ -n "${TP_CASE:-}" ] && adb "DELETE FROM cases WHERE case_id = ${TP_CASE}" >/dev/null 2>&1
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tp' EXIT
+
+	TP_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status)
+		VALUES (${TP_CASE}, 'ZZTPCASE', 1, NULL, '1')" >/dev/null
+
+	# A form template body, the same reach section 70 uses: docgen.php hands
+	# an uploaded doc_type = 'F' body to pikaTempLib as the template string,
+	# so a person with the Documents tab -- not only whoever writes the
+	# shipped templates -- decides what these tags say.
+	#
+	# The first tag walks out of the js directory. Before the fix it was read
+	# and rendered: /etc/passwd came back inside a <script> block.
+	TP_BODY='A=[%%[../../../../../etc/passwd,javascript]%%] B=[%%[popUp.js,javascript]%%]'
+	TP_HEX="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo bin2hex(addslashes(gzcompress($argv[1], 9)));' "$TP_BODY" </dev/null 2>/dev/null)"
+	TP_DOC="$(adb "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM doc_storage")"
+	adb "INSERT INTO doc_storage
+		(doc_id, doc_name, doc_data, doc_size, mime_type, doc_type, description, created, case_id, user_id)
+		VALUES (${TP_DOC}, 'zztp-form.txt', UNHEX('${TP_HEX}'), 64, 'text/plain', 'F',
+			'zz template path form', CURDATE(), 0, 1)" >/dev/null
+
+	: > "$COOKIES"
+	curl -s --max-time 30 -c "$COOKIES" -o /dev/null "$OCM_URL/index.php"
+	curl -s --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+		-X POST -d "login_user=admin&login_pass=${OCM_PASSWORD}&auth_id=1" \
+		"$OCM_URL/index.php"
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php"
+	TP_CSRF="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed 's/.*value="//; s/"//')"
+
+	if [ -z "$TP_CSRF" ] || [ -z "$TP_HEX" ]; then
+		bad "could not set up the template path checks"
+	else
+		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-X POST -d "_csrf=${TP_CSRF}&case_id=${TP_CASE}&form_id=${TP_DOC}&debug=0&recipient=&opposing=&opp_counsel=&autosave=" \
+			"$OCM_URL/ops/docgen.php"
+
+		if grep -q 'root:x:0:0' "$BODY"; then
+			bad "A FORM TEMPLATE READ A FILE OUTSIDE THE JS DIRECTORY (CWE-22)"
+		else
+			ok "a form template cannot read a file outside the js directory"
+		fi
+
+		if grep -q 'etc/passwd not found' "$BODY"; then
+			ok "the refused js name is reported as not found, not resolved"
+		else
+			bad "the refused js name was not reported"
+		fi
+
+		# The positive control. A plain name in that one flat directory is
+		# how every shipped template asks for its script.
+		if grep -q 'function popUp' "$BODY"; then
+			ok "a template can still include a js file by name"
+		else
+			bad "a template can no longer include a js file by name"
+		fi
+	fi
+
+	cleanup_tp
+	TP_CASE=""; TP_DOC=""
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the template path checks (needs the database)\n'
+fi
+
+# 73b. The helpers themselves, exercised directly. These paths have no live
+# caller today, which is the reason to pin them: the next caller will read
+# the name and trust it.
+if [ "$HAVE_COMPOSE" = 1 ]; then
+	TP_OUT="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+		require_once("/var/www/html/cms/app/lib/pl.php");
+		$r = array();
+		$r[] = "path:" . pl_clean_file_path("....//");
+		$r[] = "path2:" . pl_clean_file_path("../../etc/passwd");
+		$r[] = "name:" . pl_clean_file_name("..");
+		$r[] = "js1:" . (pl_safe_js_file_name("../x.js") ? "y" : "n");
+		$r[] = "js2:" . (pl_safe_js_file_name("popUp.js") ? "y" : "n");
+		$r[] = "fn1:" . (pl_template_section_callable("phpinfo") ? "y" : "n");
+		$r[] = "fn2:" . (pl_template_section_callable("system") ? "y" : "n");
+		$r[] = "fn3:" . (pl_template_section_callable("pl_html_escape") ? "y" : "n");
+		$r[] = "fn4:" . (pl_template_section_callable("no_such_function_here") ? "y" : "n");
+		echo implode(" ", $r);
+	' </dev/null 2>/dev/null)"
+
+	# A single pass over "....//" used to delete the inner dots and slashes
+	# and hand back "../" -- the very string it was asked to remove.
+	if printf '%s' "$TP_OUT" | grep -q 'path:[[:space:]]'; then
+		ok "a cleaned file path does not survive as a climb"
+	else
+		bad "pl_clean_file_path left something in \"....//\" [$TP_OUT]"
+	fi
+
+	if printf '%s' "$TP_OUT" | grep -q 'path2:etc/passwd'; then
+		ok "a cleaned file path drops its parent directory segments"
+	else
+		bad "pl_clean_file_path did not drop the parent segments [$TP_OUT]"
+	fi
+
+	if printf '%s' "$TP_OUT" | grep -q 'js1:n' && printf '%s' "$TP_OUT" | grep -q 'js2:y'; then
+		ok "a js file name must be a plain name in one directory"
+	else
+		bad "pl_safe_js_file_name accepts or refuses the wrong names [$TP_OUT]"
+	fi
+
+	if printf '%s' "$TP_OUT" | grep -q 'fn1:n' \
+		&& printf '%s' "$TP_OUT" | grep -q 'fn2:n' \
+		&& printf '%s' "$TP_OUT" | grep -q 'fn4:n'; then
+		ok "a template section cannot name a function built into PHP"
+	else
+		bad "a template section can name a built-in function [$TP_OUT]"
+	fi
+
+	if printf '%s' "$TP_OUT" | grep -q 'fn3:y'; then
+		ok "a template section can still name a function this application defines"
+	else
+		bad "a template section can no longer name an application function [$TP_OUT]"
+	fi
+fi
+
+# 73c. Static: a template file that cannot be opened must end the render,
+# not fall through to fopen(false) and then feof(false), which is fatal on
+# PHP 8.
+if grep -qF 'trigger_error("Invalid template file "' cms/app/lib/pl.php \
+	&& grep -qF 'Failed to open template file {$template_real}' cms/app/lib/pl.php; then
+	ok "pl_template refuses a template file it cannot open instead of warning on"
+else
+	bad "pl_template still warns and carries on with a template file it cannot open"
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
