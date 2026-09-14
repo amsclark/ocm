@@ -501,11 +501,35 @@ class pikaTempLib {
 		require_once('pikaSettings.php');
 		$plSettings = pikaSettings::getInstance();
 		
-		$blocked_fields = array('db_user','db_password');
-		
+		/*	Every setting is pre-loaded into the template data here, and the
+			blocklist held two labels: db_user and db_password. Everything
+			else resolved, including db_host, base_directory,
+			totp_encryption_key, sso_client_secret,
+			peer_transfer_shared_secret and the SMS credentials.
+			
+			That is reachable by a person, not only by a template author.
+			This class also runs in string mode, and document assembly is its
+			main caller: cms/ops/docgen.php passes the body of an uploaded
+			form template straight in as the template string. So anyone who
+			could upload a form could write %%[totp_encryption_key]%% into it,
+			generate a document against any case they may read, and get the
+			key back. Confirmed on this codebase before the fix; the key is
+			the only thing between a database dump and a working second
+			factor for every account.
+			
+			Use the one list, pl_settings_template_blocked() in pl.php, which
+			is kept beside the code that writes these settings. base_url and
+			the other presentation values are deliberately not on it: page
+			chrome resolves through here on every page.
+			
+			A page that must render a blocked label puts it in its own data
+			array, which the isset() below leaves alone -- that is how
+			system-settings.php still shows the database host and the base
+			directory.
+		*/
 		foreach ($plSettings as $setting => $value)
 		{	
-			if(!in_array($setting,$blocked_fields) && !isset($this->_data[$setting]))
+			if(!pl_settings_template_blocked($setting) && !isset($this->_data[$setting]))
 			{
 				$this->_data[$setting] = $plSettings[$setting];
 			}
