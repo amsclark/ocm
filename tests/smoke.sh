@@ -7623,6 +7623,19 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_ct() {
 		adb "DELETE FROM case_tabs WHERE name LIKE 'ZZCT%' OR name LIKE '%zzctxss%'" >/dev/null
 		adb "DELETE FROM case_tabs WHERE tab_id = 120" >/dev/null
+		# case_tabs.tab_id is a tinyint, so the highest id an install can hold
+		# is 127. A run that is interrupted between the add checks and this
+		# cleanup leaves a tab behind, and a blank row takes the column
+		# default name, so it does not match the ZZCT prefix above. Left
+		# alone those rows climb towards 127, and once MAX(tab_id) reaches it
+		# the counter repair below allocates 128, the column clamps that back
+		# to 127 and every add dies on a duplicate key.
+		adb "DELETE FROM case_tabs WHERE tab_id > 100 AND (file IS NULL OR name = 'New Tab')" >/dev/null
+		# Put the id counter back level with the rows. The counter check
+		# further down sets it to 1 itself, so this hides nothing; it only
+		# stops one run's leftovers from deciding what the next run allocates.
+		adb "UPDATE counters SET count = (SELECT COALESCE(MAX(tab_id), 0) FROM case_tabs)
+			WHERE id = 'case_tabs'" >/dev/null
 		adb "DELETE FROM aliases WHERE last_name LIKE 'ZZCT%' OR first_name = 'ZZCTBLANK'" >/dev/null
 		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZCT%' OR notes = 'ZZCTFIXTURE'" >/dev/null
 	}
