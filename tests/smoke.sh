@@ -10971,5 +10971,224 @@ else
 fi
 
 echo
+echo "== 74. a conflict is two parties on opposite sides, not two parties =="
+
+# The three conflict searches asked for "relation_code != this party's role",
+# which reads as "anybody but somebody in my own seat". That is not what a
+# conflict of interest is. It reported a judge who had sat on two cases
+# against both parties, a referral agency that had sent in more than one
+# person, and a client here who turned up as a household member there --
+# two people on the same side of two different matters.
+#
+# Noise is not harmless on this screen. The conflict tab is the one page in
+# this application a lawyer is ethically required to read, and a tab that
+# cries wolf is the tab staff learn to click past.
+#
+# pl_conflict_opposing_roles() names the roles that genuinely oppose a given
+# role: a client-side party (1 Client, 6 Non Adv. Household) against prior
+# adverse parties (2 Opposing Party, 3 Opposing Counsel, 7 Adverse
+# Household), an adverse party against prior clients. Anything else -- 5
+# Judge, 50 Referral Agency, 99 Other, and any code a site added itself --
+# opposes nothing, and that party is skipped rather than searched on an
+# empty list.
+
+# 74a. The rule itself. No database needed.
+if [ "$HAVE_COMPOSE" = 1 ]; then
+	CF_OUT="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+		require_once("/var/www/html/cms/app/lib/pl.php");
+		$r = array();
+		foreach (array(1,6,2,3,7,5,50,99,77) as $rc) {
+			$r[] = "r{$rc}:" . implode("-", pl_conflict_opposing_roles($rc));
+		}
+		echo implode(" ", $r);
+	' </dev/null 2>/dev/null)"
+
+	if printf '%s' "$CF_OUT" | grep -qF 'r1:2-3-7' && printf '%s' "$CF_OUT" | grep -qF 'r6:2-3-7'; then
+		ok "a client-side party is checked against adverse parties"
+	else
+		bad "the client side opposes the wrong roles [$CF_OUT]"
+	fi
+
+	if printf '%s' "$CF_OUT" | grep -qF 'r2:1' \
+		&& printf '%s' "$CF_OUT" | grep -qF 'r3:1' \
+		&& printf '%s' "$CF_OUT" | grep -qF 'r7:1'; then
+		ok "an adverse party is checked against prior clients"
+	else
+		bad "the adverse side opposes the wrong roles [$CF_OUT]"
+	fi
+
+	# A role in neither bucket opposes nothing. Note the bracket expression:
+	# the local grep is ugrep, where an unanchored "." runs across the line.
+	if printf '%s' "$CF_OUT" | grep -qE 'r5:( |$)' \
+		&& printf '%s' "$CF_OUT" | grep -qE 'r50:( |$)' \
+		&& printf '%s' "$CF_OUT" | grep -qE 'r99:( |$)' \
+		&& printf '%s' "$CF_OUT" | grep -qE 'r77:( |$)'; then
+		ok "a judge, a referral agency and an unknown role oppose nothing"
+	else
+		bad "a role outside both buckets still opposes something [$CF_OUT]"
+	fi
+fi
+
+# 74b. The real check, against seeded cases. Case A is the case being
+# checked; case B holds the prior matters its parties turn up in.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	cf_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+
+	cleanup_cf() {
+		adb "DELETE FROM conflict WHERE contact_id IN
+			(SELECT contact_id FROM contacts WHERE last_name LIKE 'ZZCF%')" >/dev/null
+		adb "DELETE FROM cases WHERE number LIKE 'ZZ-CF-%'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZCF%'" >/dev/null
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cf' EXIT
+	cleanup_cf
+
+	cf_next_id() {
+		adb "SELECT GREATEST(
+			COALESCE((SELECT MAX(${2}) FROM \`${1}\`), 0),
+			COALESCE((SELECT count FROM counters WHERE id = '${1}'), 0)) + 1"
+	}
+	cf_bump() { adb "UPDATE counters SET count = GREATEST(count, ${2}) WHERE id = '${1}'" >/dev/null; }
+
+	# mp_last is what the NAME search matches on, so set it here rather than
+	# leaving it to a save path this fixture never runs.
+	cf_contact() {
+		local id
+		id="$(cf_next_id contacts contact_id)"
+		adb "INSERT INTO contacts (contact_id, first_name, last_name, mp_first, mp_last)
+			VALUES (${id}, 'Zz', '${1}', '${2}', '${3}')" >/dev/null
+		cf_bump contacts "$id"
+		printf '%s' "$id"
+	}
+	cf_case() {
+		local id
+		id="$(cf_next_id cases case_id)"
+		adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id, open_date)
+			VALUES (${id}, '${1}', 1, 'ZZC', '1', ${2}, '2019-01-01')" >/dev/null
+		cf_bump cases "$id"
+		printf '%s' "$id"
+	}
+	cf_link() {
+		local id
+		id="$(cf_next_id conflict conflict_id)"
+		adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+			VALUES (${id}, ${1}, ${2}, ${3})" >/dev/null
+		cf_bump conflict "$id"
+	}
+
+	CF_MP="$(cf_dex php -r 'echo metaphone("Zzcfsmith");' </dev/null 2>/dev/null)"
+
+	# Three contacts checked by contact ID: no name, so only the ID search
+	# can reach them.
+	CF_SAME="$(cf_contact ZZCFSAME '' '')"
+	CF_JUDGED="$(cf_contact ZZCFJUDGED '' '')"
+	CF_REAL="$(cf_contact ZZCFREAL '' '')"
+	# Three sharing a surname, for the NAME search.
+	CF_NAME_SELF="$(cf_contact ZZCFSMITH ZZ "$CF_MP")"
+	CF_NAME_JUDGE="$(cf_contact ZZCFSMITH ZZ "$CF_MP")"
+	CF_NAME_ADV="$(cf_contact ZZCFSMITH ZZ "$CF_MP")"
+
+	CF_A="$(cf_case ZZ-CF-A "$CF_SAME")"
+	CF_B="$(cf_case ZZ-CF-B "$CF_SAME")"
+
+	# Case A, the one being checked.
+	cf_link "$CF_A" "$CF_SAME"      1   # Client
+	cf_link "$CF_A" "$CF_JUDGED"    2   # Opposing Party
+	cf_link "$CF_A" "$CF_REAL"      1   # Client
+	cf_link "$CF_A" "$CF_NAME_SELF" 1   # Client
+
+	# Case B, where those people turn up again.
+	cf_link "$CF_B" "$CF_SAME"       6  # Non Adv. Household: same side
+	cf_link "$CF_B" "$CF_JUDGED"     5  # Judge: opposes nothing
+	cf_link "$CF_B" "$CF_REAL"       2  # Opposing Party: a real conflict
+	cf_link "$CF_B" "$CF_NAME_JUDGE" 5  # Judge of the same name
+	cf_link "$CF_B" "$CF_NAME_ADV"   3  # Opposing Counsel: a real conflict
+
+	if [ -z "$CF_MP" ] || [ -z "${CF_A:-}" ] || [ -z "${CF_NAME_ADV:-}" ]; then
+		bad "could not seed the conflict fixtures - section 74b is untested"
+	else
+		# PL_DISABLE_SECURITY first, or pika_init() renders the login page
+		# under CLI and exits before the echo runs.
+		CF_HITS="$(cf_dex php -r '
+			define("PL_DISABLE_SECURITY", true);
+			chdir("/var/www/html/cms");
+			require_once("pika-danio.php");
+			pika_init();
+			require_once("app/lib/pikaCase.php");
+			$c = new pikaCase((int) $argv[1]);
+			$ids = array();
+			foreach ($c->fuzzyConflictCheck(50) as $h) {
+				$ids[] = "," . $h["contact_id"] . ",";
+			}
+			echo "HITS:" . implode("", array_unique($ids));
+		' "$CF_A" </dev/null 2>/dev/null | grep -o 'HITS:.*')"
+
+		cf_hit() { printf '%s' "$CF_HITS" | grep -qF ",${1},"; }
+
+		# The positive controls run first. Without them the four refusals
+		# below would pass on a check that returned nothing at all.
+		if cf_hit "$CF_REAL"; then
+			ok "a client here who is the opposing party there is still reported"
+		else
+			bad "A REAL CONFLICT IS NO LONGER REPORTED - the rest of 74b proves nothing [$CF_HITS]"
+		fi
+
+		if cf_hit "$CF_NAME_ADV"; then
+			ok "a client here whose name matches opposing counsel there is still reported"
+		else
+			bad "A REAL NAME CONFLICT IS NO LONGER REPORTED [$CF_HITS]"
+		fi
+
+		if cf_hit "$CF_SAME"; then
+			bad "A CLIENT MATCHING A HOUSEHOLD MEMBER ON ANOTHER CASE IS REPORTED AS A CONFLICT [$CF_HITS]"
+		else
+			ok "two parties on the same side of two matters are not a conflict"
+		fi
+
+		if cf_hit "$CF_JUDGED"; then
+			bad "A JUDGE ON ANOTHER CASE IS REPORTED AS A CONFLICT [$CF_HITS]"
+		else
+			ok "a judge who sat on another case is not a conflict"
+		fi
+
+		if cf_hit "$CF_NAME_JUDGE"; then
+			bad "A JUDGE SHARING A PARTY'S SURNAME IS REPORTED AS A CONFLICT [$CF_HITS]"
+		else
+			ok "a judge who shares a party's surname is not a conflict"
+		fi
+	fi
+
+	cleanup_cf
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
+# 74c. The other two copies of the check carry the same gate. pikaCms is the
+# copy the report under cms/reports/ uses, and pikaLSXML_V2 checks an intake
+# that has not been saved yet; both reach pl.php through their own bootstrap.
+if grep -qF 'pl_conflict_opposing_roles($relation_code)' cms/app/extralib/lib/pikaCms.php \
+	&& grep -qF 'pl_conflict_opposing_roles($relation_code)' cms/app/lib/pikaLSXML_V2.php; then
+	ok "the report and intake copies of the check carry the same role gate"
+else
+	bad "a copy of the conflict check still has no role gate"
+fi
+
+# The flag on the case, which is what colours the tab, was counted with the
+# same "!= my own role" test in pikaCms. Fixing the search but not the flag
+# would leave the case marked as having conflicts with none listed.
+if grep -qF "pl_conflict_opposing_roles(\$row['relation_code'])" cms/app/extralib/lib/pikaCms.php; then
+	ok "the potential-conflict flag is counted with the same rule"
+else
+	bad "the potential-conflict flag still counts any role but this one"
+fi
+
+# -F because the comments above each fix quote the old clause, and a bare
+# grep would match those and report a fix as its own absence.
+if grep -qF 'WHERE relation_code != ?' cms/app/lib/pikaCase.php cms/app/extralib/lib/pikaCms.php cms/app/lib/pikaLSXML_V2.php; then
+	bad "a conflict query still asks for any role but this one"
+else
+	ok "no conflict query asks for any role but this one"
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

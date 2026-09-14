@@ -483,6 +483,28 @@ class pikaCase extends plBaseWithUdf
 			$mp_last = (string) $row['mp_last'];
 			$ssn = (string) $row['ssn'];
 			$birth_date = $row['birth_date'];
+			/*	"relation_code != ?" reads as "anybody but somebody in my
+				own seat", which is not what a conflict is. A judge sitting
+				on two cases was reported against both parties, so was a
+				referral agency that had sent in more than one person, and
+				so was a client here matching a household member there --
+				two people on the same side of two different matters.
+				
+				pl_conflict_opposing_roles() returns the roles on another
+				case that genuinely oppose this party's role here. A role
+				in neither bucket opposes nothing, so skip the party rather
+				than search on an empty list.
+			*/
+			$opposing_roles = pl_conflict_opposing_roles($relation_code);
+			
+			if (empty($opposing_roles))
+			{
+				continue;
+			}
+			
+			$role_placeholders = implode(',',array_fill(0,count($opposing_roles),'?'));
+			
+
 			
 			// Match by contact ID
 			$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
@@ -490,10 +512,10 @@ class pikaCase extends plBaseWithUdf
 					LEFT JOIN contacts ON conflict.contact_id=contacts.contact_id
 					LEFT JOIN cases ON conflict.case_id=cases.case_id
 					LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-					WHERE relation_code != ?
+					WHERE relation_code IN ({$role_placeholders})
 					AND conflict.contact_id = ?
 					LIMIT {$lim}";
-			self::collectConflicts($sql,array($relation_code,$contact_id),'ID',
+			self::collectConflicts($sql,array_merge($opposing_roles,array($contact_id)),'ID',
 				$conflict_array,$seen);
 			
 			// Match by metaphone name and birth date
@@ -501,8 +523,8 @@ class pikaCase extends plBaseWithUdf
 			{
 				$contacts_clause = '';
 				$aliases_clause = '';
-				$contacts_params = array($relation_code,$mp_last);
-				$aliases_params = array($relation_code,$mp_last);
+				$contacts_params = array_merge($opposing_roles,array($mp_last));
+				$aliases_params = array_merge($opposing_roles,array($mp_last));
 				
 				if (strlen($mp_first) > 0)
 				{
@@ -528,7 +550,7 @@ class pikaCase extends plBaseWithUdf
 						LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND contacts.mp_last = ?{$contacts_clause}
+						WHERE relation_code IN ({$role_placeholders}) AND contacts.mp_last = ?{$contacts_clause}
 						AND conflict.contact_id != ?
 						LIMIT {$lim}";
 				self::collectConflicts($sql,$contacts_params,'NAME',$conflict_array,$seen);
@@ -539,7 +561,7 @@ class pikaCase extends plBaseWithUdf
 						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND aliases.mp_last = ?{$aliases_clause}
+						WHERE relation_code IN ({$role_placeholders}) AND aliases.mp_last = ?{$aliases_clause}
 						AND conflict.contact_id != ?
 						LIMIT {$lim}";
 				self::collectConflicts($sql,$aliases_params,'NAME',$conflict_array,$seen);
@@ -548,14 +570,14 @@ class pikaCase extends plBaseWithUdf
 			// Match by social security number
 			if (strlen(preg_replace('/\D/','',$ssn)) > 0)
 			{
-				$ssn_params = array($relation_code,$ssn,$contact_id,$mp_last);
+				$ssn_params = array_merge($opposing_roles,array($ssn,$contact_id,$mp_last));
 				
 				$sql = "SELECT conflict.*, contacts.*, number, cases.case_id, problem, status, label AS role
 						FROM contacts
 						LEFT JOIN conflict ON contacts.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND contacts.ssn = ?
+						WHERE relation_code IN ({$role_placeholders}) AND contacts.ssn = ?
 						AND conflict.contact_id != ? AND contacts.mp_last != ?
 						LIMIT {$lim}";
 				self::collectConflicts($sql,$ssn_params,'SSN',$conflict_array,$seen);
@@ -566,7 +588,7 @@ class pikaCase extends plBaseWithUdf
 						LEFT JOIN conflict ON aliases.contact_id=conflict.contact_id
 						LEFT JOIN cases ON conflict.case_id=cases.case_id
 						LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-						WHERE relation_code != ? AND aliases.ssn = ?
+						WHERE relation_code IN ({$role_placeholders}) AND aliases.ssn = ?
 						AND conflict.contact_id != ? AND aliases.mp_last != ?
 						LIMIT {$lim}";
 				self::collectConflicts($sql,$ssn_params,'SSN',$conflict_array,$seen);

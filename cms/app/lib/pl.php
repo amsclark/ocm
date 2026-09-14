@@ -832,6 +832,54 @@ function pl_benchmark()
 
 
 /**
+ * Roles on another case that a party holding role $rc on this case may
+ * legitimately conflict with.
+ *
+ * The conflict searches used to say "relation_code != <this party's role>",
+ * which reads as "anybody but somebody in my own seat". That is not what a
+ * conflict is. Two scenarios make one:
+ *
+ *   - a client-side party on this case (1 Client, 6 Non Adv. Household)
+ *     against an adverse party on another case (2 Opposing Party,
+ *     3 Opposing Counsel, 7 Adverse Household); and
+ *   - an adverse party on this case against a prior client (1).
+ *
+ * Everything else the old test let through was noise. A judge (5) sitting
+ * on two cases was reported as a conflict against both parties. So was a
+ * referral agency (50) that had sent in more than one person. So was a
+ * client on this case matching a household member on another, which is
+ * two people on the same side of two different matters.
+ *
+ * Noise is not harmless here. The tab that cries wolf is the tab staff
+ * learn to click past, and the conflict tab is the one screen in this
+ * application a lawyer is ethically required to read.
+ *
+ * A role in neither bucket -- 5 Judge, 50 Referral Agency, 99 Other, and
+ * any code a site has added to menu_relation_codes itself -- conflicts
+ * with nothing, and the caller skips that party rather than searching on
+ * an empty list. This narrows what is reported; it never hides a hit that
+ * was a real conflict, because a real conflict is one of the two
+ * scenarios above by definition.
+ */
+function pl_conflict_opposing_roles($rc)
+{
+	$rc = (int) $rc;
+	
+	if (1 === $rc || 6 === $rc)
+	{
+		return array(2,3,7);
+	}
+	
+	if (2 === $rc || 3 === $rc || 7 === $rc)
+	{
+		return array(1);
+	}
+	
+	return array();
+}
+
+
+/**
 * @return int
 * @param $dob date
 * @param $current_date date
