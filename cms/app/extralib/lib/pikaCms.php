@@ -1365,6 +1365,26 @@ class pikaCms
 	{
 		global $pikaOldMysqlMode, $plSettings;
 		
+		/*	Every filter below reaches the statement by interpolation, and
+			none of the values were escaped. Two were passed through
+			pl_double_quotes(), which doubles a quote but leaves a backslash
+			alone, so a trailing backslash still escaped the closing quote;
+			the rest went in as they arrived.
+			
+			All four callers today pass a value that came back out of the
+			database or that had already been checked as a number, so there
+			is no live hole, but nothing in the function said so and the next
+			caller had no way to know. Escape once, here, so each filter
+			below is data whatever the caller hands in.
+		*/
+		foreach ($filter as $filter_key => $filter_value)
+		{
+			if (is_scalar($filter_value))
+			{
+				$filter[$filter_key] = DB::escapeString((string) $filter_value);
+			}
+		}
+		
 		/*	
 		this little hack will save a few fractions of a second on case
 		lists w/o filters.  Instead of doing a "COUNT(*)" to determine
@@ -1381,13 +1401,17 @@ class pikaCms
 		
 		if (isset($filter["case_id"]) && $filter["case_id"])
 		{
-			$sql .= " AND cases.case_id={$filter['case_id']}";
+			/*	Unquoted, so this one filter took its value as SQL rather
+				than as data and needed no quote at all to break out of.
+				cases.case_id is int(11); cast for the same reason as
+				fetchActivity() above.
+			*/
+			$sql .= " AND cases.case_id=" . (int) $filter['case_id'];
 			$no_filters = false;
 		}
 		
 		if (isset($filter["last_name"]) && $filter["last_name"])
 		{
-			$filter["last_name"] = pl_double_quotes($filter["last_name"]);
 			$sql .= " AND contacts.last_name LIKE '{$filter['last_name']}%'";
 			$no_filters = false;
 		}
@@ -1395,7 +1419,6 @@ class pikaCms
 		
 		if (isset($filter["first_name"]) && $filter["first_name"])
 		{
-			$filter["first_name"] = pl_double_quotes($filter["first_name"]);
 			$sql .= " AND contacts.first_name LIKE '{$filter['first_name']}%'";
 			$no_filters = false;
 		}
@@ -1817,6 +1840,21 @@ class pikaCms
 	{
 		if ($act_id)
 		{
+			/*	$act_id went into the WHERE clause exactly as it arrived.
+				Two callers in dataops.php hand this the raw POST body --
+				one the 'act_id' field, one the keys of the 'hours' array --
+				and pl_clean_form_input() in its default mode takes out only
+				< and >, so a quote in either reached the statement intact
+				and closed the string early.
+				
+				activities.act_id is int(11), so cast: an id that is not a
+				number matches no row, which is the right answer for a
+				lookup by primary key. ops/vcal.php:32 already grabs the
+				same field in 'number' mode for this reason; now the
+				function does not depend on each caller remembering.
+			*/
+			$act_id = (int) $act_id;
+			
 			$sql = "SELECT activities.*, cases.number FROM activities LEFT JOIN cases ON activities.case_id=cases.case_id WHERE act_id='$act_id' LIMIT 1";
 			
 			return DB::query($sql);

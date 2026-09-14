@@ -80,12 +80,13 @@ if (sizeof($uri) == 3)
 */
 else if ($uri[1] == 'reports')
 {
-	/*	array_filter() drops the empty entry that explode() returns for an
-		unset setting, so a request naming no extension at all cannot match
-		it.
+	/*	pl_enabled_extensions() in app/lib/pl.php is the one parser for this
+		setting, and explains the shape it is stored in. The two branches in
+		this file used to parse it here, each splitting on ',' and comparing
+		against a name with no leading slash, so in_array() below was false
+		for every request and no extension could be reached at all.
 	*/
-	$enabled_extensions = array_filter(
-		array_map('trim', explode(',', (string) pl_settings_get('extensions'))), 'strlen');
+	$enabled_extensions = pl_enabled_extensions();
 	
 	if (sizeof($uri) == 4 || sizeof($uri) == 5)
 	{
@@ -131,12 +132,13 @@ else
 		string 'billing,intake' passed as one name. The reports branch above
 		already compares against the parsed list; do the same here.
 	*/
-	/*	array_filter() drops the empty entry that explode() returns for an
-		unset setting, so a request naming no extension at all cannot match
-		it.
+	/*	pl_enabled_extensions() in app/lib/pl.php is the one parser for this
+		setting, and explains the shape it is stored in. The two branches in
+		this file used to parse it here, each splitting on ',' and comparing
+		against a name with no leading slash, so in_array() below was false
+		for every request and no extension could be reached at all.
 	*/
-	$enabled_extensions = array_filter(
-		array_map('trim', explode(',', (string) pl_settings_get('extensions'))), 'strlen');
+	$enabled_extensions = pl_enabled_extensions();
 	
 	if (!in_array($filepath, $enabled_extensions, true))
 	{

@@ -2617,18 +2617,40 @@ function pl_html_checkbox($name, $val)
 
 
 /**
- * Displays the Pika login screen.
- * This is in a standalone function  
- * @return unknown
- * @param unknown $username
- * @param unknown $status
- * @desc Enter description here...
-*/
-function pl_html_login_form($username, $status)
+ * @return array the extension directory names an administrator has enabled
+ * @desc Read the 'extensions' setting as a list of plain directory names.
+ *
+ * system-extensions.php offers one checkbox per extension folder, named
+ * with the path the folder scan produced, so every name carries a leading
+ * '/'. ops/update_extensions.php then joins the names that came back with
+ * ':'. A reader has to undo both of those.
+ *
+ * The two readers had drifted apart. pm.php split the setting on ',' and
+ * compared the result against a directory name with no leading slash, so
+ * in_array() was false for every request and the guard refused every
+ * extension, enabled or not: 'billing' is not '/billing', and one entry
+ * split on ',' is the whole ':'-joined string. Parsing in one place is
+ * what stops the two sides drifting again.
+ *
+ * A name nested below the top level stays nested here ('sub/billing'),
+ * which pm.php still cannot match because it reads a single path segment.
+ * That is how it already behaved and is left alone.
+ */
+function pl_enabled_extensions()
 {
-	$a = array('username' => $username, 'status' => $status, 'php_self' => $_SERVER['PHP_SELF']);
-	echo pl_template('templates/login.html', $a);
-	return true;
+	$out = array();
+	
+	foreach (explode(':', (string) pl_settings_get('extensions')) as $entry)
+	{
+		$name = ltrim(trim($entry), '/');
+		
+		if ('' !== $name)
+		{
+			$out[] = $name;
+		}
+	}
+	
+	return $out;
 }
 
 

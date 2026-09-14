@@ -6443,11 +6443,17 @@ echo "54. the extension loader"
 # file has to end in .php.
 #
 # The first rule was asked with strpos(), which only wants the requested name to
-# appear ANYWHERE in the setting. With 'extensions' set to 'billing', a request
-# for the directory 'bill' passed; with two entries, the whole string
-# 'billing,intake' passed as one name. Any directory under cms-custom/extensions
-# whose name is a substring of the setting could be loaded. The check now
-# compares against the parsed list, exactly.
+# appear ANYWHERE in the setting. With 'extensions' set to '/billing', a request
+# for the directory 'bill' passed; a directory named across the separator, as in
+# 'billing:intake', sat inside the setting string and passed too. Any directory
+# under cms-custom/extensions whose name is a substring of the setting could be
+# loaded. The check now compares against the parsed list, exactly.
+#
+# The setting itself is written by ops/update_extensions.php, which joins the
+# names an administrator ticked with ':', each one carrying the leading '/' that
+# the folder scan in system-extensions.php produced. So '/zzextra:/zzother' is
+# the shape the application actually stores, and the fixture below uses it.
+# pl_enabled_extensions() in app/lib/pl.php is the one reader of that shape.
 #
 # Separately, every extension that DID load ended the request with HTTP 500:
 # the trailing pika_exit() was called with no argument and pika_exit() takes
@@ -6468,24 +6474,24 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		docker compose "${COMPOSE_ARGS[@]}" exec -T app rm -rf \
 			/var/www/html/cms-custom/extensions/zzextra \
 			/var/www/html/cms-custom/extensions/zzext \
-			"/var/www/html/cms-custom/extensions/zzextra,zzother" </dev/null >/dev/null 2>&1
+			"/var/www/html/cms-custom/extensions/zzextra:zzother" </dev/null >/dev/null 2>&1
 	}
 	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
 	cleanup_pm
 
-	# Two entries, so the comma fixture below can carry the whole setting
-	# string as one directory name.
+	# Two entries, so a directory named across the ':' that separates them can
+	# be tried below.
 	adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
-	adb "INSERT INTO settings (label, value) VALUES ('extensions', 'zzextra,zzother')" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('extensions', '/zzextra:/zzother')" >/dev/null
 
 	# zzextra is enabled. zzext is a prefix of it and is NOT enabled.
-	# 'zzextra,zzother' is the entire setting string as one directory name.
+	# 'zzextra:zzother' spans the separator and is not one of the names.
 	docker compose "${COMPOSE_ARGS[@]}" exec -T app sh -s >/dev/null 2>&1 <<'PMSEED'
 D=/var/www/html/cms-custom/extensions
-mkdir -p "$D/zzextra" "$D/zzext" "$D/zzextra,zzother"
+mkdir -p "$D/zzextra" "$D/zzext" "$D/zzextra:zzother"
 printf '<?php echo "ZZPM-ENABLED-OK";\n' > "$D/zzextra/zzhello.php"
 printf '<?php echo "ZZPM-SUBSTRING-OK";\n' > "$D/zzext/zzhello.php"
-printf '<?php echo "ZZPM-COMMA-OK";\n' > "$D/zzextra,zzother/zzhello.php"
+printf '<?php echo "ZZPM-SPAN-OK";\n' > "$D/zzextra:zzother/zzhello.php"
 printf 'ZZPM-SECRET-TXT\n' > "$D/zzextra/zzsecret.txt"
 PMSEED
 
@@ -6516,12 +6522,14 @@ PMSEED
 			bad "a directory named as a substring of the setting was loaded"
 		fi
 
-		# Nor is the whole comma-separated setting string one directory name.
-		code="$(pm_get 'zzextra,zzother/zzhello.php')"
-		if ! grep -q 'ZZPM-COMMA-OK' "$BODY"; then
-			ok "the whole extensions setting is not one directory name"
+		# Nor is a directory whose name spans the ':' that separates the
+		# entries. The name sits inside the setting string, which is what
+		# strpos() used to accept, but it is not one of the names in it.
+		code="$(pm_get 'zzextra%3Azzother/zzhello.php')"
+		if ! grep -q 'ZZPM-SPAN-OK' "$BODY"; then
+			ok "a directory named across the setting's separator is refused"
 		else
-			bad "a directory named after the whole setting string was loaded"
+			bad "a directory named across the setting's separator was loaded"
 		fi
 
 		# The .php rule still holds inside an enabled extension.
@@ -7510,17 +7518,27 @@ echo "62. the extension allowlist on pm.php"
 #
 # which is whether the name appears ANYWHERE in the setting, not whether it is
 # one of the names in it. So any substring of the setting ran -- with
-# 'extensions' set to 'project', cms-custom/extensions/pro was reachable, and a
-# directory named after two enabled extensions joined by the comma that
-# separates them was reachable too.
+# 'extensions' set to '/project', cms-custom/extensions/pro was reachable, and a
+# directory named after two enabled extensions joined by the ':' that separates
+# them was reachable too.
+#
+# ops/update_extensions.php writes the setting as the ticked names joined with
+# ':', each carrying the leading '/' the folder scan gave it, so '/a:/b' is the
+# shape stored. pl_enabled_extensions() in app/lib/pl.php is the one reader.
 if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	# 'zzpmext' and 'zzpmb' are enabled. 'zzpm' is a substring of the setting
-	# and is NOT enabled; neither is the literal name 'zzpmext,zzpmb', which
-	# is the whole setting value and so sits inside it.
+	# and is NOT enabled; neither is 'zzpmext:zzpmb', which spans the ':' that
+	# separates the two entries and so sits inside the setting string.
+	#
+	# The stored value carries a space after the separator on purpose. An
+	# administrator never types this setting by hand, but a value edited in
+	# the settings page can pick one up, and a name must still match with it
+	# there.
 	PMEXT='zzpmext'
 	PMSUB='zzpm'
 	PMSECOND='zzpmb'
-	PMSPAN='zzpmext, zzpmb'
+	PMSPAN='zzpmext:zzpmb'
+	PMSETTING='/zzpmext: /zzpmb'
 	PMROOT='/var/www/html/cms-custom/extensions'
 
 	cleanup_pm() {
@@ -7537,11 +7555,11 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	cleanup_pm
 
 	adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
-	adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMSPAN}')" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMSETTING}')" >/dev/null
 
 	# Four plants: both enabled extensions, a directory whose name is a
-	# substring of the setting, and a directory whose name is the whole
-	# setting value, comma and space included.
+	# substring of the setting, and a directory whose name spans the ':' that
+	# separates the two entries.
 	docker compose "${COMPOSE_ARGS[@]}" exec -T app sh -c "
 		mkdir -p ${PMROOT}/${PMEXT} ${PMROOT}/${PMSUB} ${PMROOT}/${PMSECOND} '${PMROOT}/${PMSPAN}' &&
 		printf '<?php echo \"ZZPM-ENABLED-RAN\";'  > ${PMROOT}/${PMEXT}/ok.php &&
@@ -7585,21 +7603,22 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		bad "the reports branch ran an extension that is not enabled"
 	fi
 
-	# 62d. The other reachable shape of the same bug: a directory named after
-	# the whole setting value. It is inside the setting string, so strpos()
-	# accepted it, but it is not one of the names the setting lists.
-	if [ -z "$(pm_get "/zzpmext,%20zzpmb/ok.php")" ]; then
-		ok "a directory named after the whole setting value is refused"
+	# 62d. The other reachable shape of the same bug: a directory whose name
+	# spans the separator between two entries. It is inside the setting
+	# string, so strpos() accepted it, but it is not one of the names the
+	# setting lists.
+	if [ -z "$(pm_get "/zzpmext%3Azzpmb/ok.php")" ]; then
+		ok "a directory named across the setting's separator is refused"
 	else
-		bad "AN EXTENSION THAT IS NOT ENABLED RAN — its name spans the comma in the setting (CWE-98)"
+		bad "AN EXTENSION THAT IS NOT ENABLED RAN — its name spans the separator in the setting (CWE-98)"
 	fi
 
-	# 62e. Control: the setting is a comma list, and the space an operator
-	# naturally types after the comma must not stop the second name matching.
+	# 62e. Control: the setting is a ':' list, and a space left after the
+	# separator must not stop the second name matching.
 	if [ "$(pm_get "/${PMSECOND}/ok.php")" = "ZZPM-SECOND-RAN" ]; then
-		ok "the second name in the comma list still runs"
+		ok "the second name in the list still runs, despite the space"
 	else
-		bad "a comma-list entry with a leading space no longer runs"
+		bad "a list entry with a leading space no longer runs"
 	fi
 
 	# 62f. Control on the other rule in this file: the target must be PHP.
@@ -11352,6 +11371,346 @@ if grep -qF 'pl_template3' cms/app/lib/pl.php \
 	bad "the dead Smarty template function is back in pl.php"
 else
 	ok "the dead Smarty template function stays out of pl.php"
+fi
+
+echo
+echo "== 76. A stored md5, the extensions allowlist, TLS peer checks and XXE =="
+
+# 76a. Static. PHP compares two strings that both look like numbers as
+# numbers, and an md5 hex digest that begins "0e" and continues in digits
+# looks like scientific notation. Two digests of that shape are therefore
+# "equal" to ==, whatever they actually contain, so anyone knowing one
+# such string could sign in as a user whose stored md5 was another. 76c
+# proves it over HTTP; this catches the comparison returning anywhere the
+# live test cannot reach.
+sm76_loose=0
+for sm76_f in cms/app/lib/pikaAuthDb.php cms/password.php; do
+	if grep -qE 'md5\([^)]*\) *[!=]=' "$sm76_f" \
+		|| grep -qE '[!=]= *md5\(' "$sm76_f"; then
+		sm76_loose=1
+	fi
+done
+if [ "$sm76_loose" = 1 ]; then
+	bad "a stored md5 password is compared with == or != again"
+else
+	ok "every stored-md5 password comparison uses hash_equals"
+fi
+
+# 76b. The comparison has to still be there. Deleting it would also pass
+# 76a, and would sign nobody in at all.
+if grep -qF 'hash_equals((string) $row[' cms/app/lib/pikaAuthDb.php \
+	&& grep -qF 'hash_equals((string) $user->password, md5((string) $oldpass))' cms/password.php; then
+	ok "both files still compare the stored md5, through hash_equals"
+else
+	bad "a stored-md5 comparison has gone missing rather than been fixed"
+fi
+
+# 76c. Live. The fixture's stored password is md5("240610708"), which is
+# 0e462097431906509019562988736854. md5("QNKCDZO") has the same shape, and
+# before the fix it signed in as this user. A successful md5 login rewrites
+# the row to bcrypt, so the fixture is written again before each attempt.
+#
+# The row is removed again at the end of the section, and before the
+# section as well, so an interrupted earlier run cannot leave it behind.
+if [ "$HAVE_DB" = 1 ]; then
+	SM76_MD5='0e462097431906509019562988736854'
+	SM76_UID=9912
+
+	sm76_drop() {
+		adb "DELETE FROM users WHERE user_id = ${SM76_UID} OR username = 'zzsmoke_md5'" >/dev/null
+	}
+	sm76_reset() {
+		sm76_drop
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id, last_name, auth_method)
+			VALUES (${SM76_UID}, 'zzsmoke_md5', '${SM76_MD5}', 1, 'system', 'SMOKE', 'password')" >/dev/null
+	}
+	# Answers 0 when the sign-in worked: the landing page then carries no
+	# login form, so no password field is left to count.
+	sm76_login() {
+		local jar body
+		jar="$(mktemp)"
+		body="$(mktemp)"
+		curl -sL --max-time 30 -c "$jar" -o /dev/null "$OCM_URL/index.php"
+		curl -sL --max-time 30 -c "$jar" -b "$jar" -o /dev/null \
+			--data-urlencode "login_user=zzsmoke_md5" \
+			--data-urlencode "login_pass=$1" \
+			-d "auth_id=1" "$OCM_URL/index.php"
+		curl -sL --max-time 30 -b "$jar" -o "$body" "$OCM_URL/index.php"
+		grep -c 'login_pass' "$body"
+		rm -f "$jar" "$body"
+	}
+
+	sm76_reset
+	if [ "$(sm76_login 'QNKCDZO')" = 0 ]; then
+		bad "a different 0e-prefixed md5 signed in as the md5 fixture user"
+	else
+		ok "a different 0e-prefixed md5 does not sign in as the md5 fixture user"
+	fi
+
+	sm76_reset
+	if [ "$(sm76_login '240610708')" = 0 ]; then
+		ok "the md5 fixture user's own password still signs in"
+	else
+		bad "the md5 fixture user's own password no longer signs in"
+	fi
+
+	sm76_drop
+fi
+
+# 76d. Static. system-extensions.php names each checkbox with the path its
+# folder scan produced, so every name carries a leading '/', and
+# ops/update_extensions.php joins the names that come back with ':'. A
+# reader has to undo both. pm.php used to split on ',' and compare against
+# a name with no slash, so its in_array() was false for every request and
+# no extension could be reached at all. One parser, in one place, is what
+# stops the two sides drifting apart again.
+if grep -qF "explode(',', (string) pl_settings_get('extensions'))" cms/pm.php; then
+	bad "pm.php parses the extensions setting itself again"
+else
+	ok "pm.php reads the extensions setting through pl_enabled_extensions()"
+fi
+
+if grep -qF 'function pl_enabled_extensions(' cms/app/lib/pl.php; then
+	ok "pl_enabled_extensions() is the one parser, in pl.php"
+else
+	bad "pl_enabled_extensions() has gone from pl.php"
+fi
+
+# 76e. Live. The parser itself, over a setting in the shape the extensions
+# page actually writes. pl_settings_set() holds the value for this process
+# only, so nothing is stored.
+if [ "$HAVE_COMPOSE" = 1 ]; then
+	sm76_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+	sm76_php='define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+pl_settings_set("extensions", "/alpha:/beta");
+print "PARSED[" . implode(",", pl_enabled_extensions()) . "]";'
+
+	sm76_parsed="$(sm76_dex php -r "$sm76_php" 2>/dev/null \
+		| grep -oE 'PARSED\[[^]]*\]' | head -1)"
+
+	if [ "$sm76_parsed" = 'PARSED[alpha,beta]' ]; then
+		ok "pl_enabled_extensions() splits on ':' and drops the leading slash"
+	else
+		bad "pl_enabled_extensions() read '/alpha:/beta' as ${sm76_parsed:-nothing}"
+	fi
+fi
+
+# 76f. Live. The extensions form posts to ops/update_extensions.php, which
+# requires the per-session token on every POST. The form carried no token
+# field, so saving the extension list always landed on the token-recovery
+# page instead of saving.
+SM76_JAR="$(mktemp)"
+curl -sL --max-time 30 -c "$SM76_JAR" -o /dev/null "$OCM_URL/index.php"
+curl -sL --max-time 30 -c "$SM76_JAR" -b "$SM76_JAR" -o /dev/null \
+	--data-urlencode "login_user=${OCM_USER}" \
+	--data-urlencode "login_pass=${OCM_PASSWORD}" \
+	-d "auth_id=1" "$OCM_URL/index.php"
+curl -sL --max-time 30 -b "$SM76_JAR" -o "$BODY" "$OCM_URL/system-extensions.php"
+
+if grep -qF 'name="_csrf"' "$BODY"; then
+	ok "the extensions form carries the CSRF token"
+else
+	bad "the extensions form carries no CSRF token, so it cannot save"
+fi
+
+# 76g. Live. pl_csrf_check() leaves its own fields in $_POST, and the loop
+# that builds the setting read every POST field name as an extension name,
+# so '_csrf' was recorded as an installed extension -- a name pm.php would
+# then accept for a require(). Posting the token and nothing else is enough
+# to show it: the saved list must come back empty, not holding '_csrf'.
+#
+# The save rewrites the whole settings table from what this request holds,
+# so the extensions rows are read first and written back afterwards, row
+# existence included.
+if [ "$HAVE_DB" = 1 ]; then
+	SM76_SNAP="$(mktemp)"
+	adb "SELECT label, value FROM settings WHERE label LIKE 'extensions%'" > "$SM76_SNAP"
+
+	SM76_TOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+		| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+	SM76_CODE="$(curl -sL --max-time 30 -b "$SM76_JAR" -c "$SM76_JAR" \
+		-o /dev/null -w '%{http_code}' \
+		--data-urlencode "_csrf=${SM76_TOK}" \
+		"$OCM_URL/ops/update_extensions.php")"
+	SM76_SAVED="$(adb "SELECT value FROM settings WHERE label = 'extensions'")"
+
+	if [ "$SM76_CODE" = 200 ] && [ -n "$SM76_TOK" ]; then
+		ok "the extensions list saves with the token the form supplies"
+	elif [ -z "$SM76_TOK" ]; then
+		bad "no CSRF token to save the extensions list with"
+	else
+		bad "saving the extensions list answered $SM76_CODE"
+	fi
+
+	case "$SM76_SAVED" in
+		*csrf*) bad "a CSRF field name was recorded as an installed extension" ;;
+		*)      ok "a CSRF field name is not recorded as an installed extension" ;;
+	esac
+
+	while IFS="$(printf '\t')" read -r sm76_label sm76_value; do
+		[ -n "$sm76_label" ] || continue
+		adb "INSERT INTO settings (label, value) VALUES ('${sm76_label}', '${sm76_value}')
+			ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null
+	done < "$SM76_SNAP"
+	rm -f "$SM76_SNAP"
+fi
+rm -f "$SM76_JAR"
+
+# 76h. Static. app/scripts/cms-csv-download.php is generated by
+# system-mac_download.php with the operator's own OCM username and password
+# written into it, and run from cron against an https URL. Peer
+# verification was off, so anything able to answer for that host name could
+# present a certificate of its own and be handed the password. Checking the
+# host name while not checking the certificate that carries it checks
+# nothing, so both settings are asserted together.
+if grep -qF 'CURLOPT_SSL_VERIFYPEER, FALSE' cms/app/scripts/cms-csv-download.php \
+	|| grep -qF 'CURLOPT_SSL_VERIFYPEER, false' cms/app/scripts/cms-csv-download.php \
+	|| grep -qF 'CURLOPT_SSL_VERIFYPEER, 0' cms/app/scripts/cms-csv-download.php; then
+	bad "the generated csv download script turns TLS peer verification off"
+else
+	ok "the generated csv download script leaves TLS peer verification on"
+fi
+
+sm76_peer="$(grep -cF 'CURLOPT_SSL_VERIFYPEER, TRUE' cms/app/scripts/cms-csv-download.php)"
+sm76_host="$(grep -cF 'CURLOPT_SSL_VERIFYHOST, 2' cms/app/scripts/cms-csv-download.php)"
+if [ "$sm76_peer" = 2 ] && [ "$sm76_host" = 2 ]; then
+	ok "both requests in the csv download script verify peer and host name"
+else
+	bad "csv download script: $sm76_peer peer checks, $sm76_host host checks, wanted 2 and 2"
+fi
+
+# 76i. Static. ops/upload_report.php parses a report definition posted as a
+# raw request body. LIBXML_NONET stops the parser being talked into
+# fetching a DTD or an entity over the network by the document it is
+# reading. LIBXML_NOENT would switch entity substitution back on, which is
+# the other half of the same problem, so its absence is asserted too.
+if grep -qF 'loadXML($postText, LIBXML_NONET)' cms/ops/upload_report.php; then
+	ok "the report parser is told not to go out to the network"
+else
+	bad "the report parser no longer passes LIBXML_NONET"
+fi
+
+# Read off the call rather than the file: the comment above it names
+# LIBXML_NOENT to explain why it is absent, and a whole-file grep matches
+# that sentence.
+if grep -F 'loadXML(' cms/ops/upload_report.php | grep -qF 'LIBXML_NOENT'; then
+	bad "the report parser substitutes entities again"
+else
+	ok "the report parser leaves entity substitution off"
+fi
+
+# 76j. Static. The same generated download script reads a list of table
+# names out of the answer the far end sends, and writes one file per name
+# into a folder the operator named. The path puts a separator in front of
+# the name, so without a check on its shape the answering server chooses
+# where the operator's cron job writes. Two things are asserted: the name
+# is held to a plain identifier, and the decoded answer is checked to be a
+# list at all before the loop reads it.
+if grep -qF "preg_match('/^[A-Za-z0-9_]+\$/', (string) \$v)" cms/app/scripts/cms-csv-download.php; then
+	ok "the csv download only accepts plain table names"
+else
+	bad "the csv download takes any table name the server sends"
+fi
+
+if grep -qF 'if (!is_array($result))' cms/app/scripts/cms-csv-download.php; then
+	ok "the csv download checks it got a list of tables"
+else
+	bad "the csv download loops over whatever json_decode returned"
+fi
+
+echo
+echo "== 77. Two sql injection sinks in pikaCms =="
+
+# pikaCms::fetchActivity() put $act_id into its WHERE clause exactly as it
+# arrived, and dataops.php reaches it twice with the raw POST body: the
+# 'act_id' field of the delete branch, and the array keys of the 'hours'
+# field of the bulk-save branch. pl_clean_form_input() in its default mode
+# takes out only < and >, so a quote in either closed the string early.
+#
+# pikaCms::fetchCaseList() interpolated its case_id filter unquoted, so that
+# one did not even need a quote: "0 OR 1=1" returned the whole case table.
+#
+# Both columns are int(11), so both are cast now. The positive controls run
+# first; without them a refusal proves only that the fixture is missing.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	sm77_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+
+	SM77_ACT=9931
+	sm77_drop() { adb "DELETE FROM activities WHERE act_id = ${SM77_ACT}" >/dev/null; }
+	sm77_drop
+
+	SM77_CASE="$(adb "SELECT case_id FROM cases ORDER BY case_id LIMIT 1")"
+	SM77_CASE="$(printf '%s' "$SM77_CASE" | tr -d '[:space:]')"
+
+	adb "INSERT INTO activities (act_id, case_id, user_id, act_type, act_date)
+		VALUES (${SM77_ACT}, ${SM77_CASE:-0}, 1, 'C', '2026-01-01')" >/dev/null
+
+	SM77_OUT="$(sm77_dex php -r '
+		define("PL_DISABLE_SECURITY", true);
+		chdir("/var/www/html/cms");
+		require_once("pika-danio.php");
+		pika_init();
+		require_once("lib/pikaCms.php");
+		$pk = new pikaCms();
+		$r = $pk->fetchActivity($argv[1]);
+		$w = $r ? DBResult::fetchRow($r) : null;
+		echo "ACT_PLAIN:" . (is_array($w) ? $w["act_id"] : "NOROW") . "\n";
+		$r = $pk->fetchActivity("0\x27 OR \x271\x27=\x271");
+		$w = $r ? DBResult::fetchRow($r) : null;
+		echo "ACT_INJECT:" . (is_array($w) ? $w["act_id"] : "NOROW") . "\n";
+		$d = 0;
+		$pk->fetchCaseList(array("case_id" => "0 OR 1=1"), $d);
+		echo "CASE_INJECT:" . (int) $d . "\n";
+		$d2 = 0;
+		$pk->fetchCaseList(array("case_id" => $argv[2]), $d2);
+		echo "CASE_PLAIN:" . (int) $d2 . "\n";
+	' "$SM77_ACT" "${SM77_CASE:-0}" </dev/null 2>/dev/null)"
+
+	sm77_drop
+
+	sm77_says() { printf '%s' "$SM77_OUT" | grep -qF "$1"; }
+
+	# 77a. Positive control: the lookup this function exists for still works.
+	if sm77_says "ACT_PLAIN:${SM77_ACT}"; then
+		ok "an activity is still fetched by its own id"
+	else
+		bad "THE ACTIVITY LOOKUP IS BROKEN - the rest of 77 proves nothing [$SM77_OUT]"
+	fi
+
+	# 77b. The injection itself.
+	if sm77_says 'ACT_INJECT:NOROW'; then
+		ok "a quote in an activity id no longer selects another row"
+	else
+		bad "an activity id can still break out of its quotes [$SM77_OUT]"
+	fi
+
+	if [ -n "$SM77_CASE" ]; then
+		# 77c. Positive control for the case list.
+		if sm77_says 'CASE_PLAIN:1'; then
+			ok "a case is still found by its own id"
+		else
+			bad "THE CASE LOOKUP IS BROKEN - 77d proves nothing [$SM77_OUT]"
+		fi
+
+		# 77d. The unquoted filter returned the whole table.
+		if sm77_says 'CASE_INJECT:0'; then
+			ok "a case id filter of \"0 OR 1=1\" now matches nothing"
+		else
+			bad "the case list filter still takes its value as sql [$SM77_OUT]"
+		fi
+	fi
+fi
+
+# 77e. Static. The escape pass at the top of fetchCaseList() covers every
+# other filter in the function, whose values were interpolated raw. It is
+# the thing that makes the function safe for a caller it has not met.
+if grep -qF 'DB::escapeString((string) $filter_value)' cms/app/extralib/lib/pikaCms.php; then
+	ok "the case list escapes every filter it is handed"
+else
+	bad "the case list interpolates filter values unescaped again"
 fi
 
 echo

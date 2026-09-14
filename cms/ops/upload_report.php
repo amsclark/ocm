@@ -82,7 +82,12 @@ if (!$report_name)
 	pl_upload_report_reply(400, 'The report was not saved: the request did not say which report it belongs to.');
 }
 
-if (!$postText || !@$xml_doc->loadXML($postText))
+/*	LIBXML_NONET so the parser cannot be talked into fetching a DTD or an
+	entity over the network by the document it is reading. Entity
+	substitution is already off -- LIBXML_NOENT is not passed -- so this
+	closes the remaining half of XXE rather than opening anything.
+*/
+if (!$postText || !@$xml_doc->loadXML($postText, LIBXML_NONET))
 {
 	pl_upload_report_reply(400, 'The report was not saved: the settings did not arrive in a readable form.');
 }

@@ -252,7 +252,19 @@ class pikaAuthDb
 					pl_audit('login.success', 'user', $row['user_id'], null, $row['user_id'], $row['username']);
 				}
 				
-				else if (md5($credential) == $row['password'] && $totp_ok)
+				/*	hash_equals(), not ==. PHP compares two strings that
+					both look like numbers as numbers, and an MD5 hex digest
+					beginning "0e" followed by digits looks like scientific
+					notation. Two such digests are therefore "equal" to ==
+					whatever they actually contain: md5("240610708") and
+					md5("QNKCDZO") both start 0e, and == says they match. A
+					user whose password happens to be one of those strings
+					could be signed in as by anyone who knows any other one.
+					
+					hash_equals() is also constant time, so the comparison
+					no longer leaks the stored digest one byte at a time.
+				*/
+				else if (hash_equals((string) $row['password'], md5((string) $credential)) && $totp_ok)
 				{
 					$this->is_authorized = true;
 					$this->auth_row = $row;
@@ -283,7 +295,7 @@ class pikaAuthDb
 						refused.
 					*/
 					$password_ok = (PHP_VERSION_ID >= 50303 && password_verify((string) $credential, (string) $row['password']))
-						|| md5($credential) == $row['password'];
+						|| hash_equals((string) $row['password'], md5((string) $credential));
 					
 					if (!$password_ok)
 					{

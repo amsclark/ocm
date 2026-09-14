@@ -42,6 +42,40 @@ $report_urls = $report_titles = "";
 
 foreach ($_POST as $key => $val)
 {
+	/*	$key is a POST field name, so it is whatever the request chose to
+		send, and everything this loop builds from it is a path or an
+		allowlist entry: pm.php gates a require() on the 'extensions'
+		setting written below.
+		
+		pl_csrf_check() leaves its own fields in $_POST, so '_csrf' and
+		'_csrf_recovery' were about to be recorded as installed extensions.
+		
+		Past that, hold the name to the shape the folder scan in
+		system-extensions.php produces -- one or more '/name' segments of
+		plain characters -- so a name cannot carry a traversal sequence, a
+		path separator, a null byte, or the ':' that separates entries in
+		the setting itself.
+	*/
+	if ('_csrf' === $key || '_csrf_recovery' === $key)
+	{
+		continue;
+	}
+	
+	$key_ok = (bool) preg_match('#^(/[A-Za-z0-9._\-]+)+$#', (string) $key);
+	
+	foreach (explode('/', (string) $key) as $key_segment)
+	{
+		if ('.' === $key_segment || '..' === $key_segment)
+		{
+			$key_ok = false;
+		}
+	}
+	
+	if (!$key_ok)
+	{
+		continue;
+	}
+	
 	if ($i == 0)
 	{
 		$j .= $key;

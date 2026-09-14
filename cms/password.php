@@ -116,7 +116,12 @@ if($action == 'update')
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Error: New password cannot be blank");
 		$is_authorized = false;
 	}
-	elseif ((md5($oldpass) != $user->password) && !(password_verify($oldpass, $user->password)))
+	/*	hash_equals(), not !=. See the comment on the same comparison in
+		app/lib/pikaAuthDb.php: == and != compare two "0e"-prefixed MD5
+		digests as numbers and call them equal. The check just below this
+		one already uses hash_equals(); this one had been missed.
+	*/
+	elseif (!hash_equals((string) $user->password, md5((string) $oldpass)) && !(password_verify($oldpass, $user->password)))
 	{
 		$html['flags'] .= pikaTempLib::plugin('red_flag','red_flag',"Error: Old Password incorrect");
 		$is_authorized = false;
