@@ -21,6 +21,16 @@ $screen = pl_grab_var('screen');
 $a = pl_grab_vars('activities');
 $act_url = pl_grab_var('act_url');
 
+/*	act_id was read nowhere in this file, so the fetchActivity() call under
+	MAIN CODE below ran against an undefined variable: every request to this
+	page ended in a fatal and the client got HTTP 500 with an empty body.
+
+	Ask for 'number' mode. act_id names an integer column, and
+	pikaCms::fetchActivity() interpolates the value straight into its WHERE
+	clause with no escaping, so a non-numeric value must not reach it.
+*/
+$act_id = pl_grab_var('act_id', 'REQUEST', null, 'number');
+
 // Verify that act_type is initialized and clean
 if (!isset($a['act_type']))
 {
@@ -110,9 +120,23 @@ function vc_duration($start_time, $hours) {
 
 
 // MAIN CODE
+
+	if (!$act_id)
+	{
+		pika_error_notice('Missing act_id', 'No activity was named to export.');
+		exit();
+	}
+	
 	// It's an existing activity... fetch its record
-	$result = $pk->fetchActivity("$act_id");
+	$result = $pk->fetchActivity($act_id);
 	$b = DBResult::fetchRow($result);  // there should be only one record
+	
+	if (!$b)
+	{
+		pika_error_notice('No such activity', 'That activity does not exist.');
+		exit();
+	}
+	
 	$a = array_merge($a, $b);
 	/* this will clobber any same-keyed elements in the $a array (initialized
 	at the top of the screen. */
@@ -121,7 +145,7 @@ function vc_duration($start_time, $hours) {
 	if (!pika_authorize('read_act', $a))
 	{
 		// set up template, then display page
-		$plTemplate["page_title"] = "Case: {$num}";
+		$plTemplate["page_title"] = 'Access Denied';
 		$plTemplate["content"] = 'access denied';
 		
 		echo pl_template($plTemplate, 'templates/default.html');

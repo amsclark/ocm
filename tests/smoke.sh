@@ -10016,6 +10016,144 @@ else
 	rm -f "$CSP_HEADERS"
 fi
 
+# ---------------------------------------------------------------------------
+# 68. cms/ops/vcal.php, and the generic error page on a page that bootstraps
+# through pika_cms.php.
+#
+# Two separate defects, found together.
+#
+# a) vcal.php read act_id from nowhere. Its MAIN CODE block called
+#    $pk->fetchActivity("$act_id") on a variable that the file never
+#    assigned, so every request to the vCalendar export ended in a fatal and
+#    the client got HTTP 500 with a zero-length body. The export had been
+#    dead for years.
+#
+# b) template_plugins/pika_error.php required pikaSettings.php, pikaAuth.php
+#    and pikaAuthHttp.php by bare name. Those three live in cms/app/lib.
+#    pika_init() in pika-danio.php puts ./app/lib on the include_path, but
+#    pika_cms.php puts only ./app/extralib on it. So on the nine pages that
+#    bootstrap through pika_cms.php the error page fatalled while rendering
+#    the error, and the generic error page added in the exception-handler
+#    work never appeared: the client got a bare Apache 500 instead.
+#
+# (b) is the one that hides every other failure, so it is checked first and
+# statically -- a request cannot prove it once (a) is fixed, and this suite
+# does not write files into the application tree.
+echo
+echo "== 68. the vCalendar export and the error page's own includes =="
+
+PIKA_ERROR_SRC="cms/template_plugins/pika_error.php"
+
+if [ -f "$PIKA_ERROR_SRC" ]; then
+	if grep -qE "require_once\('(pikaSettings|pikaAuth|pikaAuthHttp)\.php'\)" "$PIKA_ERROR_SRC"; then
+		bad "THE ERROR PAGE STILL REQUIRES app/lib FILES BY BARE NAME; it will fatal on every pika_cms.php page"
+	else
+		ok "the error page does not require app/lib files by bare name"
+	fi
+
+	if grep -q "require_once(__DIR__ . '/../app/lib/pikaSettings.php')" "$PIKA_ERROR_SRC"; then
+		ok "the error page resolves pikaSettings.php from its own directory"
+	else
+		bad "the error page no longer resolves pikaSettings.php from its own directory"
+	fi
+else
+	printf '  skip the error-page include check (source tree not present)\n'
+fi
+
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	VC_ID=""
+
+	cleanup_vc() {
+		if [ -n "${VC_ID:-}" ]; then
+			adb "DELETE FROM activities WHERE act_id = ${VC_ID}" >/dev/null 2>&1
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_vc' EXIT
+
+	VC_ID="$(adb "SELECT COALESCE(MAX(act_id),0)+1 FROM activities")"
+
+	if [ -z "$VC_ID" ]; then
+		bad "could not seed an activity fixture for the vCalendar export"
+	else
+		adb "INSERT INTO activities
+			(act_id, act_date, act_time, act_end_time, hours, completed,
+			 act_type, case_id, user_id, summary, notes)
+			VALUES (${VC_ID}, '2026-09-14', '09:00:00', '10:00:00', 1.00, 0,
+			 'C', NULL, 1, 'ZZVCAL smoke export', 'ZZVCALNOTE')" >/dev/null 2>&1
+
+		: > "$COOKIES"
+		curl -s --max-time 30 -c "$COOKIES" -o /dev/null "$OCM_URL/index.php"
+		curl -s --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
+			-X POST -d "login_user=admin&login_pass=${OCM_PASSWORD}&auth_id=1" \
+			"$OCM_URL/index.php"
+
+		# 68a. A real activity exports a vCalendar.
+		vc_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-w '%{http_code}' "$OCM_URL/ops/vcal.php?act_id=${VC_ID}")"
+
+		if [ "$vc_code" != "200" ]; then
+			bad "the vCalendar export answered HTTP ${vc_code} for a real activity"
+		elif ! grep -q 'BEGIN:VCALENDAR' "$BODY"; then
+			bad "THE VCALENDAR EXPORT RETURNED NO CALENDAR (act_id is unread again)"
+		elif ! grep -q 'ZZVCAL smoke export' "$BODY"; then
+			bad "the exported calendar does not carry the activity's summary"
+		else
+			ok "the vCalendar export returns the named activity"
+		fi
+
+		# 68b. It must not be servable without act_id, and must not fatal.
+		for vc_q in "" "?act_id=abc" "?act_id=999999999"; do
+			vc_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+				-w '%{http_code}' "$OCM_URL/ops/vcal.php${vc_q}")"
+			vc_size="$(wc -c < "$BODY" | tr -d ' ')"
+
+			if [ "$vc_code" = "500" ] && [ "$vc_size" -lt 600 ]; then
+				bad "vcal.php${vc_q} is a bare fatal again (HTTP 500, ${vc_size} bytes)"
+			elif grep -q 'BEGIN:VCALENDAR' "$BODY"; then
+				bad "vcal.php${vc_q} EXPORTED A CALENDAR for no valid activity"
+			else
+				ok "vcal.php${vc_q} refuses without exporting and without fatalling"
+			fi
+		done
+
+		# 68c. A quoted value must not reach fetchActivity(), which
+		# interpolates act_id into its WHERE clause with no escaping.
+		vc_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-w '%{http_code}' "$OCM_URL/ops/vcal.php?act_id=1%27%20OR%20%271%27%3D%271")"
+
+		if grep -q 'BEGIN:VCALENDAR' "$BODY"; then
+			bad "A QUOTED act_id REACHED THE QUERY AND EXPORTED AN ACTIVITY"
+		elif [ "$vc_code" = "500" ]; then
+			bad "a quoted act_id reached the query and threw (HTTP 500)"
+		else
+			ok "a quoted act_id is dropped before the query"
+		fi
+
+		# 68d. Every page that bootstraps through pika_cms.php must serve a
+		# body. A zero-length 500 from any of them is the (b) failure again.
+		for vc_page in system-ops.php cal_week.php cal_day.php assign_atty.php \
+			legacy_report.php dataops.php helpdocs/elig_guide.php \
+			reports/conflict/conflict.php ops/vcal.php
+		do
+			vc_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+				-w '%{http_code}' "$OCM_URL/${vc_page}")"
+			vc_size="$(wc -c < "$BODY" | tr -d ' ')"
+
+			if [ "$vc_code" = "500" ] && [ "$vc_size" -lt 600 ]; then
+				bad "${vc_page} serves a bare fatal (HTTP 500, ${vc_size} bytes)"
+			else
+				ok "${vc_page} serves a body (HTTP ${vc_code}, ${vc_size} bytes)"
+			fi
+		done
+	fi
+
+	cleanup_vc
+	VC_ID=""
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the vCalendar export checks (needs the database)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

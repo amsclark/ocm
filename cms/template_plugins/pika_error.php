@@ -75,9 +75,17 @@ function pika_error($errno = null, $errstr = null, $errfile = null, $errline = n
 		$a['REQUEST_URI'] = '';
 	}
 
-	require_once('pikaSettings.php');
-	require_once('pikaAuth.php');
-	require_once('pikaAuthHttp.php');
+	/*	These three live in cms/app/lib. Resolve them from this file's own
+		location instead of the include_path: pika_init() in pika-danio.php
+		puts ./app/lib on the include_path, but pika_cms.php puts only
+		./app/extralib on it. So on a page that bootstraps through
+		pika_cms.php the plain require_once() below failed, this error page
+		fatalled while rendering the error, and the client got a bare
+		HTTP 500 with an empty body instead of the generic error page.
+	*/
+	require_once(__DIR__ . '/../app/lib/pikaSettings.php');
+	require_once(__DIR__ . '/../app/lib/pikaAuth.php');
+	require_once(__DIR__ . '/../app/lib/pikaAuthHttp.php');
 	$settings = pikaSettings::getInstance();
 	
 	// Verify the user is logged into pika
