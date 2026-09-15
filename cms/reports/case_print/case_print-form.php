@@ -119,13 +119,36 @@ $pba_array = $pk->fetchPbAttorneyArray();
 $tmpstaff = $pk->fetchStaffArray();
 
 
+/*	DBResult::fetchRow() returns null when the query matched no rows, and
+	array_merge() has rejected null as a TypeError since PHP 8. Both reads
+	below can come back empty, so printing those cases was a fatal rather than
+	a report.
+
+	The two are not the same kind of empty. A case_id naming no case is a
+	bad request; there is nothing to print and every field stays blank. A
+	case with no client is ordinary -- client_id is 0 on an unassigned
+	case, and the contact it names can have been deleted since -- so that
+	report still runs, on whatever the case row itself holds.
+
+	Neither is guarded by anything earlier in the file: $case_id arrives
+	straight from pl_grab_var() at the top and is not checked against the
+	cases table before this point.
+*/
 $result = $pk->fetchCase($case_id);
 $a = DBResult::fetchRow($result);
 
-$result = $pk->fetchContact($a['client_id']);
+if (!is_array($a))
+{
+	$a = array();
+}
+
+$result = $pk->fetchContact($a['client_id'] ?? '');
 $b = DBResult::fetchRow($result);
 
-$a = array_merge($a, $b);
+if (is_array($b))
+{
+	$a = array_merge($a, $b);
+}
 
 
 // AMW - Begin of LSC 2008 CSR section.
