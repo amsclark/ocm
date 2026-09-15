@@ -1,0 +1,349 @@
+# A sink model for this application.
+#
+# Every scanner pointed at this repository reported the PHP clean, and none of
+# them was looking at it. Snyk and Trivy scan dependencies and the image.
+# CodeQL has no PHP analyzer. The stock PHP rulesets look for mysqli_query(),
+# PDO::query() and echo -- none of which this codebase calls at an application
+# page. SQL goes through DB::query(), which escapes nothing. Output goes through
+# a template layer that substitutes values into markup untouched. A scanner
+# that does not know those names cannot find an injection here however bad the
+# code is.
+#
+# So the names are written down, once, here. Every source, sink and sanitizer
+# below was read out of its definition in cms/app/lib or cms/app/extralib/lib,
+# not guessed, and every rule has annotated positive and negative cases in
+# ocm-sinks.php beside this file. `semgrep --test --config .semgrep .semgrep`
+# runs them; CI runs that before it runs the scan, because a rule that has
+# silently stopped matching is worse than no rule -- it reports success.
+#
+# When you add a helper that takes SQL, emits markup, opens a path or runs a
+# command, add it here. A missing entry is not a false negative anyone notices.
+
+rules:
+  # -------------------------------------------------------------------------
+  # SQL. DB::query() hands its argument to mysqli_query() unchanged
+  # (cms/app/lib/DB.php:106). pl_query() is a thin wrapper around it
+  # (cms/app/extralib/lib/pl-legacy.php:97). DB::escapeString() is the only
+  # escaping primitive in the class, and DB::preparedQuery() is the only
+  # binding one.
+  # -------------------------------------------------------------------------
+  - id: ocm-sql-injection
+    languages: [php]
+    severity: ERROR
+    mode: taint
+    message: >-
+      A request value reaches DB::query(), which passes its argument to
+      mysqli_query() unchanged. Bind it with DB::preparedQuery(), escape it
+      with DB::escapeString(), or read it in a mode that cannot carry a quote
+      (pl_grab_get($n, $d, 'number')).
+    metadata:
+      category: security
+      technology: [php]
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+      confidence: HIGH
+      references:
+        - https://cwe.mitre.org/data/definitions/89.html
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: pl_grab_get(...)
+          - pattern: pl_grab_post(...)
+          - pattern: pl_grab_var(...)
+    pattern-sanitizers:
+      # mysqli_real_escape_string, under this application's name for it.
+      - pattern: DB::escapeString(...)
+      - pattern: mysqli_real_escape_string(...)
+      # A number cannot carry a quote.
+      - pattern: (int) $X
+      - pattern: (float) $X
+      - pattern: intval(...)
+      - pattern: floatval(...)
+      # pl_clean_form_input() in 'number' mode replaces a non-numeric value
+      # with null, and in 'boolean' mode with 0 or 1, so a value read that way
+      # is safe (cms/app/lib/pl.php:989). 'text' is NOT in this list: it
+      # converts < and > and nothing else -- quotes pass straight through.
+      - pattern: pl_grab_get($N, $D, 'number')
+      - pattern: pl_grab_post($N, $D, 'number')
+      - pattern: pl_grab_get($N, $D, 'boolean')
+      - pattern: pl_grab_post($N, $D, 'boolean')
+      # Identifier and ORDER BY allowlists, fail-closed
+      # (cms/app/lib/pl.php:3267, :3375, :3395).
+      - pattern: pl_safe_identifier(...)
+      - pattern: pl_safe_order_by(...)
+      - pattern: pl_safe_sort_direction(...)
+      # An operator allowlist, fail-closed (cms/app/lib/pl.php).
+      - pattern: pl_safe_comparison_operator(...)
+      # pl_process_comma_vals() (cms/app/lib/pl.php:5806) splits a
+      # comma-separated string, escapes each piece with DB::escapeString() and
+      # returns a quoted, parenthesised list -- ('a','b') -- or false for an
+      # empty set. It is the one helper in this application that is safe to
+      # interpolate WITHOUT quotes of your own: write "IN $x", never "IN ($x)"
+      # and never "IN '$x'".
+      - pattern: pl_process_comma_vals(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: DB::query($SQL)
+              - pattern: pl_query($SQL)
+          # A statement written entirely as a literal cannot be injected into.
+          - pattern-not: DB::query("...")
+          - pattern-not: pl_query("...")
+
+  # -------------------------------------------------------------------------
+  # HTML.
+  #
+  # There is no rule on addRow(). Two classes define it and they differ:
+  # plFlexList::addRow() (cms/app/lib/plFlexList.php:93) runs every value
+  # through pl_clean_html_array() before templating it, while plTable::addRow()
+  # stores the value and plTable::draw() writes it into the <td> untouched, by
+  # documented contract (cms/app/extralib/lib/plTable.php:15-33, :270).
+  # semgrep cannot tell which class a $variable holds in PHP, so a rule on the
+  # bare method name reports every call on the escaping class -- 22 of them in
+  # this tree, all safe -- and is worth nothing.
+  #
+  # So the sinks named here are the ones whose name alone says the value is
+  # written raw: addHtmlRow(), which only plFlexList defines and which exists
+  # precisely to skip the escaping its sibling does, and pl_template_sub(),
+  # which substitutes into markup without encoding (cms/app/lib/pl.php:4971).
+  #
+  # A cell value on a plTable is markup on purpose, so escaping it at the
+  # library would break every caller that builds a link or a checkbox. If you
+  # want that sink covered, the fix is in the application, not here: give
+  # plTable an escaping addRow() and a separate addHtmlRow() the way
+  # plFlexList has, then add the raw one to this rule.
+  # -------------------------------------------------------------------------
+  - id: ocm-xss-raw-html
+    languages: [php]
+    severity: ERROR
+    mode: taint
+    message: >-
+      A request value reaches a sink that writes it into the page without
+      encoding it. Wrap it in pl_html_escape(), or pl_html_text() if it is a
+      free-text field that should keep its line breaks.
+    metadata:
+      category: security
+      technology: [php]
+      cwe: "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+      confidence: MEDIUM
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: pl_grab_get(...)
+          - pattern: pl_grab_post(...)
+          - pattern: pl_grab_var(...)
+    pattern-sanitizers:
+      # htmlspecialchars with ENT_QUOTES (cms/app/lib/pl.php:1527).
+      - pattern: pl_html_escape(...)
+      - pattern: pl_html_escape_label(...)
+      - pattern: pl_clean_html(...)
+      - pattern: pl_clean_html_array(...)
+      - pattern: pl_html_text(...)
+      - pattern: pl_html_text_array(...)
+      - pattern: pl_js_escape(...)
+      - pattern: htmlspecialchars(...)
+      - pattern: htmlentities(...)
+      - pattern: urlencode(...)
+      - pattern: rawurlencode(...)
+      # A number cannot carry a tag.
+      - pattern: (int) $X
+      - pattern: intval(...)
+      - pattern: pl_grab_get($N, $D, 'number')
+      - pattern: pl_grab_post($N, $D, 'number')
+    pattern-sinks:
+      # focus-metavariable, so only the ARGUMENT counts. Without it semgrep
+      # treats "$list->page_offset = $tainted" as tainting $list itself, and
+      # then every method called on $list is a finding -- five list pages that
+      # already escape their rows were reported that way, purely because the
+      # pagination offset or the sort direction came from the query string. A
+      # tainted receiver is not a tainted cell.
+      - patterns:
+          - pattern: $T->addHtmlRow($ARG)
+          - focus-metavariable: $ARG
+      - patterns:
+          - pattern: pl_template_sub($TPL, $VARS)
+          - focus-metavariable: $VARS
+
+  # -------------------------------------------------------------------------
+  # Paths. include/require with a value that came from the request is remote or
+  # local file inclusion. pl_clean_file_name() and pl_clean_file_path() are the
+  # application's path sanitizers (cms/app/lib/pl.php:932, :956).
+  # -------------------------------------------------------------------------
+  - id: ocm-file-inclusion
+    languages: [php]
+    severity: ERROR
+    mode: taint
+    message: >-
+      A request value reaches include/require. Run it through
+      pl_clean_file_path() or pl_clean_file_name(), or -- better -- select the
+      file from a fixed list rather than building its path.
+    metadata:
+      category: security
+      technology: [php]
+      cwe: "CWE-98: Improper Control of Filename for Include/Require Statement in PHP Program"
+      confidence: HIGH
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: pl_grab_get(...)
+          - pattern: pl_grab_post(...)
+          - pattern: pl_grab_var(...)
+    pattern-sanitizers:
+      - pattern: pl_clean_file_name(...)
+      - pattern: pl_clean_file_path(...)
+      - pattern: pl_clean_path_chars(...)
+      - pattern: pl_safe_js_file_name(...)
+      - pattern: basename(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: include $X
+          - pattern: include_once $X
+          - pattern: require $X
+          - pattern: require_once $X
+
+  # -------------------------------------------------------------------------
+  # Commands. The codebase shells out to cat, strings, pdftotext and pdftk. An
+  # argument built from the request and not passed through escapeshellarg() is
+  # a command injection.
+  # -------------------------------------------------------------------------
+  - id: ocm-command-injection
+    languages: [php]
+    severity: ERROR
+    mode: taint
+    message: >-
+      A request value reaches a command line. Wrap it in escapeshellarg(), or
+      reduce it to a bare file name with pl_clean_file_name() first.
+    metadata:
+      category: security
+      technology: [php]
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+      confidence: HIGH
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: pl_grab_get(...)
+          - pattern: pl_grab_post(...)
+          - pattern: pl_grab_var(...)
+    pattern-sanitizers:
+      - pattern: escapeshellarg(...)
+      - pattern: escapeshellcmd(...)
+      - pattern: pl_clean_file_name(...)
+      - pattern: pl_clean_file_path(...)
+      - pattern: pl_clean_path_chars(...)
+      - pattern: (int) $X
+      - pattern: intval(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: exec(...)
+          - pattern: shell_exec(...)
+          - pattern: system(...)
+          - pattern: passthru(...)
+          - pattern: proc_open(...)
+          - pattern: popen(...)
+
+  # -------------------------------------------------------------------------
+  # Redirects.
+  #
+  # This is NOT a response-splitting rule. PHP has rejected a CR or an LF in a
+  # header value since 5.1.2, so a request value interpolated into the query
+  # string of a Location -- which this codebase does about eighty times, always
+  # as "{$base_url}/page.php?id={$id}" -- cannot start a second header. A rule
+  # on header() with any tainted argument reports all eighty and finds nothing.
+  #
+  # What is still possible is an open redirect: a Location whose whole URL came
+  # from the request, so the attacker chooses the host. That is what the sink
+  # shapes below match, and only that -- the tainted value has to BE the URL,
+  # not appear inside one that starts with a literal of our own.
+  # -------------------------------------------------------------------------
+  - id: ocm-open-redirect
+    languages: [php]
+    severity: ERROR
+    mode: taint
+    message: >-
+      The whole redirect target comes from the request, so the caller chooses
+      the host. Redirect to a path you build yourself, or check the value
+      against the installation's own base_url before using it.
+    metadata:
+      category: security
+      technology: [php]
+      cwe: "CWE-601: URL Redirection to Untrusted Site ('Open Redirect')"
+      confidence: MEDIUM
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: pl_grab_get(...)
+          - pattern: pl_grab_post(...)
+          - pattern: pl_grab_var(...)
+    pattern-sanitizers:
+      - pattern: (int) $X
+      - pattern: intval(...)
+      - pattern: pl_safe_identifier(...)
+      # A percent-encoded value cannot end the URL it sits in, so it cannot
+      # introduce a host: no ":", "/", "?" or "#" survives encoding. This is
+      # how cms/ops/update_activity.php builds its lock-error redirect -- a
+      # base_url of ours, then encoded parameters -- and the rule reported it
+      # because the finished URL is held in one variable.
+      - pattern: urlencode(...)
+      - pattern: rawurlencode(...)
+    pattern-sinks:
+      # The shape is matched on the argument's source text, because a pattern
+      # written as header("Location: $URL") does not match PHP interpolation.
+      #
+      # The regex accepts a Location whose value is the literal "Location:"
+      # and then nothing but one variable, to the end of the argument:
+      #
+      #   header("Location: $next")            matched
+      #   header("Location: {$next}")          matched
+      #   header('Location: ' . $next)         matched
+      #
+      # and rejects one that continues with a path of our own, which is every
+      # redirect in this tree:
+      #
+      #   header("Location: {$base_url}/case.php?case_id={$case_id}")   quiet
+      #   header('Location: ' . $base_url . '/case.php')                quiet
+      - patterns:
+          - pattern: header($ARG)
+          - metavariable-regex:
+              metavariable: $ARG
+              regex: '^["'']Location:\s*(\{?\$[A-Za-z_]\w*\}?["'']|["'']\s*\.\s*\$[A-Za-z_]\w*)$'
+
+  # -------------------------------------------------------------------------
+  # unserialize() on anything an attacker can reach is object injection: the
+  # deserializer runs __wakeup() and __destruct() on classes it is given.
+  # allowed_classes => false turns that off. cms/services/transfer_case.php
+  # already passes it; this rule keeps every other call site honest. Not a
+  # taint rule -- the option is either there or it is not.
+  # -------------------------------------------------------------------------
+  - id: ocm-unserialize-without-allowed-classes
+    languages: [php]
+    severity: WARNING
+    message: >-
+      unserialize() without array('allowed_classes' => false) will instantiate
+      whatever classes the serialized data names, and run their __wakeup() and
+      __destruct(). Pass the option, or use json_decode() for data that came
+      from outside this process.
+    metadata:
+      category: security
+      technology: [php]
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      confidence: MEDIUM
+    patterns:
+      - pattern: unserialize($DATA, ...)
+      - pattern-not: unserialize($DATA, array('allowed_classes' => false, ...))
+      - pattern-not: unserialize($DATA, array('allowed_classes' => array(), ...))
+      - pattern-not: unserialize($DATA, ['allowed_classes' => false, ...])
+      - pattern-not: unserialize($DATA, ['allowed_classes' => array(), ...])

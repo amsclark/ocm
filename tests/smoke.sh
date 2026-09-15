@@ -12152,6 +12152,213 @@ then
 	rm -f "$SM79_JAR" "$SM79_A" "$SM79_B"
 fi
 
+# ---------------------------------------------------------------------------
+# 80. The custom semgrep ruleset exists, is wired into CI, and is tested.
+#
+# No scanner on this repository could see a SQL injection or an XSS in the PHP
+# until .semgrep/ocm-sinks.yml existed. A stock PHP ruleset looks for
+# mysqli_query() and echo; this application calls neither. SQL goes through
+# DB::query(), which escapes nothing, and page output goes through the template
+# layer. CodeQL cannot help at all -- it has no PHP analyzer -- so every scan
+# reported a clean codebase no matter what was in it.
+#
+# A ruleset that has silently stopped matching is worse than no ruleset,
+# because it reports success. So the rules carry their own annotated positive
+# and negative cases in .semgrep/ocm-sinks.php, and the workflow runs those
+# tests BEFORE it scans the application.
+#
+# This section is the source census for all of that. It cannot run semgrep --
+# that is the workflow's job -- but it can assert the parts are present and in
+# step with each other: every rule has a test case, every test case names a
+# real rule, every sink this application actually has is named, and the
+# workflow still fails the build on a finding rather than only reporting one.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 80. the custom semgrep ruleset is present and tested =="
+
+sm80_yml='.semgrep/ocm-sinks.yml'
+sm80_php='.semgrep/ocm-sinks.php'
+sm80_wf='.github/workflows/semgrep.yml'
+
+# 80a. The three files.
+sm80_files=0
+for sm80_f in "$sm80_yml" "$sm80_php" "$sm80_wf"
+do
+	[ -f "$sm80_f" ] && sm80_files=$((sm80_files + 1))
+done
+
+if [ "$sm80_files" -eq 3 ]
+then
+	ok "ruleset, its test fixture and its workflow are all present"
+else
+	bad "expected 3 semgrep files, found $sm80_files"
+fi
+
+if [ -f "$sm80_yml" ] && [ -f "$sm80_php" ] && [ -f "$sm80_wf" ]
+then
+	# 80b. Every rule in the ruleset has a positive test case in the fixture,
+	# and every rule id the fixture names is a rule that exists. The
+	# annotations are semgrep's own; they are assembled here rather than
+	# written out so that a scan of this tree does not read them as its own.
+	sm80_rid="rule""id:"
+	sm80_neg="o""k:"
+	sm80_ids="$(grep -oE '^  - id: [A-Za-z0-9-]+$' "$sm80_yml" | sed 's/^  - id: //' | sort -u)"
+	sm80_n_ids="$(printf '%s\n' "$sm80_ids" | grep -c .)"
+
+	if [ "$sm80_n_ids" -ge 6 ]
+	then
+		ok "ruleset declares $sm80_n_ids rules"
+	else
+		bad "ruleset declares $sm80_n_ids rules, expected at least 6"
+	fi
+
+	sm80_untested=''
+	sm80_unnegated=''
+
+	for sm80_id in $sm80_ids
+	do
+		grep -qF -e "$sm80_rid $sm80_id" "$sm80_php" \
+			|| sm80_untested="$sm80_untested $sm80_id"
+		grep -qF -e "$sm80_neg $sm80_id" "$sm80_php" \
+			|| sm80_unnegated="$sm80_unnegated $sm80_id"
+	done
+
+	if [ -z "$sm80_untested" ]
+	then
+		ok "every rule has a positive test case in the fixture"
+	else
+		bad "rules with no positive test case:$sm80_untested"
+	fi
+
+	# The negative cases are what stop a rule being widened until it flags
+	# every query in the tree and gets switched off. A rule with only
+	# positive cases can be made to match anything and still pass.
+	if [ -z "$sm80_unnegated" ]
+	then
+		ok "every rule has a negative test case in the fixture"
+	else
+		bad "rules with no negative test case:$sm80_unnegated"
+	fi
+
+	sm80_orphans=''
+
+	for sm80_ann in $(grep -oE "(rule|o)(id|k): [A-Za-z0-9-]+" "$sm80_php" \
+		| sed 's/^[A-Za-z]*: //' | sort -u)
+	do
+		printf '%s\n' "$sm80_ids" | grep -qxF -e "$sm80_ann" \
+			|| sm80_orphans="$sm80_orphans $sm80_ann"
+	done
+
+	if [ -z "$sm80_orphans" ]
+	then
+		ok "every rule id the fixture names is a rule that exists"
+	else
+		bad "fixture names rules that do not exist:$sm80_orphans"
+	fi
+
+	# 80c. The sinks this application actually has. Each of these names is the
+	# reason the ruleset exists: a stock ruleset knows none of them, so if one
+	# is dropped from the ruleset the scan goes quiet about a whole class of
+	# defect while still reporting success.
+	sm80_missing=''
+
+	for sm80_sink in 'DB::query' 'pl_query' 'addHtmlRow' 'pl_template_sub' \
+		'unserialize' 'header'
+	do
+		grep -qF -e "$sm80_sink" "$sm80_yml" \
+			|| sm80_missing="$sm80_missing $sm80_sink"
+	done
+
+	if [ -z "$sm80_missing" ]
+	then
+		ok "all six application sinks are named in the ruleset"
+	else
+		bad "sinks missing from the ruleset:$sm80_missing"
+	fi
+
+	# The sanitisers are the other half. DB::escapeString() is deliberately
+	# NOT enough on its own in this application -- it does nothing in an
+	# unquoted slot -- which is why pl_safe_identifier(),
+	# pl_safe_sort_direction(), pl_safe_comparison_operator() and
+	# pl_process_comma_vals() have to be known to the rules as well, or every
+	# report that uses them correctly is reported as a defect and the ruleset
+	# gets turned off.
+	sm80_missing_san=''
+
+	for sm80_san in 'pl_safe_identifier' 'pl_safe_sort_direction' \
+		'pl_safe_comparison_operator' 'pl_process_comma_vals' \
+		'pl_clean_html_array' 'pl_html_escape'
+	do
+		grep -qF -e "$sm80_san" "$sm80_yml" \
+			|| sm80_missing_san="$sm80_missing_san $sm80_san"
+	done
+
+	if [ -z "$sm80_missing_san" ]
+	then
+		ok "all six application sanitisers are named in the ruleset"
+	else
+		bad "sanitisers missing from the ruleset:$sm80_missing_san"
+	fi
+
+	# 80d. Those sanitisers have to exist in the application too. A rule that
+	# names a helper nobody defines silently stops clearing taint the day the
+	# helper is renamed, and the scan fills with findings on correct code.
+	sm80_missing_fn=''
+
+	for sm80_fn in 'pl_safe_identifier' 'pl_safe_sort_direction' \
+		'pl_safe_order_by' 'pl_safe_comparison_operator' \
+		'pl_process_comma_vals' 'pl_clean_html_array'
+	do
+		grep -qrF -e "function $sm80_fn(" cms/app/lib/pl.php \
+			|| sm80_missing_fn="$sm80_missing_fn $sm80_fn"
+	done
+
+	if [ -z "$sm80_missing_fn" ]
+	then
+		ok "every sanitiser the ruleset names is defined in pl.php"
+	else
+		bad "sanitisers named by the ruleset but not defined:$sm80_missing_fn"
+	fi
+
+	# 80e. The workflow. The tests must run, the scan must cover both
+	# application trees, and a finding must fail the build -- a workflow that
+	# only uploads SARIF is a workflow nobody reads.
+	if grep -qF -e '--test' "$sm80_wf"
+	then
+		ok "the workflow runs the ruleset's own tests"
+	else
+		bad "the workflow does not run the ruleset's own tests"
+	fi
+
+	if grep -qF -e 'cms cms-custom' "$sm80_wf"
+	then
+		ok "the workflow scans both cms and cms-custom"
+	else
+		bad "the workflow does not scan both application trees"
+	fi
+
+	if grep -qF -e 'exit 1' "$sm80_wf"
+	then
+		ok "the workflow fails the build on a finding"
+	else
+		bad "the workflow does not fail the build on a finding"
+	fi
+
+	# 80f. CodeQL must not claim to cover the PHP. It cannot: there is no PHP
+	# analyzer. A language list that named php would have made every one of
+	# these rules look redundant.
+	if [ -f .github/workflows/codeql.yml ]
+	then
+		if grep -qF -e "'php'" .github/workflows/codeql.yml
+		then
+			bad "codeql.yml claims a php analyzer, which does not exist"
+		else
+			ok "codeql.yml does not claim to analyse php"
+		fi
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

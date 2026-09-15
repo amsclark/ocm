@@ -1,0 +1,80 @@
+name: semgrep
+
+# Static analysis of the PHP, against a ruleset that knows THIS application's
+# sinks.
+#
+# Why a custom ruleset and not a stock one. A stock PHP ruleset looks for
+# mysqli_query() and echo. This application calls neither: SQL goes through
+# DB::query(), which escapes nothing, and HTML goes through the template layer.
+# A scanner that does not know those names reports a clean codebase no matter
+# what is in it -- which is what every scanner on this repository did until this
+# ruleset existed. CodeQL cannot help either: it has no PHP analyzer at all.
+#
+# The rules live in .semgrep/ocm-sinks.yml and carry their own unit tests in
+# .semgrep/ocm-sinks.php, run first below. A rule that has silently stopped
+# matching is worse than no rule, because it reports success.
+
+on:
+  push:
+    branches: [master, 'backport/**']
+  pull_request:
+  schedule:
+    # Monday, 04:17 UTC. A scheduled run catches a rule that broke on a
+    # semgrep upgrade rather than on a change to this repository.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      security-events: write
+
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The rules first. Every rule in the ruleset has annotated positive and
+      # negative cases in .semgrep/ocm-sinks.php; this asserts each one still
+      # fires where it should and stays quiet where it should not.
+      - name: the ruleset's own tests
+        run: semgrep --metrics=off --test --config .semgrep .semgrep
+
+      - name: scan the application
+        run: |
+          semgrep scan --metrics=off \
+            --config .semgrep/ocm-sinks.yml \
+            --sarif --output semgrep.sarif \
+            cms cms-custom
+
+      # Uploaded even when the gate below fails, so the finding is readable in
+      # the Security tab and not only in this log.
+      - name: upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: fail on any finding
+        if: always()
+        run: |
+          n="$(python3 -c "
+          import json
+          with open('semgrep.sarif') as f:
+              s = json.load(f)
+          print(sum(len(r.get('results', [])) for r in s.get('runs', [])))
+          ")"
+          echo "semgrep findings: $n"
+          if [ "$n" != "0" ]; then
+            echo "::error::semgrep found $n issue(s); see the Security tab or the scan step above"
+            exit 1
+          fi
