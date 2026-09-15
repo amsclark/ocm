@@ -12417,10 +12417,13 @@ fi
 # this one survived: the query was safe and the link was not.
 #
 # The check needs a pager on the screen, and a pager only appears when the list
-# holds more rows than one page. So it drops the acting user's page size to 1
-# for the length of the section and puts it back afterwards. The page size is
-# read from users.session_data on every request, not from the session, so the
-# value has to be changed in the database for the change to be seen.
+# holds more rows than one page. So the section does two things and undoes both
+# afterwards: it drops the acting user's page size to 1, and it adds two cases
+# of its own. The page size is read from users.session_data on every request,
+# not from the session, so it has to be changed in the database to be seen. The
+# cases are added rather than assumed because a freshly installed stack holds
+# fewer cases than one page, and on one of those the section would otherwise
+# skip itself and guard nothing.
 #
 # Both halves are asserted: no break-out, AND the value present in the url in
 # percent-encoded form. Without the second assertion the section would pass on
@@ -12454,6 +12457,12 @@ else
 	}
 
 	fx_restore() {
+		# Only the two rows this section inserted, addressed by the ids it
+		# chose, so nothing that was already in the table can be caught.
+		if [ -n "${fx_c1:-}" ]
+		then
+			adb "DELETE FROM cases WHERE case_id IN (${fx_c1}, ${fx_c2})" >/dev/null
+		fi
 		if [ -z "$fx_sd" ]
 		then
 			adb "UPDATE users SET session_data=NULL WHERE user_id=${fx_uid}" >/dev/null
@@ -12468,6 +12477,27 @@ else
 		printf '  skip section 81 (could not rewrite the page size)\n'
 	else
 		adb "UPDATE users SET session_data=UNHEX('${fx_small}') WHERE user_id=${fx_uid}" >/dev/null
+
+		# Two cases of this section's own, above whatever ids are in use, so
+		# the list is longer than the one row a page now holds. cases.case_id
+		# is a plain int primary key and not auto-increment, so the id has to
+		# be supplied here; leaving it out gives both rows id 0 and the second
+		# one is silently dropped.
+		fx_max="$(adb "SELECT COALESCE(MAX(case_id),0) FROM cases")"
+		case "$fx_max" in
+			''|*[!0-9]*) fx_max='' ;;
+		esac
+		if [ -n "$fx_max" ]
+		then
+			fx_c1=$((fx_max + 1))
+			fx_c2=$((fx_max + 2))
+			adb "INSERT INTO cases (case_id, number, user_id, office, status)
+			VALUES (${fx_c1}, 'ZZ-FLEX-1', ${fx_uid}, NULL, '1'),
+			(${fx_c2}, 'ZZ-FLEX-2', ${fx_uid}, NULL, '1')" >/dev/null
+			fx_seeded="$(adb "SELECT COUNT(*) FROM cases WHERE case_id IN (${fx_c1}, ${fx_c2})")"
+		else
+			fx_seeded=0
+		fi
 
 		# The probe. A double quote, then an event handler, in the sort column.
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
@@ -12500,8 +12530,14 @@ else
 			else
 				bad "the pager no longer carries a plain column name"
 			fi
+		elif [ "${fx_seeded:-0}" = 2 ]
+		then
+			# The rows are in the table and the page holds one row, so a pager
+			# is owed. Skipping here would let the section pass on a page that
+			# never exercised the code it is meant to guard.
+			bad "no pager on case_list.php with 2 extra cases and a page size of 1"
 		else
-			printf '  skip section 81 (no pager rendered on case_list.php)\n'
+			printf '  skip section 81 (could not add the cases a pager needs)\n'
 		fi
 
 		fx_restore
