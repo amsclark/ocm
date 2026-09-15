@@ -13,7 +13,7 @@ name: publish-image
 
 on:
   push:
-    branches: [master, feat/ghcr-publish]  # branch entry is temporary, for a test run
+    branches: [master]
     tags: ['v*']
   workflow_dispatch:
 
