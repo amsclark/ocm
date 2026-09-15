@@ -234,8 +234,8 @@ class pikaCms
 		
 		else if ($data['contact_id'] && true == $data['primary_name'])
 		{
-			$sql = "SELECT alias_id FROM aliases WHERE contact_id={$data['contact_id']} AND primary_name=1";
-			$result = DB::query($sql);
+			$sql = 'SELECT alias_id FROM aliases WHERE contact_id= ? AND primary_name=1';
+			$result = DB::preparedQuery($sql, array($data['contact_id']));
 			$row = DBResult::fetchRow($result);
 			
 			$data['alias_id'] = $row['alias_id'];
@@ -256,8 +256,8 @@ class pikaCms
 	{
 		if ($alias_id)
 		{
-			$sql = "SELECT * FROM aliases WHERE alias_id=$alias_id";
-			return DB::query($sql);
+			$sql = 'SELECT * FROM aliases WHERE alias_id= ? ';
+			return DB::preparedQuery($sql, array($alias_id));
 		}
 	}
 	
@@ -265,8 +265,8 @@ class pikaCms
 	{
 		if ($contact_id)
 		{
-			$sql = "SELECT * FROM aliases WHERE contact_id=$contact_id";
-			return DB::query($sql);
+			$sql = 'SELECT * FROM aliases WHERE contact_id= ? ';
+			return DB::preparedQuery($sql, array($contact_id));
 		}
 	}
 		
@@ -274,12 +274,14 @@ class pikaCms
 	{
 		if ($alias_id && !$contact_id)
 		{
-			DB::query("DELETE FROM aliases WHERE alias_id=$alias_id LIMIT 1");
+			DB::preparedQuery('DELETE FROM aliases WHERE alias_id= ? LIMIT 1',
+				array($alias_id));
 		}
 		
 		else if ($contact_id && !$alias_id)
 		{
-			DB::query("DELETE FROM aliases WHERE contact_id=$contact_id");
+			DB::preparedQuery('DELETE FROM aliases WHERE contact_id= ? ',
+				array($contact_id));
 		}
 		
 		return true;
@@ -316,7 +318,14 @@ class pikaCms
 		*/
 		else
 		{
-			$sql = "SELECT * FROM contacts WHERE contact_id='$contact_id'
+			/*	The two branches above build their LIKE values with
+				metaphone(), which returns letters only, so they carry
+				nothing that could end the quoted string. This one takes the
+				id from the caller, and most callers read it out of the
+				request.
+			*/
+			$sql = "SELECT * FROM contacts WHERE contact_id='"
+				. DB::escapeString($contact_id) . "'
 					LIMIT 1";
 		}
 		
@@ -328,6 +337,22 @@ class pikaCms
 	function fetchContacts($filter)
 	{
 		$sql = "SELECT contacts.* FROM aliases LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id WHERE 1";
+
+		/*	Escape every value once, here, rather than at each of the clauses
+			below. pikaMisc::getCases() takes the same approach with its own
+			filter array, and doing it in one place means a filter added later
+			cannot be the one that gets forgotten.
+		*/
+		if (is_array($filter))
+		{
+			foreach ($filter as $f_key => $f_val)
+			{
+				if (!is_array($f_val))
+				{
+					$filter[$f_key] = DB::escapeString($f_val);
+				}
+			}
+		}
 		
 		if ($filter['telephone'])
 		{
@@ -551,7 +576,7 @@ class pikaCms
 		// this should all be handled case-insensitively :)
 		$str = strtolower($str);
 		
-		$letter = substr($str, 0, 1);
+		$letter = DB::escapeString(substr($str, 0, 1));
 		
 		$vals = explode(",", $str);
 		$vals[0] = ltrim($vals[0]);
@@ -560,13 +585,21 @@ class pikaCms
 		{
 			$vals[1] = ltrim($vals[1]);
 			
+			/*	$str is the letter box on the contact list, which reaches
+				here through pl_grab_var(). That filter encodes < and >
+				and nothing else, so a quote arrives intact.
+			*/
+			$v0 = DB::escapeString($vals[0]);
+			$v1 = DB::escapeString($vals[1]);
+
 			$sql = "SELECT COUNT(*) AS 'position' FROM aliases WHERE last_name LIKE '$letter%' AND
-((last_name < '{$vals[0]}') OR (last_name <= '{$vals[0]}' AND first_name < '{$vals[1]}'))";
+((last_name < '{$v0}') OR (last_name <= '{$v0}' AND first_name < '{$v1}'))";
 		}
 		
 		else
 		{
-			$sql = "SELECT COUNT(*) AS 'position' FROM aliases WHERE last_name LIKE '$letter%' AND last_name < '{$vals[0]}'";
+			$sql = "SELECT COUNT(*) AS 'position' FROM aliases WHERE last_name LIKE '$letter%' AND last_name < '"
+				. DB::escapeString($vals[0]) . "'";
 		}
 
 		$result = DB::query($sql);
@@ -581,7 +614,7 @@ class pikaCms
 		// this should all be handled case-insensitively :)
 		$str = strtolower($str);
 		
-		$letter = substr($str, 0, 1);
+		$letter = DB::escapeString(substr($str, 0, 1));
 		
 		$vals = explode(",", $str);
 		
@@ -675,7 +708,7 @@ class pikaCms
 		$sql = "SELECT cases.*, conflict.relation_code, menu_relation_codes.label AS role
 				FROM conflict LEFT JOIN cases ON conflict.case_id=cases.case_id
 				LEFT JOIN menu_relation_codes ON conflict.relation_code=menu_relation_codes.value
-				WHERE conflict.contact_id=$contact_id ORDER BY conflict.relation_code ASC";
+				WHERE conflict.contact_id=" . (int) $contact_id . " ORDER BY conflict.relation_code ASC";
 		return DB::query($sql);
 	}
 	
@@ -683,6 +716,18 @@ class pikaCms
 	// get all contact records related to a case
 	function fetchCaseContacts($case_id, $r_type='')
 	{
+		/*	Both values go into the statement unquoted, so neither needed a
+			quote character to be read as SQL rather than as data. The
+			shortest path in is dataops.php's contact list, which grabs
+			case_id out of the query string with no filter mode at all.
+
+			conflict.case_id is int(11) and conflict.relation_code is
+			tinyint(4), so cast: a value that is not a number matches no
+			row, which is the right answer for a lookup by id.
+		*/
+		$case_id = (int) $case_id;
+		$r_type = (int) $r_type;
+
 		// sort these by order they were added to the case
 		
 		$sql = "SELECT conflict.conflict_id, conflict.relation_code, contacts.*, menu_relation_codes.label
@@ -720,8 +765,15 @@ class pikaCms
 			return FALSE;
 		}
 		*/
+		/*	The INSERT below lists these unquoted, for the same reason as
+			fetchCaseContacts() above: all four are integer columns.
+		*/
+		$case_id = (int) $case_id;
+		$contact_id = (int) $contact_id;
+		$relation_code = (int) $relation_code;
+
 		$extra_sql = '';
-		$conflict_id = pl_new_id('conflict');
+		$conflict_id = (int) pl_new_id('conflict');
 		
 		$sql = "INSERT INTO conflict
 			    (conflict_id, contact_id, case_id, relation_code) VALUES
@@ -761,17 +813,17 @@ class pikaCms
 				if ($row['birth_date'] && $row['open_date'])
 				{
 					$client_age = pl_calc_age($row['birth_date'], $row['open_date']);
-					$extra_sql .= ", client_age={$client_age}";
+					$extra_sql .= ", client_age=" . (int) $client_age;
 				}
 				
 				if ($row['zip'])
 				{
-					$extra_sql .= ", case_zip='{$row['zip']}'";
+					$extra_sql .= ", case_zip='" . DB::escapeString($row['zip']) . "'";
 				}
 				
 				if ($row['county'])
 				{
-					$extra_sql .= ", case_county='{$row['county']}'";
+					$extra_sql .= ", case_county='" . DB::escapeString($row['county']) . "'";
 				}
 				
 				DB::query("UPDATE cases SET client_id={$contact_id}{$extra_sql} WHERE case_id='$case_id' LIMIT 1");
@@ -787,7 +839,7 @@ class pikaCms
 	// removes a contact from a case
 	function deleteConflict($conflict_id, $case_id)
 	{
-		$sql = "DELETE FROM conflict WHERE conflict_id=$conflict_id LIMIT 1";
+		$sql = "DELETE FROM conflict WHERE conflict_id=" . (int) $conflict_id . " LIMIT 1";
 		$result = DB::query($sql);
 		
 		/*
@@ -886,6 +938,7 @@ class pikaCms
 	*/
 	function conflictCheck($case_id)
 	{
+		$case_id = DB::escapeString($case_id);
 		$conflict_array = array();
 		
 		$result = DB::query("SELECT contact_id, relation_code FROM conflict WHERE case_id='$case_id'");
@@ -934,6 +987,7 @@ class pikaCms
 
 	function resetConflictStatus($case_id, $reset_verification = true)
 	{
+		$case_id = DB::escapeString($case_id);
 		$tally = 0;
 		$result = DB::query("SELECT contact_id, relation_code FROM conflict WHERE case_id='$case_id'");
 		$conflict_reset_sql = '';
@@ -1238,16 +1292,23 @@ class pikaCms
 				ON conflict.case_id=cases.case_id WHERE (";
 		
 		$i = 0;
-		while (list($key, $val) = each($contact_ids))
+		/*	each() was removed in PHP 8, so this loop was a fatal error on
+			any current build. Ciprocity 9 replaced it with foreach for the
+			same reason.
+			
+			The ids were also interpolated unquoted. contacts.contact_id is
+			int(11); cast, as fetchCaseContacts() does.
+		*/
+		foreach ($contact_ids as $key => $val)
 		{
 			if (0 == $i)
 			{
-				$sql .= " contact_id=$val";
+				$sql .= " contact_id=" . (int) $val;
 			}
 			
 			else
 			{
-				$sql .= " OR contact_id=$val";
+				$sql .= " OR contact_id=" . (int) $val;
 			}
 			
 			$i++;
@@ -1324,6 +1385,8 @@ class pikaCms
 	function fetchOpenCaseList($user_id)
 	{
 		global $plFields;
+
+		$user_id = DB::escapeString($user_id);
 		
 		// Hack to get the Iowa matching funding field to work
 		$mf = '';
@@ -1556,7 +1619,7 @@ class pikaCms
 	function fetchStaff($user_id='')
 	{
 		if ($user_id)
-		$sql = "SELECT * FROM users WHERE user_id='$user_id' LIMIT 1";
+		$sql = "SELECT * FROM users WHERE user_id='" . DB::escapeString($user_id) . "' LIMIT 1";
 		else
 		$sql = "SELECT * FROM users ORDER BY last_name";
 		
@@ -1827,7 +1890,8 @@ class pikaCms
 	function setPbAttorneyLastCase($pba_id, $last_case_date)
 	{
 		$lc = pl_mogrify_date($last_case_date);
-		$sql = "UPDATE pb_attorneys SET last_case='$lc' WHERE pba_id='$pba_id' LIMIT 1";
+		$sql = "UPDATE pb_attorneys SET last_case='" . DB::escapeString($lc)
+			. "' WHERE pba_id='" . DB::escapeString($pba_id) . "' LIMIT 1";
 		DB::query($sql);
 	}
 	
@@ -1862,6 +1926,15 @@ class pikaCms
 		
 		else if ($start_date && $end_date)
 		{
+			/*	Four values, all quoted, none escaped. Escape here rather
+				than in the callers, the same choice
+				fetchActivitiesCaseClient() makes.
+			*/
+			$start_date = DB::escapeString($start_date);
+			$end_date = DB::escapeString($end_date);
+			$case_id = DB::escapeString($case_id);
+			$user_id = DB::escapeString($user_id);
+
 			$sql = "SELECT *
 		    FROM activities	
 		    WHERE act_date>='$start_date'
@@ -1888,7 +1961,7 @@ class pikaCms
 		{
 			$sql = "SELECT *
 				    FROM activities
-				    WHERE act_code='$act_code'";
+				    WHERE act_code='" . DB::escapeString($act_code) . "'";
 			return DB::query($sql);
 		}
 		
@@ -1898,6 +1971,19 @@ class pikaCms
 	function fetchActivities($filter, &$contact_count, $order_field='act_date', $order='ASC',
 	$first_row='0', $list_length='30')
 	{
+		/*	Escape every value once, here, the way fetchCaseList() and
+			fetchPbAttorney() already do with their own filter arrays, so
+			that a filter added later cannot be the one that gets
+			forgotten.
+		*/
+		foreach ($filter as $filter_key => $filter_value)
+		{
+			if (is_scalar($filter_value))
+			{
+				$filter[$filter_key] = DB::escapeString((string) $filter_value);
+			}
+		}
+
 		$sql = ' FROM activities WHERE 1';
 		
 		if (isset($filter["act_date"]) && $filter["act_date"])
@@ -1968,7 +2054,7 @@ class pikaCms
 		FROM activities 
 		LEFT JOIN cases ON activities.case_id=cases.case_id 
 		LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
-		WHERE activities.user_id=$user_id
+		WHERE activities.user_id=" . (int) $user_id . "
 		AND act_date IS NULL
 		AND completed = 0
 		ORDER BY act_id ASC LIMIT 1000";
@@ -1988,7 +2074,7 @@ class pikaCms
 		FROM activities 
 		LEFT JOIN cases ON activities.case_id=cases.case_id 
 		LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
-		WHERE activities.user_id=$user_id
+		WHERE activities.user_id=" . (int) $user_id . "
 		AND act_type = 'K'
 		AND (act_date < '$act_date' OR (act_date = '$act_date' && act_time <= '$act_time'))
 		AND completed = 0
@@ -2011,8 +2097,8 @@ class pikaCms
 		FROM activities 
 		LEFT JOIN cases ON activities.case_id=cases.case_id 
 		LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
-		WHERE activities.user_id=$user_id
-		AND act_date = '$act_date'";
+		WHERE activities.user_id=" . (int) $user_id . "
+		AND act_date = '" . DB::escapeString($act_date) . "'";
 		/*
 				AND (act_date = '$act_date' OR 
 			((repeat_period = 'D' AND DAYOFWEEK(act_date) != 1 AND DAYOFWEEK(act_date) !=7) OR
@@ -2025,7 +2111,7 @@ class pikaCms
 		not pending. */
 		if (!is_null($act_time))
 		{
-			$sql .= " AND (act_time > '$act_time' OR act_time IS NULL)";
+			$sql .= " AND (act_time > '" . DB::escapeString($act_time) . "' OR act_time IS NULL)";
 		}
 		
 		$sql .= " AND completed = 0
@@ -2072,8 +2158,8 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		FROM activities 
 		LEFT JOIN cases ON activities.case_id=cases.case_id 
 		LEFT JOIN contacts ON cases.client_id=contacts.contact_id 
-		WHERE activities.user_id=$user_id
-		AND act_date = '$act_date'
+		WHERE activities.user_id=" . (int) $user_id . "
+		AND act_date = '" . DB::escapeString($act_date) . "'
 		AND completed = 1
 		ORDER BY act_time ASC, act_id ASC LIMIT 1000";
 		return DB::query($sql);
@@ -2311,6 +2397,15 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	{
 		$a = explode(' ', $s);
 		$a_count = sizeof($a);
+
+		/*	Each word goes inside a LIKE pattern in a quoted string. The
+			search box reaches this through pl_grab_var(), so a quote
+			arrives intact.
+		*/
+		foreach ($a as $a_key => $a_val)
+		{
+			$a[$a_key] = DB::escapeString($a_val);
+		}
 		
 		$sql = "SELECT *
 			    FROM activities
@@ -2325,7 +2420,7 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	
 	function deleteActivity($act_id='')
 	{
-		$sql = "DELETE FROM activities WHERE act_id=$act_id LIMIT 1";
+		$sql = "DELETE FROM activities WHERE act_id=" . (int) $act_id . " LIMIT 1";
 		return DB::query($sql);
 	}
 	
@@ -2337,7 +2432,7 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	{
 		if ($motd_id)
 		{
-			$sql = "SELECT * FROM motd WHERE motd_id=$motd_id LIMIT 1";
+			$sql = "SELECT * FROM motd WHERE motd_id=" . (int) $motd_id . " LIMIT 1";
 			return DB::query($sql);
 		}
 		
@@ -2365,7 +2460,7 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	
 	function deleteMotd($a)
 	{
-		$result = DB::query("DELETE FROM motd WHERE motd_id=$a LIMIT 1");
+		$result = DB::query("DELETE FROM motd WHERE motd_id=" . (int) $a . " LIMIT 1");
 	}
 	
 	
@@ -2373,7 +2468,7 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	{
 		$sql = "SELECT compens.*
 						FROM compens
-						WHERE compens.case_id=$case_id";
+						WHERE compens.case_id=" . (int) $case_id;
 		return DB::query($sql);
 	}
 
@@ -2420,7 +2515,12 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		
 		$a_id = pl_new_id('survey_answers');
 		
-		$sql = "INSERT INTO survey_answers SET a_id=$a_id, q_id=$q_id, case_id=$case_id, answer='$answer'";
+		/*	$q_id and $case_id are checked as numbers above and $a_id comes
+			from pl_new_id(); the answer text is the one value that arrives
+			from the request.
+		*/
+		$sql = "INSERT INTO survey_answers SET a_id=" . (int) $a_id . ", q_id=" . (int) $q_id
+			. ", case_id=" . (int) $case_id . ", answer='" . DB::escapeString($answer) . "'";
 		
 		DB::query($sql);
 		
