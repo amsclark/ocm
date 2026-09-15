@@ -104,8 +104,18 @@ switch ($action)
 		$a['mfa_control'] = pl_mfa_admin_control($user->getValues());
 		$a['sso_control'] = pl_sso_admin_control($a);
 		
-		if($a['last_active']){
-			$a['last_active'] = date('n/d/y g:i A',$a['last_active']);
+		/*	last_active is a DATETIME, and mysqli hands every column back as a
+			string, so date() was given "2026-09-15 04:30:00" for its timestamp.
+			PHP 7 coerced that to 2026 and printed a date in 1970; PHP 8 raises a
+			TypeError, and this application turns an uncaught error into a 500,
+			so both of these pages were unreachable on any supported PHP.
+		
+			cms/system-users.php, the desktop half of this page, already reads it
+			through strtotime(). Do the same here rather than inventing a third
+			way to read one column.
+		*/
+		if(strlen((string) $a['last_active']) > 0){
+			$a['last_active'] = date('n/d/y g:i A',strtotime($a['last_active']));
 		} else {
 			$a['last_active'] = "Never logged in";
 		}
@@ -177,6 +187,20 @@ switch ($action)
 		
 		while ($row = DBResult::fetchRow($result))
 		{
+			/*	addHtmlRow() writes the row into the template with no cleaning
+				of its own, unlike addRow(). Escape the database row here, at the
+				boundary between row data and row markup: every $row read below
+				this line is already escaped, and the markup built from those
+				reads is ours.
+			
+				A user description, a username and an email address are all free
+				text an administrator can store, and the email address was
+				written into an href as well as into a cell. pl_text_name() only
+				concatenates the name parts, so it does not escape them either.
+				cms/case_list.php uses the same ordering.
+			*/
+			$row = pl_clean_html_array($row);
+			
 			$r = array();
 			$r['user_id'] = $row['user_id'];
 			$name = pikaTempLib::plugin('text_name','name',$row,array(),array("order=last"));
@@ -203,12 +227,22 @@ switch ($action)
 			$r['email'] = '<a href=mailto:' . $row["email"] . '>' . $row["email"] . '</a>';
 			$r['username'] = $row["username"];
 			
+			/*	Same DATETIME as above: read it through strtotime() once and use
+				the timestamp for both the printed date and the "active in the last
+				five minutes" test. That test compared the column directly with a
+				unix time, so on PHP 8 it compared two strings and every user who
+				had ever logged in came out bold.
+			*/
 			$r['last_active'] = "Never logged in";
-			if($row['last_active']){
-				$r['last_active'] = date('n/d/y g:i A',$row['last_active']);
+			$last_active = strtotime((string) $row['last_active']);
+			
+			if($last_active){
+				$r['last_active'] = date('n/d/y g:i A',$last_active);
 			}
+			
 			$active_value = time() - 300;
-			if ($row['last_active'] > $active_value){
+			
+			if ($last_active > $active_value){
 				$r['last_active'] = "<strong>" . $r['last_active'] . "</strong>";
 			}
 			$user_list->addHtmlRow($r);

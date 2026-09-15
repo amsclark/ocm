@@ -94,27 +94,43 @@ else if (3 == $program_filed)
 	$t->add_parameter('Show NOT Program Filed');
 	$sql .= " AND program_filed=0";
 }
-// office
-//$x = pl_process_comma_vals($office);
-$x = DB::escapeString($office);
+/*	Office and litigation status.
+
+	Both of these used to be built with DB::escapeString() -- the calls to
+	pl_process_comma_vals() were commented out and replaced with it. That
+	swapped a safe construction for an unsafe one:
+	
+	  - office is a free-text field on the form, and the clause was written as
+	    "office IN $x" with no quotes and no parentheses at all. Whatever was
+	    typed became SQL verbatim; escapeString() escapes quotes, and there
+	    were no quotes here to escape.
+	  - litigation status was joined with implode() and then escaped as one
+	    string, and the clause quoted nothing either: "lit_status IN ($x)".
+	
+	pl_process_comma_vals() is the right helper for both. It escapes each
+	value and returns a quoted, parenthesised list -- ('1','2') -- or false
+	for an empty set, which is why the clause is skipped rather than built
+	empty. The parentheses come from the helper, so the SQL below must not add
+	its own.
+*/
+$x = pl_process_comma_vals((string) $office);
 if ($x != false) 
 {
 	$t->add_parameter('Office',$office);
 	$sql .= " AND office IN $x";
 }
-// litigation status
-//$x = pl_process_comma_vals($lit_status);
-if (!(is_null($lit_status)))
+if (is_array($lit_status))
 {
-  $x = implode(',', $lit_status);
-  $x = DB::escapeString($x);
+  $lit_status_label = implode(', ', $lit_status);
+  $x = pl_process_comma_vals(implode(',', $lit_status));
 } else {
+  $lit_status_label = '';
   $x = false;
 }
 if ($x != false) 
 {	
-	$t->add_parameter('Litigation Status',$x);
-	$sql .= " AND lit_status IN ($x)";
+	$t->add_parameter('Litigation Status',$lit_status_label);
+	$sql .= " AND lit_status IN $x";
 }
 
 // show protected

@@ -150,12 +150,30 @@ switch ($action)
 		$result = pikaPensionPlan::getPensionPlansDB($filter,$row_count,$order_field,$order,$offset,$page_size);
 		while ($row = DBResult::fetchRow($result))
 		{
+			/*	addHtmlRow() writes the row into
+				subtemplates/pension_plans.html with no cleaning of its own,
+				unlike addRow(), which runs pl_clean_html_array() for you.
+				Escape here, at the boundary between row data and row markup:
+				everything above this line came out of the database, everything
+				below builds HTML. A plan name and a sponsor name are free text
+				that any user who can add a pension plan can store, and they
+				reached this page unchanged.
+			
+				cms/case_list.php and cms/pb_attorneys.php use the same ordering.
+			*/
+			$row = pl_clean_html_array($row);
+			
 			$plan_name = "No Name";
 			if(isset($row['plan_name']) && strlen($row['plan_name']) > 0)
 			{
 				$plan_name = $row['plan_name'];
 			}
-			$row['plan_name'] = "<a href={$base_url}/pension_plans.php?action=edit&pension_plan_id={$row['pension_plan_id']}>" . $plan_name . "</a>";
+
+			/*	The href was unquoted as well, so a value carrying a space ended
+				the attribute and everything after the space became further
+				attributes on the <a> -- an event handler among them.
+			*/
+			$row['plan_name'] = "<a href=\"{$base_url}/pension_plans.php?action=edit&pension_plan_id={$row['pension_plan_id']}\">" . $plan_name . "</a>";
 			$plan_list->addHtmlRow($row);
 		}
 		

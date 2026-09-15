@@ -554,6 +554,20 @@ switch ($action)
 		
 		while ($row = DBResult::fetchRow($result))
 		{
+			/*	addHtmlRow() writes the row into the template with no cleaning
+				of its own, unlike addRow(). Escape the database row here, at the
+				boundary between row data and row markup: every $row read below
+				this line is already escaped, and the markup built from those
+				reads is ours.
+			
+				A user description, a username and an email address are all free
+				text an administrator can store, and the email address was
+				written into an href as well as into a cell. pl_text_name() only
+				concatenates the name parts, so it does not escape them either.
+				cms/case_list.php uses the same ordering.
+			*/
+			$row = pl_clean_html_array($row);
+			
 			$r = array();
 			$r['user_id'] = $row['user_id'];
 			$name = pikaTempLib::plugin('text_name','name',$row,array(),array("order=last"));

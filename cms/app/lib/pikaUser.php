@@ -194,9 +194,24 @@ class pikaUser extends plBase
 	public function getUserPrefs()
 	{
 		$prefs_array = array();
-		if(strlen((string) $this->session_data) > 0 && is_array(unserialize($this->session_data)))
+		
+		/*	allowed_classes => false, as cms/services/transfer_case.php already
+			does for its own blob. These preferences are a plain array, so
+			nothing here needs to build an object -- and a blob that did name a
+			class would have that class's __wakeup() and __destruct() run while
+			it was read.
+			
+			Read once rather than twice, and not read at all when the column is
+			empty: unserialize('') is false plus a warning.
+		*/
+		$session_data = (string) $this->session_data;
+		$prefs = (strlen($session_data) > 0)
+			? unserialize($session_data, array('allowed_classes' => false))
+			: false;
+		
+		if (is_array($prefs))
 		{
-			$prefs_array = unserialize($this->session_data);
+			$prefs_array = $prefs;
 		}	
 		else if (strlen((string) $this->session_data) > 0)
 		{

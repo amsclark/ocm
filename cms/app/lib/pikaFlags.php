@@ -28,7 +28,14 @@ class pikaFlags extends plBase
 		} else {
 			// Existing Record
 			if(strlen($this->rules) > 0) {
-				$this->rules = unserialize($this->rules);
+				/*	allowed_classes => false. A flag's rules are a plain
+					array of comparisons; nothing here needs to build an
+					object. Without it, a rules column holding a serialized
+					object -- from a restored backup, a direct UPDATE, or an
+					import -- would have that class's __wakeup() and
+					__destruct() run while it was read.
+				*/
+				$this->rules = unserialize($this->rules, array('allowed_classes' => false));
 			}
 		}
 		
@@ -75,7 +82,9 @@ class pikaFlags extends plBase
 			//print_r($values);
 			$result = self::getFlagsDB('1');
 			while ($row = DBResult::fetchRow($result)) {
-				$row['rules'] = unserialize($row['rules']);
+				// allowed_classes => false, for the reason given in the
+				// constructor above.
+				$row['rules'] = unserialize((string) $row['rules'], array('allowed_classes' => false));
 				foreach ($row['rules'] as $rule) {
 					if(self::validateRule($rule,$values)) {
 						$flags_triggered[$row['flag_id']] = $row;

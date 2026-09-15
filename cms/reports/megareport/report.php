@@ -97,6 +97,140 @@ $tables = array();  // Used to store table data type information.  Useful when d
 $tables['cases'] = pl_table_fields_get('cases');
 $tables['contacts'] = pl_table_fields_get('contacts');
 $tables['activities'] = pl_table_fields_get('activities');
+
+/*	Everything read above that reaches the query as an IDENTIFIER -- a column
+	name in the SELECT list, in ORDER BY, in GROUP BY, or on the left of a
+	comparison -- is held to pl_safe_identifier() here, before it is used.
+	
+	This report used to pass those names through DB::escapeString() instead,
+	which is no protection at all in an identifier slot: escapeString() escapes
+	quotes, and an identifier is not quoted, so a value like
+	
+		1, (SELECT password FROM users LIMIT 1)
+	
+	reached the SELECT list unchanged and the report printed whatever it named.
+	The same value in the GROUP BY, ORDER BY or WHERE column slots worked the
+	same way.
+	
+	Every one of these values comes from a <select> the report form builds from
+	a fixed list, so a rejection means the request was not made by that form.
+	Fail the whole report rather than dropping one clause: a report that
+	silently ignored a filter would be read as if the filter had applied.
+*/
+$ident_inputs = array(
+	'sum column'         => $sum,
+	'count column'       => $count,
+	'first sort column'  => $order_by,
+	'second sort column' => $order_by2,
+	'first group column' => $group_by,
+	'second group column'=> $group_by2,
+);
+
+$fo_names = is_array($fo) ? $fo : array();
+
+$bad_input = false;
+$ident_safe = array();
+
+foreach ($ident_inputs AS $context => $value)
+{
+	if (strlen((string) $value) < 1)
+	{
+		$ident_safe[$context] = '';
+		continue;
+	}
+
+	$safe_ident = pl_safe_identifier($value, "megareport $context");
+
+	if (false === $safe_ident)
+	{
+		$bad_input = true;
+		continue;
+	}
+
+	$ident_safe[$context] = $safe_ident;
+}
+
+/*	The display columns and the filter columns are lists, so they are
+	validated straight into lists of their own rather than through
+	$ident_safe under a made-up key. Appending each approved name keeps
+	the value that reaches the query one step away from the allowlist
+	that approved it.
+	
+	$fo and $ffield keep the raw request values and are not read again
+	below. Everything that reaches the query reads $fo_safe or
+	$ffield_safe, so which of the two a line uses is visible on that line.
+*/
+$fo_safe = array();
+
+foreach ($fo_names AS $column)
+{
+	$safe_ident = pl_safe_identifier($column, 'megareport display column');
+
+	if (false === $safe_ident)
+	{
+		$bad_input = true;
+		continue;
+	}
+
+	$fo_safe[] = $safe_ident;
+}
+
+/*	$ffield_safe has to stay the same length as $ffield. The WHERE clause
+	below reads $fcomp and $fvalue by position, so dropping an element
+	would apply one filter's comparison and value to the next filter's
+	column. A rejected name becomes the empty string, which that loop
+	skips -- and $bad_input ends the report before it runs anyway.
+*/
+$ffield_safe = array();
+
+foreach ($ffield AS $column)
+{
+	if (strlen((string) $column) < 1)
+	{
+		$ffield_safe[] = '';
+		continue;
+	}
+
+	$safe_ident = pl_safe_identifier($column, 'megareport filter column');
+
+	if (false === $safe_ident)
+	{
+		$bad_input = true;
+		$ffield_safe[] = '';
+		continue;
+	}
+
+	$ffield_safe[] = $safe_ident;
+}
+
+if ($bad_input)
+{
+	echo "<h1>Error:  this report was asked for a column it does not offer</h1>\n";
+	exit();
+}
+
+/*	Read back what the allowlist returned, not what went into it.
+	
+	pl_safe_identifier() returns the name unchanged when it recognises
+	it, so this changes nothing about which report you get. What it
+	changes is where the guarantee lives. The query used to be built
+	from the original request values and was safe only because of the
+	exit() above: a check in one place protecting an interpolation three
+	hundred lines further down. Anyone who later moved the query, added
+	a second one, or returned an error instead of exiting would have
+	removed the protection without touching the line that looks
+	dangerous.
+	
+	An absent value becomes the empty string rather than staying null.
+	Every use below is a truthiness test, so that reads the same.
+*/
+$sum       = $ident_safe['sum column'];
+$count     = $ident_safe['count column'];
+$order_by  = $ident_safe['first sort column'];
+$order_by2 = $ident_safe['second sort column'];
+$group_by  = $ident_safe['first group column'];
+$group_by2 = $ident_safe['second group column'];
+
 $report_format = pl_grab_post('report_format');
 $show_sql = pl_grab_post('show_sql');
 
@@ -155,7 +289,7 @@ else
 		for. Under PHP 8 sizeof(null) is a fatal TypeError, so the report died
 		with a stack trace instead of printing it.
 	*/
-	if (!is_array($fo) || count($fo) < 1)
+	if (count($fo_safe) < 1)
 	{
 		echo "<h1>Error:  you need to check off the fields you want displayed on this report</h1>\n";
 		exit();
@@ -163,13 +297,21 @@ else
 	
 	else 
 	{
-		$z = implode(', ', $fo);
+		$z = implode(', ', $fo_safe);
 		$showfields = $z;
 	}
 }
 
-// Clean $showfields before sending it to MySQL.
-$showfields = DB::escapeString($showfields);
+/*	No DB::escapeString() on $showfields any more. A SELECT list is not a
+	quoted context, so escaping it removed nothing an attacker would have
+	used.
+	
+	What makes this string safe is that every column name in it came back
+	from pl_safe_identifier() -- $fo_safe, $group_by, $sum and $count are
+	the allowlist's own return values, not the request values -- and the
+	SUM(), COUNT() and "as Sum" text around them is written here rather
+	than submitted.
+*/
 
 if (substr_count($showfields, 'activities.') > 0)
 {
@@ -190,11 +332,15 @@ else
 $i = 0;
 $special_fields = array('counsel_id', 'pba_id');
 
-foreach ($ffield as $key => $val)
+foreach ($ffield_safe as $key => $val)
 {
 	if ($val)
 	{
-		$val = DB::escapeString($val);
+		/*	No DB::escapeString($val) here any more: $val is a column name,
+			which is not quoted, so escaping it did nothing. It has already
+			been held to pl_safe_identifier() with the rest of $ffield above,
+			and the report exits if any name is rejected.
+		*/
 		list($table_name, $field_name) = explode('.', $val);
 		$field_data_type = $tables[$table_name][$field_name];
 		
@@ -309,6 +455,13 @@ foreach ($ffield as $key => $val)
 				
 				$field_value = str_replace('*', '%', $field_value);
 				
+				/*	The only branch in this loop that never escaped its value.
+					It is interpolated inside single quotes, so a quote in the
+					search text closed the string and the rest of it became
+					SQL.
+				*/
+				$field_value = DB::escapeString($field_value);
+				
 				$sql .= " AND $val LIKE '$field_value'";
 			}
 			
@@ -345,7 +498,14 @@ foreach ($ffield as $key => $val)
 			
 			else if ($fvalue[$i])
 			{
-				$comp = $fcomp[$i];
+				/*	Every comparison the form offers that is not matched by
+					name above -- "<" and ">" -- lands here, and the operator
+					itself is interpolated. DB::escapeString(), which is what
+					used to guard it, does nothing in an operator slot, so the
+					submitted text could be any SQL at all. An allowlist is the
+					only control that works here.
+				*/
+				$comp = pl_safe_comparison_operator($fcomp[$i], 'megareport comparison');
 				
 					if ($field_data_type == 'date')
 					{
@@ -363,9 +523,12 @@ foreach ($ffield as $key => $val)
 					}
 					
 					$field_value = DB::escapeString($field_value);
-					$comp = DB::escapeString($comp);
 				
-				$sql .= " AND $val$comp'$field_value'";
+				// Fail closed on an operator the form does not offer: no rows,
+				// rather than a report that quietly ignored the filter.
+				$sql .= (false === $comp)
+					? " AND 0"
+					: " AND $val$comp'$field_value'";
 			}
 		}
 		/*
@@ -427,15 +590,18 @@ if (strlen($users_list) > 0)
 }
 
 
-// Build ORDER BY clause
+/*	Build ORDER BY and GROUP BY clauses.
+
+	The DB::escapeString() calls that used to sit on each of these four names
+	are gone. All four are identifiers, so escaping them was a no-op; they are
+	held to pl_safe_identifier() near the top of this file instead.
+*/
 if ($order_by)
 {
-	$order_by = DB::escapeString($order_by);
 	$sql .= " ORDER BY $order_by";
 	
 	if ($order_by2)
 	{
-		$order_by2 = DB::escapeString($order_by2);
 		$sql .= ", $order_by2";
 	}
 }
@@ -443,21 +609,29 @@ if ($order_by)
 // Build GROUP BY clause
 if ($group_by)
 {
-	$group_by = DB::escapeString($group_by);
 	$sql .= " GROUP BY $group_by";
 	
 	if ($group_by2)
 	{
-		$group_by2 = DB::escapeString($group_by2);
 		$sql .= ", $group_by2";
 	}
 }
 
-// Build LIMIT clause
-if (!$recordlimit) {
-        $recordlimit = 1000;
+/*	Build the LIMIT clause.
+
+	$recordlimit reached the query with no escaping and no cast of any kind, so
+	the row count could carry any SQL after it -- including INTO OUTFILE, which
+	writes a file on the database server if the account has FILE privilege. A
+	cast to int is the whole fix: a LIMIT is a number and nothing else.
+*/
+$recordlimit = (int) $recordlimit;
+
+if ($recordlimit < 1)
+{
+	$recordlimit = 1000;
 }
-        $sql .= " LIMIT $recordlimit";
+
+$sql .= " LIMIT $recordlimit";
 
 $result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 

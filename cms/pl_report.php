@@ -8,47 +8,24 @@ function pl_report_headers($filename, $file_desc='')
 	 
 }
 
-/*
-Convert a string of comma separated values into SQL code that can be
-used with the IN operator
+/*	pl_process_comma_vals() used to be defined again here, and the copy did
+	not escape: it wrapped each value in double quotes and concatenated it,
+	so a double quote in the input closed the string and the rest of the
+	value became SQL. MariaDB accepts a double-quoted string literal unless
+	ANSI_QUOTES is set, which this application does not set.
+	
+	It was unreachable. The definition in cms/app/lib/pl.php:5758, which
+	escapes each value with DB::escapeString(), is not guarded by
+	function_exists(), so it must always load first -- a second unguarded
+	definition would be a fatal redeclare -- and the guard here therefore
+	always skipped this one. Both files that include pl_report.php reach it
+	after pl.php.
+	
+	Removed rather than repaired. It was one include-order change away from
+	silently replacing an escaping function with a non-escaping one of the
+	same name, and there is nothing a second copy can do that the first
+	cannot.
 */
-if(!function_exists('pl_process_comma_vals')) {
-function pl_process_comma_vals($str)
-{
-	$a = explode(",", $str);
-	
-	$i = 0;
-	
-	$out = "(";
-	
-	foreach ($a as $val)
-	{
-		if ("" != $val)
-		{
-			if ($i > 0)
-			{
-				$out .= ",";
-			}
-			
-			$out .= "\"$val\"";
-			
-			$i++;
-		}
-	}
-	
-	$out .= ")";
-	
-	if ($i > 0)
-	{
-		return $out;
-	}
-	
-	else 
-	{
-		return false;
-	}
-}
-}
 
 class pikaReport
 {

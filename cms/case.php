@@ -504,6 +504,16 @@ if (!preg_match('/^[A-Za-z0-9_-]+$/', (string) $clean_screen))
 	$clean_screen = 'act';
 }
 
+/*	A no-op on a value that has just been held to [A-Za-z0-9_-], which is a
+	subset of what pl_clean_file_name() permits. It is here so the guard above
+	is legible to a static analyser as well as to a reader: taint analysis
+	cannot see that a preg_match() in an if() constrains the value, so without
+	this the four include() calls below read as unchecked. Cheaper than a
+	suppression comment, and it still holds if the pattern above is ever
+	loosened.
+*/
+$clean_screen = pl_clean_file_name($clean_screen);
+
 if (file_exists("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php")){
 	include("{$custom_dir}/case_tabs/{$clean_screen}/{$clean_screen}.php");
 }elseif (file_exists("{$custom_dir}/modules/case-{$clean_screen}.php")){	
