@@ -1085,8 +1085,16 @@ switch($action)
 		cms/ops/update_prefs.php: the theme names a file cms/pika_cms.php
 		includes and the paging count is interpolated into a LIMIT clause.
 		A value the preference may not hold leaves the session value alone.
+		
+		storePrefs() also writes what it accepts to users.session_data, so the
+		save outlives the session it was made in.
 	*/
-	require_once('pikaDefPrefs.php');
+	/*	By path, not by name. pika_cms.php replaces the include_path pika_init()
+		built and leaves ./app/lib off it, so a bare name does not resolve from
+		this file and the require is a fatal error. pika_cms.php has already
+		loaded this same file, so require_once matches it and loads nothing.
+	*/
+	require_once('app/lib/pikaDefPrefs.php');
 	
 	$pref_names = array('def_office',
 						'intake',
@@ -1096,15 +1104,14 @@ switch($action)
 						'theme',
 						'r_format');
 	
+	$posted_prefs = array();
+	
 	foreach ($pref_names as $pref_name)
 	{
-		$pref_value = pikaDefPrefs::filterValue($pref_name, pl_grab_var($pref_name, null, 'POST'));
-		
-		if (!is_null($pref_value))
-		{
-			$_SESSION[$pref_name] = $pref_value;
-		}
+		$posted_prefs[$pref_name] = pl_grab_var($pref_name, null, 'POST');
 	}
+	
+	pikaDefPrefs::storePrefs($auth_row['user_id'], $posted_prefs);
 	
 	session_write_close();
 	header("Location: prefs.php?user_id={$auth_row['user_id']}");

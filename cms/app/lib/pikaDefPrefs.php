@@ -24,6 +24,21 @@ class pikaDefPrefs extends pikaFileArray
 	*/
 	private static $font_sizes = array('Small', 'Medium', 'Large', 'Super Size');
 	
+	/*	Every preference the two preference screens can save. Both handlers
+		accept only these names from a POST, and initPrefs() reads back only
+		these names, so a preference cannot be saveable but unrestorable.
+	*/
+	private static $pref_names = array('def_office',
+										'def_intake_type',
+										'intake',
+										'def_relation_code',
+										'paging',
+										'font_size',
+										'popup',
+										'theme',
+										'def_ical_interval',
+										'r_format');
+	
 	protected function __construct()
 	{
 		$this->file_location = PL_DEFAULT_PREFS_FILE;
@@ -54,7 +69,7 @@ class pikaDefPrefs extends pikaFileArray
 		
 		if(!is_null($user_id) && is_numeric($user_id))
 		{
-			require_once('pikaUser.php');
+			require_once(dirname(__FILE__) . '/pikaUser.php');
 			$user = new pikaUser($user_id);
 			$user_prefs = $user->getUserPrefs();
 			foreach ($this->values as $name => $value)
@@ -68,14 +83,95 @@ class pikaDefPrefs extends pikaFileArray
 			$user->save();
 		}
 		
-		foreach ($this->values as $name => $value)
+		/*	Read back every preference a preference screen can save, not only
+			the ones the defaults file happens to carry. r_format and intake
+			are saveable and are not in that file, so they were stored and
+			then never read back.
+			
+			The list is fixed rather than taken from the stored array. That
+			array comes out of the database, and a stray key left by an older
+			install would otherwise overwrite an unrelated session value.
+		*/
+		$restore = array_keys($this->values);
+		
+		foreach (self::$pref_names as $name)
 		{
-			if(isset($user_prefs[$name]))
+			if (!in_array($name, $restore, true))
+			{
+				$restore[] = $name;
+			}
+		}
+		
+		foreach ($restore as $name)
+		{
+			if (isset($user_prefs[$name]))
 			{
 				$_SESSION[$name] = $user_prefs[$name];
 			}
 		}
 		
+	}
+	
+	/**
+	 * public static function storePrefs()
+	 * 
+	 * Writes the preferences a handler was posted to the session and to the
+	 * user's stored preferences. Both handlers used to write the session
+	 * only, so every saved preference was lost at logout: initPrefs() reads
+	 * users.session_data back on the next login and overwrote it.
+	 * 
+	 * $values is name => raw posted value. A value filterValue() refuses is
+	 * skipped, which leaves whatever the preference already held.
+	 * 
+	 * @return bool whether anything was accepted
+	 * @param user_id int
+	 * @param values array
+	 */
+	public static function storePrefs($user_id, $values)
+	{
+		if (!is_array($values))
+		{
+			return false;
+		}
+		
+		$user = null;
+		$stored = array();
+		
+		if (!is_null($user_id) && is_numeric($user_id))
+		{
+			require_once(dirname(__FILE__) . '/pikaUser.php');
+			$user = new pikaUser($user_id);
+			$stored = $user->getUserPrefs();
+		}
+		
+		$accepted = false;
+		
+		foreach ($values as $name => $value)
+		{
+			if (!in_array($name, self::$pref_names, true))
+			{
+				continue;
+			}
+			
+			$filtered = self::filterValue($name, $value);
+			
+			if (is_null($filtered))
+			{
+				continue;
+			}
+			
+			$_SESSION[$name] = $filtered;
+			$stored[$name] = $filtered;
+			$accepted = true;
+		}
+		
+		if ($accepted && !is_null($user))
+		{
+			$user->session_data = serialize($stored);
+			$user->save();
+		}
+		
+		return $accepted;
 	}
 	
 	/**

@@ -35,6 +35,10 @@ $user = new pikaUser($user_id);
 	pikaDefPrefs::initPrefs() on the next request, so a bad value stored
 	here stays for the rest of the session. Keep the value that is already
 	in the session when the request offers one the preference may not hold.
+	
+	storePrefs() writes the accepted values to users.session_data as well as
+	to the session. Without that the save lasts until logout and no longer:
+	initPrefs() reads that column back on the next login.
 */
 $pref_names = array('def_office',
 					'def_intake_type',
@@ -46,15 +50,14 @@ $pref_names = array('def_office',
 					'def_ical_interval',
 					'r_format');
 
+$posted_prefs = array();
+
 foreach ($pref_names as $pref_name)
 {
-	$pref_value = pikaDefPrefs::filterValue($pref_name, pl_grab_post($pref_name));
-	
-	if (!is_null($pref_value))
-	{
-		$_SESSION[$pref_name] = $pref_value;
-	}
+	$posted_prefs[$pref_name] = pl_grab_post($pref_name);
 }
+
+pikaDefPrefs::storePrefs($user_id, $posted_prefs);
 
 session_write_close();
 
