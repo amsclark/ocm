@@ -11744,6 +11744,175 @@ else
 	bad "the case list interpolates filter values unescaped again"
 fi
 
+# ---------------------------------------------------------------------------
+# 78. Administrative pages carry their own gate, and no page answers a
+#     request that has no session with content.
+#
+# pika_authorize($op, $row) is row-level: it answers questions about one
+# case or one activity. Whether a whole PAGE is administrative is decided
+# per file, by hand, at the top of that file. cms/system-extensions.php
+# shipped without that decision -- it called pika_init() and then drew the
+# extension manager for whoever asked. Its write handler,
+# cms/ops/update_extensions.php, was already gated on the system flag, so
+# nothing could be changed; but any logged-in user could read which custom
+# extensions the site had installed and the folder each one lives in.
+#
+# A gate written out by hand in 19 files is a census that goes stale, so
+# 78a and 78b assert the invariant rather than the one file: every
+# cms/system-*.php has a refusal branch, and the flag it tests is the
+# system flag or -- for the user manager, which is delegated separately --
+# the users flag. 78c and 78d are the live pair: a user whose group holds
+# no flags is refused, and the administrator is still served. 78e sweeps
+# every page in cms/ and cms/m/ with no session at all, because a gate
+# that only holds for a logged-in user is not a gate.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 78. administrative pages carry their own gate =="
+
+# 78a and 78b. The source census. No stack needed.
+sm78_total=0
+sm78_ungated=''
+sm78_wrongflag=''
+for sm78_f in cms/system-*.php
+do
+	sm78_total=$((sm78_total + 1))
+	if ! grep -qF '!pika_authorize(' "$sm78_f"
+	then
+		sm78_ungated="${sm78_ungated} ${sm78_f}"
+		continue
+	fi
+	# -F, and one -e per spelling: this pattern would need a backreference
+	# to match the closing quote to the opening one, and ugrep rejects it.
+	grep -qF \
+		-e "pika_authorize('system'" -e 'pika_authorize("system"' \
+		-e "pika_authorize('users'"  -e 'pika_authorize("users"' \
+		"$sm78_f" || sm78_wrongflag="${sm78_wrongflag} ${sm78_f}"
+done
+
+# The positive control. An empty glob would satisfy every assertion below.
+if [ "$sm78_total" -ge 19 ]
+then
+	ok "the administrative page census found $sm78_total system pages"
+else
+	bad "the administrative page census found only $sm78_total system pages, expected 19 or more"
+fi
+
+if [ -z "$sm78_ungated" ]
+then
+	ok "every system page has a pika_authorize() refusal branch"
+else
+	bad "system page(s) with no refusal branch:${sm78_ungated}"
+fi
+
+if [ -z "$sm78_wrongflag" ]
+then
+	ok "every system page gates on the system flag or the users flag"
+else
+	bad "system page(s) gating on neither flag:${sm78_wrongflag}"
+fi
+
+# 78c and 78d. The live pair. The hash comes out of the application's own
+# PHP so it matches whatever password_hash() defaults to in this image.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]
+then
+	SM78_GROUP=zz_sm78_grp
+	SM78_USER=zz_sm78_user
+	SM78_PASS='zz-Sm78-Passw0rd'
+	SM78_JAR="$(mktemp)"
+
+	sm78_cleanup() {
+		adb "DELETE FROM users WHERE username = '${SM78_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SM78_GROUP}'" >/dev/null
+		rm -f "$SM78_JAR"
+	}
+	sm78_cleanup
+
+	# A group with nothing in it: no system flag, no users flag, no offices.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SM78_GROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	SM78_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SM78_PASS" </dev/null 2>/dev/null)"
+	SM78_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${SM78_UID}, '${SM78_USER}', '${SM78_HASH}', 1, '${SM78_GROUP}', 0)" >/dev/null
+
+	if [ -z "$SM78_HASH" ] || [ -z "${SM78_UID:-}" ]
+	then
+		bad "could not seed the no-flag user for the administrative gate check"
+	else
+		curl -sL --max-time 30 -c "$SM78_JAR" -b "$SM78_JAR" -o "$BODY" \
+			-X POST -d "login_user=${SM78_USER}&login_pass=${SM78_PASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+
+		if grep -q 'login_pass' "$BODY"
+		then
+			bad "the no-flag user could not log in, so the gate check proves nothing"
+		else
+			ok "the no-flag user has a session"
+
+			# The refusal renders through the same template as the page, so
+			# assert on the form the page draws, not only on the wording of
+			# the refusal. A gate-less page serves the form; a gated one
+			# must not, whatever it says instead.
+			curl -s --max-time 30 -b "$SM78_JAR" -o "$BODY" \
+				"$OCM_URL/system-extensions.php" >/dev/null
+			if ! grep -qF 'ops/update_extensions.php' "$BODY"
+			then
+				ok "a user with no flags is not served the extension manager"
+			else
+				bad "a user with no flags was served the extension manager form"
+			fi
+		fi
+		sm78_cleanup
+	fi
+
+	# The administrator still gets the page. Without this, a gate that
+	# refused everybody would pass 78c.
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/system-extensions.php" >/dev/null
+	if grep -qF 'ops/update_extensions.php' "$BODY"
+	then
+		ok "the administrator is still served the extension manager"
+	else
+		bad "the administrator can no longer reach the extension manager"
+	fi
+fi
+
+# 78e. Nothing renders to a request with no session. cms/ops/ is left out
+# on purpose: those files are write handlers, and a GET with no parameters
+# reaches them as an error page, which says nothing about their gates.
+# What counts as rendered: 200, a body big enough to be a page, no login
+# form in it, and none of the application's refusal or error wording.
+sm78_open=''
+SM78_ANON="$(mktemp)"
+for sm78_p in cms/*.php cms/m/*.php
+do
+	sm78_rel="${sm78_p#cms/}"
+	# Libraries, not pages: index.php includes pika_cms.php, and every
+	# page includes pika-danio.php.
+	[ "$sm78_rel" = pika_cms.php ] && continue
+	[ "$sm78_rel" = pika-danio.php ] && continue
+
+	sm78_code="$(curl -s --max-time 30 -o "$SM78_ANON" -w '%{http_code}' \
+		"$OCM_URL/${sm78_rel}")"
+	[ "$sm78_code" = 200 ] || continue
+	[ "$(wc -c <"$SM78_ANON" | tr -d ' ')" -gt 800 ] || continue
+	grep -qF 'name="login_user"' "$SM78_ANON" && continue
+	grep -q 'login_pass' "$SM78_ANON" && continue
+	grep -qiE 'access denied|not authorized|permission denied' "$SM78_ANON" && continue
+	grep -qiF 'This page is currently unavailable' "$SM78_ANON" && continue
+	sm78_open="${sm78_open} ${sm78_rel}"
+done
+rm -f "$SM78_ANON"
+
+if [ -z "$sm78_open" ]
+then
+	ok "no page in cms/ or cms/m/ renders to a request with no session"
+else
+	bad "page(s) rendering with no session:${sm78_open}"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

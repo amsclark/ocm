@@ -8,6 +8,25 @@
 require_once ('pika-danio.php');
 pika_init();
 
+/*	Every other system-*.php admin page opens with this gate; this one
+	shipped without it, so any logged-in user could read the extension
+	manager and learn which custom extensions the site has installed and
+	where they live on disk. The write handler, ops/update_extensions.php,
+	was already gated, so nothing could be changed -- but the listing
+	itself is administrative and belongs behind the system flag.
+*/
+$base_url = pl_settings_get('base_url');
+
+if (!pika_authorize('system', array()))
+{
+	$denied = array();
+	$denied['page_title'] = 'Extensions';
+	$denied['content'] = 'Access denied';
+	$denied['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; 
+				<a href=\"{$base_url}/site_map.php\">Site Map</a> &gt; Extensions";
+	pika_exit(pl_template($denied, 'templates/default.html'));
+}
+
 function scan_extension_folder($subdir, $base_path)
 {
 	$path = $base_path . '/' . $subdir;
@@ -111,7 +130,6 @@ foreach($x as $val)
 
 $h .= "<div class=\"x\"><input type=\"submit\"></div></form>\n";
 
-$base_url = pl_settings_get('base_url');
 $main_html = array();
 $main_html["page_title"] = "Extensions";
 $main_html['content'] = $h;
