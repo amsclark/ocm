@@ -4089,9 +4089,25 @@ if [ "$HAVE_DB" = 1 ]; then
 	LKUSER='zz_lk_user'
 	LKPASS='zz-Lk-Passw0rd'
 	LKJAR="$(mktemp)"
-	LK_TODAY="$(date +%Y-%m-%d)"
-	LK_OLD="$(date -d '-30 days' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d)"
-	LK_FUTURE="$(date -d '+3 days' +%Y-%m-%d 2>/dev/null || date -v+3d +%Y-%m-%d)"
+	# These dates must be the application's, not the shell's. pika_init()
+	# calls date_default_timezone_set() with the time_zone setting and
+	# defaults it to America/New_York, so between midnight UTC and that
+	# offset the shell's today is the application's tomorrow. A
+	# future-dated entry is a scheduled appointment the handler
+	# deliberately leaves at 0 hours, so reading the date from the shell
+	# made 34a pass all afternoon and fail every run made at night.
+	LK_DATES="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+		define("PL_DISABLE_SECURITY", true);
+		chdir("/var/www/html/cms");
+		require_once("pika-danio.php");
+		pika_init();
+		echo date("Y-m-d"), " ",
+			date("Y-m-d", strtotime("-30 days")), " ",
+			date("Y-m-d", strtotime("+3 days"));
+	' </dev/null 2>/dev/null)"
+	LK_TODAY="$(printf '%s' "$LK_DATES" | awk '{print $1}')"
+	LK_OLD="$(printf '%s' "$LK_DATES" | awk '{print $2}')"
+	LK_FUTURE="$(printf '%s' "$LK_DATES" | awk '{print $3}')"
 
 	cleanup_lk() {
 		adb "DELETE FROM activities WHERE summary LIKE 'ZZLK%'" >/dev/null
@@ -9991,13 +10007,28 @@ else
 		fi
 	done
 
-	# script-src must still allow inline and eval, or the 2019 templates stop
-	# working. This check is here to fail loudly on the day someone tightens
-	# the policy without converting the inline handlers first.
-	if printf '%s' "$csp" | grep -qF "script-src 'self' 'unsafe-inline' 'unsafe-eval'"; then
-		ok "script-src still allows the inline handlers the templates need"
+	# script-src must still allow inline handlers -- 44 inline <script>
+	# blocks, 106 on* handler attributes and 22 javascript: URLs still need
+	# 'unsafe-inline' -- but the 9 eval() calls are converted, so
+	# 'unsafe-eval' is gone and has to stay gone. Both halves are checked,
+	# so neither re-adding eval nor dropping inline passes quietly.
+	if printf '%s' "$csp" | grep -qF "script-src 'self' 'unsafe-inline'" \
+		&& ! printf '%s' "$csp" | grep -qF "'unsafe-eval'"; then
+		ok "script-src allows the inline handlers but no longer allows eval"
 	else
-		bad "script-src changed; the inline handlers and eval() sites must be converted first"
+		bad "script-src must keep 'unsafe-inline' and drop 'unsafe-eval' [${csp}]"
+	fi
+
+	# The header above is only honest if the eval() calls really are gone,
+	# so check the tree as well. A reintroduced eval() under this policy is
+	# a silently dead handler, not a failed request, which is exactly the
+	# kind of break a header check cannot see.
+	csp_eval_files="$(grep -rlF 'eval(' cms/ --include='*.js' --include='*.html' \
+		--include='*.php' 2>/dev/null | grep -vF '.min.js' | wc -l)"
+	if [ "$csp_eval_files" -eq 0 ]; then
+		ok "no eval() call is left in the js or the subtemplates"
+	else
+		bad "eval() is back in ${csp_eval_files} file(s), which script-src now blocks"
 	fi
 
 	if printf '%s' "$csp" | grep -qiE "(script|style|img|font|connect)-src[^;]*https?://"; then

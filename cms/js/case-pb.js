@@ -1,6 +1,6 @@
 function calcDifference() {
 	var theform = document.ws;
-	if ((isNaN(eval(theform.atty_fee_normal.value))) || (isNaN(eval(theform.atty_fee_to_client.value)))) {
+	if ((isNaN(parseFloat(theform.atty_fee_normal.value))) || (isNaN(parseFloat(theform.atty_fee_to_client.value)))) {
 		return false;
 	} else {
 		var thediff = theform.atty_fee_normal.value - theform.atty_fee_to_client.value;

@@ -1,8 +1,9 @@
 <script language="JavaScript" type="text/javascript"><!--
-function KeyPress(what,max,action) {
-        if (what.value.length >= max)
-            eval(action);
-}
+/*	A KeyPress(what, max, action) helper stood here. Its whole body passed
+	the action argument to eval, so it ran whatever string a caller handed
+	it. Nothing in the tree ever called it, so it is deleted rather than
+	rewritten.
+*/
 
 var old_phone_length = 0;
 var ac_autotab_on = 1;
@@ -12,7 +13,7 @@ function pika_area_code(what, max, field_name)
 {	
 	if (max > 0 && what.value.length >= max && ac_autotab_on == 1)
 	{
-		eval('document.fc.' + field_name + '.focus()');
+		document.fc[field_name].focus();
 	}
 	
 	if (what.value.length >= 3)

@@ -2292,12 +2292,18 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	What this policy can be today is set by what the 2019 templates do, not
 	by what is ideal:
 
-	  script-src keeps 'unsafe-inline' and 'unsafe-eval'. The tree has 44
-	  inline <script> blocks, 106 inline on* handler attributes, 22
-	  javascript: URLs and 9 eval() calls. Dropping either keyword now would
-	  break the application, so those have to be converted first. Until then
-	  the script directive still blocks the thing worth blocking most:
-	  script loaded from any other origin.
+	  script-src no longer allows 'unsafe-eval'. The 9 eval calls that
+	  needed it are gone: five built a reference to a form field out of
+	  the field's name and are now a bracket lookup, two picked a
+	  checkbox out of a form by number, one read two currency fields and
+	  is now parseFloat, and the last was a KeyPress helper that ran
+	  whatever string it was handed, which nothing called.
+
+	  script-src still keeps 'unsafe-inline'. The tree has 44 inline
+	  <script> blocks, 106 inline on* handler attributes and 22
+	  javascript: URLs, so that keyword cannot go until those are
+	  converted too. Even with it the directive still blocks the thing
+	  worth blocking most: script loaded from any other origin.
 
 	  style-src keeps 'unsafe-inline' for the 229 style="..." attributes.
 
@@ -2348,7 +2354,7 @@ function pl_send_csp_header()
 	
 	$policy = implode('; ', array(
 		"default-src 'self'",
-		"script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+		"script-src 'self' 'unsafe-inline'",
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data:",
 		"font-src 'self' data:",
