@@ -2990,6 +2990,16 @@ function pl_menu_get($menu_name, $key = null)
 	
 	if (!array_key_exists($menu_name, $plMenus))
 	{
+		/*	A menu name reaches this function from template tags, and
+		pl_template_sub() re-parses substituted values, so a request value
+		can end up naming a menu.  The name is pasted straight into the
+		statement below, so refuse anything that is not a bare identifier.
+		*/
+		if (!is_string($menu_name) || !preg_match('/^[A-Za-z0-9_]+$/', $menu_name))
+		{
+			return false;
+		}
+		
 		$key = $val = $ord = '';
 		$menu_table_name = 'menu_' . $menu_name;
 		
@@ -3007,6 +3017,17 @@ function pl_menu_get($menu_name, $key = null)
 			$ord = 'menu_order';
 		}
 		
+		/*	The column names come from $plMenuDefs, which is code, not
+		request data.  Hold them to the same rule anyway so that a future
+		definition cannot open the statement up.
+		*/
+		if (!preg_match('/^[A-Za-z0-9_]+$/', (string) $key)
+			|| !preg_match('/^[A-Za-z0-9_]+$/', (string) $val)
+			|| !preg_match('/^[A-Za-z0-9_]+$/', (string) $ord))
+		{
+			return false;
+		}
+		
 		$menu_exists = false;
 		$sql = "SHOW TABLES;";
 		$result = DB::query($sql) or trigger_error($sql . "  " . DB::error());
@@ -3014,7 +3035,7 @@ function pl_menu_get($menu_name, $key = null)
 			if($menu_table_name == $row[0]) {$menu_exists = true;}
 		}
 		if($menu_exists) {
-			$sql = "SELECT $key, $val FROM $menu_table_name ORDER BY $ord";
+			$sql = "SELECT `$key`, `$val` FROM `$menu_table_name` ORDER BY `$ord`";
 			$result = DB::query($sql) or trigger_error(DB::error());
 		
 			$plMenus[$menu_name] = array();
