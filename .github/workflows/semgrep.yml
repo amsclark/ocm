@@ -30,14 +30,18 @@ permissions:
 jobs:
   semgrep:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     permissions:
       contents: read
       security-events: write
 
+    # Pinned. On an unpinned tag this gate would change behaviour on a
+    # semgrep release rather than on a change to this repository, and a
+    # security gate that goes red or green on its own teaches people to
+    # ignore it. The Monday schedule above is where an upgrade gets tried.
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.176.1
 
     steps:
       - uses: actions/checkout@v4
@@ -48,9 +52,23 @@ jobs:
       - name: the ruleset's own tests
         run: semgrep --metrics=off --test --config .semgrep .semgrep
 
+      # -j 1 is not a performance setting, it is the difference between a
+      # scan that finds things and one that does not.
+      #
+      # semgrep OSS 1.176.1 shards the target files across worker
+      # processes, and on this repository that loses findings: the same
+      # commit, the same ruleset and the same 313 targets report 2 findings
+      # single-threaded and 0 findings in parallel. Nothing is reported as
+      # skipped or timed out -- the summary says "Scan completed
+      # successfully" either way. Two real SQL injections in the report
+      # pages were invisible locally for that reason and only showed up
+      # here, on a runner with fewer cores.
+      #
+      # So this scan runs single-threaded. It is slower, and a gate that
+      # quietly misses findings is worth nothing at any speed.
       - name: scan the application
         run: |
-          semgrep scan --metrics=off \
+          semgrep scan --metrics=off -j 1 \
             --config .semgrep/ocm-sinks.yml \
             --sarif --output semgrep.sarif \
             cms cms-custom

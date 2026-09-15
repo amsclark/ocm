@@ -12345,6 +12345,35 @@ then
 		bad "the workflow does not fail the build on a finding"
 	fi
 
+	# The scan has to be single-threaded. This is not a performance
+	# setting. semgrep OSS 1.176.1 shards the target files across worker
+	# processes and on this repository that loses findings: the same
+	# commit, the same ruleset and the same 313 targets report two
+	# findings with -j 1 and none in parallel. Nothing is reported as
+	# skipped or timed out and the summary says the scan completed
+	# successfully either way, so the failure mode of dropping this flag
+	# is a gate that passes everything and tells nobody.
+	#
+	# Two real SQL injections in the report pages were invisible locally
+	# for exactly this reason and only appeared on a runner with fewer
+	# cores.
+	if grep -qE -e 'semgrep scan[^#]*[[:space:]]-j[[:space:]]+1([[:space:]]|\\|$)' "$sm80_wf"
+	then
+		ok "the workflow scan is single-threaded (-j 1)"
+	else
+		bad "the workflow scan is not pinned to -j 1: a parallel semgrep scan silently drops findings"
+	fi
+
+	# And the image has to be pinned. On a floating tag this gate changes
+	# behaviour when semgrep releases rather than when this repository
+	# changes, and a security gate that goes red on its own gets ignored.
+	if grep -qE -e 'image:[[:space:]]*semgrep/semgrep:[0-9]+\.[0-9]+\.[0-9]+' "$sm80_wf"
+	then
+		ok "the workflow pins an exact semgrep image version"
+	else
+		bad "the workflow does not pin an exact semgrep version"
+	fi
+
 	# 80f. CodeQL must not claim to cover the PHP. It cannot: there is no PHP
 	# analyzer. A language list that named php would have made every one of
 	# these rules look redundant.
