@@ -148,6 +148,20 @@ if($order != 'ASC')
 {
 	$order = 'DESC';
 }
+
+/*	$order is interpolated into the ORDER BY clauses below, so hold it to
+	the two literals MySQL accepts by name, rather than leaving that
+	guarantee to the shape of the comparison above.
+
+	Nothing changes in what this report does: pl_safe_sort_direction()
+	returns 'DESC' for 'DESC' and 'ASC' for 'ASC', so it still sorts
+	descending unless the form asked for ascending. What changes is that
+	the guarantee now lives in one named function, which an edit to the
+	comparison above cannot quietly remove, and which a reader -- or a
+	scanner -- can see without following the control flow.
+*/
+$order = pl_safe_sort_direction($order);
+
 $order_sql = "";
 if(strlen($order_by) > 0)
 {

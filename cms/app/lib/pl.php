@@ -1365,7 +1365,23 @@ function pl_date_mogrify($date_str)
 		$a = explode('\\', $date);
 	}
 	
-	if (sizeof($a) > 1 && is_numeric($a[0]) && is_numeric($a[1]))
+	/*	$a[2] is checked here as well as $a[0] and $a[1].
+	
+		It used to be interpolated with no check at all, in both branches
+		below: the ISO branch builds "{$a[0]}-{$a[1]}-{$a[2]}" and the other
+		takes $a[2] as the year whenever its length is 4 or 2. So
+		"2019-01-x' OR 1=1 -- " came back out of this function with the quote
+		still in it, and several callers drop the result straight into a
+		quoted SQL literal. This function is not a sanitiser and was never
+		meant to be one, but it must not hand back something worse than it was
+		given.
+		
+		Input that fails the check falls through to the strtotime() fallback,
+		which returns false for anything it cannot read -- the same answer
+		this function already gives for an empty string.
+	*/
+	if (sizeof($a) > 1 && is_numeric($a[0]) && is_numeric($a[1])
+		&& (!isset($a[2]) || is_numeric($a[2])))
 	{
 		/*	A recognized date separator was found, and $a was populated
 		with month, day and possibly year.
@@ -1377,6 +1393,13 @@ function pl_date_mogrify($date_str)
 		
 		if (strlen($a[0]) == 4)
 		{
+			// sizeof($a) > 1 is all the condition above requires, so a
+			// "2019-01" with no day reaches here. That is not a date.
+			if (!isset($a[2]))
+			{
+				return false;
+			}
+			
 			$x = "{$a[0]}-{$a[1]}-{$a[2]}";
 		}
 		
@@ -3379,6 +3402,54 @@ if (!function_exists('pl_safe_sort_direction')) {
 			return 'DESC';
 		}
 		return 'ASC';
+	}
+}
+
+/**
+ * Hold a SQL comparison operator to a set this application can accept.
+ *
+ * The mega reports let the user pick the operator as well as the column and
+ * the value, and build the clause as "$column$operator'$value'". An operator
+ * is not a quoted value, so DB::escapeString() -- which is what those reports
+ * used on it -- does nothing: the "<" the form offered could be replaced with
+ * anything at all, including a closing quote and a new predicate.
+ *
+ * menu_comparison_sql ships =, !=, >, <, LIKE, between, is blank and is not
+ * blank. Only the ones this list names ever reach an interpolated operator
+ * slot; the others are matched by name and build their own clause. The list is
+ * a little wider than the shipped menu so an installation that adds an
+ * ordinary operator row still works.
+ *
+ * Fail closed: returns false for anything else, and the caller drops the
+ * clause rather than running the report without it.
+ */
+if (!function_exists('pl_safe_comparison_operator')) {
+	function pl_safe_comparison_operator($operator, $context = 'SQL comparison')
+	{
+		$allowed = array('=', '!=', '<>', '>', '<', '>=', '<=');
+		
+		if (is_string($operator) && in_array(trim($operator), $allowed, true))
+		{
+			return trim($operator);
+		}
+		
+		// Same logging shape as pl_safe_identifier(): control characters
+		// removed so the value cannot forge a log line, length capped so a
+		// large request body cannot flood the log.
+		$candidate = is_string($operator) ? $operator : gettype($operator);
+		$candidate = preg_replace('/[^\x20-\x7E]/', '.', $candidate);
+		
+		if (strlen($candidate) > 64)
+		{
+			$candidate = substr($candidate, 0, 64) . '...';
+		}
+		
+		pl_log_error(
+			'invalid SQL comparison operator rejected by allowlist',
+			$context . ' = ' . $candidate
+		);
+		
+		return false;
 	}
 }
 

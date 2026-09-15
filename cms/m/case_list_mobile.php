@@ -192,6 +192,19 @@ while ($row = DBResult::fetchRow($result))
 		$row['link_target'] = " target=\"_blank\"";
 	}
 	
+	/*	addHtmlRow() writes the row into the template with no cleaning of its
+		own, unlike addRow(). Escape here, at the boundary between row data and
+		row markup: everything above this line came out of the database or out
+		of the authorisation check above, everything below builds HTML.
+	
+		cms/case_list.php does exactly this, in exactly this place, because a
+		case number has no format validation and pl_text_last_name() only
+		concatenates name parts -- so any user who could edit a case could
+		store markup in one and have it run for every user whose list showed
+		it. This page shows the same columns and was left out.
+	*/
+	$row = pl_clean_html_array($row);
+	
 	$cases_table->addHtmlRow($row);
 }
 
