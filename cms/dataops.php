@@ -944,7 +944,7 @@ switch($action)
 	
 	if ('' === $old_pass_in
 		|| '' === $stored_hash
-		|| (md5($old_pass_in) !== $stored_hash && !password_verify($old_pass_in, $stored_hash)))
+		|| (!hash_equals($stored_hash, md5($old_pass_in)) && !password_verify($old_pass_in, $stored_hash)))
 	{
 		header('Location: password.php?error_code=1');
 		exit();

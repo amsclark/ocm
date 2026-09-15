@@ -12676,6 +12676,9 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+echo
+echo "== 83. pikaCms.php does not paste request values into its statements =="
+
 # 83. pikaCms.php builds most of its statements as raw strings, and a long tail
 # of them still pasted request values in unescaped. Two of those were also
 # broken outright: fetchConflicts() looped with each(), removed in PHP 8, and
@@ -12781,6 +12784,84 @@ else
 	fi
 fi
 
+
+echo
+echo "== 84. pl_menu_get() only accepts a bare identifier for a menu name =="
+
+# 84. pl_menu_get() pastes the menu name into "FROM menu_<name>" and pastes
+# the key, value and order columns into the select list. A menu name reaches
+# it from a template lookup tag, and pl_template_sub() re-parses the values it
+# has already substituted, so a request value can end up naming a menu.
+#
+# Nothing was exploitable, but only by accident: a SHOW TABLES loop ran first
+# and required an exact match, so an injected name matched no table. That is a
+# mitigation nobody wrote on purpose and nobody would think to keep. The
+# deliberate one is an allowlist on the name plus backtick-quoted identifiers,
+# and the checks below hold both in place.
+
+if [ -f cms/app/lib/pl.php ]
+then
+	if grep -qF -e 'preg_match('\''/^[A-Za-z0-9_]+$/'\'', $menu_name)' cms/app/lib/pl.php
+	then
+		ok "pl_menu_get() holds the menu name to a bare identifier"
+	else
+		bad "pl_menu_get() no longer checks the menu name - the table name is pasted into the statement"
+	fi
+
+	if grep -qF -e 'SELECT $key, $val FROM $menu_table_name' cms/app/lib/pl.php
+	then
+		bad "pl_menu_get() still builds its select list and FROM clause out of unquoted identifiers"
+	else
+		ok "pl_menu_get() quotes the identifiers it builds its statement from"
+	fi
+fi
+
+if [ -f cms/dataops.php ]
+then
+	# The legacy md5 branch stays, because dropping it locks every account
+	# whose password predates password_hash() out of its own change-password
+	# form. It should at least compare in constant time, as the other three
+	# legacy comparisons in the tree already do.
+	if grep -qF -e 'hash_equals($stored_hash, md5($old_pass_in))' cms/dataops.php
+	then
+		ok "the change-password handler compares the legacy hash in constant time"
+	else
+		bad "the change-password handler compares the legacy md5 hash with a plain !=="
+	fi
+fi
+
+if [ "${HAVE_DB:-0}" != 1 ] || [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip section 84 database and page checks (needs the database and a compose stack)\n'
+else
+	# An allowlist is only safe if it covers every name the installer and the
+	# menu editor actually create. If a menu table ever picks up a character
+	# the pattern refuses, that menu stops loading and the page it feeds goes
+	# quietly empty, so fail here rather than there.
+	mg_bad="$(adb "SHOW TABLES LIKE 'menu\_%'" | grep -cvE '^menu_[A-Za-z0-9_]+$' || true)"
+	mg_all="$(adb "SHOW TABLES LIKE 'menu\_%'" | grep -cE '^menu_' || true)"
+
+	if [ "${mg_all:-0}" -lt 1 ]
+	then
+		printf '  skip the menu name survey (no menu_ tables on this stack)\n'
+	elif [ "${mg_bad:-0}" -ne 0 ]
+	then
+		bad "${mg_bad} menu table(s) have names pl_menu_get() now refuses - those menus will load empty"
+	else
+		ok "all ${mg_all} menu tables have names the allowlist accepts"
+	fi
+
+	# Positive control. cal_adv.php draws its selects from lookup tags, so it
+	# only has options at all if pl_menu_get() still returns rows.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/cal_adv.php"
+
+	if grep -qF -e 'value="1">Yes' "$BODY" && grep -qF -e 'value="0">No' "$BODY"
+	then
+		ok "the advanced calendar still renders the yes_no menu through pl_menu_get()"
+	else
+		bad "the advanced calendar lost its yes_no options - pl_menu_get() is refusing a real menu name"
+	fi
+fi
 
 echo
 echo "smoke: $pass passed, $fail failed"
