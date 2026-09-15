@@ -35,6 +35,20 @@ tests/smoke.sh
 
 That should end with `261 passed, 0 failed`.
 
+### Prebuilt image
+
+Every merge to `master` and every version tag is published to GitHub Container
+Registry as `ghcr.io/amsclark/ocm`. To run that instead of building from
+source, layer the image override over the compose file:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.image.yml up -d --pull always
+```
+
+This runs only the code baked into the image, without the `./cms` bind mount,
+which is what a deployment wants. Pin a version with `OCM_IMAGE_TAG` in `.env`.
+Tags are listed on the [package page](https://github.com/amsclark/ocm/pkgs/container/ocm).
+
 ## Documentation
 
 The [wiki](https://github.com/amsclark/ocm/wiki) is the place to look.
