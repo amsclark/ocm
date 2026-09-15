@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Case Management</title>
+<meta name="description" content="Open Case Management (OCM) is a free, GPL v2 case management system for not-for-profit legal aid organizations. Intakes, cases, calendars, time, documents and LSC reporting, in a web browser.">
+<link rel="icon" href="favicon.ico">
+<meta property="og:title" content="Open Case Management">
+<meta property="og:description" content="Free, GPL v2 case management for legal aid programs. Two commands to run it with Docker.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://amsclark.github.io/ocm/">
+<style>
+  :root {
+    --ink: #1c2230;
+    --ink-soft: #4a5468;
+    --ink-faint: #7c8598;
+    --paper: #f7f5f0;
+    --paper-2: #ffffff;
+    --line: #dcd8cf;
+    --navy: #243b6b;
+    --navy-deep: #182a4e;
+    --accent: #b5542a;
+    --code-bg: #1e2433;
+    --code-fg: #e6e9f0;
+    --max: 1040px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--navy); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--accent); }
+  h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; line-height: 1.15; margin: 0 0 .5em; letter-spacing: -0.01em; }
+  h1 { font-size: clamp(2.2rem, 5vw, 3.4rem); }
+  h2 { font-size: clamp(1.6rem, 3vw, 2.1rem); }
+  h3 { font-size: 1.2rem; margin-bottom: .3em; }
+  p { margin: 0 0 1em; }
+  code { font: 0.92em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #ece9e1; padding: .1em .35em; border-radius: 3px; }
+  pre { background: var(--code-bg); color: var(--code-fg); padding: 1.1rem 1.3rem; border-radius: 8px; overflow-x: auto; margin: 0 0 1em; font-size: .93rem; line-height: 1.55; }
+  pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+  pre .c { color: #8b95ab; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 20px; }
+
+  header { border-bottom: 1px solid var(--line); background: var(--paper-2); position: sticky; top: 0; z-index: 10; }
+  header .wrap { display: flex; align-items: center; gap: 12px; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-family: Georgia, serif; font-size: 1.1rem; color: var(--ink); text-decoration: none; }
+  .brand svg { width: 28px; height: 28px; }
+  nav { margin-left: auto; display: flex; gap: 22px; flex-wrap: wrap; }
+  nav a { text-decoration: none; color: var(--ink-soft); font-size: .95rem; }
+  nav a:hover { color: var(--accent); }
+  nav .gh { color: var(--navy); font-weight: 600; }
+
+  .hero { padding: 72px 0 56px; background: linear-gradient(180deg, #fbfaf7 0%, var(--paper) 100%); }
+  .hero .wrap { display: grid; grid-template-columns: 1.1fr 1fr; gap: 48px; align-items: center; }
+  .eyebrow { color: var(--accent); text-transform: uppercase; letter-spacing: .12em; font-size: .78rem; font-weight: 600; margin-bottom: 14px; }
+  .lede { font-size: 1.2rem; color: var(--ink-soft); max-width: 34em; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 26px; }
+  .btn { display: inline-block; padding: .7em 1.25em; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: .98rem; border: 1px solid transparent; }
+  .btn-primary { background: var(--navy); color: #fff; }
+  .btn-primary:hover { background: var(--navy-deep); color: #fff; }
+  .btn-ghost { border-color: var(--line); color: var(--ink); background: var(--paper-2); }
+  .btn-ghost:hover { border-color: var(--navy); color: var(--navy); }
+  .hero pre { margin: 0; box-shadow: 0 18px 40px -20px rgba(24,42,78,.5); }
+  .hero-note { font-size: .88rem; color: var(--ink-faint); margin-top: 10px; }
+
+  section { padding: 56px 0; }
+  section + section { border-top: 1px solid var(--line); }
+  .section-head { max-width: 40em; margin-bottom: 28px; }
+  .section-head p { color: var(--ink-soft); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 22px; }
+  .card { background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px; padding: 22px 22px 18px; }
+  .card p { color: var(--ink-soft); font-size: .97rem; margin: 0; }
+  .card h3 a { text-decoration: none; }
+  .card h3 a:after { content: " \2192"; color: var(--ink-faint); }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+  .callout { border-left: 4px solid var(--accent); background: var(--paper-2); padding: 16px 20px; border-radius: 0 8px 8px 0; margin: 0 0 1em; }
+  .callout p:last-child { margin: 0; }
+
+  table { border-collapse: collapse; width: 100%; background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #f1eee7; font-weight: 600; font-size: .9rem; }
+  tr:last-child td { border-bottom: 0; }
+
+  ul.checks { list-style: none; padding: 0; margin: 0 0 1em; }
+  ul.checks li { padding-left: 1.6em; position: relative; margin-bottom: .5em; }
+  ul.checks li:before { content: "\2713"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+
+  footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--ink-faint); font-size: .9rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+
+  @media (max-width: 800px) {
+    .hero .wrap, .cols { grid-template-columns: 1fr; }
+    .hero { padding: 44px 0 40px; }
+    nav { gap: 14px; }
+    nav .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="8" fill="#243b6b"/><path d="M24 8 8 17h32z" fill="#fff"/><rect x="10" y="18" width="28" height="3" fill="#fff"/><rect x="12" y="23" width="4" height="12" fill="#fff"/><rect x="19" y="23" width="4" height="12" fill="#fff"/><rect x="26" y="23" width="4" height="12" fill="#fff"/><rect x="33" y="23" width="4" height="12" fill="#fff"/><rect x="8" y="37" width="32" height="3" fill="#fff"/></svg>
+      Open Case Management
+    </a>
+    <nav>
+      <a href="#try" class="hide-sm">Try it</a>
+      <a href="#features" class="hide-sm">What it does</a>
+      <a href="#docs">Docs</a>
+      <a href="#security" class="hide-sm">Security</a>
+      <a href="#about" class="hide-sm">About</a>
+      <a class="gh" href="https://github.com/amsclark/ocm">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<div class="hero">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">Free software &middot; GPL v2</div>
+      <h1>Case management for legal aid.</h1>
+      <p class="lede">OCM tracks intakes, cases, clients and contacts, calendars and deadlines, time entries, documents, and the reporting a legal aid program needs for its funders, including LSC case service reporting. It runs in a web browser.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="#try">Run it in two commands</a>
+        <a class="btn btn-ghost" href="https://github.com/amsclark/ocm/wiki">Read the docs</a>
+      </div>
+    </div>
+    <div>
+<pre><code>git clone https://github.com/amsclark/ocm.git
+cd ocm
+cp .env.example .env   <span class="c"># then set DB_PASSWORD</span>
+docker compose up -d</code></pre>
+      <p class="hero-note">Needs Docker with the Compose plugin. Nothing else.</p>
+    </div>
+  </div>
+</div>
+
+<section id="try">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Try it</h2>
+      <p>The first start builds the image, loads the schema, and prints the generated admin password when it finishes.</p>
+    </div>
+    <div class="cols">
+      <div>
+        <h3>1. Watch the first start</h3>
+<pre><code>docker compose logs -f app</code></pre>
+        <h3>2. Log in</h3>
+        <p>Open <a href="http://127.0.0.1:8080/cms/">http://127.0.0.1:8080/cms/</a> and sign in with the admin password from the log.</p>
+      </div>
+      <div>
+        <h3>3. Check it worked</h3>
+<pre><code>tests/smoke.sh</code></pre>
+        <p>That should end with <code>261 passed, 0 failed</code>.</p>
+        <p>Before you put real client data in it, read <a href="https://github.com/amsclark/ocm/wiki/Installation-with-Docker">Installation with Docker</a>: configuration, backups, and upgrades.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>What it does</h2>
+      <p>The day-to-day work of a legal aid program, in one place.</p>
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Intake</h3><p>Start an intake, run financial and citizenship eligibility, check for conflicts and duplicates, then review and assign it.</p></div>
+      <div class="card"><h3>Cases and contacts</h3><p>Clients, adverse parties, and contacts on every case, with merging of duplicates and peer case transfer.</p></div>
+      <div class="card"><h3>Calendar and deadlines</h3><p>Shared calendars, ticklers, and iCal feeds so staff see what is due.</p></div>
+      <div class="card"><h3>Time and documents</h3><p>Timeslips on every case. Uploaded documents are indexed for search, PDFs and WordPerfect included.</p></div>
+      <div class="card"><h3>Document assembly</h3><p>Form letters and generated documents from case data, with template tags you configure.</p></div>
+      <div class="card"><h3>Reporting</h3><p>Built-in reports plus MegaReport for ad hoc queries, and the case service reporting LSC grantees need.</p></div>
+      <div class="card"><h3>Sign-in security</h3><p>Multi-factor authentication, single sign-on, breached password checks, forced password change, and re-authentication for sensitive actions.</p></div>
+      <div class="card"><h3>Menus and customization</h3><p>Editable menus, custom fields, and HTML fields, so the system fits your program rather than the reverse.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="docs">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Documentation</h2>
+      <p>The <a href="https://github.com/amsclark/ocm/wiki">wiki</a> is the place to look.</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h3><a href="https://github.com/amsclark/ocm/wiki/Installation-with-Docker">Installation with Docker</a></h3>
+        <p>The quick start in full: configuration, backups, upgrades, and what to do before putting real client data in it.</p>
+      </div>
+      <div class="card">
+        <h3><a href="https://github.com/amsclark/ocm/wiki/Installation-without-Docker">Installation without Docker</a></h3>
+        <p>Apache, PHP and MariaDB on a server you manage.</p>
+      </div>
+      <div class="card">
+        <h3><a href="https://github.com/amsclark/ocm/wiki/OCM-Admin-Manual">Admin manual</a></h3>
+        <p>Configuration, users and permissions, customization, upgrades.</p>
+      </div>
+      <div class="card">
+        <h3><a href="https://github.com/amsclark/ocm/wiki/OCM-User-Manual">User manual</a></h3>
+        <p>Intakes, cases, the calendar, reports.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="requirements">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h2>Requirements</h2>
+        <p>For running it directly rather than in a container.</p>
+        <table>
+          <tr><th>Component</th><th>Version</th></tr>
+          <tr><td>PHP</td><td>8.0 &ndash; 8.3, with <code>mysqli</code>, <code>mbstring</code> and <code>zip</code></td></tr>
+          <tr><td>MariaDB</td><td>10.6 or newer, or MySQL 8.0</td></tr>
+          <tr><td>Apache</td><td>2.4, with <code>mod_rewrite</code> and <code>mod_headers</code></td></tr>
+        </table>
+      </div>
+      <div>
+        <h2>Three optional tools</h2>
+        <p>Each one enables a single feature. Leave one out and that feature fails quietly: the upload still succeeds, but document search will not find its contents.</p>
+        <ul class="checks">
+          <li><code>pdftotext</code> (poppler-utils) indexes the text of uploaded PDFs</li>
+          <li><code>htmldoc</code> renders reports to PDF</li>
+          <li><code>strings</code> (binutils) indexes WordPerfect documents</li>
+        </ul>
+        <p><code>httpd-config/ocm.conf</code> is a ready-made Apache configuration. Use it. Among other things it makes <code>cms-custom</code> unreachable over HTTP, and that directory holds your database password.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Security</h2>
+      <p>Read <a href="https://github.com/amsclark/ocm/blob/master/SECURITY.md">SECURITY.md</a> before running this anywhere that holds real client data. It sets out what is supported, what is in scope, and how to report a vulnerability privately.</p>
+    </div>
+    <div class="cols">
+      <div class="callout">
+        <h3>Put TLS in front of it</h3>
+        <p>Nothing in this repository terminates HTTPS. The in-application setting named "Allow Only Secure (HTTPS) Logins" sends a redirect and does no more than that. The web server is what enforces HTTPS.</p>
+      </div>
+      <div class="callout">
+        <h3>Report vulnerabilities privately</h3>
+        <p>For anything that looks like a vulnerability, do not open an issue. Follow the process in SECURITY.md.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="about">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h2>What this repository is</h2>
+        <p>OCM is a fork of Pika CMS, which Aaron Worley released under the GPL. This repository holds the 2019 feature set, and it stays there on purpose.</p>
+        <p>Development since then has continued in a private fork, which is where new features go. What comes back here is security work and bug fixes, backported from that fork. So this repository gets more secure and more correct over time without growing new features, which keeps it a stable base for anyone running it or building on it.</p>
+        <p>Commercial hosting and support are available from Case Management Corporation, the maintainer of this repository.</p>
+      </div>
+      <div>
+        <h2>Contributing</h2>
+        <p>Bug reports and pull requests are welcome <a href="https://github.com/amsclark/ocm/issues">on GitHub</a>. Two things will get a pull request merged faster:</p>
+        <ul class="checks">
+          <li><code>tests/smoke.sh</code> passes</li>
+          <li><code>php -l</code> is clean on every file you touched</li>
+        </ul>
+        <p>CI checks both, on PHP 8.2.</p>
+        <p>Please do not send new features. They will not be merged here. A feature idea is still worth an issue; it may land in the private fork and reach you that way if you are a hosting customer.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>GPL v2. Full text in <a href="https://github.com/amsclark/ocm/blob/master/LICENSE">LICENSE</a>.</span>
+    <span>Copyright of the original Pika CMS work remains with its authors.</span>
+    <span><a href="https://github.com/amsclark/ocm">Source on GitHub</a></span>
+  </div>
+</footer>
+
+</body>
+</html>
