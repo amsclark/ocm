@@ -1715,7 +1715,7 @@ class pikaCms
 	
 	function updateGroup($a)
 	{
-		$sql = pl_build_sql('UPDATE', '`groups`:', $a);
+		$sql = pl_build_sql('UPDATE', '`groups`', $a);
 		$result = DB::query($sql);
 		return $result;
 	}
