@@ -594,7 +594,18 @@ function pl_table_autosql_update($table, $data)
 		}
 	}
 	
-	$sql .= " WHERE $primary_key='" . $data["$primary_key"] . "'";
+	/*	The primary key was the one value in this builder that never went
+		through the escaper. Every column written into the SET list above is
+		passed through DB::escapeString(), but the key column is deliberately
+		left out of that list, so its value reached the WHERE clause exactly
+		as the caller supplied it.
+
+		pl_grab_vars() is the usual caller, and it reads the key straight out
+		of the request. It filters the value with pl_clean_form_input() in
+		'primary_key' mode, and that mode turns < and > into entities and
+		nothing else, so both quote characters arrive intact.
+	*/
+	$sql .= " WHERE $primary_key='" . DB::escapeString($data["$primary_key"]) . "'";
 	
 	$sql .= ' LIMIT 1';
 

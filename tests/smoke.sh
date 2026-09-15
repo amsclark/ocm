@@ -12544,6 +12544,137 @@ else
 	fi
 fi
 
+# ---------------------------------------------------------------------------
+# 82. pl_table_autosql_update() escapes the primary key it puts in the WHERE
+# clause.
+#
+# The builder escapes every column it writes into the SET list, but the key
+# column is deliberately left out of that list, so its value used to reach
+# "WHERE <key>='<value>'" exactly as the request supplied it. pl_grab_vars()
+# reads the key out of the request and filters it in 'primary_key' mode, and
+# that mode turns < and > into entities and nothing else, so both quote
+# characters arrive intact.
+#
+# The authorization gate in dataops.php does not stop this. It looks the case
+# up with a prepared statement, but cases.case_id is an int column, and MariaDB
+# coerces the whole injected string to the integer it starts with. So the gate
+# sees only the case the caller is allowed to edit while the UPDATE underneath
+# writes somewhere else.
+#
+# Two assertions, because they fail in opposite directions. The victim case
+# must not change -- that is the vulnerability. The caller's own case must
+# change -- without that a request rejected outright, for any unrelated reason,
+# would look like a pass.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 82. the update builder escapes the primary key in its where clause =="
+
+# 82a. The typo that kept this path from being reachable through the group
+# editor at all. pl_build_sql() takes the table name straight through to
+# DESCRIBE, so a stray character means every group save silently DESCRIBEs a
+# table that does not exist and writes nothing.
+if [ -f cms/app/extralib/lib/pikaCms.php ]
+then
+	if grep -qF -e "pl_build_sql('UPDATE', '\`groups\`', \$a)" cms/app/extralib/lib/pikaCms.php
+	then
+		ok "updateGroup() names the groups table the same way addGroup() does"
+	else
+		bad "updateGroup() does not pass a clean groups table name to pl_build_sql()"
+	fi
+fi
+
+if [ "${HAVE_DB:-0}" != 1 ] || [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip section 82 (needs the database and a compose stack)\n'
+else
+	pk_uid="$(adb "SELECT user_id FROM users WHERE username='${OCM_USER}' LIMIT 1")"
+	case "$pk_uid" in
+		''|*[!0-9]*) pk_uid='' ;;
+	esac
+
+	pk_restore() {
+		# Only the two rows this section inserted, addressed by the ids it
+		# chose, so nothing that was already in the table can be caught.
+		if [ -n "${pk_c1:-}" ]
+		then
+			adb "DELETE FROM cases WHERE case_id IN (${pk_c1}, ${pk_c2})" >/dev/null
+		fi
+	}
+
+	if [ -z "$pk_uid" ]
+	then
+		printf '  skip section 82 (could not find the acting user)\n'
+	else
+		# Two cases of this section's own, above whatever ids are in use.
+		# cases.case_id is a plain int primary key and not auto-increment, so
+		# the id has to be supplied; leaving it out gives both rows id 0 and
+		# the second one is silently dropped.
+		pk_max="$(adb "SELECT COALESCE(MAX(case_id),0) FROM cases")"
+		case "$pk_max" in
+			''|*[!0-9]*) pk_max='' ;;
+		esac
+
+		if [ -z "$pk_max" ]
+		then
+			printf '  skip section 82 (could not read the case ids in use)\n'
+		else
+			pk_c1=$((pk_max + 1))
+			pk_c2=$((pk_max + 2))
+			adb "INSERT INTO cases (case_id, number, user_id, office, status)
+			VALUES (${pk_c1}, 'ZZ-PK-MINE', ${pk_uid}, 'AA', '1'),
+			(${pk_c2}, 'ZZ-PK-OTHER', ${pk_uid}, 'BB', '1')" >/dev/null
+			pk_seeded="$(adb "SELECT COUNT(*) FROM cases WHERE case_id IN (${pk_c1}, ${pk_c2})")"
+
+			# Fetch a token of this session's own rather than reusing one from
+			# an earlier section, which the re-auth checks may have rotated.
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/system-maint.php" >/dev/null
+			pk_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+				| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+
+			if [ "${pk_seeded:-0}" != 2 ] || [ "${#pk_tok}" -ne 64 ]
+			then
+				printf '  skip section 82 (could not set up the two cases and a token)\n'
+			else
+				# Closes the quote, names the second case, then comments out
+				# the LIMIT 1 the builder appends so both rows are in range.
+				# The value still starts with the id the caller may edit, so
+				# the authorization gate above it is satisfied.
+				pk_payload="${pk_c1}' OR case_id='${pk_c2}' ORDER BY case_id DESC #"
+
+				curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+					--data-urlencode "action=update_case" \
+					--data-urlencode "_csrf=${pk_tok}" \
+					--data-urlencode "case_id=${pk_payload}" \
+					--data-urlencode "office=ZZ" \
+					"$OCM_URL/dataops.php" >/dev/null
+
+				pk_mine="$(adb "SELECT office FROM cases WHERE case_id=${pk_c1}")"
+				pk_other="$(adb "SELECT office FROM cases WHERE case_id=${pk_c2}")"
+
+				if [ "$pk_other" = 'ZZ' ]
+				then
+					bad "a case_id carrying a quote wrote a second case the request never named"
+				else
+					ok "a case_id carrying a quote does not reach a second case"
+				fi
+
+				# The request has to have done its ordinary work, otherwise
+				# the check above passes on any request that failed early.
+				if [ "$pk_mine" = 'ZZ' ]
+				then
+					ok "the same request still updated the case it was allowed to update"
+				else
+					bad "update_case wrote nothing at all (office is '${pk_mine}') - section 82 proved nothing"
+				fi
+			fi
+		fi
+
+		pk_restore
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
