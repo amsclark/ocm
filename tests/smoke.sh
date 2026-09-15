@@ -12405,6 +12405,145 @@ then
 	fi
 fi
 
+# ---------------------------------------------------------------------------
+# 81. plFlexList builds its own pager urls, and the sort column it puts in them
+# comes straight from ?order_field=.
+#
+# pl_grab_get() turns < and > into entities but leaves the double quote alone,
+# so a value holding one closed the href attribute and everything after it was
+# read as further attributes of the <a> tag. An event handler needs no angle
+# bracket, so the existing filter never saw it. The SQL side of the same value
+# was fixed earlier -- pl_safe_order_by() guards the ORDER BY -- which is why
+# this one survived: the query was safe and the link was not.
+#
+# The check needs a pager on the screen, and a pager only appears when the list
+# holds more rows than one page. So the section does two things and undoes both
+# afterwards: it drops the acting user's page size to 1, and it adds two cases
+# of its own. The page size is read from users.session_data on every request,
+# not from the session, so it has to be changed in the database to be seen. The
+# cases are added rather than assumed because a freshly installed stack holds
+# fewer cases than one page, and on one of those the section would otherwise
+# skip itself and guard nothing.
+#
+# Both halves are asserted: no break-out, AND the value present in the url in
+# percent-encoded form. Without the second assertion the section would pass on
+# any page that simply never rendered a pager.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 81. the flex list pager escapes the sort column it was handed =="
+
+if [ "${HAVE_DB:-0}" != 1 ] || [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip section 81 (needs the database and a compose stack)\n'
+else
+	fx_uid="$(adb "SELECT user_id FROM users WHERE username='${OCM_USER}' LIMIT 1")"
+	fx_sd="$(adb "SELECT HEX(session_data) FROM users WHERE user_id=${fx_uid}")"
+	case "$fx_sd" in
+		''|NULL) fx_sd='' ;;
+	esac
+
+	# Rewrite one key of the serialised preference array and hand back the
+	# result as hex, so nothing that came out of the database has to survive
+	# a trip through the shell.
+	fx_paging_hex() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+			$raw = $argv[1] === "" ? "" : hex2bin($argv[1]);
+			$a = @unserialize($raw);
+			if (!is_array($a)) { $a = array(); }
+			$a["paging"] = $argv[2];
+			echo bin2hex(serialize($a));
+		' "$1" "$2" </dev/null | tr -d '\r\n'
+	}
+
+	fx_restore() {
+		# Only the two rows this section inserted, addressed by the ids it
+		# chose, so nothing that was already in the table can be caught.
+		if [ -n "${fx_c1:-}" ]
+		then
+			adb "DELETE FROM cases WHERE case_id IN (${fx_c1}, ${fx_c2})" >/dev/null
+		fi
+		if [ -z "$fx_sd" ]
+		then
+			adb "UPDATE users SET session_data=NULL WHERE user_id=${fx_uid}" >/dev/null
+		else
+			adb "UPDATE users SET session_data=UNHEX('${fx_sd}') WHERE user_id=${fx_uid}" >/dev/null
+		fi
+	}
+
+	fx_small="$(fx_paging_hex "$fx_sd" 1)"
+	if [ -z "$fx_small" ] || [ -z "$fx_uid" ]
+	then
+		printf '  skip section 81 (could not rewrite the page size)\n'
+	else
+		adb "UPDATE users SET session_data=UNHEX('${fx_small}') WHERE user_id=${fx_uid}" >/dev/null
+
+		# Two cases of this section's own, above whatever ids are in use, so
+		# the list is longer than the one row a page now holds. cases.case_id
+		# is a plain int primary key and not auto-increment, so the id has to
+		# be supplied here; leaving it out gives both rows id 0 and the second
+		# one is silently dropped.
+		fx_max="$(adb "SELECT COALESCE(MAX(case_id),0) FROM cases")"
+		case "$fx_max" in
+			''|*[!0-9]*) fx_max='' ;;
+		esac
+		if [ -n "$fx_max" ]
+		then
+			fx_c1=$((fx_max + 1))
+			fx_c2=$((fx_max + 2))
+			adb "INSERT INTO cases (case_id, number, user_id, office, status)
+			VALUES (${fx_c1}, 'ZZ-FLEX-1', ${fx_uid}, NULL, '1'),
+			(${fx_c2}, 'ZZ-FLEX-2', ${fx_uid}, NULL, '1')" >/dev/null
+			fx_seeded="$(adb "SELECT COUNT(*) FROM cases WHERE case_id IN (${fx_c1}, ${fx_c2})")"
+		else
+			fx_seeded=0
+		fi
+
+		# The probe. A double quote, then an event handler, in the sort column.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+			"$OCM_URL/case_list.php?order_field=open_date%22%20onmouseover%3D%22zzFLEXXSS()&order=DESC" >/dev/null
+
+		if grep -qF 'offset=' "$BODY"
+		then
+			if grep -qF 'onmouseover="zzFLEXXSS()' "$BODY"
+			then
+				bad "ORDER_FIELD BREAKS OUT OF THE PAGER HREF ON case_list.php"
+			else
+				ok "a quote in order_field does not break out of the pager href"
+			fi
+
+			# The pass above is only worth something if the value reached the url.
+			if grep -qF 'order_field=open_date%22%20onmouseover%3D%22zzFLEXXSS' "$BODY"
+			then
+				ok "the pager url carries the sort column percent-encoded"
+			else
+				bad "the sort column is not percent-encoded in the pager url - it was left raw, or it never reached one"
+			fi
+
+			# And the ordinary case still has to work: a real column name goes
+			# into the pager unchanged, so no sort link moved.
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/case_list.php?order_field=open_date&order=DESC" >/dev/null
+			if grep -qF 'order_field=open_date&order=DESC&offset=' "$BODY"
+			then
+				ok "a plain column name still passes through the pager unchanged"
+			else
+				bad "the pager no longer carries a plain column name"
+			fi
+		elif [ "${fx_seeded:-0}" = 2 ]
+		then
+			# The rows are in the table and the page holds one row, so a pager
+			# is owed. Skipping here would let the section pass on a page that
+			# never exercised the code it is meant to guard.
+			bad "no pager on case_list.php with 2 extra cases and a page size of 1"
+		else
+			printf '  skip section 81 (could not add the cases a pager needs)\n'
+		fi
+
+		fx_restore
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

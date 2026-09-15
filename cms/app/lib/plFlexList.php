@@ -134,7 +134,27 @@ class plFlexList
 	{
 		// The pager.
 		$pager_str = '';
-		$pager_url = "{$this->table_url}?{$this->get_url}{$this->pager_prefix}order_field={$this->order_field}&{$this->pager_prefix}order={$this->order}";		
+		/*	order_field and order arrive from the query string. pl_grab_get()
+			turns < and > into entities but leaves the double quote alone, so
+			an order_field carrying one closed the href attribute below and
+			everything after it was read as further attributes of the <a>
+			tag. No angle bracket is needed for that, which is why the
+			existing filter did not stop it.
+			
+			rawurlencode() is the escape that belongs here, because both
+			values are query string values: it removes the double quote, the
+			ampersand and the equals sign in one step, and it leaves a real
+			column name such as open_date untouched, so no link in the pager
+			moves.
+			
+			get_url is deliberately NOT escaped again. setFilterParams()
+			already ran pl_clean_html() over every key and value, so a second
+			pass would turn each & into &amp;amp; and show stored brackets as
+			literal entities.
+		*/
+		$safe_order_field = rawurlencode((string) $this->order_field);
+		$safe_order = rawurlencode((string) $this->order);
+		$pager_url = "{$this->table_url}?{$this->get_url}{$this->pager_prefix}order_field={$safe_order_field}&{$this->pager_prefix}order={$safe_order}";		
 		$current_page = $last_page = 0;
 		if($this->records_per_page > 0)
 		{
@@ -278,7 +298,14 @@ class plFlexList
 				$next_order = 'DESC';
 			}
 			
-			$this->template_array["{$val}_url"] = "{$this->table_url}?{$this->get_url}order_field={$val}&order={$next_order}";
+			/*	The same encoding as the pager. Every caller in the tree sets
+				column_names to a literal array, so $val is not request data
+				today. Encoding it anyway keeps both URL builders in this class
+				under one rule; the two drifting apart is what produced the
+				pager defect.
+			*/
+			$this->template_array["{$val}_url"] = "{$this->table_url}?{$this->get_url}order_field="
+				. rawurlencode((string) $val) . "&order={$next_order}";
 			
 			if ($val == $this->order_field)
 			{
