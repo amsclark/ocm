@@ -9,7 +9,7 @@ function pika_area_code(what, max, field_name)
 {	
 	if (max > 0 && what.value.length >= max && ac_autotab_on == 1)
 	{
-		eval('document.fc.' + field_name + '.focus()');
+		document.fc[field_name].focus();
 	}
 	
 	if (what.value.length >= 3)

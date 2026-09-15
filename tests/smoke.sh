@@ -9991,13 +9991,28 @@ else
 		fi
 	done
 
-	# script-src must still allow inline and eval, or the 2019 templates stop
-	# working. This check is here to fail loudly on the day someone tightens
-	# the policy without converting the inline handlers first.
-	if printf '%s' "$csp" | grep -qF "script-src 'self' 'unsafe-inline' 'unsafe-eval'"; then
-		ok "script-src still allows the inline handlers the templates need"
+	# script-src must still allow inline handlers -- 44 inline <script>
+	# blocks, 106 on* handler attributes and 22 javascript: URLs still need
+	# 'unsafe-inline' -- but the 9 eval() calls are converted, so
+	# 'unsafe-eval' is gone and has to stay gone. Both halves are checked,
+	# so neither re-adding eval nor dropping inline passes quietly.
+	if printf '%s' "$csp" | grep -qF "script-src 'self' 'unsafe-inline'" \
+		&& ! printf '%s' "$csp" | grep -qF "'unsafe-eval'"; then
+		ok "script-src allows the inline handlers but no longer allows eval"
 	else
-		bad "script-src changed; the inline handlers and eval() sites must be converted first"
+		bad "script-src must keep 'unsafe-inline' and drop 'unsafe-eval' [${csp}]"
+	fi
+
+	# The header above is only honest if the eval() calls really are gone,
+	# so check the tree as well. A reintroduced eval() under this policy is
+	# a silently dead handler, not a failed request, which is exactly the
+	# kind of break a header check cannot see.
+	csp_eval_files="$(grep -rlF 'eval(' cms/ --include='*.js' --include='*.html' \
+		--include='*.php' 2>/dev/null | grep -vF '.min.js' | wc -l)"
+	if [ "$csp_eval_files" -eq 0 ]; then
+		ok "no eval() call is left in the js or the subtemplates"
+	else
+		bad "eval() is back in ${csp_eval_files} file(s), which script-src now blocks"
 	fi
 
 	if printf '%s' "$csp" | grep -qiE "(script|style|img|font|connect)-src[^;]*https?://"; then

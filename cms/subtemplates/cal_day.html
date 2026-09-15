@@ -6,7 +6,7 @@ function checkAll()
 	for (j = 0; j < i; j++)
 	{
 		k = (j * 2);
-		eval("document.act_update_bulk.elements[" + k + "].checked = true;");
+		document.act_update_bulk.elements[k].checked = true;
 	}
 }
 
@@ -17,7 +17,7 @@ function uncheckAll()
 	for (j = 0; j < i; j++)
 	{
 		k = (j * 2);
-		eval("document.act_update_bulk.elements[" + k + "].checked = false;");
+		document.act_update_bulk.elements[k].checked = false;
 	}
 }
 </script>
