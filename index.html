@@ -162,10 +162,16 @@ docker compose up -d</code></pre>
       <div>
         <h3>3. Check it worked</h3>
 <pre><code>tests/smoke.sh</code></pre>
-        <p>That should end with <code>261 passed, 0 failed</code>.</p>
+        <p>That should end with <code>844 passed, 0 failed</code>.</p>
         <p>Before you put real client data in it, read <a href="https://github.com/amsclark/ocm/wiki/Installation-with-Docker">Installation with Docker</a>: configuration, backups, and upgrades.</p>
       </div>
     </div>
+    <div class="section-head" style="margin-top:2.5rem">
+      <h3>Or skip the build</h3>
+      <p>Every merge and every version tag is published as a ready-made image at <a href="https://github.com/amsclark/ocm/pkgs/container/ocm">ghcr.io/amsclark/ocm</a>. Run that instead of building from source:</p>
+    </div>
+<pre><code>docker compose -f docker-compose.yml -f docker-compose.image.yml up -d --pull always</code></pre>
+    <p class="hero-note">Pin a version with <code>OCM_IMAGE_TAG</code> in <code>.env</code>. This runs only the code in the image, without the source bind mount, which is what a deployment wants.</p>
   </div>
 </section>
 
