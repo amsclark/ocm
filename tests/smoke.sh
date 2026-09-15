@@ -12675,6 +12675,113 @@ else
 	fi
 fi
 
+# ----------------------------------------------------------------------------
+# 83. pikaCms.php builds most of its statements as raw strings, and a long tail
+# of them still pasted request values in unescaped. Two of those were also
+# broken outright: fetchConflicts() looped with each(), removed in PHP 8, and
+# deleteActivity() pasted its id in unquoted.
+#
+# The two static checks below name the broken pair. The live check that follows
+# is the one that matters for the rest: the sweep added escapeString() and int
+# casts to about forty statements, and the way that goes wrong is not an
+# injection but an ordinary query that quietly stops matching. So seed two
+# activities on two different days and ask the day calendar for one of them.
+
+if [ -f cms/app/extralib/lib/pikaCms.php ]
+then
+	if grep -qF -e 'each($contact_ids)' cms/app/extralib/lib/pikaCms.php
+	then
+		bad "fetchConflicts() still calls each(), which is a fatal error on PHP 8"
+	else
+		ok "fetchConflicts() no longer calls each()"
+	fi
+
+	if grep -qF -e 'WHERE act_id=$act_id LIMIT 1' cms/app/extralib/lib/pikaCms.php
+	then
+		bad "deleteActivity() still pastes act_id into the statement unquoted"
+	else
+		ok "deleteActivity() does not paste act_id into the statement unquoted"
+	fi
+fi
+
+if [ "${HAVE_DB:-0}" != 1 ] || [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip section 83 (needs the database and a compose stack)\n'
+else
+	ak_uid="$(adb "SELECT user_id FROM users WHERE username='${OCM_USER}' LIMIT 1")"
+	case "$ak_uid" in
+		''|*[!0-9]*) ak_uid='' ;;
+	esac
+
+	# Fixed dates, not today's. The application runs on America/New_York and
+	# this script does not, so a fixture dated from the shell is a different
+	# day from the one the page defaults to for part of every evening.
+	ak_day='2031-03-04'
+	ak_next='2031-03-05'
+
+	ak_restore() {
+		# Only this section's own ids.
+		adb "DELETE FROM activities WHERE act_id IN (929301, 929302)" >/dev/null
+		if [ -n "${ak_case:-}" ]
+		then
+			adb "DELETE FROM cases WHERE case_id=${ak_case}" >/dev/null
+		fi
+	}
+
+	if [ -z "$ak_uid" ]
+	then
+		printf '  skip section 83 (could not find the acting user)\n'
+	else
+		ak_max="$(adb "SELECT COALESCE(MAX(case_id),0) FROM cases")"
+		case "$ak_max" in
+			''|*[!0-9]*) ak_max='' ;;
+		esac
+
+		if [ -z "$ak_max" ]
+		then
+			printf '  skip section 83 (could not read the case ids in use)\n'
+		else
+			ak_case=$((ak_max + 1))
+			adb "INSERT INTO cases (case_id, number, user_id, office, status)
+			VALUES (${ak_case}, 'ZZ-AK-CASE', ${ak_uid}, 'AA', '1')" >/dev/null
+
+			# act_time stays NULL: the page passes a time only when the day
+			# asked for is today, and these two days are not.
+			adb "DELETE FROM activities WHERE act_id IN (929301, 929302)" >/dev/null
+			adb "INSERT INTO activities (act_id, user_id, case_id, act_date, completed, summary)
+			VALUES (929301, ${ak_uid}, ${ak_case}, '${ak_day}', 0, 'ZZAKWANTED'),
+			(929302, ${ak_uid}, ${ak_case}, '${ak_next}', 0, 'ZZAKOTHERDAY')" >/dev/null
+
+			ak_seeded="$(adb "SELECT COUNT(*) FROM activities WHERE act_id IN (929301, 929302)")"
+
+			if [ "${ak_seeded:-0}" != 2 ]
+			then
+				printf '  skip section 83 (could not seed the two activities)\n'
+			else
+				curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+					"$OCM_URL/cal_day.php?cal_date=${ak_day}" >/dev/null
+
+				if grep -qF -e 'ZZAKWANTED' "$BODY"
+				then
+					ok "the day calendar still lists the activity seeded for that day"
+				else
+					bad "the day calendar lost the activity seeded for ${ak_day} - a pikaCms.php filter stopped matching"
+				fi
+
+				if grep -qF -e 'ZZAKOTHERDAY' "$BODY"
+				then
+					bad "the day calendar for ${ak_day} also listed an activity dated ${ak_next}"
+				else
+					ok "the day calendar for one day does not list another day's activity"
+				fi
+			fi
+		fi
+
+		ak_restore
+	fi
+fi
+
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
