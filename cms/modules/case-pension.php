@@ -1,21 +1,5 @@
 <?php
 
-require_once('pikaPensionPlan.php');
-
-$case_row['pension_plan_name'] = 'No Plan Selected';
-if(is_numeric($case_row['pension_plan_id']))
-{
-	$pension_plan = new pikaPensionPlan($case_row['pension_plan_id']);
-	$plan_name = "No Plan Name Entered";
-	if(strlen($pension_plan->plan_name) > 0)
-	{
-		$plan_name = $pension_plan->plan_name;
-	}
-	$case_row['pension_plan_name'] = "<a href=\"{$base_url}/pension_plans.php?action=edit&pension_plan_id={$case_row['pension_plan_id']}\">{$plan_name}</a>";
-	$case_row['pension_plan_remove_link'] = "&nbsp;(<a href=\"{$base_url}/assign_plan.php?action=assign&case_id={$case_id}&pension_plan_id=\">Remove</a>)";
-
-}
-
 $menu_mortality_table = array(
 	'1' => "Combined Static",
 	'2' => "Static",
