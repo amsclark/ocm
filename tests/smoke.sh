@@ -4089,9 +4089,25 @@ if [ "$HAVE_DB" = 1 ]; then
 	LKUSER='zz_lk_user'
 	LKPASS='zz-Lk-Passw0rd'
 	LKJAR="$(mktemp)"
-	LK_TODAY="$(date +%Y-%m-%d)"
-	LK_OLD="$(date -d '-30 days' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d)"
-	LK_FUTURE="$(date -d '+3 days' +%Y-%m-%d 2>/dev/null || date -v+3d +%Y-%m-%d)"
+	# These dates must be the application's, not the shell's. pika_init()
+	# calls date_default_timezone_set() with the time_zone setting and
+	# defaults it to America/New_York, so between midnight UTC and that
+	# offset the shell's today is the application's tomorrow. A
+	# future-dated entry is a scheduled appointment the handler
+	# deliberately leaves at 0 hours, so reading the date from the shell
+	# made 34a pass all afternoon and fail every run made at night.
+	LK_DATES="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+		define("PL_DISABLE_SECURITY", true);
+		chdir("/var/www/html/cms");
+		require_once("pika-danio.php");
+		pika_init();
+		echo date("Y-m-d"), " ",
+			date("Y-m-d", strtotime("-30 days")), " ",
+			date("Y-m-d", strtotime("+3 days"));
+	' </dev/null 2>/dev/null)"
+	LK_TODAY="$(printf '%s' "$LK_DATES" | awk '{print $1}')"
+	LK_OLD="$(printf '%s' "$LK_DATES" | awk '{print $2}')"
+	LK_FUTURE="$(printf '%s' "$LK_DATES" | awk '{print $3}')"
 
 	cleanup_lk() {
 		adb "DELETE FROM activities WHERE summary LIKE 'ZZLK%'" >/dev/null
