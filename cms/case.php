@@ -30,21 +30,10 @@ function pl_warning($str)
 }
 
 
-/*	Answer a request for a case this user may not see, and say nothing else.
-
-	Used for both a case_id that does not exist and a case_id the caller is
-	not authorized to read, so the two are indistinguishable.
+/*	pl_case_not_viewable() used to be defined here. It is in
+	cms/app/lib/pl.php now, because cms/transfer.php answers an unauthorized
+	request the same way and a page cannot be included from another page.
 */
-function pl_case_not_viewable($base_url)
-{
-	http_response_code(403);
-	$main_html = array();
-	$main_html['page_title'] = 'Case';
-	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php/\">Cases</a>";
-	$main_html['content'] = "This case is not viewable.";
-	$default_template = new pikaTempLib('templates/default.html', $main_html);
-	pika_exit($default_template->draw());
-}
 
 
 // VARIABLES

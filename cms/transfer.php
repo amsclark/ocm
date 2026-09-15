@@ -43,22 +43,81 @@ $base_url = pl_settings_get('base_url');
 
 $case_number = 'No Case #';
 
-/*	Only look a case up when the request named one.
+/*	ENFORCE PERMISSIONS
 
-	pikaCase's constructor treats a null id as a new case, and a new case is
-	given a case number straight away - which draws the next value from the
-	'case_number' counter and leaves it drawn, because nothing here saves the
-	case. So loading this page without a case, or with a case_id that is not
-	a number, used to consume a case number every time. Nothing on this page
-	needs the case for anything except its number.
+	This page had no authorization check of any kind. It took a case_id from
+	the query string and printed that case's number into the breadcrumb and
+	into the two value="..." attributes of subtemplates/transfer.html, so a
+	user whose group holds no flags at all could read the number of any case
+	in the system by asking for its id here -- while case.php answered the
+	same id with a 403. It also listed every configured transfer destination
+	to whoever loaded it. CWE-862.
+
+	The predicate is the one the handler already applies:
+	ops/transfer_case.php refuses unless pika_authorize('edit_case', ...) on
+	the case being transferred. Using the same one here means nobody who
+	could actually complete a transfer loses the page, and the form stops
+	being drawn for people the handler would refuse anyway.
+
+	A request that names no case is refused too. Every link into this page
+	carries a case_id -- the button in subtemplates/case_screen.html and the
+	hidden field in the form in subtemplates/transfer.html -- and the handler
+	refuses a request without one, so there is nothing to serve.
+
+	The old code also explains why the lookup is guarded rather than
+	unconditional: pikaCase's constructor treats a null id as a NEW case, and
+	a new case draws the next value from the 'case_number' counter straight
+	away and leaves it drawn, because nothing here saves the case. Loading
+	this page without a case used to consume a case number every time.
 */
-if (!is_null($case_id))
+if (is_null($case_id))
 {
-	$case = new pikaCase($case_id);
-	if (strlen((string) $case->number) > 0)
-	{
-		$case_number = $case->number;
-	}
+	pl_case_not_viewable($base_url);
+}
+
+/*	Confirm the row is there before constructing pikaCase. plBase's
+	constructor answers a missing row with trigger_error(), and
+	pl_error_handler() turns that into the generic error page and
+	pika_exit()s -- so `new pikaCase($absent_id)` never returns and a check
+	made after it can never run. Same guard as cms/ops/upload_document.php.
+*/
+$case_exists = false;
+$result = DB::query(
+	"SELECT case_id FROM cases WHERE case_id = '"
+	. DB::escapeString((string) (int) $case_id) . "' LIMIT 1"
+);
+
+if ($result && DBResult::numRows($result) > 0)
+{
+	$case_exists = true;
+}
+
+if (!$case_exists)
+{
+	pl_case_not_viewable($base_url);
+}
+
+$case = new pikaCase($case_id);
+
+/*	Read the row through getValues() rather than testing the magic property:
+	plBase exposes columns through __get() but defines no __isset(), so
+	empty()/isset() on one is always true whatever the loaded value is.
+*/
+$case_row = $case->getValues();
+
+if (!is_array($case_row) || empty($case_row['case_id']))
+{
+	pl_case_not_viewable($base_url);
+}
+
+if (!pika_authorize('edit_case', $case_row))
+{
+	pl_case_not_viewable($base_url);
+}
+
+if (strlen((string) $case->number) > 0)
+{
+	$case_number = $case->number;
 }
 
 /*	A case number is a stored value that a user types, and every use of it

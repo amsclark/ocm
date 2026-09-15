@@ -3542,6 +3542,28 @@ if (!function_exists('pl_strip_protected_columns')) {
 	}
 }
 
+/*	Answer a request for a case this user may not see, and say nothing else.
+
+	Used for a case_id that does not exist and for a case_id the caller is not
+	authorized to, so the two are indistinguishable: the caller cannot use the
+	refusal to learn which case numbers are real.
+
+	This lived in cms/case.php, which is a page and cannot be included from
+	another page. cms/transfer.php needs the same answer, so it lives here
+	now and both pages call it.
+*/
+function pl_case_not_viewable($base_url)
+{
+	require_once('pikaTempLib.php');
+	http_response_code(403);
+	$main_html = array();
+	$main_html['page_title'] = 'Case';
+	$main_html['nav'] = "<a href=\"{$base_url}/\">Pika Home</a> &gt; <a href=\"{$base_url}/case_list.php/\">Cases</a>";
+	$main_html['content'] = "This case is not viewable.";
+	$default_template = new pikaTempLib('templates/default.html', $main_html);
+	pika_exit($default_template->draw());
+}
+
 // User SESSION Functions
 
 function pl_session_close()
