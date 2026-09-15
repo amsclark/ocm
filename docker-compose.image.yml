@@ -1,0 +1,21 @@
+# Run the prebuilt image from GitHub Container Registry instead of building
+# from source. Layer it over docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.image.yml up -d --pull always
+#
+# Pin a version with OCM_IMAGE_TAG in .env, for example OCM_IMAGE_TAG=1.0.0.
+# Tags are listed at https://github.com/amsclark/ocm/pkgs/container/ocm
+#
+# The bind mount of ./cms is dropped here on purpose: this stack runs only the
+# code baked into the image, which is what a deployment wants. The named
+# volumes for cms-custom and uploads stay, so data survives an image update.
+#
+# Needs Docker Compose 2.24 or newer for !reset and !override.
+
+services:
+  app:
+    image: ghcr.io/amsclark/ocm:${OCM_IMAGE_TAG:-latest}
+    build: !reset null
+    volumes: !override
+      - cms_custom:/var/www/html/cms-custom
+      - uploads:/var/www/html/cms/uploads
