@@ -12963,6 +12963,63 @@ else
 	fi
 fi
 
+# 86. The case print report reads two rows and merges them, and neither read
+# is guarded.
+#
+# cms/reports/case_print/case_print-form.php takes case_id straight out of
+# the request, fetches the case, fetches that case's client, and calls
+# array_merge() on the two rows. DBResult::fetchRow() returns null when the
+# query matched nothing, and array_merge() has rejected null as a TypeError
+# since PHP 8, so an unknown case_id and an ordinary case with no client both
+# produced an error page instead of a report. client_id is 0 on an unassigned
+# case, and the contact it names can have been deleted since, so the second
+# one is not a rare shape.
+
+echo
+echo "checking the case print report with no client"
+
+if grep -qF -e 'is_array($b)' cms/reports/case_print/case_print-form.php
+then
+	ok "case_print-form.php checks the client row before merging it"
+else
+	bad "case_print-form.php merges the client row without checking it is a row"
+fi
+
+if [ "${HAVE_DB:-0}" != 1 ]
+then
+	printf '  skip the case print renders (needs the database)\n'
+else
+	adb "DELETE FROM cases WHERE number = 'ZZCPNOCLIENT'" >/dev/null 2>&1
+
+	# case_id is a primary key with no AUTO_INCREMENT, so pick the id here.
+	cp_case="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	cp_none="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1000 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, client_id)
+		VALUES (${cp_case}, 'ZZCPNOCLIENT', 0)" >/dev/null
+
+	cp_code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/legacy_report.php?report=case_print&case_id=${cp_case}")"
+	if [ "$cp_code" = "200" ] && [ -s "$BODY" ]
+	then
+		ok "a case with no client prints"
+	else
+		bad "a case with no client returned ${cp_code} - the report is a fatal, not a page"
+	fi
+
+	# An id that names no case at all is a bad request, not a crash. Every
+	# field comes out blank; the point is that the page renders.
+	cp_code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/legacy_report.php?report=case_print&case_id=${cp_none}")"
+	if [ "$cp_code" = "200" ] && [ -s "$BODY" ]
+	then
+		ok "a case_id that names no case does not fatal"
+	else
+		bad "an unknown case_id returned ${cp_code}"
+	fi
+
+	adb "DELETE FROM cases WHERE number = 'ZZCPNOCLIENT'" >/dev/null 2>&1
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
