@@ -6650,18 +6650,23 @@ if [ "$HAVE_DB" = 1 ]; then
 		# and a request that names something that is not a case id.
 		TRCOUNT_BEFORE="$(adb "SELECT count FROM counters WHERE id = 'case_number'")"
 
+		# The page used to answer a request with no case_id by drawing the
+		# transfer form under the label 'No Case #'. It now requires
+		# edit_case on a real case, so there is nothing to draw and nothing
+		# to say: both of these get the shared case refusal instead. Every
+		# link into the page carries a case_id, so no working flow loses.
 		code="$(tr_get '')"
-		if [ "$code" = 200 ] && grep -qF 'No Case #' "$BODY"; then
-			ok "transfer.php with no case says 'No Case #'"
+		if [ "$code" = 403 ] && ! grep -qF 'No Case #' "$BODY"; then
+			ok "transfer.php with no case is refused"
 		else
-			bad "transfer.php with no case answers ${code} without 'No Case #'"
+			bad "transfer.php with no case answers ${code}, expected 403"
 		fi
 
 		code="$(tr_get 'case_id=zznotanumber')"
-		if [ "$code" = 200 ] && grep -qF 'No Case #' "$BODY"; then
-			ok "transfer.php with a non-numeric case_id says 'No Case #'"
+		if [ "$code" = 403 ] && ! grep -qF 'No Case #' "$BODY"; then
+			ok "transfer.php with a non-numeric case_id is refused"
 		else
-			bad "transfer.php with a non-numeric case_id answers ${code} without 'No Case #'"
+			bad "transfer.php with a non-numeric case_id answers ${code}, expected 403"
 		fi
 
 		TRCOUNT_AFTER="$(adb "SELECT count FROM counters WHERE id = 'case_number'")"
@@ -6675,7 +6680,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 			-G --data-urlencode "case_id=${TRCASE}\" onfocus=\"zztralert()\" autofocus x=\"" \
 			"$OCM_URL/transfer.php")"
-		if [ "$code" = 200 ] && ! grep -qF 'onfocus' "$BODY"; then
+		if [ "$code" = 403 ] && ! grep -qF 'onfocus' "$BODY"; then
 			ok "a quote in case_id does not reach the page"
 		else
 			bad "a quote in case_id answers ${code} and reaches the page as an event handler"
@@ -11911,6 +11916,240 @@ then
 	ok "no page in cms/ or cms/m/ renders to a request with no session"
 else
 	bad "page(s) rendering with no session:${sm78_open}"
+fi
+
+# ---------------------------------------------------------------------------
+# 79. The two case-transfer pages are gated.
+#
+# cms/transfer.php drew the "send this case to another organisation" form for
+# whoever asked. It had no check of any kind: it took case_id from the query
+# string, loaded the case, and printed the case number into the breadcrumb and
+# into two value="" attributes, then listed every configured transfer
+# destination. So a user whose group held no flags could read any case's number
+# -- one request per id -- while cms/case.php answered the same id with 403.
+# Its write handler, cms/ops/transfer_case.php, already required edit_case, so
+# the page now applies the same predicate the handler does.
+#
+# cms/transfers.php is the other half: the holding tank for transfers sent TO
+# this installation. It had no check either, so any logged-in user could list
+# every pending referral -- client last name, first name, county, city and
+# problem code -- open one, and press Accept or Reject. It is now the system
+# group plus whichever group carries the intake flag, because accepting a
+# transfer ends in a new case and a new contact and groups.intake already
+# names the people who do that.
+#
+# 79a is the source census. 79b is the live pair, and it asserts the property
+# that matters rather than the wording: the refusal transfer.php sends is
+# byte-for-byte the refusal case.php sends, so the response cannot be used to
+# tell a case that exists from one that does not.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 79. the case-transfer pages are gated =="
+
+# 79a. Source census. No stack needed.
+sm79_files=0
+for sm79_f in cms/transfer.php cms/transfers.php cms/app/lib/pl.php cms/case.php
+do
+	[ -f "$sm79_f" ] && sm79_files=$((sm79_files + 1))
+done
+
+if [ "$sm79_files" -eq 4 ]
+then
+	ok "all four case-transfer source files are present"
+else
+	bad "expected 4 case-transfer source files, found $sm79_files"
+fi
+
+# One -e per spelling: matching the closing quote to the opening one needs a
+# backreference, and ugrep rejects those.
+if grep -qF -e "pika_authorize('edit_case'" -e 'pika_authorize("edit_case"' cms/transfer.php
+then
+	ok "cms/transfer.php requires edit_case, the predicate its handler applies"
+else
+	bad "cms/transfer.php no longer requires edit_case"
+fi
+
+if grep -qF 'pl_case_not_viewable' cms/transfer.php
+then
+	ok "cms/transfer.php answers an unauthorized request with the shared refusal"
+else
+	bad "cms/transfer.php does not call pl_case_not_viewable()"
+fi
+
+# The refusal has to live in one place for the two pages to share it: a page
+# cannot be included from another page, so it belongs in the library.
+if grep -qF 'function pl_case_not_viewable' cms/app/lib/pl.php \
+	&& ! grep -qF 'function pl_case_not_viewable' cms/case.php
+then
+	ok "pl_case_not_viewable() is defined once, in the library"
+else
+	bad "pl_case_not_viewable() is missing from the library or duplicated in cms/case.php"
+fi
+
+if grep -qF -e "pika_authorize('system'" -e 'pika_authorize("system"' cms/transfers.php \
+	&& grep -qF -e "auth_row['intake']" -e 'auth_row["intake"]' cms/transfers.php
+then
+	ok "cms/transfers.php gates on the system group or the intake flag"
+else
+	bad "cms/transfers.php does not gate on the system group or the intake flag"
+fi
+
+# 79b. The live pair.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]
+then
+	SM79_GROUP=zz_sm79_grp
+	SM79_USER=zz_sm79_user
+	SM79_PASS='zz-Sm79-Passw0rd'
+	SM79_NUMBER='ZZ-SM79-CASE'
+	SM79_JAR="$(mktemp)"
+	SM79_A="$(mktemp)"
+	SM79_B="$(mktemp)"
+
+	sm79_cleanup() {
+		adb "DELETE FROM users WHERE username = '${SM79_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SM79_GROUP}'" >/dev/null
+		adb "DELETE FROM cases WHERE number = '${SM79_NUMBER}'" >/dev/null
+	}
+	sm79_cleanup
+
+	# A group with nothing in it, so pika_authorize() has no reason to grant.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SM79_GROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	SM79_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SM79_PASS" </dev/null 2>/dev/null)"
+	SM79_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${SM79_UID}, '${SM79_USER}', '${SM79_HASH}', 1, '${SM79_GROUP}', 0)" >/dev/null
+
+	# A case owned by somebody else, in an office this group cannot read.
+	SM79_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office)
+		VALUES (${SM79_CASE}, '${SM79_NUMBER}', 1, 'HQ')" >/dev/null
+	SM79_SEEDED="$(adb "SELECT number FROM cases WHERE case_id = ${SM79_CASE}")"
+
+	if [ -z "$SM79_HASH" ] || [ -z "${SM79_UID:-}" ] || [ "$SM79_SEEDED" != "$SM79_NUMBER" ]
+	then
+		bad "could not seed the no-flag user and the unreadable case for the transfer gate check"
+	else
+		ok "seeded case ${SM79_NUMBER} and a group with no flags"
+
+		curl -sL --max-time 30 -c "$SM79_JAR" -b "$SM79_JAR" -o "$BODY" \
+			-X POST -d "login_user=${SM79_USER}&login_pass=${SM79_PASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+
+		if grep -q 'login_pass' "$BODY"
+		then
+			bad "the no-flag user could not log in, so the transfer gate check proves nothing"
+		else
+			ok "the no-flag user has a session"
+
+			sm79_case_code="$(curl -s --max-time 30 -b "$SM79_JAR" -o "$SM79_A" \
+				-w '%{http_code}' "$OCM_URL/case.php?case_id=${SM79_CASE}")"
+			sm79_xfer_code="$(curl -s --max-time 30 -b "$SM79_JAR" -o "$SM79_B" \
+				-w '%{http_code}' "$OCM_URL/transfer.php?case_id=${SM79_CASE}")"
+
+			# The control: if case.php served the case, the group is not
+			# actually unprivileged and nothing below means anything.
+			if [ "$sm79_case_code" = 403 ]
+			then
+				ok "cms/case.php refuses the no-flag user this case"
+			else
+				bad "cms/case.php answered the no-flag user with HTTP $sm79_case_code, expected 403"
+			fi
+
+			if [ "$sm79_xfer_code" = 403 ]
+			then
+				ok "cms/transfer.php refuses the no-flag user the same case"
+			else
+				bad "cms/transfer.php answered the no-flag user with HTTP $sm79_xfer_code, expected 403"
+			fi
+
+			if ! grep -qF "$SM79_NUMBER" "$SM79_B"
+			then
+				ok "the refusal does not leak the case number"
+			else
+				bad "cms/transfer.php printed the case number to a user who may not read the case"
+			fi
+
+			# No oracle: the two pages must answer identically, or the
+			# difference tells the caller which case ids are real.
+			if cmp -s "$SM79_A" "$SM79_B"
+			then
+				ok "cms/transfer.php and cms/case.php send the same refusal byte for byte"
+			else
+				bad "cms/transfer.php and cms/case.php send different refusals, which is an oracle"
+			fi
+
+			sm79_tanks_code="$(curl -s --max-time 30 -b "$SM79_JAR" -o "$BODY" \
+				-w '%{http_code}' "$OCM_URL/transfers.php")"
+			if [ "$sm79_tanks_code" = 403 ]
+			then
+				ok "cms/transfers.php refuses a user with neither the system group nor the intake flag"
+			else
+				bad "cms/transfers.php answered a no-flag user with HTTP $sm79_tanks_code, expected 403"
+			fi
+
+			# The intake flag is the grant, so it has to actually grant.
+			adb "UPDATE \`groups\` SET intake = 1 WHERE group_id = '${SM79_GROUP}'" >/dev/null
+			sm79_intake_code="$(curl -s --max-time 30 -b "$SM79_JAR" -o "$BODY" \
+				-w '%{http_code}' "$OCM_URL/transfers.php")"
+			if [ "$sm79_intake_code" = 200 ]
+			then
+				ok "the intake flag opens cms/transfers.php"
+			else
+				bad "cms/transfers.php answered an intake user with HTTP $sm79_intake_code, expected 200"
+			fi
+
+			# ...and it must not open the outgoing page, which is a
+			# case-level decision, not an intake one.
+			sm79_intake_xfer="$(curl -s --max-time 30 -b "$SM79_JAR" -o "$BODY" \
+				-w '%{http_code}' "$OCM_URL/transfer.php?case_id=${SM79_CASE}")"
+			if [ "$sm79_intake_xfer" = 403 ]
+			then
+				ok "the intake flag does not open a case the user may not edit"
+			else
+				bad "cms/transfer.php answered an intake user with HTTP $sm79_intake_xfer, expected 403"
+			fi
+		fi
+	fi
+
+	# The administrator still gets both pages. Without this, a gate that
+	# refused everybody would pass every check above.
+	sm79_adm_xfer="$(curl -s --max-time 30 -b "$COOKIES" -o "$SM79_A" \
+		-w '%{http_code}' "$OCM_URL/transfer.php?case_id=${SM79_CASE}")"
+	if [ "$sm79_adm_xfer" = 200 ] && grep -qF "$SM79_NUMBER" "$SM79_A"
+	then
+		ok "the administrator still reaches cms/transfer.php for that case"
+	else
+		bad "the administrator got HTTP $sm79_adm_xfer from cms/transfer.php and no case number"
+	fi
+
+	sm79_adm_tanks="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		-w '%{http_code}' "$OCM_URL/transfers.php")"
+	if [ "$sm79_adm_tanks" = 200 ]
+	then
+		ok "the administrator still reaches cms/transfers.php"
+	else
+		bad "the administrator got HTTP $sm79_adm_tanks from cms/transfers.php, expected 200"
+	fi
+
+	# A request with no case_id, and one naming a case that does not exist,
+	# both get the same refusal -- the page must not answer either of them
+	# with the form, and must not distinguish them.
+	sm79_noid="$(curl -s --max-time 30 -b "$COOKIES" -o "$SM79_A" \
+		-w '%{http_code}' "$OCM_URL/transfer.php")"
+	sm79_absent="$(curl -s --max-time 30 -b "$COOKIES" -o "$SM79_B" \
+		-w '%{http_code}' "$OCM_URL/transfer.php?case_id=2147483646")"
+	if [ "$sm79_noid" = 403 ] && [ "$sm79_absent" = 403 ] && cmp -s "$SM79_A" "$SM79_B"
+	then
+		ok "cms/transfer.php answers a missing and an absent case_id identically"
+	else
+		bad "cms/transfer.php answered no case_id with HTTP $sm79_noid and an absent one with HTTP $sm79_absent"
+	fi
+
+	sm79_cleanup
+	rm -f "$SM79_JAR" "$SM79_A" "$SM79_B"
 fi
 
 echo

@@ -186,6 +186,48 @@ $transfer_id = pl_grab_get('transfer_id', 0);
 $z = '';
 $base_url = pl_settings_get('base_url');
 
+/*	ENFORCE PERMISSIONS
+
+	This page had no authorization check. Any authenticated session -- a group
+	with read_all, edit_all, users, pba, motd and intake all 0 and
+	read_office, edit_office and reports all NULL -- could:
+
+	  * list every pending incoming transfer, which prints the client's last
+	    name, first name, county, city and problem code straight out of the
+	    payload a peer installation sent us;
+	  * open one and read its whole record, including the conflict report
+	    built from our own contacts and cases;
+	  * press Accept, which creates a case and a contact from that payload;
+	  * press Reject, which discards another organisation's referral.
+
+	So the holding tank was readable and writable by anyone who could log in.
+	CWE-862.
+
+	Who should have it: the system group, and whichever group does intake.
+	Accepting an incoming transfer is an intake -- it ends in a new case and a
+	new contact -- so groups.intake is the flag that already names those
+	people, the same flag pika_authorize() consults for the not-yet-assigned
+	cases intake staff work on. Nothing new is invented and no new setting is
+	added.
+
+	The flag defaults to 0, so this narrows access on upgrade. Grant `intake`
+	to whichever group handles incoming transfers at your organisation
+	(System > Security Levels). An installation that does not use peer
+	transfers needs to grant nothing.
+*/
+if (!pika_authorize('system', array()) && empty($auth_row['intake']))
+{
+	http_response_code(403);
+	$plTemplate = array();
+	$plTemplate['page_title'] = 'Incoming Case Transfers';
+	$plTemplate['nav'] = "<a href=\"{$base_url}\">Pika Home</a>
+						&gt; <a href=\"{$base_url}/site_map.php\">Site Map</a>
+						&gt; Incoming Case Transfers";
+	$plTemplate['content'] = '<div id="page_content" class="container">'
+		. '<p>Access denied.</p></div>';
+	pika_exit(pl_template($plTemplate, 'templates/default.html'));
+}
+
 if (strlen((string) pl_grab_post('accept')) > 0)
 {
 	$safe_transfer_id = DB::escapeString(pl_grab_post('transfer_id'));
