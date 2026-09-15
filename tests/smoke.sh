@@ -12386,6 +12386,23 @@ then
 			ok "codeql.yml does not claim to analyse php"
 		fi
 	fi
+
+	# 80g. The fixture is deliberately vulnerable, so Snyk Code reads it as
+	# application source and reports the planted SQL injection and file
+	# inclusion. The .snyk policy excludes the directory. Without that
+	# exclusion the tempting fix is to make the fixture safe, which would
+	# leave the ruleset with nothing to test against.
+	if [ -f .snyk ]
+	then
+		if grep -qE -e '^[[:space:]]+- \.semgrep/' .snyk
+		then
+			ok ".snyk excludes the scanner fixture directory"
+		else
+			bad ".snyk does not exclude .semgrep/ - Snyk Code will report the planted vulnerabilities as real"
+		fi
+	else
+		bad ".snyk is missing - Snyk Code will report the planted vulnerabilities in the semgrep fixture as real"
+	fi
 fi
 
 echo

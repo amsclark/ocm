@@ -1,0 +1,17 @@
+# Snyk policy file. https://docs.snyk.io/manage-risk/policies/the-.snyk-file
+version: v1.25.0
+
+# .semgrep/ocm-sinks.php is not application code and never ships. It is the
+# test fixture for the repository's own semgrep ruleset: every rule in
+# .semgrep/ocm-sinks.yml has one deliberately vulnerable line in it and one
+# safe line, and `semgrep --test` fails the build if a rule stops catching
+# its vulnerable line. The Dockerfile copies only cms, cms-custom and
+# errors into the image, so nothing in .semgrep/ is reachable at runtime.
+#
+# Snyk Code read that file as application source and reported the planted
+# SQL injection and file inclusion as real findings. Excluding the
+# directory hides nothing: a scanner fixture that stopped being vulnerable
+# would be a broken fixture.
+exclude:
+  global:
+    - .semgrep/**
