@@ -12863,6 +12863,106 @@ else
 	fi
 fi
 
+echo "== 85. a saved preference outlives the session it was saved in =="
+
+# 85. Both preference handlers -- cms/ops/update_prefs.php and the
+# save_prefs branch of cms/dataops.php -- used to write the accepted values
+# to $_SESSION and nowhere else. users.session_data was never touched, and
+# pikaDefPrefs::initPrefs() reads that column back on the next login, so
+# every saved preference was silently discarded at logout.
+#
+# The static checks below hold the shared writer in place. The round trip
+# after them is the one that would have caught the original bug.
+
+if [ -f cms/ops/update_prefs.php ] && [ -f cms/dataops.php ]
+then
+	up_bad=0
+	for pf in cms/ops/update_prefs.php cms/dataops.php
+	do
+		if ! grep -qF -e 'pikaDefPrefs::storePrefs(' "$pf"
+		then
+			up_bad=$((up_bad + 1))
+		fi
+	done
+
+	if [ "$up_bad" -eq 0 ]
+	then
+		ok "both preference handlers save through pikaDefPrefs::storePrefs()"
+	else
+		bad "${up_bad} preference handler(s) no longer call storePrefs() - their saves are lost at logout"
+	fi
+
+	# dataops.php runs under pika_cms.php, which rebuilds the include_path
+	# without ./app/lib. A bare require_once('pikaDefPrefs.php') there does
+	# not resolve and the whole branch is a fatal error, which is what the
+	# save_prefs branch used to be.
+	if grep -qF -e "require_once('app/lib/pikaDefPrefs.php')" cms/dataops.php
+	then
+		ok "dataops.php loads pikaDefPrefs by path, not off the include_path"
+	else
+		bad "dataops.php requires pikaDefPrefs by bare name - that does not resolve from this file"
+	fi
+fi
+
+if [ "${HAVE_DB:-0}" != 1 ]
+then
+	printf '  skip the preference round trip (needs the database)\n'
+else
+	pr_before="$(adb "SELECT session_data FROM users WHERE username='${OCM_USER}'" | head -1)"
+
+	# Read the token off the page that carries the form.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php"
+	pr_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
+		| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+
+	if [ "${#pr_tok}" -ne 64 ]
+	then
+		bad "prefs.php did not render a usable CSRF token (got ${#pr_tok} chars)"
+	else
+		# paging is a plain digit string, so the stored value is easy to read
+		# back, and pikaDefPrefs::filterValue() accepts it without touching a
+		# theme file or any other part of the tree.
+		curl -sL --max-time 30 -b "$COOKIES" -c "$COOKIES" -o "$BODY" \
+			--data-urlencode "_csrf=${pr_tok}" \
+			--data-urlencode "paging=37" \
+			"$OCM_URL/ops/update_prefs.php" >/dev/null
+
+		pr_after="$(adb "SELECT session_data FROM users WHERE username='${OCM_USER}'" | head -1)"
+
+		if printf '%s' "$pr_after" | grep -qF -e 's:6:"paging";s:2:"37"'
+		then
+			ok "a saved preference reached users.session_data"
+		else
+			bad "the saved preference never reached users.session_data - it is lost at logout"
+		fi
+
+		if [ "$pr_before" != "$pr_after" ]
+		then
+			ok "the stored preferences changed when a preference was saved"
+		else
+			bad "users.session_data is byte-identical after a save - nothing was written"
+		fi
+
+		# A fresh login has to read the value back. r_format and intake are
+		# saveable and are not in the defaults file, so initPrefs() used to
+		# skip them even once they were stored.
+		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php"
+
+		if grep -qF -e 'name="paging" id="paging" value="37"' "$BODY"
+		then
+			ok "the preference screen renders the value that was saved"
+		else
+			bad "the preference screen does not show the saved value - initPrefs() is not reading it back"
+		fi
+
+		# Put it back so the next run starts where this one did.
+		if [ -n "$pr_before" ]
+		then
+			adb "UPDATE users SET session_data='$(printf '%s' "$pr_before" | sed "s/'/''/g")' WHERE username='${OCM_USER}'" >/dev/null
+		fi
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
