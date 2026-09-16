@@ -10071,6 +10071,213 @@ else
 	rm -f "$CSP_HEADERS"
 fi
 
+echo
+# ── 67b. The rest of the OWASP header set ──────────────────────────────────
+echo "67b. the rest of the OWASP response header set"
+
+# pl_send_security_headers() sends the set the OWASP Secure Headers Project
+# recommends, of which the CSP checked above is one. These are not conditional
+# on csp_mode: turning the policy off is a statement about the policy, not
+# permission to stop sending nosniff.
+#
+# Two of these checks are negative, and they are the ones worth having:
+#
+#   Strict-Transport-Security must NOT be sent here. This stack is plain HTTP,
+#   and a browser that receives that header refuses plain HTTP to the host for
+#   a year. Sending it to an HTTP install locks that install out of itself,
+#   and there is no way to call it back. If this check ever fails, the release
+#   it failed on must not ship.
+#
+#   X-Powered-By must be gone. It names the PHP version, which is a list of
+#   published bugs to try.
+
+SEC_HEADERS="$(mktemp)"
+sec_headers() {
+	curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D "$SEC_HEADERS" \
+		"$OCM_URL/index.php"
+	tr -d '\r' < "$SEC_HEADERS"
+}
+
+hdr="$(sec_headers)"
+
+sec_expect() {
+	# sec_expect <header> <value fragment>
+	if printf '%s' "$hdr" | grep -qi "^$1:.*$2"; then
+		ok "$1 carries $2"
+	else
+		bad "$1 is MISSING or does not carry $2 [$(printf '%s' "$hdr" | grep -i "^$1:" || echo 'header absent')]"
+	fi
+}
+
+sec_expect "X-Content-Type-Options" "nosniff"
+sec_expect "X-Frame-Options" "DENY"
+# strict-origin-when-cross-origin, deliberately not no-referrer:
+# pl_request_origin() falls back to Origin and Referer to decide whether a POST
+# started on our own page, and no-referrer removes both. A change to
+# no-referrer here would look like hardening and would disable a CSRF control.
+sec_expect "Referrer-Policy" "strict-origin-when-cross-origin"
+
+if printf '%s' "$hdr" | grep -qi '^Referrer-Policy:.*no-referrer'; then
+	bad "Referrer-Policy is no-referrer, which makes browsers send Origin: null on POSTs and disables the CSRF fallback in pl_request_origin()"
+else
+	ok "Referrer-Policy is not no-referrer, so the CSRF fallback still has a header to read"
+fi
+sec_expect "Cross-Origin-Opener-Policy" "same-origin"
+sec_expect "Cross-Origin-Resource-Policy" "same-origin"
+sec_expect "Cross-Origin-Embedder-Policy" "require-corp"
+sec_expect "Cache-Control" "no-store"
+
+# The Permissions-Policy is a deny list written out in full, so a feature left
+# off it is a feature the page keeps. Spot-check the ones that matter most on
+# a machine in an office: the camera, the microphone and the location.
+for feature in "camera=()" "microphone=()" "geolocation=()"
+do
+	if printf '%s' "$hdr" | grep -qi "^Permissions-Policy:.*$(printf '%s' "$feature" | sed 's/[()]/\\&/g')"; then
+		ok "Permissions-Policy gives up ${feature}"
+	else
+		bad "Permissions-Policy does NOT give up ${feature}"
+	fi
+done
+
+if printf '%s' "$hdr" | grep -qi '^Strict-Transport-Security:'; then
+	bad "HSTS WAS SENT OVER PLAIN HTTP. A browser that saw this refuses http:// to this host for a year and it cannot be undone"
+else
+	ok "no HSTS over plain HTTP, so an http install cannot lock itself out"
+fi
+
+if printf '%s' "$hdr" | grep -qi '^X-Powered-By:'; then
+	bad "X-Powered-By is still sent, naming the PHP version [$(printf '%s' "$hdr" | grep -i '^X-Powered-By:')]"
+else
+	ok "X-Powered-By is not sent"
+fi
+
+# No header may arrive twice.
+#
+# Apache sets three of these too, for the responses PHP never sees. The first
+# attempt used `Header always set`, and that is what this check exists for:
+# `always` does NOT replace what PHP sent. It writes to err_headers_out, a
+# different table from the one PHP writes to, so both values go on the wire.
+# Referrer-Policy is the one that hurts -- two header fields are read as one
+# comma-joined list, so the policy the browser applies is whichever it parses
+# last, and the conf and the application can disagree for years without
+# anybody seeing a broken page.
+for h in X-Frame-Options X-Content-Type-Options Referrer-Policy \
+	Cross-Origin-Opener-Policy Cross-Origin-Resource-Policy \
+	Permissions-Policy Content-Security-Policy
+do
+	n="$(printf '%s\n' "$hdr" | grep -ci "^$h:" || true)"
+	if [ "$n" -le 1 ]; then
+		ok "$h is sent once"
+	else
+		bad "$h is sent ${n} times; Apache and PHP are both setting it. Use 'Header setifempty' in the conf, not 'Header always set' [$(printf '%s\n' "$hdr" | grep -i "^$h:" | tr '\n' '|')]"
+	fi
+done
+
+# The conf files must use setifempty, for the reason above, and must say the
+# same thing PHP says so that a static file and a PHP page are protected the
+# same way.
+for conf in docker/apache.conf httpd-config/ocm.conf
+do
+	if [ ! -f "$conf" ]; then
+		continue
+	fi
+
+	if grep -q 'X-Frame-Options "DENY"' "$conf" \
+		&& grep -q 'Referrer-Policy "strict-origin-when-cross-origin"' "$conf" \
+		&& grep -q 'X-Content-Type-Options "nosniff"' "$conf"
+	then
+		ok "${conf} agrees with what PHP sends"
+	else
+		bad "${conf} DISAGREES with pl_send_security_headers(); a static file would then be protected differently from a PHP page"
+	fi
+
+	if grep -qE '^[^#]*Header +always +set +(X-Frame-Options|X-Content-Type-Options|Referrer-Policy)' "$conf"; then
+		bad "${conf} uses 'Header always set', which duplicates the header PHP already sent instead of replacing it. Use 'Header setifempty'"
+	else
+		ok "${conf} does not use 'Header always set' for a header PHP sends"
+	fi
+
+	if grep -qE '^[^#]*Header .*Strict-Transport-Security' "$conf"; then
+		bad "${conf} sets HSTS unconditionally; it must come from PHP, which only sends it over HTTPS with force_https on"
+	else
+		ok "${conf} does not set HSTS unconditionally"
+	fi
+done
+
+# A static file is the response PHP never sees, so the conf is the only thing
+# that can protect it. Check it actually does -- setifempty only fires when the
+# header is absent, and getting that wrong is invisible on a PHP page.
+STATIC_HDR="$(mktemp)"
+curl -s --max-time 30 -o /dev/null -D "$STATIC_HDR" \
+	"${OCM_URL%/cms}/errors/404.html"
+static="$(tr -d '\r' < "$STATIC_HDR")"
+rm -f "$STATIC_HDR"
+
+if printf '%s' "$static" | grep -qi '^HTTP/[0-9.]* 200'; then
+	for h in X-Frame-Options X-Content-Type-Options Referrer-Policy
+	do
+		if printf '%s' "$static" | grep -qi "^$h:"; then
+			ok "a static file still carries $h, from the Apache conf"
+		else
+			bad "a static file carries no $h; PHP cannot set it and the conf did not"
+		fi
+	done
+else
+	echo "  skip the static-file header checks: /errors/404.html did not return 200"
+fi
+
+# compat mode exists for the install that loads a font from another server.
+# It must drop exactly one header, Cross-Origin-Embedder-Policy, and leave the
+# rest alone.
+#
+# Cache-Control is NOT part of the compat set, and this is the check that keeps
+# it out. pika-danio.php calls session_start() after pl_send_security_headers(),
+# and PHP's session cache limiter then replaces Cache-Control with its own
+# "no-store, no-cache, must-revalidate". A compat mode that dropped no-store
+# would be promising a browser cache it cannot deliver on any page that starts
+# a session -- which is every page a user sees.
+if [ "$HAVE_DB" != 1 ]; then
+	echo "  skip the compat-mode checks: no database access"
+else
+	adb "DELETE FROM settings WHERE label = 'security_headers_mode'" >/dev/null 2>&1
+	adb "INSERT INTO settings (label, value) VALUES ('security_headers_mode', 'compat')" \
+		>/dev/null 2>&1
+	hdr="$(sec_headers)"
+
+	if printf '%s' "$hdr" | grep -qi '^Cross-Origin-Embedder-Policy:'; then
+		bad "compat mode still sent Cross-Origin-Embedder-Policy, the one header it exists to drop"
+	else
+		ok "compat mode drops Cross-Origin-Embedder-Policy"
+	fi
+
+	if printf '%s' "$hdr" | grep -qi '^Cache-Control:.*no-store'; then
+		ok "compat mode still keeps case data out of the browser cache"
+	else
+		bad "compat mode stopped sending Cache-Control: no-store, so case data may be written to disk on a shared machine"
+	fi
+
+	if printf '%s' "$hdr" | grep -qi '^X-Frame-Options:.*DENY' \
+		&& printf '%s' "$hdr" | grep -qi '^X-Content-Type-Options:.*nosniff'
+	then
+		ok "compat mode keeps everything that cannot break a page"
+	else
+		bad "compat mode dropped a header it has no reason to drop"
+	fi
+
+	# A missing row must read as strict, so an install that never opens the
+	# settings screen gets the whole set.
+	adb "DELETE FROM settings WHERE label = 'security_headers_mode'" >/dev/null 2>&1
+	hdr="$(sec_headers)"
+
+	if printf '%s' "$hdr" | grep -qi '^Cross-Origin-Embedder-Policy:.*require-corp'; then
+		ok "a missing security_headers_mode row is strict, so a fresh install is covered"
+	else
+		bad "a missing security_headers_mode row did NOT send the strict set"
+	fi
+fi
+
+rm -f "$SEC_HEADERS"
+
 # ---------------------------------------------------------------------------
 # 68. cms/ops/vcal.php, and the generic error page on a page that bootstraps
 # through pika_cms.php.
