@@ -1,3 +1,4 @@
+// Case LSC compliance: replace the problem menu's inline onchange handler.
 document.addEventListener('DOMContentLoaded', function ()
 {
 	var problemMenu = document.getElementById('problem');
@@ -6,14 +7,6 @@ document.addEventListener('DOMContentLoaded', function ()
 		problemMenu.addEventListener('change', function ()
 		{
 			problem_code_lookup(this.value);
-		});
-	}
-	var closeLinks = document.querySelectorAll('.js-case-info-close-date');
-	for (var i = 0; i < closeLinks.length; i++)
-	{
-		closeLinks[i].addEventListener('click', function ()
-		{
-			set_close();
 		});
 	}
 });

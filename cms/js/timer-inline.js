@@ -58,6 +58,14 @@ function currenttime ()
 
 document.addEventListener('DOMContentLoaded', function ()
 {
+	var caseMenu = document.getElementById('case_id');
+	if (caseMenu)
+	{
+		caseMenu.addEventListener('change', function ()
+		{
+			setFunding(this.value);
+		});
+	}
 	var links = document.querySelectorAll('.js-timer-highlight, .js-timer-pause-highlight');
 	for (var i = 0; i < links.length; i++)
 	{

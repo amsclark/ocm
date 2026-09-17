@@ -65,7 +65,7 @@ $case_menu_args = array();
 
 if (pl_settings_get('autofill_time_funding') == 1)
 {
-	$case_menu_args = array('onchange=setFunding(this.value);');
+	$case_menu_args = array();
 }
 
 $act_row['new_case_menu'] = pikaTempLib::plugin('case_menu', 'case_id',

@@ -96,7 +96,7 @@
     City, State:<br/>
 	%%[city,input_text,class=city]%%%%[state,input_text,size=3,class=state]%%<br/>
 	ZIP Code, County:<br/>
-	%%[zip,input_text,onblur=zipcode_lookup(this.value),size=5]%%%%[county,input_text,class=county]%%<br/>
+	%%[zip,input_text,size=5]%%%%[county,input_text,class=county]%%<br/>
     </td>
 </tr>
 </table>
@@ -115,6 +115,7 @@ Password:<br>
 %%[case_list]%% 
 %%[ajax_init.js,javascript]%%
 %%[zip-server-ajax.js,javascript,parse]%%
+<script src="%%[base_url]%%/js/pb-attorneys-inline.js"></script>
 %%[end:edit_pba]%%
 
 %%[begin:case_list_header]%%
