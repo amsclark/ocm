@@ -7,7 +7,7 @@
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="activity-text-highlight" data-target="demodiv" data-toggle-state="1">Text Highlighting</a>
 		%%[textFormat]%%
 		&nbsp;&nbsp;
 		%%[deleteActivity]%%
@@ -17,11 +17,7 @@
 
 		Date: <br/>
 		%%[act_date,input_date_selector]%%<br/>
-		<script>
-      		jQuery(document).ready(function() {
-        		jQuery("#act_date").datepicker();
-      		});
-    	</script>
+
 		Start Time:<br/>
 		%%[act_time,input_text]%%<br/>
 		End Time:<br/>
@@ -74,27 +70,9 @@
 
 </form>
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.ws.summary.focus();
-//-->
-</script>
+<script src="%%[base_url]%%/js/activityC-inline.js"></script>
 
-<script>
 
-function setSmsVisibility() {
-  if (document.ws.case_id.value.length > 0) {
-    document.getElementById("sms_reminders").style.display = "block";
-  }
-  
-  else {
-    document.getElementById("sms_reminders").style.display = "none";
-  }
-}
-
-setSmsVisibility();
-
-</script>
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%

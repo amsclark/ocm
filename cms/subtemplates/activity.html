@@ -9,7 +9,7 @@
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="activity-text-highlight" data-target="demodiv" data-toggle-state="1">Text Highlighting</a>
 		%%[textFormat]%%
 		&nbsp;&nbsp;
 		%%[deleteActivity]%%
@@ -53,11 +53,7 @@
 %%[notes_list]%%
 %%[notes_footer]%%
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.ws.summary.focus();
-//-->
-</script>
+<script src="%%[base_url]%%/js/activity-inline.js"></script>
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
@@ -77,7 +73,7 @@ document.ws.summary.focus();
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="activity-text-highlight" data-target="demodiv" data-toggle-state="1">Text Highlighting</a>
 		%%[textFormat]%%
 		&nbsp;&nbsp;
 		%%[deleteActivity]%%
@@ -117,11 +113,7 @@ document.ws.summary.focus();
 
 </form>
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.ws.summary.focus();
-//-->
-</script>
+<script src="%%[base_url]%%/js/activity-inline.js"></script>
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
@@ -141,7 +133,7 @@ document.ws.summary.focus();
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="activity-text-highlight" data-target="demodiv" data-toggle-state="1">Text Highlighting</a>
 		%%[textFormat]%%
 		&nbsp;&nbsp;
 		%%[deleteActivity]%%
@@ -181,11 +173,7 @@ document.ws.summary.focus();
 </table>
 </form>
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.ws.summary.focus();
-//-->
-</script>
+<script src="%%[base_url]%%/js/activity-inline.js"></script>
 
 
 %%[textFormat.js,javascript]%%
@@ -254,11 +242,7 @@ document.ws.summary.focus();
 
 </form>
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.ws.summary.focus();
-//-->
-</script>
+<script src="%%[base_url]%%/js/activity-inline.js"></script>
 
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%
@@ -267,7 +251,7 @@ document.ws.summary.focus();
 %%[end:L]%%
 
 %%[begin:T]%%
-<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST">%%[csrf_field]%%
+<form action="%%[base_url]%%/ops/update_activity.php" name="ws" method="POST" data-datepicker="act_date">%%[csrf_field]%%
 <table>
 	<tr valign="top">
 		<td>
@@ -276,7 +260,7 @@ document.ws.summary.focus();
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=11,cols=44,class=notes]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="activity-text-highlight" data-target="demodiv" data-toggle-state="1">Text Highlighting</a>
 		%%[textFormat]%%
 		&nbsp;&nbsp;
 		%%[deleteActivity]%%
@@ -287,11 +271,7 @@ document.ws.summary.focus();
 		%%[hours,input_text]%%<br/>
 		Date:<br/>
 		%%[act_date,input_date_selector]%%<br/>
-		<script>
-      		jQuery(document).ready(function() {
-        		jQuery("#act_date").datepicker();
-      		});
-    	</script>
+
 		Start Time:<br/>
 		%%[act_time,input_text]%%<br/>
 		Type of Activity:<br/>
@@ -319,11 +299,7 @@ document.ws.summary.focus();
 </table>
 </form>
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.ws.summary.focus();
-//-->
-</script>
+<script src="%%[base_url]%%/js/activity-inline.js"></script>
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
