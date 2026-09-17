@@ -267,7 +267,7 @@ while ($row = DBResult::fetchRow($result))
 		on the log-time button. %%[client_name]%% goes into a <td>. A case
 		number has no format validation and is not on update_case.php's
 		denylist, and pl_text_last_name() only concatenates name parts, so
-		any user who could edit a case could store an SVG load handler in
+		any user who could edit a case could store `<svg onload=...>` in
 		one and have it run for every user whose case list showed it.
 		
 		Escape here, at the boundary between row data and row markup:

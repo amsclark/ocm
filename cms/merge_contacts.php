@@ -76,7 +76,7 @@ switch ($action) {
 			table goes through that filter: the migration and import scripts
 			under app/scripts, an admin working directly in the database, and
 			any site-local tooling all write the column as given. A contact
-			whose address holds an SVG load handler renders as live markup in
+			whose address holds `<svg onload=...>` renders as live markup in
 			the session of whoever opens the merge-duplicates screen.
 			
 			The two render blocks below were duplicates, so they collapse into

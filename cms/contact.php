@@ -187,7 +187,7 @@ if (strlen($case_id) > 0)
 	
 	/*	$number and $case_id are read from the query string at the top of
 		this file and went into the breadcrumb as they arrived, so a link
-		with script markup in the number parameter ran that script for
+		like contact.php?case_id=1&number=<script>... ran that script for
 		whoever opened it. The page title is a contact's name, which the
 		address book lets anyone type. Escape all three at the point they
 		are written into the markup.
