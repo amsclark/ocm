@@ -41,8 +41,8 @@
 			<p>
 				<input type="hidden" name="case_id" value="%%[case_id]%%"/>
 				<input type="hidden" name="debug" value="0"/>
-				<input type="submit" value="Make New Doc" tabindex="1" onclick="if(isEmpty(form_id)) { alert('Please select a form.'); return false;}"/>
-				<a onclick="document.docgen.debug.value=1;document.docgen.submit();">[?]</a>
+				<input type="submit" value="Make New Doc" tabindex="1" class="js-case-docs-make-document"/>
+				<a class="js-case-docs-debug">[?]</a>
 			</p>
 			</form>
 		</td>
@@ -81,35 +81,7 @@
 
 %%[jquery.min.js,javascript]%%
 
-<script type="text/javascript">
-function isEmpty(field) {
-   if ((field.value.length==0) || (field.value==null)) {
-      return true;
-   } else { return false; }
-}
-	
-$('.upload_control').change(function() {
-	$('#upload_gif').show("slow");
-	$('#upload_form').submit();
-});
-
-/*
-$(function () {
-    $("#doc_upload").bind("click", function () {
-        if (typeof ($("#doc_upload")[0].files) != "undefined") {
-            $.each($("#doc_upload")[0].files, function(key, value) {
-							var size = parseFloat($("#doc_upload")[0].files[0].size / 1024).toFixed(2);
-            	alert(size + " KB.");
-						});
-        } else {
-            // This browser does not support HTML5.
-        }
-    });
-});
-*/
-
-//-->
-</script>
+<script src="%%[base_url]%%/js/case-docs-inline.js"></script>
 
 %%[ajax_init.js,javascript]%%
 %%[file_list.js,javascript,parse]%%

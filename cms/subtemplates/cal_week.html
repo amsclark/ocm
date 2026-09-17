@@ -36,7 +36,7 @@
 Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=K">New Tickle</a><br/>
 <img src="images/point.gif">
 Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=T">New Time Slip</a>
-(<a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a>)<br/>
+(<a href="%%[base_url]%%/timer.php" class="cal_week-popup-timer" data-popup-name="popUpTimer">Popup Timer</a>)<br/>
 <img src="images/point.gif">
 Add <a href="%%[base_url]%%/activity.php?screen=compose&completed=0&act_date=%%[cal_date]%%">New Calendar Entry</a><br/>
 <img src="images/point.gif">
@@ -63,3 +63,5 @@ View Another Person's Calendar:<br/>
 </table>
 
 <script type="text/javascript" language="JavaScript" src="%%[base_url]%%/js/popUp.js"></script>
+
+<script src="%%[base_url]%%/js/cal_week-inline.js"></script>

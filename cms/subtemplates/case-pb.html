@@ -3,9 +3,9 @@
 <table cellpadding="3" cellspacing="0">
 <tr>
 	<td class="de">
-	Referral Date: <a href="%%[base_url]%%" onClick="set_ref_date();return false;">[today]</a><br/>
+	Referral Date: <a href="%%[base_url]%%" class="js-case-pb-ref-date">[today]</a><br/>
     %%[referral_date,input_date_selector]%%<br/>
-    Date Closed: <a href="%%[base_url]%%" onClick="set_close();return false;">[today]</a><br/>
+    Date Closed: <a href="%%[base_url]%%" class="js-case-pb-close-date">[today]</a><br/>
     %%[close_date,input_date_selector]%%<br/>
     %%[lsc_close_code_menu]%%
     <br/>
@@ -80,3 +80,5 @@
 %%[date_selector.js,javascript,parse]%%
 
 
+
+<script src="%%[base_url]%%/js/case-pb-inline.js"></script>

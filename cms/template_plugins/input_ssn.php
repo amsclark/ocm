@@ -1,6 +1,7 @@
 <?php
 function input_ssn($field_name = null, $field_value = null, $menu_array = null, $args = null) 
 {
+	static $ssn_script_included = false;
 
 	if (is_array($field_value)) {
                    $field_value = $field_value[0];
@@ -36,8 +37,14 @@ function input_ssn($field_name = null, $field_value = null, $menu_array = null, 
 	
 	else
 	{
+		$base_url = pl_settings_get('base_url');
 		$C .= "SSN:<br/>\n";
-		$C .= '<input type="text" name="ssn" onkeyup="pika_ssn(this);" value="' . htmlentities($field_value) . '" maxlength="11" size="22" tabindex="1">';
+		$C .= '<input type="text" name="ssn" class="js-ssn-mask" value="' . htmlentities($field_value) . '" maxlength="11" size="22" tabindex="1">';
+		if (!$ssn_script_included)
+		{
+			$C .= '<script src="' . $base_url . '/js/ssn-mask.js"></script>';
+			$ssn_script_included = true;
+		}
 	}
 
 	$C .= "<br/>\n";

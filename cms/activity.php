@@ -302,7 +302,14 @@ if (pika_activity_date_locked($act_row['act_date']))
 {
 	$act_buffer = $a['content'];
 	
-	$act_buffer = str_replace('onclick="openCalendar(', 'disabled onclick="openCalendar(', $act_buffer);
+	/*	The calendar button used to carry onclick="openCalendar(...", and this
+		matched that. Moving the handler out for the CSP left the button with a
+		js-input-date-selector class instead, so the old needle matched nothing
+		and a locked activity rendered an enabled calendar button. The refusal
+		itself is in ops/update_activity.php, so this is what the user sees,
+		not what stops the write.
+	*/
+	$act_buffer = str_replace('<button class="btn js-input-date-selector"', '<button disabled class="btn js-input-date-selector"', $act_buffer);
 	$act_buffer = str_replace('name="act_date"', 'disabled name="act_date"', $act_buffer);
 	$act_buffer = str_replace('name="funding"', 'disabled name="funding"', $act_buffer);
 	$act_buffer = str_replace('name="hours"', 'disabled name="hours"', $act_buffer);

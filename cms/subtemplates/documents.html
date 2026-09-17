@@ -4,11 +4,11 @@
 	<th>Edit Folder Properties</th>
 </tr><tr>
 	<td style='padding-left: 3px;padding-top: 3px;'>
-	<form name='edit' id='edit' onsubmit="return false;">
+	<form name='edit' id='edit' class="js-document-form">
 	Name:&nbsp;%%[doc_name,input_text]%%<br/>
 	<br/>
-	<input type="button" name="submit" onClick="updateFile('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%',this.parentNode.name);" value="Update"/>
-	<input type="button" name="cancel" onClick="fileList('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%');" value="Cancel"/>
+	<input type="button" name="submit" class="js-document-action" data-document-action="update" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" value="Update"/>
+	<input type="button" name="cancel" class="js-document-action" data-document-action="list" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" value="Cancel"/>
 	%%[doc_type,input_hidden]%%
 	%%[mode,input_hidden]%%
 	%%[doc_id,input_hidden]%%
@@ -28,13 +28,13 @@
 	<th>Edit File Properties</th>
 </tr><tr>
 	<td style='padding-left: 3px;padding-top: 3px;'>
-	<form name='edit_form' id='edit_form' onsubmit="return false;" >
+	<form name='edit_form' id='edit_form' class="js-document-form" >
 	Name:&nbsp;%%[doc_name,input_text]%%<br/>
 	Description:<br/>
 	%%[description,input_textarea,cols=25,rows=2]%%<br/>
 	Folder: %%[folder_ptr,folder_menu]%%<br/>
-	<input type="button" name="submit" onClick="updateFile('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%',this.parentNode.name);" value="Update"/>
-	<input type="button" name="cancel" onClick="fileList('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%');" value="Cancel"/>
+	<input type="button" name="submit" class="js-document-action" data-document-action="update" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" value="Update"/>
+	<input type="button" name="cancel" class="js-document-action" data-document-action="list" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" value="Cancel"/>
 	%%[doc_type,input_hidden]%%
 	%%[mode,input_hidden]%%
 	%%[doc_id,input_hidden]%%
@@ -53,12 +53,12 @@
 	<th>Delete %%[folder_file]%%</th>
 </tr><tr>
 	<td style='padding-left: 3px;padding-top: 3px;'>
-	<form name='delete' onsubmit="return false;">
+	<form name='delete' class="js-document-form">
 	Are you sure you would like to delete: <i>%%[doc_name]%%</i><br/>
 	<!--%%[del_all_sub,yes_no,checkbox]%%&nbsp;Delete contents?<br/>-->
 	<br/>
-	<input type="button" name="submit" onClick="removeFile('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%','%%[doc_id]%%');" value="Delete"/>
-	<input type="button" name="cancel" onClick="fileList('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%');" value="Cancel"/>
+	<input type="button" name="submit" class="js-document-action" data-document-action="remove" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" data-doc-id="%%[doc_id]%%" value="Delete"/>
+	<input type="button" name="cancel" class="js-document-action" data-document-action="list" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" value="Cancel"/>
 	<input type="hidden" name="action" value="delete_folder"/>
 	%%[doc_type,input_hidden]%%
 	%%[display_type,input_hidden]%%
@@ -81,7 +81,7 @@
 	<td style='padding-left: 3px;padding-top: 3px;'>
 	You do not have access to delete this file.
 	<br/>
-	<input type="button" name="cancel" onClick="fileList('%%[container]%%','%%[folder_ptr]%%','%%[mode]%%','%%[doc_type]%%','%%[folder_field]%%','%%[doc_field]%%','%%[case_id]%%','%%[report_name]%%');" value="Cancel"/>
+	<input type="button" name="cancel" class="js-document-action" data-document-action="list" data-container="%%[container]%%" data-folder-ptr="%%[folder_ptr]%%" data-mode="%%[mode]%%" data-doc-type="%%[doc_type]%%" data-folder-field="%%[folder_field]%%" data-doc-field="%%[doc_field]%%" data-case-id="%%[case_id]%%" data-report-name="%%[report_name]%%" value="Cancel"/>
 	</td>
 </tr>
 </table>

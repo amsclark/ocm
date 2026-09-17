@@ -9,7 +9,7 @@
 %%[begin:edit_item]%%
 <div style="float:left;margin: 4px;">
 <h2>Editing Menu: %%[menu_name]%%</h2>
-<form onsubmit="validate();return false;">
+<form class="js-menu-item">
 Value:<br/>
 %%[value_input]%%<br/>
 Label:%%[label_db_type]%%<br/>
@@ -22,7 +22,7 @@ Label:%%[label_db_type]%%<br/>
 <input type="submit" name="update" value="Update" class="save" tabindex="1" />
 </form>
 </div>
-%%[system-menus.js,javascript]%%
+<script src="%%[base_url]%%/js/system-menus-handlers.js"></script>
 %%[end:edit_item]%%
 
 %%[begin:edit]%%

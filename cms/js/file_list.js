@@ -270,3 +270,48 @@ function setDescription(file_id)
 
 
 
+if (!window.documentActionsBound)
+{
+	window.documentActionsBound = true;
+	document.addEventListener('click', function(e)
+	{
+		var control = e.target.closest('.js-document-action');
+		if (!control)
+		{
+			return;
+		}
+		e.preventDefault();
+		var args = [
+			control.getAttribute('data-container'),
+			control.getAttribute('data-folder-ptr'),
+			control.getAttribute('data-mode'),
+			control.getAttribute('data-doc-type'),
+			control.getAttribute('data-folder-field'),
+			control.getAttribute('data-doc-field'),
+			control.getAttribute('data-case-id'),
+			control.getAttribute('data-report-name')
+		];
+		var action = control.getAttribute('data-document-action');
+		if (action === 'update')
+		{
+			args.push(control.form.name);
+			updateFile.apply(null, args);
+		}
+		else if (action === 'remove')
+		{
+			args.push(control.getAttribute('data-doc-id'));
+			removeFile.apply(null, args);
+		}
+		else if (action === 'list')
+		{
+			fileList.apply(null, args);
+		}
+	});
+	document.addEventListener('submit', function(e)
+	{
+		if (e.target.classList.contains('js-document-form'))
+		{
+			e.preventDefault();
+		}
+	});
+}

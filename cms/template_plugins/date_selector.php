@@ -82,7 +82,7 @@ function date_selector($field_name = null, $field_value = null, $container = nul
 	
 	// Draw calendar
 	
-	$date_selector .= "<table cellspacing=\"0\" cellpadding=\"2\"><tr class='DSCalHeader'>";
+	$date_selector .= "<table class=\"js-date-selector\" data-field-name=\"" . $field_name_js . "\" data-container-name=\"" . $container_js . "\" cellspacing=\"0\" cellpadding=\"2\"><tr class='DSCalHeader'>";
 	// Generate previous month link
 	$display_prev_month = $display_month;
 	$display_prev_year = $display_year;
@@ -103,9 +103,9 @@ function date_selector($field_name = null, $field_value = null, $container = nul
 	}
 	// The month and year arguments are integers produced by date() arithmetic
 	// above, never request data, so they are left interpolated as-is.
-	$date_selector .= "<td><a onclick=\"date_selector(" . $field_name_js . "," . $container_js . ",'{$display_prev_month}','{$display_prev_year}');\">&lt;&lt;</a></td>";
+	$date_selector .= "<td><a data-date-action=\"month\" data-month=\"{$display_prev_month}\" data-year=\"{$display_prev_year}\">&lt;&lt;</a></td>";
 	$date_selector .= "<td colspan='5' align='center'>". $display_month_name . " " . $display_year ."</td>";
-	$date_selector .= "<td><a onclick=\"date_selector(" . $field_name_js . "," . $container_js . ",'{$display_next_month}','{$display_next_year}');\">&gt;&gt;</a></td>";
+	$date_selector .= "<td><a data-date-action=\"month\" data-month=\"{$display_next_month}\" data-year=\"{$display_next_year}\">&gt;&gt;</a></td>";
 	$date_selector .= "</tr>";
 	$date_selector .= "<tr class='DSCalDaysOfWeek'><td>Sun</td><td>Mon</td><td>Tue</td><td>Wed</td><td>Thu</td><td>Fri</td><td>Sat</td></tr>";
 	
@@ -124,7 +124,7 @@ function date_selector($field_name = null, $field_value = null, $container = nul
 			$date_selector .= "<td class=\"" . pl_html_escape($selected_class) . "\">";
 			if($first_week && $day == $first_day_of_week) {$first_week = false;} 
 			if(!$first_week && $current_day <= $num_days_in_month) {
-				$date_selector .= "<a onclick=\"selectDate(" . $field_name_js . ",'{$current_full_date_display}'," . $container_js . ");\">";
+				$date_selector .= "<a data-date-action=\"select\" data-date=\"" . pl_html_escape($current_full_date_display) . "\">";
 				$date_selector .= $current_day; 
 				$date_selector .= "</a>";
 				$current_day++;
@@ -135,11 +135,12 @@ function date_selector($field_name = null, $field_value = null, $container = nul
 		$current_week++;
 	}
 	
-	$date_selector .= "<tr class=\"DSCalFooter\"><td colspan=\"7\"><a onclick=\"closeCalendar(" . $container_js . ");\">Close [X]</a></td></tr></table>";
+	$date_selector .= "<tr class=\"DSCalFooter\"><td colspan=\"7\"><a data-date-action=\"close\">Close [X]</a></td></tr></table>";
+	$base_url = pl_settings_get('base_url');
+	$date_selector .= '<script src="' . $base_url . '/js/date_selector-events.js"></script>';
 	
 	return $date_selector;
 	
 }
-
 
 
