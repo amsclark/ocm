@@ -13397,6 +13397,97 @@ then
 	adb "DELETE FROM contacts WHERE contact_id = ${cs_cid}" >/dev/null 2>&1
 fi
 
+# ── 87. The case and contact PHP pages carry no inline JavaScript ───────────
+echo "87. the case and contact PHP pages carry no inline JavaScript"
+
+# Five pages assembled markup in PHP with an event handler attribute written
+# into the string, and two of them pulled a whole <script> block in with
+# file_get_contents() and echoed it. Both forms need script-src
+# 'unsafe-inline'.
+#
+# The handlers now live in cms/js/ and the pages reference them with a
+# <script src>. The party name that case.php used to interpolate into an
+# onClick travels in data-party-name, the same carrier the case summary
+# sidebar uses; see section 86 for why a data- attribute is the safe one.
+#
+# One trap is specific to the two file_get_contents() sites. js/form_save.js
+# is not JavaScript: it is markup, a <script> element with a jQuery include
+# above it, written to be pasted into a page. Referenced with a <script src>
+# instead, the browser would parse "<script" as JavaScript and throw. The
+# replacements must therefore be script-only files, which is what the last
+# check here asserts.
+
+for csp_php in cms/case.php cms/contact.php cms/index.php
+do
+	if [ ! -f "$csp_php" ]
+	then
+		bad "$csp_php is missing - section 87 tested nothing"
+	elif grep -qiE '<[a-z][^>]*[[:space:]]on[a-z]+[[:space:]]*=' "$csp_php"
+	then
+		bad "$csp_php has an inline on* handler attribute again"
+	else
+		ok "$csp_php has no inline on* handler attribute"
+	fi
+done
+
+for csp_js in cms/js/case.js cms/js/case-inline.js cms/js/contact-inline.js cms/js/index.js
+do
+	if [ -f "$csp_js" ]
+	then
+		ok "$csp_js exists"
+	else
+		bad "$csp_js is missing - the page that includes it will 404"
+	fi
+	
+	# A file served through <script src> is parsed as JavaScript from its
+	# first byte, so a <script> tag inside it is a syntax error, not markup.
+	if [ -f "$csp_js" ] && grep -qi '<script' "$csp_js"
+	then
+		bad "$csp_js holds a <script> tag - it is markup, not a script file"
+	elif [ -f "$csp_js" ]
+	then
+		ok "$csp_js is script-only"
+	fi
+done
+
+if grep -q 'js/case-inline.js' cms/case.php && grep -q 'js/case.js' cms/case.php
+then
+	ok "cms/case.php includes both of its script files"
+else
+	bad "cms/case.php lost one of its script includes"
+fi
+
+if grep -q 'js/contact-inline.js' cms/contact.php
+then
+	ok "cms/contact.php includes js/contact-inline.js"
+else
+	bad "cms/contact.php lost its script include"
+fi
+
+if grep -q 'js/index.js' cms/index.php
+then
+	ok "cms/index.php includes js/index.js"
+else
+	bad "cms/index.php lost its script include"
+fi
+
+# The remove-client link. case.php builds this into $clients_html, which
+# nothing prints today - the block that used to is the commented-out "OLD
+# WAY" - so this is a source check, not a render check.
+if grep -q 'data-party-name=' cms/case.php && grep -q 'js-case-remove-client' cms/case.php
+then
+	ok "the remove-client link carries the party name in a data attribute"
+else
+	bad "the remove-client link no longer carries data-party-name"
+fi
+
+if grep -q 'pl_html_escape(pl_text_name(' cms/case.php
+then
+	ok "the party name is escaped before it goes into the attribute"
+else
+	bad "the party name reaches the attribute unescaped"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
