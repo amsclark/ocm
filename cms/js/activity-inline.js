@@ -23,3 +23,16 @@ if (document.ws.getAttribute('data-datepicker'))
 		}
 	});
 }
+
+document.addEventListener('DOMContentLoaded', function ()
+{
+	var interviewLinks = document.querySelectorAll('.js-insert-interview');
+	for (var i = 0; i < interviewLinks.length; i++)
+	{
+		interviewLinks[i].addEventListener('click', function (e)
+		{
+			insert_interview(document.ws.interviews.value);
+			e.preventDefault();
+		});
+	}
+});

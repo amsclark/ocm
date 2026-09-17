@@ -76,8 +76,7 @@
 			Ongoing monthly benefits: <strong>$</strong> 			
 			<input name="lsac_protect_mth_benefits" 
 			value="%%[lsac_protect_mth_benefits]%%" tabindex="1" size="5" 
-			onchange="annual_benefit_protected_change();" 
-			class="maskf" type="text">	 x 12= <strong>$</strong>	
+			class="maskf js-annual-benefit-protected" type="text">	 x 12= <strong>$</strong>	
 				
 			<input name="lsac_protect_annual_benefits" 
 			value="%%[lsac_protect_annual_benefits]%%" size="10" 
@@ -138,8 +137,7 @@
 			Ongoing monthly benefits: <strong>$</strong> 			
 			<input name="lsac_obtain_mth_benefits" 
 			value="%%[lsac_obtain_mth_benefits]%%" tabindex="1" size="5" 
-			onchange="annual_benefit_obtained_change();" 
-			class="maskf" type="text">	 x 12= <strong>$</strong>	
+			class="maskf js-annual-benefit-obtained" type="text">	 x 12= <strong>$</strong>	
 				
 			<input name="lsac_obtain_annual_benefits" 
 			value="%%[lsac_obtain_annual_benefits]%%" size="10" 
@@ -199,3 +197,5 @@
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%
 %%[case-lsac.js,javascript,parse]%%
+
+<script src="%%[base_url]%%/js/case-lsac-inline.js"></script>
