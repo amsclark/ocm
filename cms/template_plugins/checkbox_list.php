@@ -75,17 +75,15 @@ function checkbox_list($field_name = null, $field_value = null, $menu_array = nu
 		that plugin HTML-escapes it, so it must go in raw here or it would be
 		escaped twice.
 	*/
-	$js_flags = JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP;
-	$field_js = json_encode((string) $field_name, $js_flags);
-	$field_js_attr = pl_html_escape($field_js);
+	$field_attr = pl_html_escape((string) $field_name);
 	$list_id_attr = pl_html_escape($list_id);
 	
-	$checklist_output .= "<table id=\"{$list_id_attr}\" width=\"100%\" class=\"nopad\" cellspacing=\"0\" cellpadding=\"0\">";
+	$checklist_output .= "<table id=\"{$list_id_attr}\" data-field=\"{$field_attr}\" width=\"100%\" class=\"nopad js-checkbox-list\" cellspacing=\"0\" cellpadding=\"0\">";
 	$checklist_output .= "<tr>\n\t<th>";
 	$checklist_output .= "Check:&nbsp;";
-	$checklist_output .= "<a onClick=\"checkAll('{$list_id_attr}',{$field_js_attr});return false;\">All</a>&nbsp;|&nbsp;";
-	$checklist_output .= "<a onClick=\"checkNone('{$list_id_attr}',{$field_js_attr});return false;\">None</a>&nbsp;|&nbsp;";
-	$checklist_output .= "<a onClick=\"checkInvert('{$list_id_attr}',{$field_js_attr});return false;\">Invert</a>";
+	$checklist_output .= "<a href=\"#\" data-check-action=\"all\">All</a>&nbsp;|&nbsp;";
+	$checklist_output .= "<a href=\"#\" data-check-action=\"none\">None</a>&nbsp;|&nbsp;";
+	$checklist_output .= "<a href=\"#\" data-check-action=\"invert\">Invert</a>";
 	$checklist_output .= "</th>\n</tr>";
 	foreach($menu_array as $key => $val) {
 		$checked = 0;
@@ -95,8 +93,7 @@ function checkbox_list($field_name = null, $field_value = null, $menu_array = nu
 		}
 		
 		$checklist_output .= "<tr>\n\t<td>";
-		$key_js = json_encode((string) $key, $js_flags);
-		$checklist_output .= pikaTempLib::plugin('checkbox',$key,$checked,array(),array("no_hidden","label=$val","onclick=update_checkbox_list({$key_js},{$field_js});"));	
+		$checklist_output .= pikaTempLib::plugin('checkbox',$key,$checked,array(),array("no_hidden","label=$val"));
 		$checklist_output .= "</td>\n</tr>";
 
 	}
@@ -137,6 +134,9 @@ function checkbox_list($field_name = null, $field_value = null, $menu_array = nu
 		$checklist_output .= pikaTempLib::plugin('input_hidden',$field_name,$field_value);
 	}
 	
+	$base_url = pl_settings_get('base_url');
+	$checklist_output .= "<script src=\"{$base_url}/js/checkbox_list.js\"></script>";
+	$checklist_output .= "<script src=\"{$base_url}/js/checkbox_list-events.js\"></script>";
 	return $checklist_output;
 }
 

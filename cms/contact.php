@@ -168,7 +168,7 @@ $main_html['content'] = $contact_template->draw();
 
 if (pl_mysql_column_exists('cases', 'benefit_form'))
 {
-	$main_html['content'] .= file_get_contents('js/form_save_contact.js');
+	$main_html['content'] .= "<script src=\"{$base_url}/js/contact-inline.js\"></script>";
 }
 
 // Display a different crumb trail if we just came from the case screen.

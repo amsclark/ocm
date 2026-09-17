@@ -1,27 +1,28 @@
-<div id="demodiv" class="thinborder" style="visibility: hidden; position:absolute; background-color: white; padding: .5em; text-align:right;">
+<div id="demodiv" class="thinborder js-text-format" style="visibility: hidden; position:absolute; background-color: white; padding: .5em; text-align:right;">
 		<span class="yh">Yellow Hi-lite</span>:  
-		<a href="javascript:no_op()" onclick="AddTag('[y]');"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
-		<a href="javascript:no_op()" onclick="AddTag('[/y]');"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
+		<a href="#" data-tag="[y]"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
+		<a href="#" data-tag="[/y]"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
 		<br/>
 		<span class="ph">Pink hi-lite</span>:  
-		<a href="javascript:no_op()" onclick="AddTag('[p]');"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
-		<a href="javascript:no_op()" onclick="AddTag('[/p]');"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
+		<a href="#" data-tag="[p]"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
+		<a href="#" data-tag="[/p]"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
 		<br/>
 		<b>Bold</b>:
-		<a href="javascript:no_op()" onclick="AddTag('[b]');"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
-		<a href="javascript:no_op()" onclick="AddTag('[/b]');"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
+		<a href="#" data-tag="[b]"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
+		<a href="#" data-tag="[/b]"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
 		<br/>
 		<i>Italic</i>:
-		<a href="javascript:no_op()" onclick="AddTag('[i]');"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
-		<a href="javascript:no_op()" onclick="AddTag('[/i]');"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
+		<a href="#" data-tag="[i]"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
+		<a href="#" data-tag="[/i]"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
 		<br/>
 		<span class="ul">Underline</span>:
-		<a href="javascript:no_op()" onclick="AddTag('[u]');"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
-		<a href="javascript:no_op()" onclick="AddTag('[/u]');"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
+		<a href="#" data-tag="[u]"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
+		<a href="#" data-tag="[/u]"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
 		<br/>
 		<span class="lt">Line Through</span>:
-		<a href="javascript:no_op()" onclick="AddTag('[l]');"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
-		<a href="javascript:no_op()" onclick="AddTag('[/l]');"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
+		<a href="#" data-tag="[l]"><img alt="On" src="%%[base_url]%%/images/tag_on.png"/></a>
+		<a href="#" data-tag="[/l]"><img alt="Off" src="%%[base_url]%%/images/tag_off.png"/></a>
 		<br/>
-		<strong>X</strong> <a href="javascript:toggleBox('demodiv',0);">Close</a>
+		<strong>X</strong> <a href="#" data-close-box="demodiv" data-close-value="0">Close</a>
 		</div>
+<script src="%%[base_url]%%/js/textFormat-handlers.js"></script>

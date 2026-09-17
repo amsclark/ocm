@@ -32,8 +32,8 @@ else
 		if(strlen($row['content']) > 140) 
 		{
 			$row['summary_content'] = pl_html_text(substr($row['content'],0,140));
-			$row['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleMotd({$row['motd_id']});" .
-										 " return false;\">View Full Text</a></i>)";
+			$row['summary_content'] .= " ... (<i><a href=\"#\" class=\"js-index-toggle-motd\" data-motd-id=\"" .
+										 pl_html_text($row['motd_id']) . "\">View Full Text</a></i>)";
 		}
 		$row['content'] = pl_html_text($row['content']);
 // 06-11-2010 - caw - put code here to detect mobile device				
@@ -51,6 +51,8 @@ $home_page['user_id'] = $auth_row['user_id'];
 $main_html['page_title'] = "Home Page";
 // 06-11-2010 - caw - put code here to detect mobile device
 $main_html['content'] = pl_template('m/home.html', $home_page);
+$base_url = pl_settings_get('base_url');
+$main_html['content'] .= '<script src="' . pl_html_text($base_url) . '/js/m-index.js"></script>';
 // end of 06-11 - caw changes
 
 $main_html['nav'] = "Pika Home";
