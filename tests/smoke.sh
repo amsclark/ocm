@@ -13228,5 +13228,175 @@ else
 fi
 
 echo
+# ── 86. The case summary sidebar carries no inline JavaScript ───────────────
+echo "86. the case summary sidebar carries no inline JavaScript"
+
+# subtemplates/case_screen.html set a global in a one-line <script> block per
+# party so that the form's onSubmit could read the party's name out of it,
+# rather than interpolating the name into a JavaScript string literal where an
+# apostrophe would close the literal early. That is inline script plus an
+# inline event handler, both of which need script-src 'unsafe-inline'.
+#
+# The name now travels in data-party-name and the confirm() lives in
+# js/case-screen.js. A data- attribute is the safer carrier anyway: it goes
+# out through the template layer's normal HTML escaping and comes back as a
+# string that was never parsed as code.
+#
+# Most of these are source checks rather than render checks. The panels drawn
+# inside this page still have inline handlers of their own, so grepping the
+# finished HTML would report their state, not this file's.
+
+CS_TPL="cms/subtemplates/case_screen.html"
+
+if [ ! -f "$CS_TPL" ]
+then
+	bad "$CS_TPL is missing - section 86 tested nothing"
+else
+	if grep -qiE '<[a-z][^>]*[[:space:]]on[a-z]+[[:space:]]*=' "$CS_TPL"
+	then
+		bad "$CS_TPL has an inline on* handler attribute again"
+	else
+		ok "the case summary sidebar has no inline on* handler attribute"
+	fi
+
+	if grep -q 'javascript:' "$CS_TPL"
+	then
+		bad "$CS_TPL has a javascript: URL again"
+	else
+		ok "the case summary sidebar has no javascript: URL"
+	fi
+
+	# An include carries src=. A tag that carries none opens a body, and a
+	# body is inline script.
+	#
+	# Anchored at the start of the line because the comments in this file talk
+	# about <script> blocks, and an unanchored match reads the prose as code.
+	if grep -iE '^[[:space:]]*<script' "$CS_TPL" | grep -qiv 'src='
+	then
+		bad "$CS_TPL has an inline <script> block again"
+	else
+		ok "every <script> in the case summary sidebar is an external include"
+	fi
+
+	for js in case-screen.js ssn-mask.js
+	do
+		if grep -q "js/${js}" "$CS_TPL"
+		then
+			ok "the case summary sidebar includes js/${js}"
+		else
+			bad "$CS_TPL does not include js/${js} - its handlers are dead"
+		fi
+
+		if [ -f "cms/js/${js}" ]
+		then
+			ok "cms/js/${js} exists"
+		else
+			bad "cms/js/${js} is missing - the include 404s"
+		fi
+	done
+
+	# The party name must reach the page through the default (HTML-escaping)
+	# tag. encode=none here would put an unescaped value inside a quoted
+	# attribute, which is an attribute-escape and then script.
+	if grep -qE 'data-party-name="%%\[(client_name|full_name)[^]]*encode' "$CS_TPL"
+	then
+		bad "a data-party-name tag sets an encoding - it must use the default HTML escaping"
+	else
+		ok "both data-party-name tags use the default HTML escaping"
+	fi
+
+	# The old indirection must be gone, not merely supplemented.
+	if grep -qE 'var (client_name|full_name)' "$CS_TPL"
+	then
+		bad "$CS_TPL still declares a name global for a confirm() prompt"
+	else
+		ok "no per-party name global is left in the case summary sidebar"
+	fi
+
+	# pika_ssn() is copy-pasted around this repo. The shared copy must hold
+	# exactly one definition, or two files on one page share its counter and
+	# the field gets two dashes.
+	ssn_defs="$(grep -c 'function pika_ssn' cms/js/ssn-mask.js 2>/dev/null || echo 0)"
+	if [ "$ssn_defs" = "1" ]
+	then
+		ok "cms/js/ssn-mask.js holds exactly one pika_ssn() definition"
+	else
+		bad "cms/js/ssn-mask.js holds ${ssn_defs} pika_ssn() definitions, expected 1"
+	fi
+fi
+
+# The render check: a client whose name holds both a double quote and an
+# apostrophe. The quote is what would close data-party-name and let the rest
+# of the value be read as markup; the apostrophe is what broke the JavaScript
+# string literal the old code was avoiding. Both must survive as text.
+if [ "$HAVE_DB" = 1 ]
+then
+	cs_cid="$(adb "SELECT COALESCE(MAX(contact_id), 0) + 1 FROM contacts")"
+	cs_case="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	cs_conf="$(adb "SELECT COALESCE(MAX(conflict_id), 0) + 1 FROM conflict")"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${cs_cid}, 'Zz', 'O\\'Brien \\\"Bo\\\"')" >/dev/null
+	adb "INSERT INTO cases (case_id, number, client_id, status)
+		VALUES (${cs_case}, 'ZZ-CSP-1', ${cs_cid}, '1')" >/dev/null
+
+	# The client card is drawn from the party list, not from cases.client_id
+	# alone: case.php draws it for the one party row whose contact is the
+	# client and whose relation_code is 1. Without the conflict row the case
+	# renders with no client card at all, and the checks below would pass or
+	# fail on an empty page.
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code)
+		VALUES (${cs_conf}, ${cs_case}, ${cs_cid}, '1')" >/dev/null
+
+	cs_code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/case.php?case_id=${cs_case}")"
+
+	if [ "$cs_code" = "200" ] && ! grep -q 'Pika Error' "$BODY"
+	then
+		ok "a case whose client name holds a quote and an apostrophe renders"
+	else
+		bad "case.php returned ${cs_code} for a client name with a quote"
+	fi
+
+	if grep -q 'data-party-name=' "$BODY"
+	then
+		ok "the rendered client card carries data-party-name"
+	else
+		bad "the rendered client card has no data-party-name - the confirm() has no name"
+	fi
+
+	# htmlspecialchars with ENT_QUOTES turns the double quote into &quot;. If
+	# a raw one reached the attribute the value would have escaped it.
+	if grep -q 'data-party-name="[^"]*&quot;' "$BODY"
+	then
+		ok "the double quote in the client name is escaped inside the attribute"
+	elif grep -q 'data-party-name="[^"]*Bo' "$BODY"
+	then
+		bad "A RAW DOUBLE QUOTE REACHED data-party-name - THE ATTRIBUTE IS ESCAPABLE (CWE-79)"
+	else
+		bad "could not find the seeded client name in data-party-name"
+	fi
+
+	# pl_html_escape() passes ENT_HTML5, so the apostrophe comes out as the
+	# named entity &apos; rather than &#039;. Either is correct here; what
+	# matters is that it is escaped exactly once. Doubly escaped it would read
+	# "&amp;apos;" and the confirm() prompt would show the entity to the user,
+	# which is what happens on the contact card, whose name is cleaned once
+	# before the template layer escapes it again.
+	if grep -qE 'data-party-name="[^"]*O(&apos;|&#039;)Brien' "$BODY"
+	then
+		ok "the apostrophe in the client name is escaped exactly once"
+	elif grep -qE 'data-party-name="[^"]*&amp;(apos|#039);' "$BODY"
+	then
+		bad "the client name is doubly escaped - the prompt will show the entity"
+	else
+		bad "the apostrophe in the client name did not render"
+	fi
+
+	adb "DELETE FROM conflict WHERE case_id = ${cs_case}" >/dev/null 2>&1
+	adb "DELETE FROM cases WHERE number = 'ZZ-CSP-1'" >/dev/null 2>&1
+	adb "DELETE FROM contacts WHERE contact_id = ${cs_cid}" >/dev/null 2>&1
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
