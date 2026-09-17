@@ -8,7 +8,23 @@
 # This image is deliberately small. OCM is a PHP application with a MySQL
 # database and nothing else: no queue, no cache server, no search service.
 #
-FROM php:8.2-apache
+# The base image is pinned by digest as well as by tag. A tag is mutable: the
+# name php:8.2-apache can be repointed at different bytes at any time, and a
+# build that trusts only the name cannot tell that it happened. The digest
+# names the exact image.
+#
+# Pinning does not hold security updates back here. Debian ships most of its
+# fixes as a rebuilt base image rather than as something this Dockerfile could
+# patch, so the way to take them is to bump the digest. The weekly Trivy scan
+# (.github/workflows/trivy.yml) reports any vulnerability that has a fix
+# available, so a fix landing upstream turns into an alert that says to bump
+# this line.
+#
+# To bump it:
+#   docker pull php:8.2-apache
+#   docker inspect --format '{{index .RepoDigests 0}}' php:8.2-apache
+#
+FROM php:8.2-apache@sha256:f64f4ee8103510c4c1cb22c895235fb01018e4b5fd67b9f60a22f8f8dda68ccf
 
 # Build dependencies for the PHP extensions, plus the command-line tools OCM
 # shells out to. Each of those tools is a real call site, not a guess:
