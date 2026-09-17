@@ -46,15 +46,15 @@
 	</td><td>
 		Change the order of fields on the report:<br/>
 		%%[fo,fo,multiselect,style=border:1px black solid;width: 220px;,nomsg,noblank,size=8]%%<br/>
-		<input type="button" value="Move Up" onclick="move_up();" />
-		<input type="button" value="Move Down" onclick="move_down();" />
+		<input type="button" value="Move Up" class="megapartyreport-move-up" />
+		<input type="button" value="Move Down" class="megapartyreport-move-down" />
 	</td>
 </tr><tr valign="top">
 	<td rowspan="3">
 	Report only on these staff:<br>
 	%%[users_list,user_list]%%
 	<br/>
-	<input type="submit" value="Run Report" class="save" onClick="highlight_all_fo();" />
+	<input type="submit" value="Run Report" class="save megapartyreport-run" />
 	</td><td class="de">
 	Calculate sum of:<br/>
 	%%[sum,sum,nomsg]%%<br/>
@@ -92,14 +92,14 @@
 	     is raw XML rather than a form encoding, so there is no _csrf field for
 	     ops/upload_report.php to read out of $_POST. -->
 	<form name='docgen' id='docgen'>%%[csrf_field]%%
-	<button onclick="load_report('mega',document.docgen.form_id.value);return false;">Load Saved Report</button><br/>
+	<button class="megapartyreport-load" data-report-form="mega" data-source-form="docgen" data-report-id-field="form_id">Load Saved Report</button><br/>
 	
 	</td>
 	<td valign="top">
 	%%[form_id,input_hidden]%%
 	Report Name:<br/>
 	<input type="text" id="doc_name" name="doc_name" value="Megareport Saved: %%[current_date]%%" size="25" tabindex="1"/>
-	<button onclick="save_report('mega','doc_name');setTimeout('reload(\'saved_reports\')',500);return false;">Save Report</button>
+	<button class="megapartyreport-save" data-report-form="mega" data-name-field="doc_name" data-reload-target="saved_reports" data-reload-delay="500">Save Report</button>
 	</form>
 	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">%%[csrf_field]%%
 	New Folder Name:<br/>
@@ -113,65 +113,12 @@
 	</td>
 </tr>
 </table>
-<script>
-  // handling of adding relation_codes to the field ordering.
-  checkboxes = document.querySelectorAll('input[type=checkbox]');
-  relation_checkboxes = [];
-  for (var i = 0; i < checkboxes.length; i++) 
-  {
-    if (checkboxes[i].parentElement.parentElement.parentElement.parentElement.parentElement.parentElement.parentElement.classList.contains("party_types")) 
-    {
-      relation_checkboxes.push(checkboxes[i]);
-    }
-  }
-  for (var i = 0; i < relation_checkboxes.length; i++) 
-  {
-    relation_checkboxes[i].addEventListener('change', (event) => { handle_relation_codes_selection(); });
-  }
 
-  function handle_relation_codes_selection() 
-  {
-    add_option_rel("fo",'conflict.relation_code', 'Party Type');
-  }
-
-
-  function add_option_rel(menu_name, field_name, field_text)
-  {
-    var container = document.getElementById(menu_name);
-    var is_found = false;
-    checked_relation_checkboxes = [];
-    for (var h = 0; h < relation_checkboxes.length; h++)
-    {
-      if (relation_checkboxes[h].checked) 
-      {
-        checked_relation_checkboxes.push(relation_checkboxes[h]);
-      }
-    }
-    if(container.length) 
-    {
-      for (var i = 0; i < container.length; i++)
-      {
-        if (container.options[i].value == field_name)
-        {
-          if (checked_relation_checkboxes.length == 0) 
-          {
-	    container.options[i] = null;
-          }
-          is_found = true;
-          break;
-        }
-      }
-    }
-    if (is_found == false)
-    {
-      var addIndex = container.length;
-      container.options[addIndex] = new Option(field_text,field_name);
-    }
-  } 
-</script>
 
 %%[megareport.js,javascript,parse]%%
 %%[ajax_init.js,javascript]%%
 %%[file_list.js,javascript,parse]%%
 %%[save_report.js,javascript,parse]%%
 %%[checkbox_list.js,javascript]%%
+
+<script src="%%[base_url]%%/js/megapartyreport-form-inline.js"></script>
