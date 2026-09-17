@@ -13397,6 +13397,267 @@ then
 	adb "DELETE FROM contacts WHERE contact_id = ${cs_cid}" >/dev/null 2>&1
 fi
 
+# ── 87. The case and contact PHP pages carry no inline JavaScript ───────────
+echo "87. the case and contact PHP pages carry no inline JavaScript"
+
+# Five pages assembled markup in PHP with an event handler attribute written
+# into the string, and two of them pulled a whole <script> block in with
+# file_get_contents() and echoed it. Both forms need script-src
+# 'unsafe-inline'.
+#
+# The handlers now live in cms/js/ and the pages reference them with a
+# <script src>. The party name that case.php used to interpolate into an
+# onClick travels in data-party-name, the same carrier the case summary
+# sidebar uses; see section 86 for why a data- attribute is the safe one.
+#
+# One trap is specific to the two file_get_contents() sites. js/form_save.js
+# is not JavaScript: it is markup, a <script> element with a jQuery include
+# above it, written to be pasted into a page. Referenced with a <script src>
+# instead, the browser would parse "<script" as JavaScript and throw. The
+# replacements must therefore be script-only files, which is what the last
+# check here asserts.
+
+for csp_php in cms/case.php cms/contact.php cms/index.php
+do
+	if [ ! -f "$csp_php" ]
+	then
+		bad "$csp_php is missing - section 87 tested nothing"
+	elif grep -qiE '<[a-z][^>]*[[:space:]]on[a-z]+[[:space:]]*=' "$csp_php"
+	then
+		bad "$csp_php has an inline on* handler attribute again"
+	else
+		ok "$csp_php has no inline on* handler attribute"
+	fi
+done
+
+for csp_js in cms/js/case.js cms/js/case-inline.js cms/js/contact-inline.js cms/js/index.js
+do
+	if [ -f "$csp_js" ]
+	then
+		ok "$csp_js exists"
+	else
+		bad "$csp_js is missing - the page that includes it will 404"
+	fi
+	
+	# A file served through <script src> is parsed as JavaScript from its
+	# first byte, so a <script> tag inside it is a syntax error, not markup.
+	if [ -f "$csp_js" ] && grep -qi '<script' "$csp_js"
+	then
+		bad "$csp_js holds a <script> tag - it is markup, not a script file"
+	elif [ -f "$csp_js" ]
+	then
+		ok "$csp_js is script-only"
+	fi
+done
+
+if grep -q 'js/case-inline.js' cms/case.php && grep -q 'js/case.js' cms/case.php
+then
+	ok "cms/case.php includes both of its script files"
+else
+	bad "cms/case.php lost one of its script includes"
+fi
+
+if grep -q 'js/contact-inline.js' cms/contact.php
+then
+	ok "cms/contact.php includes js/contact-inline.js"
+else
+	bad "cms/contact.php lost its script include"
+fi
+
+if grep -q 'js/index.js' cms/index.php
+then
+	ok "cms/index.php includes js/index.js"
+else
+	bad "cms/index.php lost its script include"
+fi
+
+# The remove-client link. case.php builds this into $clients_html, which
+# nothing prints today - the block that used to is the commented-out "OLD
+# WAY" - so this is a source check, not a render check.
+if grep -q 'data-party-name=' cms/case.php && grep -q 'js-case-remove-client' cms/case.php
+then
+	ok "the remove-client link carries the party name in a data attribute"
+else
+	bad "the remove-client link no longer carries data-party-name"
+fi
+
+if grep -q 'pl_html_escape(pl_text_name(' cms/case.php
+then
+	ok "the party name is escaped before it goes into the attribute"
+else
+	bad "the party name reaches the attribute unescaped"
+fi
+
+# ── 88. Every script include resolves to a real script file ────────────────
+echo "88. every script include resolves to a real script file"
+
+# This is a sweep, not a list of filenames, because the last three batches of
+# this work produced three different ways to get it wrong and a list would
+# only have caught the ones already known.
+#
+# There are two ways to load JavaScript in this tree and they are not
+# interchangeable:
+#
+#   <script src="%%[base_url]%%/js/NAME.js">   the browser fetches the file
+#   %%[NAME.js,javascript,parse]%%             the template layer renders the
+#                                              file and inlines the result
+#
+# The second form exists because some of these files contain template tags -
+# js/case-pb.js needs %%[current_date]%%, for instance. Converting one of
+# those to a <script src> leaves a file whose tags are never substituted: it
+# parses, it runs, and it is wrong. So a file loaded with <script src> must
+# hold no template tag.
+#
+# A file loaded with <script src> must also be JavaScript rather than markup.
+# js/form_save.js is a <script> element with a jQuery include above it,
+# written to be pasted into a page; served through a src attribute the browser
+# parses "<script" as JavaScript and throws on the first line.
+#
+# And the file has to exist. Two independent conversions each created a
+# cms/js/index.js, one for cms/index.php and one for cms/m/index.php, which
+# would have left whichever landed second silently overwriting the other.
+
+csp_missing=0
+csp_markup=0
+csp_tagged=0
+
+# Every js/NAME.js named in a <script src>, anywhere in the tree.
+grep -rhoE '<script[^>]+src="[^"]*/js/[A-Za-z0-9_.-]+\.js"' cms cms-custom 2>/dev/null \
+	| grep -oE '/js/[A-Za-z0-9_.-]+\.js' \
+	| sed 's|^/js/||' \
+	| sort -u > "$BODY.csp88"
+
+while read -r csp_js
+do
+	[ -z "$csp_js" ] && continue
+	
+	if [ ! -f "cms/js/$csp_js" ]
+	then
+		bad "a page includes js/$csp_js and no such file exists"
+		csp_missing=$((csp_missing + 1))
+		continue
+	fi
+	
+	# The test is the FIRST line of real code, not any mention of the string.
+	# Several of these files describe in a comment what they replaced, and the
+	# word <script> appears in that prose; the browser does not care about
+	# that. What breaks a file is opening with markup, because the parse
+	# starts at the first byte.
+	csp_first="$(awk '
+		BEGIN { inblock = 0 }
+		{
+			line = $0
+			
+			while (1)
+			{
+				if (inblock)
+				{
+					i = index(line, "*/")
+					if (i == 0) { line = ""; break }
+					line = substr(line, i + 2)
+					inblock = 0
+				}
+				else
+				{
+					i = index(line, "/*")
+					if (i == 0) { break }
+					line = substr(line, 1, i - 1)
+					inblock = 1
+				}
+			}
+			
+			sub(/^[ \t]*\/\/.*$/, "", line)
+			gsub(/^[ \t]+/, "", line)
+			gsub(/[ \t]+$/, "", line)
+			
+			if (line != "") { print line; exit }
+		}
+	' "cms/js/$csp_js")"
+	
+	case "$csp_first" in
+		"<"*)
+			bad "js/$csp_js is loaded with <script src> but opens with markup: $csp_first"
+			csp_markup=$((csp_markup + 1))
+			;;
+	esac
+	
+	if grep -q '%%\[' "cms/js/$csp_js"
+	then
+		bad "js/$csp_js is loaded with <script src> but holds a template tag"
+		csp_tagged=$((csp_tagged + 1))
+	fi
+done < "$BODY.csp88"
+
+csp_total="$(grep -c . "$BODY.csp88" 2>/dev/null || echo 0)"
+
+if [ "$csp_total" -lt 5 ]
+then
+	bad "section 88 found only $csp_total script includes - the sweep is broken"
+else
+	ok "$csp_total script includes swept"
+fi
+
+[ "$csp_missing" -eq 0 ] && ok "every script include resolves to a file that exists"
+[ "$csp_markup"  -eq 0 ] && ok "no file served through <script src> is markup"
+[ "$csp_tagged"  -eq 0 ] && ok "no file served through <script src> needs the template layer"
+
+# The other direction: a file that does hold a template tag must still be
+# loaded through the parsing form somewhere, or its tags never resolve.
+# The other way to load a script, and the other way to get it wrong. The
+# javascript plugin defaults to parse => false, so a file holding a tag and
+# included without the flag renders the literal text %%[base_url]%% into the
+# page: it parses, it runs, and the URL it builds is wrong.
+#
+# Every include SITE is checked, not every file. js/problem-server-ajax.js is
+# included from two templates, and one of them losing the flag breaks that one
+# page while the other keeps working - which is exactly the kind of difference
+# a per-file check reports as fine.
+csp_sites=0
+csp_unparsed=0
+
+grep -rnoE '%%\[[A-Za-z0-9_.-]+\.js,javascript[^]]*\]%%' cms cms-custom 2>/dev/null \
+	| sort -u > "$BODY.csp88b"
+
+while IFS= read -r csp_site
+do
+	[ -z "$csp_site" ] && continue
+	
+	csp_where="${csp_site%%:*}"
+	csp_tag="${csp_site##*:}"
+	csp_base="${csp_tag#%%[}"
+	csp_base="${csp_base%%,*}"
+	
+	# Only a file that actually holds a tag needs the flag.
+	if [ ! -f "cms/js/$csp_base" ] || ! grep -q '%%\[' "cms/js/$csp_base"
+	then
+		continue
+	fi
+	
+	csp_sites=$((csp_sites + 1))
+	
+	case "$csp_tag" in
+		*,parse]%%)
+			;;
+		*)
+			bad "$csp_where includes js/$csp_base without parse, so its tags stay literal"
+			csp_unparsed=$((csp_unparsed + 1))
+			;;
+	esac
+done < "$BODY.csp88b"
+
+if [ "$csp_sites" -lt 5 ]
+then
+	bad "section 88 found only $csp_sites template-tag includes - the sweep is broken"
+else
+	ok "$csp_sites template-tag includes swept"
+fi
+
+[ "$csp_unparsed" -eq 0 ] && ok "every include of a tag-bearing script carries parse"
+
+rm -f "$BODY.csp88b"
+
+rm -f "$BODY.csp88"
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

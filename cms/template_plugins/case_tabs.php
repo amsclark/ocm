@@ -67,12 +67,9 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 				keep the characters a file name can hold and drop the rest.
 			*/
 			$screen_name = preg_replace('/[^A-Za-z0-9_.-]/','',$screen_name);
-			$onclick = '';
-			if(strlen($temp_args['onclick']) > 0) {
-				$onclick .= $temp_args['onclick'];
-			}
+			$tab_attributes = '';
 			if($temp_args['js_mode'] && $autosave) {
-				$onclick .= "if(typeof window.setConfirmUnload == 'function') setConfirmUnload(false); document.forms.ws.screen.value='{$screen_name}'; document.forms.ws.submit(); return false;";
+				$tab_attributes = " class=\"js-case-tab\" data-screen=\"{$screen_name}\"";
 			}
 			/*	The tab name is typed in on the Case Tabs admin screen and
 				went into the link as it came out of the table.
@@ -88,9 +85,9 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 			$case_tabs[$tab['tab_row']] .= "<li{$current}>";
 			
 			if($temp_args['url']) {
-				$case_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$screen_name}\" onClick=\"{$onclick}\">{$tab_name}</a>";
+				$case_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$screen_name}\"{$tab_attributes}>{$tab_name}</a>";
 			} else {
-				$case_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/case.php?case_id={$case_id}&screen={$screen_name}\" onClick=\"{$onclick}\">{$tab_name}</a>";				
+				$case_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/case.php?case_id={$case_id}&screen={$screen_name}\"{$tab_attributes}>{$tab_name}</a>";
 			}
 			$case_tabs[$tab['tab_row']] .= "</li>\n";
 		}
@@ -99,6 +96,7 @@ function case_tabs($field_name = null, $field_value = null, $menu_array = null, 
 	$case_tabs_html = "<ul class=\"nav nav-tabs\">";
 	$case_tabs_html .= implode("</ul>\n<ul class=\"nav nav-tabs\">",$case_tabs);
 	$case_tabs_html .= "</ul>";
+	$case_tabs_html .= "<script src=\"{$base_url}/js/case_tabs.js\"></script>";
 	
 	
 	return $case_tabs_html;
