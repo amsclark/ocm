@@ -2322,13 +2322,16 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	  is now parseFloat, and the last was a KeyPress helper that ran
 	  whatever string it was handed, which nothing called.
 
-	  script-src still keeps 'unsafe-inline'. The tree has 44 inline
-	  <script> blocks, 106 inline on* handler attributes and 22
-	  javascript: URLs, so that keyword cannot go until those are
-	  converted too. Even with it the directive still blocks the thing
+	  script-src still keeps 'unsafe-inline', but only just. The inline
+	  <script> blocks are gone, all 44 of them, and so are the 22
+	  javascript: URLs. What is left is 20 inline on* handler
+	  attributes, down from 106: 13 are arguments handed to a template
+	  plugin, 4 are the Save, Next Tab buttons on the case tabs, and 3
+	  are written straight into a template. The keyword goes when they
+	  do. Even while it is here the directive still blocks the thing
 	  worth blocking most: script loaded from any other origin.
 
-	  style-src keeps 'unsafe-inline' for the 229 style="..." attributes.
+	  style-src keeps 'unsafe-inline' for the 203 style="..." attributes.
 
 	The directives that cost nothing here are the ones that do the work:
 
@@ -2354,7 +2357,7 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	                         template is fetched over https instead of
 	                         becoming mixed content the browser blocks
 
-	No CDN origins are allowed because the tree loads none: all 9 external
+	No CDN origins are allowed because the tree loads none: all 55 external
 	<script src> references are local files.
 
 	csp_mode picks what to do with it. A missing row means 'enforce', so an
