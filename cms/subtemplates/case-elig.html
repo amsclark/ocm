@@ -4,11 +4,11 @@
   <tr>
     <td class="elig1">
 	    Children:<br/>
-	    <input type=text name=children value="%%[children]%%" tabindex=1 onChange="ph_change();" class="input-mini"/><br/>
+	    <input type=text name=children value="%%[children]%%" tabindex=1 class="input-mini js-case-elig-persons"/><br/>
     </td>
     <td class="elig1">
 	    Adults:<br/>
-	    <input type=text name=adults value="%%[adults]%%" tabindex=1 onChange="ph_change();" class="input-mini"/><br/>
+	    <input type=text name=adults value="%%[adults]%%" tabindex=1 class="input-mini js-case-elig-persons"/><br/>
     </td>
     <td class="elig1">
 	    # Helped:<br/>
@@ -19,9 +19,9 @@
 	  <strong>
 	  <div class="input-prepend">
 	  	<span class="add-on">$</span>
-	  	<input type=text name=dontuse1 onChange="calcWage();" tabindex="3" class="input-mini"/>
+	<input type=text name=dontuse1 tabindex="3" class="input-mini js-case-elig-wage"/>
 	  </div>
-	   X <input type=text name=dontuse2 onChange="calcWage();" size=6 tabindex="3" class="input-mini"/>
+	   X <input type=text name=dontuse2 size=6 tabindex="3" class="input-mini js-case-elig-wage"/>
 	   = 
 	  <div class="input-prepend">
 	  	<span class="add-on">$</span>
@@ -29,7 +29,7 @@
 	  </div>
 	  </strong>
 	</td>
-	<td><input type="button" value="Send to Grid" class="btn btn-success" onclick="sendToGrid();"/></td>
+	<td><input type="button" value="Send to Grid" class="btn btn-success js-case-elig-send-grid"/></td>
   </tr>
 </table>
 
@@ -52,7 +52,7 @@
             %%[income_freq0,income_freq,default=A,class=input-small]%%
           </td>
           <td><table class="nopad" summary=""><tr><td class=maskt nowrap>$ 
-            <input type=text name=annual0 value="%%[annual0]%%" tabindex=1 size=8 onChange="annual_change();" class="maskf input-small"/></td></tr></table>
+            <input type=text name=annual0 value="%%[annual0]%%" tabindex=1 size=8 class="maskf input-small js-case-elig-annual"/></td></tr></table>
           </td>
         </tr>
         <tr class="row2"> 
@@ -63,7 +63,7 @@
             %%[income_freq1,income_freq,default=A,class=input-small]%%
           </td>
           <td><table summary="" class="nopad"><tr><td class=maskt nowrap>$ 
-            <input type=text name=annual1 value="%%[annual1]%%" tabindex=1 size=8 onChange="annual_change();" class="maskf input-small"/></td></tr></table>
+            <input type=text name=annual1 value="%%[annual1]%%" tabindex=1 size=8 class="maskf input-small js-case-elig-annual"/></td></tr></table>
           </td>
         </tr>
         <tr> 
@@ -74,7 +74,7 @@
             %%[income_freq2,income_freq,default=A,class=input-small]%%
           </td>
           <td><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=annual2 value="%%[annual2]%%" tabindex=1 size=8 onChange="annual_change();" class="maskf input-small"/></td></tr></table>
+            <input type=text name=annual2 value="%%[annual2]%%" tabindex=1 size=8 class="maskf input-small js-case-elig-annual"/></td></tr></table>
           </td>
         </tr>
         <tr class="row2"> 
@@ -85,7 +85,7 @@
             %%[income_freq3,income_freq,default=A,class=input-small]%%
           </td>
           <td><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=annual3 value="%%[annual3]%%" tabindex=1 size=8 onChange="annual_change();" class="maskf input-small"/></td></tr></table>
+            <input type=text name=annual3 value="%%[annual3]%%" tabindex=1 size=8 class="maskf input-small js-case-elig-annual"/></td></tr></table>
           </td>
         </tr>
         <tr> 
@@ -96,7 +96,7 @@
             %%[income_freq4,income_freq,default=A,class=input-small]%%
           </td>
           <td><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=annual4 value="%%[annual4]%%" tabindex=1 size=8 onChange="annual_change();" class="maskf input-small"/></td></tr></table>
+            <input type=text name=annual4 value="%%[annual4]%%" tabindex=1 size=8 class="maskf input-small js-case-elig-annual"/></td></tr></table>
           </td>
         </tr>
         <!--
@@ -161,7 +161,7 @@
             %%[asset_type0,asset_type]%%
           </td>
           <td nowrap><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=asset0 tabindex=1 size=7 onChange="asset_change();" value="%%[asset0]%%" class="maskf"/></td></tr></table>
+            <input type=text name=asset0 tabindex=1 size=7 value="%%[asset0]%%" class="maskf js-case-elig-asset"/></td></tr></table>
           </td>
         </tr>
         <tr class="row2"> 
@@ -169,7 +169,7 @@
             %%[asset_type1,asset_type]%%
           </td>
           <td nowrap><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=asset1 tabindex=1 size=7 onChange="asset_change();" value="%%[asset1]%%" class="maskf"/></td></tr></table>
+            <input type=text name=asset1 tabindex=1 size=7 value="%%[asset1]%%" class="maskf js-case-elig-asset"/></td></tr></table>
           </td>
         </tr>
         <tr> 
@@ -177,7 +177,7 @@
             %%[asset_type2,asset_type]%%
           </td>
           <td nowrap><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=asset2 tabindex=1 size=7 onChange="asset_change();" value="%%[asset2]%%" class="maskf"/></td></tr></table>
+            <input type=text name=asset2 tabindex=1 size=7 value="%%[asset2]%%" class="maskf js-case-elig-asset"/></td></tr></table>
           </td>
         </tr>
         <tr class="row2"> 
@@ -185,7 +185,7 @@
             %%[asset_type3,asset_type]%%
           </td>
           <td nowrap><table summary="" class="nopad"><tr><td class=maskt>$ 
-            <input type=text name=asset3 tabindex=1 size=7 onChange="asset_change();" value="%%[asset3]%%" class="maskf"/></td></tr></table>
+            <input type=text name=asset3 tabindex=1 size=7 value="%%[asset3]%%" class="maskf js-case-elig-asset"/></td></tr></table>
           </td>
         </tr>
         <tr> 
@@ -193,7 +193,7 @@
             %%[asset_type4,asset_type]%%
           </td>
           <td nowrap><table summary="" class="nopad"><tr><td class=maskt nowrap>$ 
-            <input type=text name=asset4 tabindex=1 size=7 onChange="asset_change();" value="%%[asset4]%%" class="maskf"/></td></tr></table>
+            <input type=text name=asset4 tabindex=1 size=7 value="%%[asset4]%%" class="maskf js-case-elig-asset"/></td></tr></table>
           </td>
         </tr>
       </table>
@@ -207,8 +207,8 @@
 <table cellpadding="0" summary="">
   <tr valign="top"> 
     <td nowrap>
-      	% of Poverty<a href='%%[base_url]%%/helpdocs/elig_guide.php' onclick="popUp({url:this.href,name:'Eligibility Guide'});return false;">[?]</a>:<br/>
-       	<input type="button" value="Calculate" tabindex="1" onclick="calc_poverty();" style="width: 6em;"/>
+	% of Poverty<a href='%%[base_url]%%/helpdocs/elig_guide.php' class="js-case-elig-guide" data-popup-name="Eligibility Guide">[?]</a>:<br/>
+	<input type="button" value="Calculate" tabindex="1" class="js-case-elig-poverty" style="width: 6em;"/>
         <input type=text name=poverty value="%%[poverty]%%" size=8 readonly style="width: 6.8em; text-align: right;"/>
         <input type=hidden name="poverty_income_only" size=8 readonly  style="width: 6.8em; text-align: right;"/>
         <strong>%</strong><br/>
@@ -249,3 +249,5 @@
 
 %%[case-elig.js,javascript,parse]%%
 
+
+<script src="%%[base_url]%%/js/case-elig-inline.js"></script>

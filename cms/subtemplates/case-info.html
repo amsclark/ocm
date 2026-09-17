@@ -42,7 +42,7 @@
   <table cellpadding="0" summary="">
     <tr valign="top"> 
       <td class="de">
-      	Date Closed: <a onClick="set_close()" href="#dc" tabindex=1>[today]</a><br/>
+	Date Closed: <a class="js-case-info-close-date" href="#dc" tabindex=1>[today]</a><br/>
         %%[close_date,input_date_selector]%%<br/>
         
         %%[lsc_close_code_menu]%%
@@ -104,3 +104,5 @@
 %%[ajax_init.js,javascript]%%
 %%[date_selector.js,javascript,parse]%%
 %%[problem-server-ajax.js,javascript,parse]%%
+
+<script src="%%[base_url]%%/js/case-info-inline.js"></script>
