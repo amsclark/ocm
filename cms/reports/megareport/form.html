@@ -46,15 +46,15 @@
 	</td><td>
 		Change the order of fields on the report:<br/>
 		%%[fo,fo,multiselect,style=border:1px black solid;width: 220px;,nomsg,noblank,size=8]%%<br/>
-		<input type="button" value="Move Up" onclick="move_up();" />
-		<input type="button" value="Move Down" onclick="move_down();" />
+		<input type="button" value="Move Up" class="megareport-move-up" />
+		<input type="button" value="Move Down" class="megareport-move-down" />
 	</td>
 </tr><tr valign="top">
 	<td rowspan="3">
 	Report only on these staff:<br>
 	%%[users_list,user_list]%%
 	<br/>
-	<input type="submit" value="Run Report" class="save" onClick="highlight_all_fo();" />
+	<input type="submit" value="Run Report" class="save megareport-run" />
 	</td><td class="de">
 	Calculate sum of:<br/>
 	%%[sum,sum,nomsg]%%<br/>
@@ -89,14 +89,14 @@
 	     is raw XML rather than a form encoding, so there is no _csrf field for
 	     ops/upload_report.php to read out of $_POST. -->
 	<form name='docgen' id='docgen'>%%[csrf_field]%%
-	<button onclick="load_report('mega',document.docgen.form_id.value);return false;">Load Saved Report</button><br/>
+	<button class="megareport-load" data-report-form="mega" data-source-form="docgen" data-report-id-field="form_id">Load Saved Report</button><br/>
 	
 	</td>
 	<td valign="top">
 	%%[form_id,input_hidden]%%
 	Report Name:<br/>
 	<input type="text" id="doc_name" name="doc_name" value="Megareport Saved: %%[current_date]%%" size="25" tabindex="1"/>
-	<button onclick="save_report('mega','doc_name');setTimeout('reload(\'saved_reports\')',500);return false;">Save Report</button>
+	<button class="megareport-save" data-report-form="mega" data-name-field="doc_name" data-reload-target="saved_reports" data-reload-delay="500">Save Report</button>
 	</form>
 	<form action="%%[base_url]%%/ops/upload_document.php" name="add_folder" method="POST">%%[csrf_field]%%
 	New Folder Name:<br/>
@@ -116,3 +116,5 @@
 %%[file_list.js,javascript,parse]%%
 %%[save_report.js,javascript,parse]%%
 %%[checkbox_list.js,javascript]%%
+
+<script src="%%[base_url]%%/js/megareport-form-inline.js"></script>

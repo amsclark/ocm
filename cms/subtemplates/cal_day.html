@@ -1,27 +1,3 @@
-<script LANGUAGE="JavaScript" type="text/javascript">
-function checkAll()
-{
-	var i = %%[i_value]%%;
-	
-	for (j = 0; j < i; j++)
-	{
-		k = (j * 2);
-		document.act_update_bulk.elements[k].checked = true;
-	}
-}
-
-function uncheckAll()
-{
-	var i = %%[i_value]%%;
-	
-	for (j = 0; j < i; j++)
-	{
-		k = (j * 2);
-		document.act_update_bulk.elements[k].checked = false;
-	}
-}
-</script>
-
 <table width="98%" summary="">
 <tr>
 
@@ -48,7 +24,7 @@ function uncheckAll()
 <tr valign="top">
 
 <td width="100%">
-<form action="dataops.php" method="post" name="act_update_bulk">%%[csrf_field]%%
+<form action="dataops.php" method="post" name="act_update_bulk" data-item-count="%%[i_value]%%">%%[csrf_field]%%
 
 %%[overdue_table]%%
 
@@ -69,8 +45,8 @@ function uncheckAll()
  	</span>
         <span style="float: right; text-align: right; margin-top: 3px;">
 
-[ <a href="javascript:checkAll()">Check All</a> / 
-<a href="javascript:uncheckAll()">Uncheck All</a> ]
+[ <a href="#" class="cal_day-check-all">Check All</a> /
+<a href="#" class="cal_day-uncheck-all">Uncheck All</a> ]
       </span>
 	</div>
 
@@ -86,7 +62,7 @@ function uncheckAll()
 		
 		<img src="images/point.gif">
 		Add <a href="%%[base_url]%%/activity.php?screen=compose&act_date=%%[cal_date]%%&act_type=T">New Time Slip</a>
-		(<a href="%%[base_url]%%/timer.php" onclick="popUp({url:this.href,name:'popUpTimer'});return false;">Popup Timer</a>)<br/>
+		(<a href="%%[base_url]%%/timer.php" class="cal_day-popup-timer" data-popup-name="popUpTimer">Popup Timer</a>)<br/>
 
 		<img src="images/point.gif">
 		Add <a href="%%[base_url]%%/activity.php?screen=compose&completed=0&act_date=%%[cal_date]%%">New Calendar Entry</a><br/>
@@ -129,3 +105,5 @@ function uncheckAll()
 </table>
 
 <script type="text/javascript" language="JavaScript" src="%%[base_url]%%/js/popUp.js"></script>
+
+<script src="%%[base_url]%%/js/cal_day-inline.js"></script>

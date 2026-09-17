@@ -76,6 +76,7 @@ Comments:<br/>
 <br/>
 <input type="submit" value="Save" accesskey="s" tabindex="1" class="save">
 </form>
+<script src="%%[base_url]%%/js/case-compen-inline.js"></script>
 %%[end:view]%%
 
 %%[begin:flex_header]%%
@@ -101,7 +102,7 @@ Comments:<br/>
 	<td nowrap>
 	<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=edit&compen_id=%%[compen_id]%%">Edit</a>
 	&nbsp;|&nbsp;
-	<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=delete&compen_id=%%[compen_id]%%" onclick="confirm('Are you sure you wish to delete this entry?');">Delete</a>
+	<a href="%%[base_url]%%/case.php?case_id=%%[case_id]%%&screen=compen&action=delete&compen_id=%%[compen_id]%%" class="js-case-compen-confirm" data-confirm="Are you sure you wish to delete this entry?">Delete</a>
 	</td>
 </tr>
 %%[end:flex_row]%%

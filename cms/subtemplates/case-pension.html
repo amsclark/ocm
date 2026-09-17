@@ -3,9 +3,9 @@
 <table>
 <tr>
 	<td class="de">
-	Issue #1: %%[issue1,pension_issue,onchange=issue_code_lookup(this);]%%<br/>
-	Issue #2: %%[issue2,pension_issue,onchange=issue_code_lookup(this);]%%<br/>
-	Issue #3: %%[issue3,pension_issue,onchange=issue_code_lookup(this);]%%<br/>
+	Issue #1: %%[issue1,pension_issue,class=plmenu js-case-pension-issue]%%<br/>
+	Issue #2: %%[issue2,pension_issue,class=plmenu js-case-pension-issue]%%<br/>
+	Issue #3: %%[issue3,pension_issue,class=plmenu js-case-pension-issue]%%<br/>
 	</td><td class="de">
 	Sub Issue #1:&nbsp;%%[sub_issue1,pension_sub_issue]%%<br/>
 	Sub Issue #2:&nbsp;%%[sub_issue2,pension_sub_issue]%%<br/>
@@ -60,17 +60,17 @@
 <tr>
 	<td>
 	Interest:<br/>
-	<span class=maskt>$%%[annuity_interest,input_text,class=maskf,onblur=total_annuities();]%%</span><br/>
+	<span class=maskt>$%%[annuity_interest,input_text,class=maskf js-case-pension-annuity-blur]%%</span><br/>
 	Not Recovered:<br/>
-	<span class=maskt>$%%[annuity_not_recovered,input_text,class=maskf,onblur=total_annuities();]%%</span><br/>	
+	<span class=maskt>$%%[annuity_not_recovered,input_text,class=maskf js-case-pension-annuity-blur]%%</span><br/>
 	Retroactive Payment:<br/>
-	<span class=maskt>$%%[annuity_retro_payment,input_text,class=maskf,onblur=total_annuities();]%%</span><br/>
+	<span class=maskt>$%%[annuity_retro_payment,input_text,class=maskf js-case-pension-annuity-blur]%%</span><br/>
 	Lump Sum:<br/>
-	<span class=maskt>$%%[annuity_lump_sum,input_text,class=maskf,onblur=total_annuities();]%%</span><br/>
+	<span class=maskt>$%%[annuity_lump_sum,input_text,class=maskf js-case-pension-annuity-blur]%%</span><br/>
 	Annuity Cash Accumulated:<br/>
-	<span class=maskt>$%%[annuity_cash_accumulated,input_text,class=maskf,onchange=total_annuities();]%%</span><br/>
+	<span class=maskt>$%%[annuity_cash_accumulated,input_text,class=maskf js-case-pension-annuity-change]%%</span><br/>
 	Annuity Present Value:<br/>
-	<span class=maskt>$%%[annuity_present_value,input_text,class=maskf,onchange=total_annuities();]%%</span><br/>
+	<span class=maskt>$%%[annuity_present_value,input_text,class=maskf js-case-pension-annuity-change]%%</span><br/>
 	Total Cash Accumulated:<br/>
 	<span class=maskt>$%%[annuity_total_cash_accumulated,input_text,class=maskf]%%</span><br/>
 	Total Present Value:<br/>
@@ -85,7 +85,7 @@
 <tr>
 	<td>
 	Calculation Type <!--<a href="%%[base_url]%%" onclick="display_all(document.getElementById('calc_type').value);return false;">[Unhide]</a>--><br/>
-	%%[calc_type,calc_type,onchange=display_recovery_calulator(this.value)]%%<br/>
+	%%[calc_type,calc_type,class=plmenu js-case-pension-calculation-type]%%<br/>
 	<div style="display:none;" id="input_pv_factor">
 	<strong>%%[pv_factor,input_text,disabled]%%<label for="pv_factor">Present Value Factor</label></strong>
 	</div>
@@ -133,7 +133,7 @@
 			%%[js_percentage2,input_text,default=]%%<label for="js_percentage">Joint and Survivor Percentage</label><br/>
 			%%[spouse_age2,input_text,default=]%%<label for="spouse_age">Spouse Age</label><br/>
 			<br/>
-			<input type="button" value="Calculate" class="save" onclick="runPPALevel();total_annuities();">
+			<input type="button" value="Calculate" class="save js-case-pension-calculate-level">
 		</div>
 	</td>
 </tr>
@@ -146,7 +146,7 @@
 	%%[segment_rate_3,input_hidden,default=4.88]%%
 	%%[mortality_table,input_hidden,default=4]%%
 	%%[payment_form,input_hidden,default=LS]%%
-	<input type="button" value="Calculate" class="save" onclick="runPPA();total_annuities();">
+	<input type="button" value="Calculate" class="save js-case-pension-calculate">
 	</div>
 	</td>
 </tr>
@@ -166,5 +166,4 @@
 <input type="submit" value="Save" name="save" class="save">
 </form>
 
-%%[case-pension.js,javascript,parse]%%
-%%[pvppa.js,javascript,parse]%%
+<script src="%%[base_url]%%/js/case-pension-inline.js"></script>

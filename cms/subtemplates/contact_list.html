@@ -30,8 +30,8 @@
 		<td class="clf" colspan="2">
 			Telephone Number: <br/>
 			<span class="maskt">
-			(<input type=text name="area_code" value="%%[area_code]%%" onkeyup="pika_area_code(this, 3, 'phone');" style="width: 2em;" maxlength="3" tabindex=1 class=maskf>) 
-			<input type=text name="phone" value="%%[phone]%%" onkeyup="pika_phone(this);" style="width: 11.2em;" maxlength="8" tabindex="1" class="maskf">
+			(<input type=text name="area_code" value="%%[area_code]%%" data-area-max="3" data-phone-field="phone" style="width: 2em;" maxlength="3" tabindex=1 class="maskf js-contact-list-area-code">)
+			<input type=text name="phone" value="%%[phone]%%" style="width: 11.2em;" maxlength="8" tabindex="1" class="maskf js-contact-list-phone">
 			</span>
 		</td>
 		<td class="clf" colspan="2">
@@ -93,59 +93,4 @@
     </tbody>
 </table>
 %%[end:flex_footer]%%
-
-<script language="JavaScript" type="text/javascript"><!--
-var old_ssn_length = 0;
-
-function pika_ssn(what)
-{
-	if (what.value.length == 3 && old_ssn_length == 2)
-	{
-		what.value += '-';
-	}
-
-	if (what.value.length == 6 && old_ssn_length == 5)
-	{
-		what.value += '-';
-	}
-
-	old_ssn_length = what.value.length;
-}
-
-var ac_autotab_on = 1;
-
-function pika_area_code(what, max, field_name)
-{	
-	if (max > 0 && what.value.length >= max && ac_autotab_on == 1)
-	{
-		document.form1[field_name].focus();
-	}
-
-	if (what.value.length >= 3)
-	{
-		ac_autotab_on = 0;
-	}
-
-	else if (what.value.length == 0)
-	{
-		ac_autotab_on = 1;
-	}
-
-	return;
-}
-
-var old_phone_length = 0;
-
-function pika_phone(what)
-{
-	if (what.value.length == 3 && old_phone_length == 2)
-	{
-		what.value += '-';
-	}
-
-	old_phone_length = what.value.length;
-}
-
-document.form1.first_name.focus();
-
-//--></script>
+<script src="%%[base_url]%%/js/contact_list-inline.js"></script>
