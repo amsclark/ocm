@@ -41,6 +41,21 @@ jobs:
           template: '@/contrib/sarif.tpl'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
+          # Report only the vulnerabilities somebody can act on.
+          #
+          # Measured on the image this workflow builds: 228 findings at
+          # CRITICAL or HIGH, and exactly one of them had a fixed version
+          # available. 108 of the 228 were in linux-libc-dev, a set of kernel
+          # headers pulled in as a build dependency for the PHP extensions; a
+          # container runs the host's kernel, so those headers are never the
+          # kernel anything executes. None of that is work anybody can do, and
+          # it buried the one finding that was.
+          #
+          # A vulnerability with no fix does not stop being real. It stops
+          # being a task. When Debian publishes a fix, the finding reappears
+          # here with a fixed version, which is the signal to bump the base
+          # image digest in the Dockerfile.
+          ignore-unfixed: 'true'
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
