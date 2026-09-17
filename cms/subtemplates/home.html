@@ -49,7 +49,7 @@
 		<strong>%%[title]%%</strong>
 		<small>By %%[full_name]%%</small>
 		<div id="motd-content-%%[motd_id]%%" style="display:none">
-		%%[content]%% ... (<i><a href="#" onclick="toggleMotd(%%[motd_id]%%); return false;">Hide Full Text</a></i>)
+		%%[content]%% ... (<i><a href="#" class="js-hide-motd" data-motd-id="%%[motd_id]%%">Hide Full Text</a></i>)
 		</div>
 		<div id="motd-summary-%%[motd_id]%%">
 		%%[summary_content]%%
@@ -78,21 +78,4 @@
 	(<a href="http://en.wikipedia.org/wiki/Wiki">What is a wiki?</a>)</p>
 </div>
 
-<script type="text/javascript" language="Javascript">
-<!--
-
-function toggleMotd(id) {
-	toggleDiv("motd-summary-"+id);
-	toggleDiv("motd-content-"+id);
-}
-
-function toggleDiv(id) {
-	var div = document.getElementById(id);
-	if(div.style.display == "none") {
-		div.style.display = "block";
-	} else {
-		div.style.display = "none";
-	}
-}
--->
-</script>
+<script src="%%[base_url]%%/js/home-inline.js"></script>
