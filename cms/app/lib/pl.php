@@ -2342,7 +2342,17 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	                         that file this is not baked into the image.
 	  form-action 'self'     an injected <form> cannot post a user's input
 	                         off-site
+	  frame-src 'none'       the page may not create an iframe either. The
+	                         tree has none, and an injected one is a route to
+	                         a convincing fake login form.
+	  worker-src 'none'      no Worker or SharedWorker. The tree has none,
+	                         and a worker is script execution that survives
+	                         the page that started it.
 	  default-src 'self'     everything not named above is same-origin only
+	  upgrade-insecure-requests
+	                         a subresource written as http:// in an old
+	                         template is fetched over https instead of
+	                         becoming mixed content the browser blocks
 
 	No CDN origins are allowed because the tree loads none: all 9 external
 	<script src> references are local files.
@@ -2387,6 +2397,9 @@ function pl_send_csp_header()
 		"base-uri 'self'",
 		"form-action 'self'",
 		"frame-ancestors 'none'",
+		"frame-src 'none'",
+		"worker-src 'none'",
+		'upgrade-insecure-requests',
 	));
 	
 	if ('report_only' === $mode)
@@ -2397,6 +2410,211 @@ function pl_send_csp_header()
 	}
 	
 	header('Content-Security-Policy: ' . $policy);
+}
+
+/*	Emit the response headers the OWASP Secure Headers Project recommends.
+
+	The CSP above is one of that set. This sends the rest of it, in one place,
+	from PHP for the same reason the CSP is sent from PHP: docker/apache.conf
+	is baked into the image, so an operator running OCM under their own Apache
+	never received it, and changing it meant a rebuild.
+
+	Apache still sets three of these in docker/apache.conf and
+	httpd-config/ocm.conf. That is deliberate -- those cover responses PHP
+	never sees, such as a static file or an Apache-generated error page -- but
+	it means the two should AGREE, so that a static file and a PHP page are not
+	protected differently. Both files were updated with this function; a future
+	change to one needs the same change to the other.
+
+	Those files use `Header setifempty`, not `Header always set`. `always` does
+	not replace what PHP sent -- it writes to a different table
+	(err_headers_out) from the one PHP writes to, and the client gets the
+	header twice, which for Referrer-Policy means the value the browser applies
+	depends on which field it parses last. setifempty writes only when the
+	response does not already carry the header, so PHP wins on a PHP page and
+	Apache covers what PHP never sees.
+
+	What is sent, and what each one is for:
+
+	  X-Content-Type-Options: nosniff
+	      A browser may not second-guess a declared content type. This is
+	      load-bearing for cms/documents.php, which serves a stored document
+	      with the type the uploading browser claimed: a file can say
+	      image/png and hold markup.
+
+	  X-Frame-Options: DENY
+	      Superseded by frame-ancestors in the CSP, and sent anyway for
+	      browsers that do not implement it. DENY rather than the SAMEORIGIN
+	      the Apache files used to carry, so that it says the same thing as
+	      frame-ancestors 'none'. The tree frames nothing of its own.
+
+	  Referrer-Policy: strict-origin-when-cross-origin
+	      Was same-origin. A case management URL carries case and contact
+	      ids, and this sends none of that to another site: a cross-origin
+	      request gets the bare origin, and an http:// destination gets
+	      nothing at all.
+
+	      NOT no-referrer, which is the stricter value OWASP names first.
+	      Three things in this tree read the referrer, and one of them is a
+	      security control:
+
+	        pl_request_origin() in this file decides whether a POST started
+	        on our own page. It reads Sec-Fetch-Site, then Origin, then
+	        Referer. Under no-referrer a browser sends `Origin: null` on
+	        every non-GET request -- that is the Fetch standard, not a quirk
+	        -- and the function already discards the literal string 'null',
+	        so both fallbacks would be gone and the answer would be
+	        'unknown' on any browser too old to send Sec-Fetch-Site. That is
+	        the exact case the fallback was written for.
+
+	        activity.php derives which page an activity was logged from, and
+	        ops/vcal.php uses the referrer to decide where to send the user
+	        back to. Both would quietly degrade.
+
+	      strict-origin-when-cross-origin still sends the full URL on a
+	      same-origin request, which is what all three of those read, while
+	      sending no path to anybody else. It is on OWASP's list as well.
+	      The privacy that no-referrer would add here is the referrer our own
+	      pages send to our own pages, and the cost is a CSRF fallback.
+
+	  Permissions-Policy
+	      Turns off the browser features the application does not use --
+	      camera, microphone, geolocation, USB, serial, payment and the rest.
+	      Injected script cannot ask for a permission the page has already
+	      given up. publickey-credentials-* are denied too: multi-factor here
+	      is TOTP, and no WebAuthn call exists in the tree.
+
+	  Cross-Origin-Opener-Policy: same-origin
+	      A page this one opens, or that opened it, gets no window handle to
+	      it. Closes the cross-window scripting routes and makes the browser
+	      treat the tab as its own browsing context group.
+
+	  Cross-Origin-Resource-Policy: same-origin
+	      Another site may not load our responses as a subresource.
+
+	  Cross-Origin-Embedder-Policy: require-corp
+	      Our page may not load a cross-origin subresource unless that
+	      resource opts in. Safe here because the tree loads no cross-origin
+	      asset at all -- every <script src>, stylesheet and image is local.
+	      It is the one header in this set that WILL break a local overlay
+	      that pulls a font or a logo from a CDN, which is what
+	      security_headers_mode is for.
+
+	  Cache-Control: no-store
+	      Do not write case data to disk. This application shows client names,
+	      addresses and case notes, often on a shared office machine, and the
+	      browser cache outlives the session.
+
+	      Sent in both modes, and deliberately not part of the compat set.
+	      pika-danio.php calls session_start() after this function, and PHP's
+	      session cache limiter then replaces this value with its own
+	      "no-store, no-cache, must-revalidate". So on any page that starts a
+	      session, no-store arrives whatever this function does, and a compat
+	      mode that dropped it would be promising a browser cache it cannot
+	      deliver. What this line adds is the responses that never reach
+	      session_start() -- an early exit, a redirect, an error path.
+
+	  Strict-Transport-Security: max-age=31536000; includeSubDomains
+	      Sent ONLY when the request arrived over HTTPS and force_https is on.
+	      Both conditions matter. Over plain HTTP the header is meaningless.
+	      And it cannot be called back: a browser that has seen it refuses
+	      plain HTTP to this host for a year, so sending it to an install that
+	      has not committed to HTTPS locks that install out of its own
+	      application. force_https being on IS that commitment -- the operator
+	      already redirects every plain request -- which makes it the honest
+	      condition rather than a second setting nobody would find.
+
+	  X-Powered-By is removed. It names the PHP version, which tells an
+	      attacker which published bugs to try. expose_php=Off does the same
+	      thing, but a shipped php.ini cannot reach an operator's own build.
+
+	security_headers_mode picks how far to go. A missing row means 'strict',
+	so an install that never opens the settings screen gets the whole set:
+
+	  strict   send all of the above (default)
+	  compat   drop Cross-Origin-Embedder-Policy, and nothing else. It is the
+	           only header in this set that can break a page that already
+	           worked: it refuses a cross-origin font, image or script that a
+	           local overlay loads. Everything else still sends.
+
+	Nothing here is conditional on csp_mode. Turning the CSP off is a
+	statement about the CSP, not permission to stop sending nosniff.
+*/
+function pl_send_security_headers()
+{
+	if (headers_sent())
+	{
+		return;
+	}
+
+	/*	Before anything is added, take away the one PHP adds by itself.
+		header_remove() on a header that was never sent is not an error.
+	*/
+	header_remove('X-Powered-By');
+
+	$strict = ('compat' !== pl_settings_get('security_headers_mode'));
+
+	header('X-Content-Type-Options: nosniff');
+	header('X-Frame-Options: DENY');
+	header('Referrer-Policy: strict-origin-when-cross-origin');
+	header('Cross-Origin-Opener-Policy: same-origin');
+	header('Cross-Origin-Resource-Policy: same-origin');
+	header('Cache-Control: no-store');
+
+	/*	Every feature the application does not use. A feature left out of
+		this list is a feature the page keeps, so the list is written out in
+		full rather than trimmed to the interesting ones.
+	*/
+	header('Permissions-Policy: ' . implode(', ', array(
+		'accelerometer=()',
+		'ambient-light-sensor=()',
+		'autoplay=()',
+		'battery=()',
+		'camera=()',
+		'display-capture=()',
+		'document-domain=()',
+		'encrypted-media=()',
+		'fullscreen=()',
+		'gamepad=()',
+		'geolocation=()',
+		'gyroscope=()',
+		'hid=()',
+		'idle-detection=()',
+		'local-fonts=()',
+		'magnetometer=()',
+		'microphone=()',
+		'midi=()',
+		'payment=()',
+		'picture-in-picture=()',
+		'publickey-credentials-create=()',
+		'publickey-credentials-get=()',
+		'screen-wake-lock=()',
+		'serial=()',
+		'speaker-selection=()',
+		'storage-access=()',
+		'usb=()',
+		'web-share=()',
+		'xr-spatial-tracking=()',
+	)));
+
+	if ($strict)
+	{
+		header('Cross-Origin-Embedder-Policy: require-corp');
+	}
+
+	/*	The same HTTPS test pika-danio.php makes before the force_https
+		redirect: absent, empty and the literal string "off" all mean no.
+	*/
+	$https_on = isset($_SERVER['HTTPS'])
+		&& strlen((string) $_SERVER['HTTPS']) > 0
+		&& 'off' !== strtolower((string) $_SERVER['HTTPS']);
+
+	if ($https_on && true == pl_settings_get('force_https'))
+	{
+		header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+	}
+
+	pl_send_csp_header();
 }
 
 function pl_exception_handler($e)

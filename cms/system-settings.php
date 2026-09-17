@@ -133,7 +133,7 @@ $list_of_settings = array('cookie_prefix', 'enable_system', 'enable_compression'
 		would rather have no in-browser preview at all.
 	*/
 	'doc_force_download',
-	'csp_mode',
+	'csp_mode', 'security_headers_mode',
 	/*	Single sign-on. sso_client_secret is deliberately NOT in this list:
 		it is handled on its own below so that a blank field leaves the
 		stored secret alone. sso_allow_insecure_transport is not here either
@@ -320,6 +320,10 @@ switch ($action)
 			'enforce'     => 'On (recommended)',
 			'report_only' => 'Report only — log violations, block nothing',
 			'off'         => 'Off'
+		));
+		$template->addMenu('security_headers_mode', array(
+			'strict' => 'Strict (recommended)',
+			'compat' => 'Compatible — allow files from other servers'
 		));
 		$template->addMenu('password_breach_policy', array(
 			'off'   => 'Off',

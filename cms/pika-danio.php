@@ -840,11 +840,16 @@ function pika_init()
 		}
 	}
 	
-	/*	Send the Content-Security-Policy. After the force_https redirect
-		above, which exits, so a redirect does not carry a policy for a page
-		it is not serving; before any output, which has not started yet.
+	/*	Send the security response headers, the Content-Security-Policy among
+		them. After the force_https redirect above, which exits, so a redirect
+		does not carry a policy for a page it is not serving; before any
+		output, which has not started yet.
+
+		It has to be after the redirect for a second reason now:
+		Strict-Transport-Security is only sent on an HTTPS request, and the
+		request that gets redirected is the one that is not.
 	*/
-	pl_send_csp_header();
+	pl_send_security_headers();
 	
 	// GZIP compression
 	if ($plSettings['enable_compression'] && !defined('PIKA_NO_COMPRESSION'))
