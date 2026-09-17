@@ -1,5 +1,5 @@
 %%[begin:timer]%%
-<form action="%%[base_url]%%/timer.php" name="clock" method="GET">
+<form action="%%[base_url]%%/timer.php" name="clock" method="GET" data-timer-running="1">
 <table>
 	<tr valign="top" class="de">
     	<td>
@@ -8,7 +8,7 @@
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=10,cols=30]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="js-timer-highlight" data-target="demodiv" data-mode="1">Text Highlighting</a>
 		%%[textFormat]%%	
     	</td>
     	<td>
@@ -40,78 +40,9 @@
 </form>
 
 <!-- BEGIN: code from http://www.visonet.com/javascript/clock.html -->
-<script language="JavaScript" type="text/javascript">
-
-var timerID = null;
-var timerRunning = false;
-
-function round_extra(number,X) 
-{
-	// rounds number to X decimal places, defaults to 2
-    X = (!X ? 2 : X);
-	return Math.round(number*Math.pow(10,X))/Math.pow(10,X);
-}
-
-function stopclock() 
-{
-	if(timerRunning)
-		clearTimeout(timerID);
-    timerRunning = false;
-}
-
-function startclock() 
-{
-	stopclock();
-	showtime();
-}
-
-function showtime () 
-{
-	var now = new Date();
-	var hours = now.getHours();
-	var minutes = now.getMinutes();
-    var seconds = now.getSeconds()
-    var timeValue = "" + ((hours >12) ? hours -12 :hours)
-	var elapsedValue = document.clock.elapsed_secs.value++;
-	
-    timeValue += ((minutes < 10) ? ":0" : ":") + minutes
-	//timeValue += ((seconds < 10) ? ":0" : ":") + seconds
-    timeValue += (hours >= 12) ? " PM" : " AM"
-    
-	document.clock.current.value = timeValue;
-	document.clock.elapsed_mins.value = Math.round(elapsedValue/60);
-	
-    timerID = setTimeout("showtime()",1000);
-    timerRunning = true;
-}
-
-function currenttime () 
-{
-	var now = new Date();
-	var hours = now.getHours();
-	var minutes = now.getMinutes();
-    var seconds = now.getSeconds()
-    var timeValue = "" + ((hours >12) ? hours -12 :hours)
-	
-    timeValue += ((minutes < 10) ? ":0" : ":") + minutes
-	// timeValue += ((seconds < 10) ? ":0" : ":") + seconds
-    timeValue += (hours >= 12) ? " PM" : " AM"
-    
-	return timeValue;
-}
-
-</script>
+<script src="%%[base_url]%%/js/timer-inline.js"></script>
 
 <!-- END: code from http://www.visonet.com/javascript/clock.html -->
-
-<script language="JavaScript" type="text/javascript">
-<!--
-document.clock.summary.focus();
-
-startclock();
-document.clock.start.value = currenttime();
-//--> 
-</script>
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
@@ -128,7 +59,7 @@ document.clock.start.value = currenttime();
 		Notes (private):<br/>
 		%%[notes,input_textarea,rows=10,cols=30]%%<br/>
 		<img src="%%[base_url]%%/images/point.gif">
-		<a href="javascript:toggleBox('demodiv',1);">Text Highlighting</a>
+		<a href="#" class="js-timer-pause-highlight" data-target="demodiv" data-mode="1">Text Highlighting</a>
 		%%[textFormat]%%	
     	</td>
     	<td>
@@ -160,12 +91,7 @@ document.clock.start.value = currenttime();
 </form>
 
 
-<script language="JavaScript" type="text/javascript">
-<!--
-document.clock.summary.focus();
-
-//--> 
-</script>
+<script src="%%[base_url]%%/js/timer-inline.js"></script>
 
 %%[textFormat.js,javascript]%%
 %%[ajax_init.js,javascript]%%
@@ -176,9 +102,10 @@ document.clock.summary.focus();
 %%[begin:timer-close]%%
 <html>
 <head/>
-<body onload="self.close();" />
+<body class="js-timer-close">
+<script src="%%[base_url]%%/js/timer-inline.js"></script>
+</body>
 
 </html>
 %%[end:timer-close]%%
-
 

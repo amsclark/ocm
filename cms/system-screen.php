@@ -175,23 +175,7 @@ EOF;
 	$main_html['content'] .= '';
 	$main_html['content'] .= <<<EOF
 			<script src="js/Sortable.min.js"></script>
-			<script>
-				new Sortable(example2Left, {
-					group: 'shared', // set both lists to same group
-					animation: 150,
-					onSort: function(event, ui) {
-						var sorted = this.toArray();
-						document.getElementById('screen_fields').value = sorted;
-						}
-				});
-				
-				new Sortable(example2Right, {
-					group: 'shared',
-				animation: 150
-				
-				});
-				
-			</script>
+			<script src="{$base_url}/js/system-screen-inline.js"></script>
 EOF;
 
 	$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
