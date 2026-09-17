@@ -45,19 +45,14 @@ function contact_tabs($field_name = null, $field_value = null, $menu_array = nul
 				$current = ' id=current';
 			}
 			
-			$onclick = '';
-			if(strlen($temp_args['onclick']) > 0) {
-				$onclick .= $temp_args['onclick'];
-			}
-			
 			if(!isset($contact_tabs[$tab['tab_row']])) { $contact_tabs[$tab['tab_row']] = ''; }
 			$contact_tabs[$tab['tab_row']] .= "<li{$current}>";
 			
 			
 			if($temp_args['url']) {
-				$contact_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$tab['screen']}\" onClick=\"{$onclick}\">{$tab['name']}</a>";
+				$contact_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$tab['screen']}\">{$tab['name']}</a>";
 			} else {
-				$contact_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/{$tab['file']}?screen={$tab['screen']}&contact_id={$field_value['contact_id']}&case_id={$field_value['case_id']}&number={$field_value['number']}\" onClick=\"{$onclick}\">{$tab['name']}</a>";				
+				$contact_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/{$tab['file']}?screen={$tab['screen']}&contact_id={$field_value['contact_id']}&case_id={$field_value['case_id']}&number={$field_value['number']}\">{$tab['name']}</a>";
 			}
 			$contact_tabs[$tab['tab_row']] .= "</li>\n";
 		}

@@ -44,7 +44,7 @@ function pika_warning($field_name = null, $field_value = null, $menu_array = nul
 	$base_url = pl_settings_get('base_url');
 	
 	// At least one warning exists (TODO - tie this to display_errors?)
-	$warning_output .= "<div id='warning_link'><a href={$base_url} onclick='toggleWarnings();return false;'>PHP Warnings [{$num_warnings}]</a></div>";
+	$warning_output .= "<div id='warning_link'><a href={$base_url} class='js-pika-warning-toggle'>PHP Warnings [{$num_warnings}]</a></div>";
 	$warning_output .= "<div id='warning_list' style='display: none'>";
 	$i = 1;
 	foreach ($warnings as $val) {
@@ -76,8 +76,14 @@ function pika_warning($field_name = null, $field_value = null, $menu_array = nul
 			. " - Line: " . pl_html_escape($val[3]) . "<br/>";
 	}
 	$warning_output .= "</div>\n";
-	$warning_output .= pikaTempLib::plugin('javascript','toggleDiv.js');
-	$warning_output .= pikaTempLib::plugin('javascript','pika_warning.js');
+	$warning_output .= '<script src="' . $base_url . '/js/toggleDiv.js"></script>';
+	$warning_output .= '<script src="' . $base_url . '/js/pika_warning.js"></script>';
+	static $warning_script_included = false;
+	if (!$warning_script_included)
+	{
+		$warning_output .= '<script src="' . $base_url . '/js/pika_warning-events.js"></script>';
+		$warning_script_included = true;
+	}
 	
 	return $warning_output;
 }

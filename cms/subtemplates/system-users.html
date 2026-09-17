@@ -63,7 +63,7 @@
   	City, State:<br/>
 	%%[city,input_text,size=14,class=city]%%%%[state,input_text,size=3,class=state]%%<br/>
 	ZIP Code, County:<br/>
-	%%[zip,input_text,onblur=zipcode_lookup(this.value),size=5,class=zip]%%%%[county,input_text,size=12,class=county]%%<br/>
+	%%[zip,input_text,size=5,class=zip js-user-zip]%%%%[county,input_text,size=12,class=county]%%<br/>
 	</td><td valign="top">
 	Phone:<br/>
   	%%[phone_notes,input_text]%%<br/>
@@ -88,11 +88,11 @@
 		%%[p_len,p_len,radio]%%<br/>
 		<br/>
 	</p><p>
-		<button type="button" onclick="make_password();">Suggest a New Password</button>
+		<button type="button" class="js-user-suggest-password">Suggest a New Password</button>
 	</p><p>
 		<input type="text" name="newpass" id="password-suggest" disabled />
 	</p><p>
-		<button type="button" onclick="use_password('password');">Use This as My Password</button>
+		<button type="button" class="js-user-use-password" data-password-field="password">Use This as My Password</button>
 	</p>
 	</form>
 </fieldset>
@@ -101,6 +101,7 @@
 %%[ajax_init.js,javascript]%%
 %%[zip-server-ajax.js,javascript,parse]%%
 %%[passwordGenerator.js,javascript,parse]%%
+<script src="%%[base_url]%%/js/system-users.js"></script>
 %%[end:edit_user]%%
 
 
