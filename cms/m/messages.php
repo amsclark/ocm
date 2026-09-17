@@ -27,8 +27,8 @@ else
 		$row['summary_content'] = $row['content'];
 		if(strlen($row['content']) > 140) {
 			$row['summary_content'] = pl_html_text(substr($row['content'],0,140));
-			$row['summary_content'] .= " ... (<i><a href=\"#\" onclick=\"toggleMotd({$row['motd_id']});" .
-										 " return false;\">View Full Text</a></i>)";
+			$row['summary_content'] .= " ... (<i><a href=\"#\" class=\"js-toggle-mobile-motd\" data-motd-id=\"" .
+				pl_html_text($row['motd_id']) . "\">View Full Text</a></i>)";
 		}
 		$row['content'] = pl_html_text($row['content']);
 // 06-11-2010 - caw - modified for Pika Mobile		
