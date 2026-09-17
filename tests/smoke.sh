@@ -13854,6 +13854,104 @@ else
 	bad "$mark_attr inline on* handler attributes are back in the templates"
 fi
 
+# ---------------------------------------------------------------------------
+# 82. pikaTempLib reads the file it is handed, whatever file that is.
+#
+# The constructor calls file_exists() and then file_get_contents(), with no
+# check that the path is a template. Handed /etc/hostname it returns the
+# container hostname as the template string, which the caller then renders into
+# a page. Confirmed against the unpatched class.
+#
+# No request reaches that today. The only caller whose path is influenced by a
+# request is activity.php, which builds "subtemplates/activity{$act_type}.html"
+# out of ?act_type=, and the fixed prefix and the .html suffix are what stop a
+# traversal from landing anywhere interesting -- not any check. So this is the
+# class being made to refuse rather than a live leak being closed, and the
+# checks below are written to hold whichever caller arrives next.
+#
+# Section 82a runs inside the container rather than over HTTP, because that is
+# where a caller handing the class an outside path can be arranged. It writes a
+# file with a marker in it somewhere the template roots do not cover, and
+# asserts the marker does not come back. Note that trigger_error() only stops
+# the request where pl_error_handler() is installed, which a php -r is not, so
+# the assertion is on the template string and not on the exit status.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 82. the template engine refuses a file outside the template roots =="
+
+if [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip section 82 (needs a compose stack)\n'
+else
+	# 82a. A file outside the roots must not be read.
+	TL_OUT="$(docker compose "${COMPOSE_ARGS[@]}" exec -T -w /var/www/html/cms app php -r '
+		file_put_contents("/tmp/zz-templib-outside.html", "ZZTEMPLIBLEAK");
+		$_SERVER["custom_directory"] = "/var/www/html/cms-custom";
+		require_once("app/lib/pl.php");
+		require_once("app/lib/pikaTempLib.php");
+		$t = new pikaTempLib("/tmp/zz-templib-outside.html", array());
+		$r = new ReflectionClass($t);
+		$p = $r->getProperty("_template_string");
+		$p->setAccessible(true);
+		echo "STRING:" . trim((string) $p->getValue($t));
+	' </dev/null 2>/dev/null | tr -d '\r')"
+
+	case "$TL_OUT" in
+		*ZZTEMPLIBLEAK*)
+			bad "pikaTempLib read a file outside the template roots (${TL_OUT})" ;;
+		*STRING:*)
+			ok "pikaTempLib refuses a file outside the template roots" ;;
+		*)
+			bad "pikaTempLib containment check did not run (${TL_OUT})" ;;
+	esac
+
+	# 82b. Positive control. A refusal that refuses everything would pass 82a
+	# and break every screen, so a real template must still be read.
+	TL_IN="$(docker compose "${COMPOSE_ARGS[@]}" exec -T -w /var/www/html/cms app php -r '
+		$_SERVER["custom_directory"] = "/var/www/html/cms-custom";
+		require_once("app/lib/pl.php");
+		require_once("app/lib/pikaTempLib.php");
+		$t = new pikaTempLib("subtemplates/activity.html", array());
+		$r = new ReflectionClass($t);
+		$p = $r->getProperty("_template_string");
+		$p->setAccessible(true);
+		echo "LEN:" . strlen((string) $p->getValue($t));
+	' </dev/null 2>/dev/null | tr -d '\r')"
+
+	TL_LEN="$(printf '%s' "$TL_IN" | sed -e 's/.*LEN://')"
+	case "$TL_LEN" in
+		''|*[!0-9]*)
+			bad "pikaTempLib positive control did not run (${TL_IN})" ;;
+		0)
+			bad "pikaTempLib no longer reads subtemplates/activity.html - the containment check is refusing real templates" ;;
+		*)
+			ok "pikaTempLib still reads a real template (${TL_LEN} bytes)" ;;
+	esac
+fi
+
+# 82c. The caller. A traversing act_type must leave the screen working and
+# nothing of the filesystem on it. Asserting the screen still renders as well
+# as the absence of the file, because a blank page would also hold no passwd.
+TL_BODY="$BODY.templib82c"
+TL_CODE="$(curl -s --max-time 30 -b "$COOKIES" -o "$TL_BODY" -w '%{http_code}' \
+	"$OCM_URL/activity.php?act_type=../../../../etc/passwd")"
+
+if grep -q 'root:x:' "$TL_BODY"
+then
+	bad "activity.php served /etc/passwd for a traversing act_type"
+elif [ "$TL_CODE" != 200 ]
+then
+	bad "activity.php returned ${TL_CODE} for a traversing act_type"
+elif grep -qi 'act_date' "$TL_BODY"
+then
+	ok "activity.php falls back to the default activity screen for a traversing act_type"
+else
+	bad "activity.php rendered no activity screen for a traversing act_type"
+fi
+
+rm -f "$TL_BODY"
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
