@@ -327,20 +327,18 @@ while ($row = DBResult::fetchRow($result))
 				inside an onClick attribute. pl_grab_post() does not escape
 				quotes, so a name holding an apostrophe closed the literal and
 				the rest of it ran as script for every user who opened the
-				case. Build the literal with json_encode, then escape the
-				attribute, and URL-encode the two ids in the href.
+				case. Carry the name in an escaped data attribute, and
+				URL-encode the two ids in the href.
 				
 				Nothing prints $clients_html today: the block that used to do
 				it is the commented-out "OLD WAY" further down. So this
 				corrects a sink that is assembled and not yet rendered rather
 				than closing a live hole.
 			*/
-			$confirm_js = 'return confirm(' . json_encode(
-				'Are you sure you want to remove ' . pl_text_name($dirty_row) . ' from this case?',
-				JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ');';
+			$party_name = pl_html_escape(pl_text_name($dirty_row));
 			
 			$clients_html .= "<img src=\"images/point.gif\" alt=\"Arrow\"/> "
-				. "<a onClick=\"" . pl_html_escape($confirm_js) . "\" "
+				. "<a class=\"js-case-remove-client\" data-party-name=\"{$party_name}\" "
 				. "href=\"dataops.php?action=delete_conflict"
 				. "&conflict_id=" . urlencode($row['conflict_id'])
 				. "&case_id=" . urlencode($row['case_id']) . "\">remove</a>\n";
@@ -596,7 +594,8 @@ $case_row['server_url'] = preg_replace('/[^A-Za-z0-9.:\[\]_-]/', '',
 	(string) (isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : ''));
 
 $main_html['content'] = pl_template('subtemplates/case_screen.html', $case_row);
-$main_html['head_extra'] = file_get_contents('js/form_save.js');
+$main_html['content'] .= "<script src=\"{$base_url}/js/case.js\"></script>";
+$main_html['head_extra'] = "<script src=\"{$base_url}/js/case-inline.js\"></script>";
 
 $default_template = new pikaTempLib('templates/default.html',$main_html);
 $buffer = $default_template->draw();
