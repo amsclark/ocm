@@ -13,16 +13,26 @@
 # build that trusts only the name cannot tell that it happened. The digest
 # names the exact image.
 #
-# Pinning does not hold security updates back here. Debian ships most of its
-# fixes as a rebuilt base image rather than as something this Dockerfile could
-# patch, so the way to take them is to bump the digest. The weekly Trivy scan
-# (.github/workflows/trivy.yml) reports any vulnerability that has a fix
-# available, so a fix landing upstream turns into an alert that says to bump
-# this line.
+# The digest does not hold security updates back, but bumping it is not how
+# they arrive. That was the earlier assumption here and it was wrong. Debian
+# publishes a package fix days or weeks before the php image is rebuilt on top
+# of it, so for that whole window the tag, the pinned digest and the newest
+# digest are all the same bytes and all still vulnerable. Bumping the pin is
+# then a no-op that looks like a fix. The gzip advisory below was exactly this:
+# Debian had 1.13-1+deb13u1 in stable while every php:8.2-apache digest,
+# including the newest one, still shipped 1.13-1.
 #
-# To bump it:
+# So the build takes the package updates itself, with the apt-get upgrade in
+# the next stanza. The pin keeps the base layers reproducible; the upgrade
+# keeps the packages current. The weekly Trivy scan
+# (.github/workflows/trivy.yml) reports any vulnerability that has a fix
+# available, and a finding there now means Debian has no fix yet, not that this
+# line is stale.
+#
+# Bump the pin when moving to a newer base on purpose — a PHP patch release, a
+# new Debian point release:
 #   docker pull php:8.2-apache
-#   docker inspect --format '{{index .RepoDigests 0}}' php:8.2-apache
+#   docker image inspect php:8.2-apache --format '{{index .RepoDigests 0}}'
 #
 FROM php:8.2-apache@sha256:f64f4ee8103510c4c1cb22c895235fb01018e4b5fd67b9f60a22f8f8dda68ccf
 
@@ -39,7 +49,13 @@ FROM php:8.2-apache@sha256:f64f4ee8103510c4c1cb22c895235fb01018e4b5fd67b9f60a22f
 #
 # Ghostscript is deliberately absent. The older documentation lists it, but the
 # only two ps2ascii calls in the tree are commented out; pdftotext replaced it.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# The upgrade is what takes Debian's security updates, for the reason given
+# above the FROM line: a package fix reaches Debian stable well before the php
+# image is rebuilt on top of it, and until that rebuild happens no digest of
+# php:8.2-apache has the fix. Without this line the image carries whatever the
+# pinned base shipped with, however old, and bumping the pin cannot help.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         libxml2-dev \
         libonig-dev \
         libzip-dev \
