@@ -62,9 +62,23 @@ switch ($action)
 {
 	case 'edit':
 	
+		/*	The same request value goes to two different places and needs a
+			different escape for each. The SQL further down wants
+			DB::escapeString(). The form action is a query value inside a
+			double-quoted HTML attribute, and DB::escapeString() puts a
+			backslash in front of the quote rather than removing it -- in HTML
+			that is still the end of the attribute, so
+
+				?action=edit&outcome=housing" zzoutcome=1 x="
+
+			wrote two attributes of its own into the <form> tag.
+			rawurlencode() is what a query value wants anyway, and it has no
+			quote left to escape.
+		*/
+		$outcome_url = rawurlencode($outcome);
 		$outcome = DB::escapeString($outcome);
 		$main_html['content'] = "<a href=\"{$base_url}/system-outcomes.php\">Return to Outcome Goals Listing</a>";
-		$main_html['content'] .= "<form action=\"{$base_url}/system-outcomes.php?action=update&outcome={$outcome}\" method=\"POST\">";
+		$main_html['content'] .= "<form action=\"{$base_url}/system-outcomes.php?action=update&outcome={$outcome_url}\" method=\"POST\">";
 		// Same as transfers.php: the update POST goes back to this file, which
 		// enforces the token, so saving the goal list needs one in the body.
 		$main_html['content'] .= pl_csrf_hidden_input();
