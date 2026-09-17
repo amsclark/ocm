@@ -21,6 +21,9 @@ function checkbox($field_name = null, $field_value = null, $menu_array = null, $
 		'tabindex' => '1',
 		'disabled' => false,
 		'no_hidden' => false,
+		// These data attributes replace an onclick argument that CSP disallows.
+		'data-pair' => '',
+		'data-label' => '',
 		// JS Directives
 		'onfocus' => '', 
 		'onblur' => '', 
@@ -49,6 +52,14 @@ function checkbox($field_name = null, $field_value = null, $menu_array = null, $
 	}
 	$checkbox_output .= "value=\"" . pl_html_escape($default_value) . "\" ";
 	$checkbox_output .= "class=\"" . pl_html_escape($temp_args['class']) . "\" ";
+	if ($temp_args['data-pair'] != '')
+	{
+		$checkbox_output .= "data-pair=\"" . pl_html_escape($temp_args['data-pair']) . "\" ";
+	}
+	if ($temp_args['data-label'] != '')
+	{
+		$checkbox_output .= "data-label=\"" . pl_html_escape($temp_args['data-label']) . "\" ";
+	}
 	
 	if($temp_args['onclick'] != '') { 
 		$checkbox_output .= "onClick=\"" . pl_html_escape($temp_args['onclick']) . "\" ";

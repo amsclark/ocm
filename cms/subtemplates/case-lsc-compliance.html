@@ -23,7 +23,7 @@
 	<input type=submit name="update_case" value="Save" tabindex=1 class="save" accesskey="s" />
 </p>
 <!--
-<input type=submit name="update_case" value="Save, Next Tab" tabindex="1" class="save" onclick="document.forms.ws.screen.value='pb';"><br/><br/>
+<input type=submit name="update_case" value="Save, Next Tab" tabindex="1" class="save js-save-next-tab" data-next-screen="pb"><br/><br/>
 -->
 </form>
 
@@ -31,3 +31,6 @@
 <script src="%%[base_url]%%/js/ajax_init.js"></script>
 %%[date_selector.js,javascript,parse]%%
 %%[problem-server-ajax.js,javascript,parse]%%
+
+<script src="%%[base_url]%%/js/save-next-tab.js"></script>
+<script src="%%[base_url]%%/js/case-lsc-compliance-inline.js"></script>

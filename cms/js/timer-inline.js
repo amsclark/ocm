@@ -58,6 +58,18 @@ function currenttime ()
 
 document.addEventListener('DOMContentLoaded', function ()
 {
+	/*	timer.php puts js-set-funding on the case menu only when the
+		autofill_time_funding setting is on, so this must match the class and
+		not the menu's id. The id is there on every box.
+	*/
+	var funding = document.querySelectorAll('.js-set-funding');
+	for (var f = 0; f < funding.length; f++)
+	{
+		funding[f].addEventListener('change', function ()
+		{
+			setFunding(this.value);
+		});
+	}
 	var links = document.querySelectorAll('.js-timer-highlight, .js-timer-pause-highlight');
 	for (var i = 0; i < links.length; i++)
 	{

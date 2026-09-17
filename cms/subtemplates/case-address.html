@@ -18,9 +18,10 @@
 %%[case_id,input_hidden]%%
 <input type=submit name="update_case" value="Save" tabindex=1 class="save" accesskey="s" />
 <!--
-<input type=submit name="update_case" value="Save, Next Tab" tabindex="1" class="save" onclick="document.forms.ws.screen.value='pb';"><br/><br/>
+<input type=submit name="update_case" value="Save, Next Tab" tabindex="1" class="save js-save-next-tab" data-next-screen="pb"><br/><br/>
 -->
 
 </form>
 
 %%[case-info.js,javascript,parse]%%
+<script src="%%[base_url]%%/js/save-next-tab.js"></script>
