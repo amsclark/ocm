@@ -13675,6 +13675,89 @@ rm -f "$BODY.csp88b"
 
 rm -f "$BODY.csp88"
 
+
+# ── 89. Every marker class is both emitted and bound ───────────────────────
+echo "89. every marker class is both emitted and bound"
+
+# Taking a handler out of the markup splits one thing into two: a class on the
+# tag, and an addEventListener in a file under cms/js. Nothing joins them but
+# the spelling, and a mismatch is silent. A class emitted but never bound is a
+# control that does nothing when clicked - no console error, no failed
+# request, nothing on the page to notice. A class bound but never emitted is a
+# listener that never fires. Neither is visible in a page fetch, so no other
+# section here can see it. This is the only check that can.
+#
+# The sweep reads both sides as sets and requires them to match exactly.
+#
+# The class names on the JavaScript side are NOT read as ".js-name", because
+# only some of these are CSS selectors. field-list-inline.js binds with
+# classList.contains('js-field-list-toggle'), which has no dot, and requiring
+# one silently drops it from the set.
+
+grep -rhoE 'js-[A-Za-z0-9_-]+' cms/js 2>/dev/null | sort -u > "$BODY.csp89bound"
+
+# Where a marker class may legitimately be written: the templates, the PHP
+# that renders them, and the plugins that build the tags.
+grep -rhoE 'js-[A-Za-z0-9_-]+' \
+	cms/subtemplates cms-custom/subtemplates cms/reports cms/templates \
+	cms/modules cms/template_plugins cms/m cms/*.php cms-custom/*.php \
+	2>/dev/null | sort -u > "$BODY.csp89emit"
+
+mark_bound="$(grep -c . "$BODY.csp89bound" 2>/dev/null || echo 0)"
+mark_emit="$(grep -c . "$BODY.csp89emit" 2>/dev/null || echo 0)"
+
+if [ "$mark_bound" -lt 20 ] || [ "$mark_emit" -lt 20 ]
+then
+	bad "section 89 found only $mark_bound bound and $mark_emit emitted marker classes - the sweep is broken"
+else
+	ok "$mark_bound marker classes swept"
+fi
+
+mark_dead=0
+while read -r mark_class
+do
+	[ -z "$mark_class" ] && continue
+	if ! grep -qxF "$mark_class" "$BODY.csp89emit"
+	then
+		bad "cms/js binds $mark_class but no template or plugin emits it, so the listener never fires"
+		mark_dead=$((mark_dead + 1))
+	fi
+done < "$BODY.csp89bound"
+
+while read -r mark_class
+do
+	[ -z "$mark_class" ] && continue
+	if ! grep -qxF "$mark_class" "$BODY.csp89bound"
+	then
+		bad "a page emits $mark_class but nothing in cms/js binds it, so the control is dead"
+		mark_dead=$((mark_dead + 1))
+	fi
+done < "$BODY.csp89emit"
+
+[ "$mark_dead" -eq 0 ] && ok "every marker class is both emitted and bound"
+
+rm -f "$BODY.csp89bound"
+rm -f "$BODY.csp89emit"
+
+# And the handlers must not come back. Case matters here: onChange="..." was
+# missed by an earlier case-sensitive sweep and three live handlers survived
+# on case-elig.html, so this reads case-insensitively.
+#
+# Markup inside an HTML comment is never parsed and is not a handler, so the
+# comments are stripped before the count rather than filtered after it: both
+# remaining examples sit inside a comment on a line that also holds live
+# markup, and dropping the whole line would hide anything else on it.
+mark_attr="$(find cms/subtemplates cms-custom/subtemplates cms/reports cms/templates -name '*.html' -print0 2>/dev/null \
+	| xargs -0 sed -E 's/<!--.*-->//g' 2>/dev/null \
+	| grep -ciE '<[^<>]*[[:space:]]on(click|change|submit|load|unload|blur|focus|keyup|keydown|keypress|mouseover|mouseout|mousedown|mouseup|dblclick|select|reset|abort|error|input|paste)[[:space:]]*=' )"
+
+if [ "$mark_attr" -eq 0 ]
+then
+	ok "no template renders an inline on* handler attribute"
+else
+	bad "$mark_attr inline on* handler attributes are back in the templates"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

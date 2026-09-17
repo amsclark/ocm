@@ -63,9 +63,16 @@ while($row = DBResult::fetchRow($open_cases_result)) {
 
 $case_menu_args = array();
 
+/*	setFunding used to arrive as onchange="setFunding(this.value);" on the
+	case menu, and only when this setting was on. The handler has moved to
+	js/timer-inline.js for the Content-Security-Policy, so the setting now
+	reaches the browser as a class the listener looks for. Binding the
+	listener to the menu's id instead would autofill funding on every box,
+	including the ones that turned this off.
+*/
 if (pl_settings_get('autofill_time_funding') == 1)
 {
-	$case_menu_args = array();
+	$case_menu_args[] = 'class=plmenu js-set-funding';
 }
 
 $act_row['new_case_menu'] = pikaTempLib::plugin('case_menu', 'case_id',
