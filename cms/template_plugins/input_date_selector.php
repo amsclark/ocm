@@ -46,7 +46,7 @@ function input_date_selector($field_name = null, $field_value = null, $menu_arra
 			));
 		};
 		
-		$date_selector_output .= "<div class=\"input-group-append\"><button class=\"btn\" type=\"button\" onclick=\"openCalendar(" . $js_literal($field_name) . "," . $js_literal($container_name) . ");\">";
+		$date_selector_output .= "<div class=\"input-group-append\"><button class=\"btn js-input-date-selector\" type=\"button\" data-field-name=\"" . $js_literal($field_name) . "\" data-container-name=\"" . $js_literal($container_name) . "\">";
 		$date_selector_output .= "<i class=\"far fa-calendar\"></i></button></div>";
 	}
 	
@@ -57,6 +57,13 @@ function input_date_selector($field_name = null, $field_value = null, $menu_arra
 	
 	$date_selector_output .= "</div>";
 	$date_selector_output .= "<div id=\"" . pl_html_escape($container_name) . "\" style=\"z-index:3;clear:both;position:absolute;background-color:white;display:none;border:solid;border-width:1px;\"></div>";
+	static $date_script_included = false;
+	if (!$date_script_included)
+	{
+		$date_selector_output .= '<script src="' . $base_url . '/js/input_date_selector.js"></script>';
+		$date_selector_output .= '<script src="' . $base_url . '/js/date_selector-events.js"></script>';
+		$date_script_included = true;
+	}
 	
 	return $date_selector_output;
 

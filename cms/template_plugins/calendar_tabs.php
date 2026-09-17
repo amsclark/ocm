@@ -46,11 +46,6 @@ function calendar_tabs($field_name = null, $field_value = null, $menu_array = nu
 				$current = ' class="active"';
 			}
 			
-			$onclick = '';
-			if(strlen($temp_args['onclick']) > 0) {
-				$onclick .= $temp_args['onclick'];
-			}
-			
 			if(!isset($calendar_tabs[$tab['tab_row']])) { $calendar_tabs[$tab['tab_row']] = ''; }
 			$calendar_tabs[$tab['tab_row']] .= "<li{$current}>";
 			
@@ -58,9 +53,9 @@ function calendar_tabs($field_name = null, $field_value = null, $menu_array = nu
 			if(!isset($field_value['cal_date'])) { $field_value['cal_date'] = date('Y-m-d'); }
 			
 			if($temp_args['url']) {
-				$calendar_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$tab['screen']}\" onClick=\"{$onclick}\">{$tab['name']}</a>";
+				$calendar_tabs[$tab['tab_row']] .= "<a href=\"{$temp_args['url']}screen={$tab['screen']}\">{$tab['name']}</a>";
 			} else {
-				$calendar_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/{$tab['file']}?screen={$tab['screen']}&cal_date={$field_value['cal_date']}&user_id={$field_value['user_id']}\" onClick=\"{$onclick}\">{$tab['name']}</a>";				
+				$calendar_tabs[$tab['tab_row']] .= "<a href=\"{$base_url}/{$tab['file']}?screen={$tab['screen']}&cal_date={$field_value['cal_date']}&user_id={$field_value['user_id']}\">{$tab['name']}</a>";
 			}
 			$calendar_tabs[$tab['tab_row']] .= "</li>\n";
 		}

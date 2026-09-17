@@ -183,7 +183,7 @@ switch ($action) {
 		. pl_csrf_hidden_input() . '
 		<h2>Truncate SSNs</h2>';
 		$main_html['content'] .= $not_available . 
-		'<input type="submit" name="submit" value="Truncate SSNs" onclick="if ( confirm(\'Are you sure you want to shorten all SSNs to the last four digits?  This operation can not be undone.\')) { return confirm(\'Click OK to truncate all SSNs.\'); } else {return false;}"';
+		'<input type="submit" name="submit" value="Truncate SSNs" class="js-truncate-ssns"';
 		$main_html['content'] .= $disabled . '>
 		<input type="hidden" name="action" value="ssn_truncate">
 		</form>';
@@ -201,7 +201,7 @@ switch ($action) {
 		. pl_csrf_hidden_input() . '
 		<h2>Remove SSNs</h2>';
 		$main_html['content'] .= $not_available . 
-		'<input type="submit" name="submit" value="Remove SSNs" onclick="if ( confirm(\'Are you sure you want to remove all SSNs?  This operation can not be undone.\')) { return confirm(\'Click OK to delete all SSNs.\'); } else {return false;}"';
+		'<input type="submit" name="submit" value="Remove SSNs" class="js-remove-ssns"';
 		$main_html['content'] .= $disabled . '>
 		<input type="hidden" name="action" value="ssn_remove">
 		</form>';
@@ -220,6 +220,7 @@ switch ($action) {
 
 
 // Display a screen
+$main_html['content'] .= "<script src=\"{$base_url}/js/system-maint.js\"></script>";
 $main_html['page_title'] = "System Maintenance";
 
 $default_template = new pikaTempLib('templates/default.html',$main_html);
