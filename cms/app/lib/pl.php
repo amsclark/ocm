@@ -2322,14 +2322,28 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	  is now parseFloat, and the last was a KeyPress helper that ran
 	  whatever string it was handed, which nothing called.
 
-	  script-src still keeps 'unsafe-inline', but only just. The inline
-	  <script> blocks are gone, all 44 of them, and so are the 22
-	  javascript: URLs. What is left is 20 inline on* handler
-	  attributes, down from 106: 13 are arguments handed to a template
-	  plugin, 4 are the Save, Next Tab buttons on the case tabs, and 3
-	  are written straight into a template. The keyword goes when they
-	  do. Even while it is here the directive still blocks the thing
-	  worth blocking most: script loaded from any other origin.
+	  script-src no longer allows 'unsafe-inline' either. It names a
+	  per-request nonce instead, and the browser runs an inline script
+	  only if the script carries the matching value. An injected
+	  <script> cannot, because the value is new on every response.
+	  This is the directive that stops a stored cross-site script from
+	  executing even after the escaping that should have stopped it
+	  failed.
+
+	  Three things had to go first, because a nonce makes the browser
+	  IGNORE 'unsafe-inline' rather than add to it - the day the nonce
+	  appears, everything that relied on the keyword stops working.
+	  All 44 inline <script> blocks, all 22 javascript: URLs and all
+	  106 inline on* handler attributes are now external files bound
+	  with addEventListener. A nonce cannot rescue an on* attribute:
+	  nonces apply to <script> elements only, so an attribute handler
+	  has no way to be allowed short of 'unsafe-inline' itself.
+
+	  One inline block is left and it is the application's own:
+	  cms/template_plugins/javascript.php, which inlines the 68 files
+	  included as %%[<name>.js,javascript]%% because several of them hold
+	  template tags that only get substituted on the way through. That
+	  block carries the nonce.
 
 	  style-src keeps 'unsafe-inline' for the 203 style="..." attributes.
 
@@ -2374,6 +2388,37 @@ function pl_error_fatal($errno = null, $errstr = null, $errfile = null, $errline
 	using the shipped image get it too, and so changing it does not need an
 	image rebuild.
 */
+/*	One Content-Security-Policy nonce per request.
+
+	A nonce is a random value that appears twice: in the script-src
+	directive, and as an attribute on each <script> block the application
+	itself wrote. The browser runs an inline script only when the two match,
+	so a <script> an attacker injected into the page has no way to run - it
+	cannot know a value that is new on every response.
+
+	Generated once and held for the life of the request, because the header
+	and every tag on the page must carry the same value. 16 bytes from
+	random_bytes, which is the cryptographic source; a predictable nonce is
+	worth nothing.
+
+	This is safe to cache in a static only because the responses carrying it
+	are not cached themselves: pl_send_security_headers() sends
+	Cache-Control: no-store. A stored page would keep a nonce the next
+	response's header no longer names, and every script on it would be
+	blocked.
+*/
+function pl_csp_nonce()
+{
+	static $nonce = null;
+	
+	if (null === $nonce)
+	{
+		$nonce = base64_encode(random_bytes(16));
+	}
+	
+	return $nonce;
+}
+
 function pl_send_csp_header()
 {
 	if (headers_sent())
@@ -2390,7 +2435,7 @@ function pl_send_csp_header()
 	
 	$policy = implode('; ', array(
 		"default-src 'self'",
-		"script-src 'self' 'unsafe-inline'",
+		"script-src 'self' 'nonce-" . pl_csp_nonce() . "'",
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data:",
 		"font-src 'self' data:",

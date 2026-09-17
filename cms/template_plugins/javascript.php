@@ -68,7 +68,25 @@ function javascript($file_name = null, $field_value = null, $menu_array = null, 
 	// Add opening and closing declarations
 	$js_open = $js_close = '';
 	if($temp_args['script_tags']) {
-		$js_open = "<script language=\"JavaScript\" type=\"text/javascript\"><!-- \n";
+		/*	This is the one place left in the tree that writes an inline script
+			block. The 68 files included as %%[<name>.js,javascript]%% are inlined
+			rather than fetched because several of them hold template tags, and a
+			tag is only substituted on the way through here.
+
+			The nonce is what lets script-src drop 'unsafe-inline'. Without it the
+			policy would have to permit every inline script on the page, including
+			one an attacker injected; with it the browser runs this block and
+			nothing else. The value is escaped like any other attribute even
+			though it is base64 from random_bytes, because an unescaped attribute
+			is a habit worth not having.
+		*/
+		$js_nonce = '';
+		if (function_exists('pl_csp_nonce'))
+		{
+			$js_nonce = ' nonce="' . htmlspecialchars(pl_csp_nonce(), ENT_QUOTES) . '"';
+		}
+		
+		$js_open = "<script{$js_nonce} language=\"JavaScript\" type=\"text/javascript\"><!-- \n";
 		$js_close = "   \n//--></script>";
 	}
 	$javascript_output = $js_open . $javascript_output . $js_close;

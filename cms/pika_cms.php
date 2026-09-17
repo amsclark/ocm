@@ -135,6 +135,25 @@ if(isset($plSettings['cookie_prefix']) && strlen($plSettings['cookie_prefix']))
 session_name($session_name);
 session_start();
 
+/*	Send the security response headers, the Content-Security-Policy among
+	them. pika-danio.php sends them from pika_init(), and eight pages come in
+	through this file without ever calling pika_init(): the two calendars,
+	assign_atty.php, legacy_report.php, system-ops.php, the conflict report,
+	helpdocs/elig_guide.php and ops/vcal.php. Those eight were being served
+	with no policy at all, so an injected <script> on any of them ran.
+
+	The placement matters twice over. It is after the settings load above,
+	because the function reads csp_mode and security_headers_mode. It is
+	before the authenticate() call further down, because that call draws the
+	login form and exits, and the login form needs a policy as much as any
+	other page does.
+
+	The function returns early once output has started, and header() replaces
+	a header of the same name, so a page that calls pika_init() as well ends
+	up with the same header set either way.
+*/
+pl_send_security_headers();
+
 
 // Set server time zone, per PHP best practices.
 // AMW - 2013-02-20 - I moved this up, above authentication, because authentication

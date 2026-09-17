@@ -6080,10 +6080,15 @@ if [ "$HAVE_DB" = 1 ]; then
 
 		# 51g. screen= reaches three include() calls. Anything outside
 		# [A-Za-z0-9_-] falls back to the default tab, and the page is the
-		# page the default tab draws. The date-picker markup carries a random
-		# element id on every render, so compare with that id normalised.
+		# page the default tab draws.
+		#
+		# Two things on this page are deliberately different on every render
+		# and are not part of what the page drew: the date-picker's element
+		# id, and the Content-Security-Policy nonce on each script block.
+		# Both are normalised before the comparison, or every request differs
+		# from every other and the check can never pass.
 		cs_normalise() {
-			sed -E 's/date_selector-[0-9]+/date_selector-ID/g' "$1"
+			sed -E 's/date_selector-[0-9]+/date_selector-ID/g; s/nonce="[^"]*"/nonce="NONCE"/g' "$1"
 		}
 
 		curl -sL --max-time 30 -b "$COOKIES" -o "$CSB2" \
@@ -10012,17 +10017,108 @@ else
 		fi
 	done
 
-	# script-src must still allow inline handlers -- 44 inline <script>
-	# blocks, 106 on* handler attributes and 22 javascript: URLs still need
-	# 'unsafe-inline' -- but the 9 eval() calls are converted, so
-	# 'unsafe-eval' is gone and has to stay gone. Both halves are checked,
-	# so neither re-adding eval nor dropping inline passes quietly.
-	if printf '%s' "$csp" | grep -qF "script-src 'self' 'unsafe-inline'" \
-		&& ! printf '%s' "$csp" | grep -qF "'unsafe-eval'"; then
-		ok "script-src allows the inline handlers but no longer allows eval"
+	# script-src now names a per-request nonce and allows neither
+	# 'unsafe-inline' nor 'unsafe-eval'. Each half is checked on its own so
+	# a failure says which keyword came back.
+	#
+	# Only the script-src directive is read, not the whole policy, because
+	# style-src still carries 'unsafe-inline' for the style="..." attributes
+	# and a grep over the whole header would match that and pass.
+	csp_script="$(printf '%s' "$csp" | tr ';' '\n' | grep -i 'script-src')"
+	
+	if printf '%s' "$csp_script" | grep -qF "'nonce-"; then
+		ok "script-src names a nonce"
 	else
-		bad "script-src must keep 'unsafe-inline' and drop 'unsafe-eval' [${csp}]"
+		bad "script-src names NO nonce, so every inline script is blocked [${csp_script}]"
 	fi
+	
+	if printf '%s' "$csp_script" | grep -qF "'unsafe-inline'"; then
+		bad "script-src allows 'unsafe-inline' again [${csp_script}]"
+	else
+		ok "script-src does not allow 'unsafe-inline'"
+	fi
+	
+	if printf '%s' "$csp" | grep -qF "'unsafe-eval'"; then
+		bad "the policy allows 'unsafe-eval' again [${csp}]"
+	else
+		ok "the policy does not allow 'unsafe-eval'"
+	fi
+	
+	# A nonce is only worth anything if it changes. A fixed one is a
+	# password the attacker can read off the page they are injecting into,
+	# and the header would look exactly the same as a correct one. This is
+	# the failure that no amount of reading the policy string can see.
+	csp_n1="$(csp_header | grep -oE "'nonce-[^']*'")"
+	csp_n2="$(csp_header | grep -oE "'nonce-[^']*'")"
+	
+	if [ -n "$csp_n1" ] && [ "$csp_n1" != "$csp_n2" ]; then
+		ok "the nonce is different on every response"
+	else
+		bad "the nonce did not change between two requests, so it is not a nonce"
+	fi
+	
+	# And the page has to agree with its own header. Dropping
+	# 'unsafe-inline' breaks every inline <script> that does not carry the
+	# matching value, and the browser reports that only to its console: the
+	# request still returns 200 and the page still renders, just without
+	# whatever that script did. Fetch the header and the body in ONE request
+	# -- a second request has a different nonce and would fail every time.
+	csp_both="$(mktemp)"
+	csp_inline=0
+	csp_nononce=0
+	csp_noheader=0
+	
+	# Two entry points, not one. timer.php, case.php, index.php and
+	# password.php come in through pika-danio.php, which sends the headers
+	# from pika_init(). cal_day.php, cal_week.php, assign_atty.php and
+	# system-ops.php come in through pika_cms.php, which does not call
+	# pika_init() at all - those four were served with no policy until
+	# pika_cms.php started sending the headers itself. Both paths are on the
+	# list so neither can lose its policy again unnoticed.
+	for csp_page in timer.php case.php index.php password.php \
+		cal_day.php cal_week.php assign_atty.php system-ops.php
+	do
+		curl -s --max-time 30 -b "$COOKIES" -D "$CSP_HEADERS" \
+			-o "$csp_both" "$OCM_URL/$csp_page"
+		
+		csp_want="$(grep -i '^content-security-policy' "$CSP_HEADERS" | tr -d '\r' \
+			| grep -oE "'nonce-[^']*'" | sed "s/^'nonce-//; s/'\$//")"
+		
+		if [ -z "$csp_want" ]
+		then
+			csp_noheader=$((csp_noheader + 1))
+			bad "$csp_page sent no nonce in its policy, so its inline scripts are blocked"
+			continue
+		fi
+		
+		# Every <script> opening tag on the page, minus the ones with a
+		# src: those are fetched from 'self' and need no nonce.
+		csp_n="$(grep -oE '<script[^>]*>' "$csp_both" | grep -cv 'src=')"
+		csp_b="$(grep -oE '<script[^>]*>' "$csp_both" | grep -v 'src=' \
+			| grep -cvF "nonce=\"${csp_want}\"")"
+		
+		csp_inline=$((csp_inline + csp_n))
+		csp_nononce=$((csp_nononce + csp_b))
+		
+		if [ "$csp_b" -ne 0 ]
+		then
+			bad "$csp_page has $csp_b inline script block(s) without this response's nonce"
+		fi
+	done
+	
+	# Nothing to find means the check is broken, not that the pages are
+	# clean: these pages all render %%[NAME.js,javascript]%% tags, which is
+	# what an inline script block is here. A zero means the fetches failed,
+	# or the grep stopped matching the tag the plugin writes.
+	if [ "$csp_inline" -eq 0 ]
+	then
+		bad "found no inline script block on any page - the nonce check is broken"
+	elif [ "$csp_nononce" -eq 0 ]
+	then
+		ok "all $csp_inline inline script blocks carry their own response's nonce"
+	fi
+	
+	rm -f "$csp_both"
 
 	# The header above is only honest if the eval() calls really are gone,
 	# so check the tree as well. A reintroduced eval() under this policy is
