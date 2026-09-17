@@ -77,8 +77,13 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 		
 	
 	
-	$file_list_output .= "<table width=\"100%\" class=\"nopad\" cellspacing=\"0\" cellpadding=\"0\">";
-	$file_list_output .= "<tr><th><a href=\"\" onClick=\"fileList('{$field_name}','0','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');return false;\">{$doc_type_description}</a></th></tr><tr><td style='padding-left: 20px;padding-top: 3px;'>";
+	$event_attrs = function ($action, $values)
+	{
+		return ' data-file-action="' . pl_html_escape($action) . '" data-file-args="'
+			. pl_html_escape(json_encode(array_map('strval', $values), JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP)) . '"';
+	};
+	$file_list_output .= "<table width=\"100%\" class=\"nopad js-file-list\" cellspacing=\"0\" cellpadding=\"0\">";
+	$file_list_output .= "<tr><th><a href=\"\"" . $event_attrs('list', array($field_name, '0', $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name)) . ">{$doc_type_description}</a></th></tr><tr><td style='padding-left: 20px;padding-top: 3px;'>";
 	
 	require_once('pikaDocument.php');
 	require_once('pikaUser.php');
@@ -140,10 +145,10 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 				/*$docs[$key]['li'] = "<input type=\"radio\" name=\"form_id_radio\" class=\"plradio\" id=\"{$uid}\" value=\"{$file['doc_id']}\" 
 									onClick=\"updateCurrentDoc('{$temp_args['doc_field']}','{$file['doc_id']}');\" />
 									<label for=\"{$uid}\">{$file['doc_name']}</label>&nbsp;";*/
-				$docs[$key]['li'] = pikaTempLib::plugin('radio','form_id_radio',null,array($file['doc_id'] => $file['doc_name']),array("id={$uid}","onclick=updateCurrentDoc('{$temp_args['doc_field']}','{$file['doc_id']}');")) . "&nbsp;";
+				$docs[$key]['li'] = '<span' . $event_attrs('select', array($temp_args['doc_field'], $file['doc_id'])) . '>' . pikaTempLib::plugin('radio','form_id_radio',null,array($file['doc_id'] => $file['doc_name']),array("id={$uid}")) . "</span>&nbsp;";
 				//$docs[$key]['li'] = "<a href=\"\" onClick=\"updateCurrentDocument('{$temp_args['doc_field']}','{$file['doc_id']}');\">{$file['doc_name']}</a>&nbsp;";
 			}
-			$docs[$key]['li'] .= "<img id=\"{$file['doc_id']}_pointer\" title=\"More Info\" src='{$base_url}/images/pointer.gif' onClick='setDescription({$file['doc_id']})'>";
+			$docs[$key]['li'] .= "<img id=\"{$file['doc_id']}_pointer\" title=\"More Info\" src='{$base_url}/images/pointer.gif'" . $event_attrs('description', array($file['doc_id'])) . ">";
 			
 			$doc_size = pikaDocument::format_bytes($file['doc_size']);
 			$description = array();
@@ -151,9 +156,9 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 			$description['li'] = "<div id='{$file['doc_id']}_description' name='{$file['doc_id']}_description' style='display: none'>";
 			if(in_array($temp_args['mode'],array('edit','edit_select')))
 			{
-				$description['li'] .= 	"(<a href=\"\" onClick=\"editFile('{$field_name}','{$file['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}');return false;\">Edit</a>
+				$description['li'] .= 	"(<a href=\"\"" . $event_attrs('edit', array($field_name, $file['doc_id'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'])) . ">Edit</a>
 										|
-										<a href=\"\" onClick=\"confirmDeleteFile('{$field_name}','{$file['folder_ptr']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}','{$file['doc_id']}');return false;\">Delete</a>
+										<a href=\"\"" . $event_attrs('delete', array($field_name, $file['folder_ptr'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name, $file['doc_id'])) . ">Delete</a>
 										)<br/>";
 			}
 			$description['li'] .= 	"Description: {$h($file['description'])}<br/>
@@ -169,13 +174,13 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 		// Folders
 		elseif($file['folder'] == 1)
 		{
-			$docs[$key]['li'] = "<a onClick=\"fileList('{$field_name}','{$file['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');return false;\">" . $h($file['doc_name']) . "</a>&nbsp;";
+			$docs[$key]['li'] = "<a" . $event_attrs('list', array($field_name, $file['doc_id'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name)) . ">" . $h($file['doc_name']) . "</a>&nbsp;";
 			if($temp_args['mode'] != 'select')
 			{
 				$docs[$key]['li'] .= "<span class='folder_actions'>
-									(<a href=\"\" onClick=\"editFile('{$field_name}','{$file['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}');return false;\">Edit</a>
+									(<a href=\"\"" . $event_attrs('edit', array($field_name, $file['doc_id'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'])) . ">Edit</a>
 									|
-									<a href=\"\" onClick=\"confirmDeleteFile('{$field_name}','{$file['folder_ptr']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}','{$file['doc_id']}');return false;\">Delete</a>
+									<a href=\"\"" . $event_attrs('delete', array($field_name, $file['folder_ptr'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name, $file['doc_id'])) . ">Delete</a>
 									)</span>";
 			}	
 			$docs[$key]['li_class'] = "directory";
@@ -197,16 +202,16 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 			
 			if($temp_args['mode'] != 'select')
 			{
-				$file_list= "<a onClick=\"fileList('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');\">" . $h($folder['doc_name']) . "</a>&nbsp;" .
+				$file_list= "<a" . $event_attrs('list', array($field_name, $folder['doc_id'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name)) . ">" . $h($folder['doc_name']) . "</a>&nbsp;" .
 							"<span class='folder_actions'>
-							(<a href=\"\" onClick=\"editFile('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}');return false;\">Edit</a>
+							(<a href=\"\"" . $event_attrs('edit', array($field_name, $folder['doc_id'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'])) . ">Edit</a>
 							|
-							<a href=\"\" onClick=\"confirmDeleteFile('{$field_name}','{$folder['folder_ptr']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}','{$folder['doc_id']}');return false;\">Delete</a>
+							<a href=\"\"" . $event_attrs('delete', array($field_name, $folder['folder_ptr'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name, $folder['doc_id'])) . ">Delete</a>
 							)</span>" . $file_list;
 			}
 			else 
 			{
-				$file_list= "<a onClick=\"fileList('{$field_name}','{$folder['doc_id']}','{$temp_args['mode']}','{$temp_args['doc_type']}','{$temp_args['folder_field']}','{$temp_args['doc_field']}','{$case_id}','{$report_name}');\">" . $h($folder['doc_name']) . "</a>&nbsp;" . $file_list;
+				$file_list= "<a" . $event_attrs('list', array($field_name, $folder['doc_id'], $temp_args['mode'], $temp_args['doc_type'], $temp_args['folder_field'], $temp_args['doc_field'], $case_id, $report_name)) . ">" . $h($folder['doc_name']) . "</a>&nbsp;" . $file_list;
 			}
 			$file_list = pikaTempLib::plugin('ul','','',array(array('li'=>$file_list,'li_class'=>'directory_open')),array('ul_class=pika_files'));
 		}
@@ -267,5 +272,11 @@ function file_list($field_name = null, $field_value = null, $menu_array = null, 
 	
 	
 	
+	static $file_script_included = false;
+	if (!$file_script_included)
+	{
+		$file_list_output .= '<script src="' . $base_url . '/js/file_list-events.js"></script>';
+		$file_script_included = true;
+	}
 	return $file_list_output;
 }

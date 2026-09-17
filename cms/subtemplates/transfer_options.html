@@ -58,7 +58,7 @@
 		<input type="submit" name="edit" value="Edit">
 		</form>
 		</td><td>
-		<form action="%%[base_url]%%/transfer_options.php" method="POST" onsubmit="return confirm('Are you sure you want to Delete this Agency?');">%%[csrf_field]%%
+		<form action="%%[base_url]%%/transfer_options.php" method="POST" class="js-delete-agency">%%[csrf_field]%%
 		<input type="hidden" name="action" value="delete">
 		<input type="hidden" name="transfer_option_id" value="%%[transfer_option_id]%%">
 		<input type="submit" name="delete" value="Delete">
@@ -68,6 +68,7 @@
 %%[end:flex_row]%%
 %%[begin:flex_footer]%%
 </table>
+<script src="%%[base_url]%%/js/transfer_options.js"></script>
 %%[end:flex_footer]%%
 %%[begin:new_option]%%
 <h2 class="hdt">Add New Agency</h2>
