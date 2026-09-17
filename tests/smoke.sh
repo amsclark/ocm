@@ -13614,6 +13614,7 @@ fi
 # a per-file check reports as fine.
 csp_sites=0
 csp_unparsed=0
+csp_missing=0
 
 grep -rnoE '%%\[[A-Za-z0-9_.-]+\.js,javascript[^]]*\]%%' cms cms-custom 2>/dev/null \
 	| sort -u > "$BODY.csp88b"
@@ -13626,6 +13627,21 @@ do
 	csp_tag="${csp_site##*:}"
 	csp_base="${csp_tag#%%[}"
 	csp_base="${csp_base%%,*}"
+	
+	# A name behind this plugin that resolves to nothing is not a no-op.
+	# The plugin returns the string "NAME not found", wraps it in script
+	# tags and echoes it, so the page gets a script block whose first
+	# statement is "pvppa.js not found" - a syntax error thrown on every
+	# render of that page. cms/subtemplates/case-pension.html carried
+	# exactly that, for a file that has never existed in this repository.
+	# The plugin looks in the custom directory first and the cms one
+	# second, so either one counts as resolving.
+	if [ ! -f "cms/js/$csp_base" ] && [ ! -f "cms-custom/js/$csp_base" ]
+	then
+		bad "$csp_where includes js/$csp_base, which does not exist, so the page gets a script block reading '$csp_base not found'"
+		csp_missing=$((csp_missing + 1))
+		continue
+	fi
 	
 	# Only a file that actually holds a tag needs the flag.
 	if [ ! -f "cms/js/$csp_base" ] || ! grep -q '%%\[' "cms/js/$csp_base"
@@ -13653,6 +13669,7 @@ else
 fi
 
 [ "$csp_unparsed" -eq 0 ] && ok "every include of a tag-bearing script carries parse"
+[ "$csp_missing" -eq 0 ] && ok "every template-tag include resolves to a file that exists"
 
 rm -f "$BODY.csp88b"
 

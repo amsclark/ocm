@@ -125,7 +125,7 @@ switch ($screen)
 	
 	$template = new pikaTempLib('subtemplates/pb_attorneys.html',$a,'edit_pba');
 	$main_html['content'] = $template->draw();
-	$main_html['content'] .= file_get_contents('js/form_save.js');
+	$main_html['content'] .= "<script src=\"{$base_url}/js/form_save.js\"></script>";
 	$main_html['nav'] = "<a href=\"{$base_url}\">Pika Home</a> &gt;
 						<a href\"{$base_url}/pb_attorneys.php\">Pro Bono Attorneys &gt;
 						Adding New Attorney";
@@ -247,7 +247,7 @@ else
 	
 	$template = new pikaTempLib('subtemplates/pb_attorneys.html',$pba_row,'edit_pba');
 	$main_html['content'] = $template->draw();
-	$main_html['content'] .= file_get_contents('js/form_save.js');
+	$main_html['content'] .= "<script src=\"{$base_url}/js/form_save.js\"></script>";
 	
 	
 	break;

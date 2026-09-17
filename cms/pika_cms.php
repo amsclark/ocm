@@ -968,14 +968,15 @@ function pika_html_report_list()
 // Generates the JavaScript-y case list menu
 function pika_act_case_menu($user_id, $case_id)
 {
-	global $pk;
+	global $pk, $plSettings;
 	
 	// the open cases menu for case_id, tied to funding with JavaScript
 	$result = $pk->fetchOpenCaseList($user_id);
 	
 	$new_case_menu = "";
-	$javascript = "";
-	$js_array = "";
+	$funding = array();
+	$project = array();
+	$lsc_elig = array();
 	$i = 0;
 	
 	if ($case_id)
@@ -996,12 +997,14 @@ function pika_act_case_menu($user_id, $case_id)
 			}
 			
 			$new_case_menu .= "<option {$selected}value=\"{$rr['case_id']}\">{$rr['last_name']}, {$rr['first_name']} {$rr['middle_name']} {$rr['extra_name']} - {$rr['number']} - {$rr['problem']} - {$rr['area_code']} {$rr['phone']}\n";
-			$js_array .= "funding['{$rr['case_id']}'] = '{$rr['funding']}';\n";
-			if(isset($rr['project']) && $rr['project']) {
-				$js_array .= "project['{$rr['case_id']}'] = '{$rr['project']}';\n";
+			$funding[$rr['case_id']] = (string) $rr['funding'];
+			if (isset($rr['project']) && $rr['project'])
+			{
+				$project[$rr['case_id']] = (string) $rr['project'];
 			}
-			if(isset($rr['lsc_elig']) && $rr['lsc_elig']) {
-				$js_array .= "lsc_elig['{$rr['case_id']}'] = '{$rr['lsc_elig']}';\n";
+			if (isset($rr['lsc_elig']) && $rr['lsc_elig'])
+			{
+				$lsc_elig[$rr['case_id']] = (string) $rr['lsc_elig'];
 			}
 		}
 		
@@ -1011,12 +1014,14 @@ function pika_act_case_menu($user_id, $case_id)
 			$case_row = DBResult::fetchRow($result);
 			
 			$new_case_menu = "<option selected value=\"{$case_id}\">{$case_row['contacts.last_name']}, , {$case_row['contacts.first_name']} {$case_row['contacts.middle_name']} {$case_row['contacts.extra_name']} - {$case_row['number']} - {$case_row['problem']} - {$case_row['area_code']} {$case_row['phone']}" . $new_case_menu;
-			$js_array .= "funding['{$rr['case_id']}'] = '{$rr['funding']}';\n";
-			if(isset($rr['project']) && $rr['project']) {
-				$js_array .= "project['{$rr['case_id']}'] = '{$rr['project']}';\n";
+			$funding[$rr['case_id']] = (string) $rr['funding'];
+			if (isset($rr['project']) && $rr['project'])
+			{
+				$project[$rr['case_id']] = (string) $rr['project'];
 			}
-			if(isset($rr['lsc_elig']) && $rr['lsc_elig']) {
-				$js_array .= "lsc_elig['{$rr['case_id']}'] = '{$rr['lsc_elig']}';\n";
+			if (isset($rr['lsc_elig']) && $rr['lsc_elig'])
+			{
+				$lsc_elig[$rr['case_id']] = (string) $rr['lsc_elig'];
 			}
 		}
 	}
@@ -1029,36 +1034,23 @@ function pika_act_case_menu($user_id, $case_id)
 	else while ($rr = DBResult::fetchRow($result))
 	{
 		$new_case_menu .= "<option value=\"{$rr['case_id']}\">{$rr['last_name']}, {$rr['first_name']} {$rr['middle_name']} {$rr['extra_name']} - {$rr['number']} - {$rr['problem']} - {$rr['area_code']} {$rr['phone']}\n";
-		$js_array .= "funding['{$rr['case_id']}'] = '{$rr['funding']}';\n";
-		if(isset($rr['project']) && $rr['project']) {
-			$js_array .= "project['{$rr['case_id']}'] = '{$rr['project']}';\n";
+		$funding[$rr['case_id']] = (string) $rr['funding'];
+		if (isset($rr['project']) && $rr['project'])
+		{
+			$project[$rr['case_id']] = (string) $rr['project'];
 		}
-		if(isset($rr['lsc_elig']) && $rr['lsc_elig']) {
-			$js_array .= "lsc_elig['{$rr['case_id']}'] = '{$rr['lsc_elig']}';\n";
+		if (isset($rr['lsc_elig']) && $rr['lsc_elig'])
+		{
+			$lsc_elig[$rr['case_id']] = (string) $rr['lsc_elig'];
 		}
 	}
 	
-	$new_case_menu = "<select name=\"case_id\" tabindex=\"1\" onChange=\"sfw(this.value);\">\n" . "<option value=\"\">\n" . $new_case_menu . "</select>\n";
+	$funding_data = htmlspecialchars(json_encode($funding), ENT_QUOTES, 'UTF-8');
+	$project_data = htmlspecialchars(json_encode($project), ENT_QUOTES, 'UTF-8');
+	$lsc_elig_data = htmlspecialchars(json_encode($lsc_elig), ENT_QUOTES, 'UTF-8');
+	$new_case_menu = "<select name=\"case_id\" tabindex=\"1\" class=\"js-pika-case-funding\" data-funding=\"{$funding_data}\" data-project=\"{$project_data}\" data-lsc-elig=\"{$lsc_elig_data}\">\n" . "<option value=\"\">\n" . $new_case_menu . "</select>\n";
 	
-	// Create code for sfw() a.k.a. the set_fund wrapper.
-	$javascript .= <<<EOF
-<script language="JavaScript" type="text/javascript"><!--
-function sfw(val)
-{
-funding = new Array();
-project = new Array();
-lsc_elig = new Array();
-
-EOF;
-	$javascript .= $js_array;
-	$javascript .= <<<EOF
-	return set_fund(funding[val], project[val], lsc_elig[val]);
-}
-//--></script>
-
-EOF;
-	
-	return $javascript . $new_case_menu;
+	return '<script src="' . pl_html_text($plSettings['base_url']) . '/js/pika_cms-inline.js"></script>' . $new_case_menu;
 }
 
 /**
