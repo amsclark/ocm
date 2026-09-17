@@ -1,48 +1,3 @@
-<script language="JavaScript" type="text/javascript"><!--
-/*	A KeyPress(what, max, action) helper stood here. Its whole body passed
-	the action argument to eval, so it ran whatever string a caller handed
-	it. Nothing in the tree ever called it, so it is deleted rather than
-	rewritten.
-*/
-
-var old_phone_length = 0;
-var ac_autotab_on = 1;
-
-
-function pika_area_code(what, max, field_name)
-{	
-	if (max > 0 && what.value.length >= max && ac_autotab_on == 1)
-	{
-		document.fc[field_name].focus();
-	}
-	
-	if (what.value.length >= 3)
-	{
-		ac_autotab_on = 0;
-	}
-	
-	else if (what.value.length == 0)
-	{
-		ac_autotab_on = 1;
-	}
-	
-	return;
-}
-
-
-function pika_phone(what)
-{
-	if (what.value.length == 3 && old_phone_length == 2)
-	{
-		what.value += '-';
-	}
-
-	old_phone_length = what.value.length;
-}
-
-
-//--></script>
-
 <form action="%%[form_action]%%" name=fc method=POST>%%[csrf_field]%%
 %%[preamble]%%
 
@@ -79,9 +34,9 @@ function pika_phone(what)
         <table cellpadding="0" cellspacing="0">
           <tr> 
             <td class=maskt nowrap>( 
-              <input type=text name="area_code" value="%%[area_code]%%" onkeyup="pika_area_code(this, 3, 'phone');" size=3 maxlength="3" tabindex=1 class=maskf>
+              <input type=text name="area_code" value="%%[area_code]%%" data-area-max="3" data-phone-field="phone" size=3 maxlength="3" tabindex=1 class="maskf js-contact-counsel-area-code">
               ) 
-              <input type=text name="phone" value="%%[phone]%%" onkeyup="pika_phone(this);" size="14" maxlength="8" tabindex="1" class="maskf">
+              <input type=text name="phone" value="%%[phone]%%" size="14" maxlength="8" tabindex="1" class="maskf js-contact-counsel-phone">
           </tr>
         </table>
         <input type=text name="phone_notes" value="%%[phone_notes]%%" size=25 tabindex=1><br/>
@@ -90,9 +45,9 @@ function pika_phone(what)
         <table cellpadding="0" cellspacing="0">
           <tr> 
             <td class=maskt nowrap>( 
-              <input type=text name="area_code_alt" value="%%[area_code_alt]%%" onkeyup="pika_area_code(this, 3, 'phone_alt');" size=3 maxlength="3" tabindex=1 class=maskf>
+              <input type=text name="area_code_alt" value="%%[area_code_alt]%%" data-area-max="3" data-phone-field="phone_alt" size=3 maxlength="3" tabindex=1 class="maskf js-contact-counsel-area-code">
               ) 
-              <input type=text name="phone_alt" value="%%[phone_alt]%%" onkeyup="pika_phone(this);" size="14" maxlength="8" tabindex="1" class="maskf">
+              <input type=text name="phone_alt" value="%%[phone_alt]%%" size="14" maxlength="8" tabindex="1" class="maskf js-contact-counsel-phone">
           </tr>
         </table>  
 		<input type=text name="phone_notes_alt" value="%%[phone_notes_alt]%%" size=25 tabindex=1><br/>
@@ -119,7 +74,4 @@ function pika_phone(what)
 <input type=submit value="%%[submit_label]%%" tabindex=1 name="submit2">
 
 </form>
-
-<script language="JavaScript" type="text/javascript"><!--
-document.fc.first_name.focus();
-//--></script>
+<script src="%%[base_url]%%/js/contact_counsel-inline.js"></script>
