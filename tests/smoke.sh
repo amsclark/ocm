@@ -4067,6 +4067,30 @@ ZZA | Alpha Again'
 		bad "the duplicate guard blocked an edit it should have let through"
 	fi
 
+	# 33f. pikaMenu::save() used to echo the DELETE and the INSERT it had just
+	# run, so every menu save answered with the table name, the column list and
+	# the values ahead of its Location header. Not script injection -- the
+	# request values arrive with < and > already entities, and a browser
+	# discards a 302 body -- but curl, a proxy log and any error page that
+	# renders the body do not.
+	#
+	# -s and not -sL on purpose: following the redirect would fetch the page
+	# after the save and throw away the body being checked.
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/system-menus.php?action=update&menu_name=${MN_NAME}&old_value=ZZA&value=ZZA&label=Alpha%20Again" >/dev/null
+	if grep -qE "INSERT ${MN_TABLE}|DELETE FROM ${MN_TABLE}" "$BODY"
+	then
+		bad "system-menus.php prints the SQL it just ran into the save response"
+	else
+		ok "system-menus.php does not print the SQL it just ran"
+	fi
+	if [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZA'")" = 'Alpha Again' ]
+	then
+		ok "the save behind that check still saved"
+	else
+		bad "the save behind the SQL-echo check did not save"
+	fi
+
 	cleanup_mn
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
@@ -13951,6 +13975,113 @@ else
 fi
 
 rm -f "$TL_BODY"
+
+# ---------------------------------------------------------------------------
+# 83. Request values inside quoted HTML attributes.
+#
+# pl_grab_var() and pl_grab_get()'s default filter turn < and > into entities
+# and leave everything else alone, so a value that went through them cannot
+# open a tag. Both pages below put such a value inside a quoted attribute,
+# where the quote is what matters and the quote is not on that list.
+#
+# The current CSP -- script-src 'self' with a nonce, no 'unsafe-inline' --
+# stops an on* attribute written this way from running, so what these checks
+# describe is attribute injection rather than script execution. They assert on
+# the markup rather than on any consequence of it, because the CSP is a second
+# line and this is the first one.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 83. request values stay inside their quoted attributes =="
+
+XA_BODY="$BODY.attr83"
+
+# 83a. assign_atty.php, single-quoted hidden input. case_id and field are
+# request values and the template writes them as value='...'.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode "case_id=1' zzatty=1 x='" \
+	--data-urlencode "field=atty_id" \
+	"$OCM_URL/assign_atty.php" >/dev/null
+
+if grep -qF "value='1' zzatty=1" "$XA_BODY"
+then
+	bad "assign_atty.php lets case_id break out of a single-quoted attribute"
+elif grep -qE "value='1&[A-Za-z0-9#]+; zzatty=1" "$XA_BODY"
+then
+	# Any character reference will do. htmlspecialchars() writes &apos; under
+	# ENT_HTML5 and &#039; under ENT_HTML401, and which one is not the point.
+	ok "assign_atty.php escapes the quote in case_id"
+else
+	bad "assign_atty.php did not render the case_id input at all"
+fi
+
+# 83b. The same page, double-quoted, and a different value: county comes from
+# the search form and $z is the filter array itself.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'case_id=1' \
+	--data-urlencode 'field=atty_id' \
+	--data-urlencode 'county=ZZ" zzcounty=1 x="' \
+	"$OCM_URL/assign_atty.php" >/dev/null
+
+if grep -qF 'value="ZZ" zzcounty=1' "$XA_BODY"
+then
+	bad "assign_atty.php lets county break out of a double-quoted attribute"
+elif grep -qE 'value="ZZ&[A-Za-z0-9#]+; zzcounty=1' "$XA_BODY"
+then
+	ok "assign_atty.php escapes the quote in a search field"
+else
+	bad "assign_atty.php did not render the county input at all"
+fi
+
+# 83c. Positive control for both: an ordinary search term still comes back in
+# the box, unchanged, so the escape has not eaten the form.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'case_id=1' \
+	--data-urlencode 'field=atty_id' \
+	--data-urlencode 'county=Wayne' \
+	"$OCM_URL/assign_atty.php" >/dev/null
+
+if grep -qF 'name="county" value="Wayne"' "$XA_BODY"
+then
+	ok "assign_atty.php still hands an ordinary search term back to the form"
+else
+	bad "assign_atty.php lost the search term it was given"
+fi
+
+# 83d. system-outcomes.php builds a form action out of ?outcome=. The value
+# reaches it through DB::escapeString(), which backslash-escapes the quote for
+# SQL and leaves it in the string -- and in HTML a backslashed quote is still
+# the end of the attribute.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'action=edit' \
+	--data-urlencode 'outcome=housing" zzoutcome=1 x="' \
+	"$OCM_URL/system-outcomes.php" >/dev/null
+
+if grep -qF 'zzoutcome=1' "$XA_BODY"
+then
+	bad "system-outcomes.php lets outcome break out of the form action"
+elif grep -qF 'zzoutcome%3D1' "$XA_BODY"
+then
+	ok "system-outcomes.php encodes the outcome in the form action"
+else
+	bad "system-outcomes.php did not render the form action at all"
+fi
+
+# 83e. Positive control. The form still points at the outcome it is editing,
+# so the encoding has not broken the save.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'action=edit' \
+	--data-urlencode 'outcome=housing' \
+	"$OCM_URL/system-outcomes.php" >/dev/null
+
+if grep -qF 'outcome=housing" method="POST"' "$XA_BODY"
+then
+	ok "system-outcomes.php still aims the edit form at the outcome it opened"
+else
+	bad "system-outcomes.php no longer aims the edit form at its outcome"
+fi
+
+rm -f "$XA_BODY"
 
 echo
 echo "smoke: $pass passed, $fail failed"
