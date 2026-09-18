@@ -11,8 +11,8 @@ This is the gate instead. The scan still runs at the same threshold and still
 reports everything; its SARIF is compared against the accepted list, and
 anything not on that list fails the build.
 
-Usage:
-    snyk_code_gate.py <sarif file> [accepted file]
+Run it from the root of the checkout, with no arguments: it reads the two
+file names below, and nothing it opens comes from outside the script.
 
 Exit codes:
     0  every finding is accounted for
@@ -28,6 +28,13 @@ import sys
 # A reason shorter than this is not a reason. The point of the file is that
 # somebody wrote down why, and "n/a" is how that stops being true.
 MIN_REASON = 40
+
+# The two files this reads, by name, resolved against the working directory.
+# They are not arguments. The workflow always gates the same report against the
+# same list, so an argument would only add a path this script has to defend
+# against, which is exactly what Snyk Code reported against the first version.
+SARIF_FILE = 'snyk-code.sarif'
+ACCEPTED_FILE = '.snyk-code-accepted'
 
 
 def load_accepted(path):
@@ -102,13 +109,9 @@ def load_findings(path):
 	return found, total
 
 
-def main(argv):
-	if len(argv) < 2:
-		sys.stderr.write(__doc__)
-		return 2
-
-	sarif_path = argv[1]
-	accepted_path = argv[2] if len(argv) > 2 else '.snyk-code-accepted'
+def main():
+	sarif_path = SARIF_FILE
+	accepted_path = ACCEPTED_FILE
 
 	if not os.path.exists(sarif_path):
 		print('snyk-code gate: no SARIF at %s -- the scan did not produce a report' % sarif_path)
@@ -199,4 +202,4 @@ def main(argv):
 
 
 if __name__ == '__main__':
-	sys.exit(main(sys.argv))
+	sys.exit(main())

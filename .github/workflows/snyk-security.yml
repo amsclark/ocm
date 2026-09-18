@@ -140,4 +140,4 @@ jobs:
         # tab even on the runs where the gate fails.
       - name: Gate Snyk Code findings against the accepted list
         if: always()
-        run: python3 .github/scripts/snyk_code_gate.py snyk-code.sarif .snyk-code-accepted
+        run: python3 .github/scripts/snyk_code_gate.py
