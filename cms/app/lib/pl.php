@@ -4136,6 +4136,64 @@ function pl_settings_get_all()
 	return $pl_settings;
 }
 
+if (!function_exists('pl_safe_redirect_path'))
+{
+	/**
+	 * pl_safe_redirect_path()
+	 *
+	 * Reduces a return path taken from a request to something that can only
+	 * point back at this site.
+	 *
+	 * Several handlers let the form say where to go once a save finishes -- an
+	 * act_url or con_url field -- and build a Location header out of it. A
+	 * request that supplied its own URL there chose the next page a logged-in
+	 * staff member saw. That is worth having on a legal aid system: the
+	 * credential-phishing page it sends them to is reached from a real link
+	 * inside the application they already trust.
+	 *
+	 * The callers all build "{base_url}/{path}", and that leading slash is what
+	 * makes the shape almost safe by itself: "{base_url}/https://evil.example"
+	 * is still a path on this host. The hole is base_url. It comes from
+	 * cms-custom/config/settings.php, where the shipped example and the
+	 * container entrypoint both give it "/cms", and on that deployment
+	 * "/cms" . "/" . "//evil.example" is "/cms///evil.example" -- a path, and
+	 * no way out.
+	 *
+	 * An install serving the application at the domain root sets base_url to
+	 * "", which is the right value there, and then "" . "/" . "//evil.example"
+	 * is "///evil.example". A browser resolves that to http://evil.example/:
+	 * the URL parser skips the extra slashes before it reads the authority.
+	 *
+	 * So this returns a path fragment with no leading slash or backslash, and
+	 * returns '' for anything it will not vouch for, which leaves the caller
+	 * emitting "{base_url}/" -- the site root.
+	 *
+	 * A CR or LF is stripped as well. PHP's own header() refuses a value
+	 * holding one, so a request cannot add headers of its own through here,
+	 * but refusing means a fatal error on a page that was working, and this
+	 * field never needs a newline.
+	 *
+	 * @return string - a relative path, or '' meaning the site root
+	 * @param $url string - the return path as the request supplied it
+	 */
+	function pl_safe_redirect_path($url)
+	{
+		$url = str_replace(array("\r", "\n", "\0"), '', trim((string) $url));
+		
+		/*	A scheme cannot reach another host from inside a path, but it has no
+			business in this field either, and letting one through would put a
+			whole URL in the middle of one.
+		*/
+		if (preg_match('#^[A-Za-z][A-Za-z0-9+.-]*:#', $url))
+		{
+			return '';
+		}
+		
+		return ltrim($url, "/\\");
+	}
+}
+
+
 
 if (!function_exists('pl_canonical_origin'))
 {

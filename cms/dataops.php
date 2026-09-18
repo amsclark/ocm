@@ -26,20 +26,35 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 	worth having on a legal aid system: the credential-phishing page it sends
 	them to is reached from a real link inside the application they trust.
 	
-	Anything absolute, protocol-relative, or carrying a CR or LF -- which would
-	split the Location header and let the request add headers of its own -- is
-	replaced with the site root.
+	The decision is pl_safe_redirect_path() in app/lib/pl.php, because
+	ops/update_activity.php reads the same field out of the same forms and
+	needed the same answer. It gives back a path that cannot leave this site,
+	or '' for anything it will not vouch for.
+	
+	This wrapper stays because this file emits the value on its own, with no
+	base_url in front of it, so what it returns is resolved against the
+	current page rather than against the site root. A CR or LF, which would
+	split the Location header and let the request add headers of its own, and
+	anything carrying a scheme are both refused outright and come back here as
+	'', and those become the site root.
+	
+	A protocol-relative //host/path no longer becomes the site root, as it did
+	while this function decided for itself: the shared helper strips the
+	leading slashes, so it comes back as host/path and is emitted as a
+	relative URL. That resolves against the directory of this script, so the
+	browser stays on this host either way; it just lands on a path named after
+	the host the request asked for instead of on the front page.
 */
 function safe_redirect_url($url, $base_url)
 {
-	$url = trim((string) $url);
+	$path = pl_safe_redirect_path($url);
 	
-	if (preg_match('#^https?://#i', $url) || preg_match('#^//#', $url))
+	if ('' === $path)
 	{
 		return $base_url . '/';
 	}
 	
-	return str_replace(array("\r", "\n"), '', $url);
+	return $path;
 }
 
 // VARIABLES
