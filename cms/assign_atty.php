@@ -124,8 +124,11 @@ while ($row = DBResult::fetchRow($result))
 	}
 			
 	//$row['full_phone'] = pl_format_phone($row);
-	$row['case_id'] = $case_id;
-	$row['field'] = $field;
+	/*	Both of these land in value="..." in the atty_table rows, so they are
+		escaped here rather than in the template, which substitutes raw.
+	*/
+	$row['case_id'] = pl_html_escape($case_id);
+	$row['field'] = pl_html_escape($field);
 	
 	$atty_table_str .= pl_template('subtemplates/assign_atty.html', $row, 'atty_table');
 }
@@ -137,8 +140,38 @@ else
 }
 
 $z['atty_table'] = $atty_table_str;
-$z['case_id'] = $case_id;
-$z['field'] = $field;
+
+/*	Everything below this line is the search form at the top of the screen,
+	and every value in it came from the request: $z started as $filter, which
+	is built out of pl_grab_var() above, and case_id and field are request
+	values too.
+
+	pl_grab_var()'s default filter only turns < and > into entities, so none of
+	these can open a tag -- but the template puts them inside quoted
+	attributes, two of them single-quoted, and a quote is not on that list:
+
+		?case_id=1' zzatty=1 x='
+
+	came back as <input type=hidden name='case_id' value='1' zzatty=1 x=''>,
+	with two attributes of the attacker's choosing added to the tag. The
+	current CSP stops an on* attribute added that way from running, so this is
+	attribute injection rather than script execution today; it is still the
+	page emitting markup the request wrote.
+
+	Escaped here and not in the template because pl_template_sub() substitutes
+	raw, and not in $filter because $filter is the search itself -- escaping it
+	there would look for an attorney whose county is "O&#039;Brien".
+*/
+foreach (array('county', 'languages', 'practice_areas', 'last_name') as $z_field)
+{
+	if (isset($z[$z_field]))
+	{
+		$z[$z_field] = pl_html_escape($z[$z_field]);
+	}
+}
+
+$z['case_id'] = pl_html_escape($case_id);
+$z['field'] = pl_html_escape($field);
 
 $plTemplate['nav'] = "<a href=\".\">$pikaNavRootLabel</a> &gt; Assign an Attorney";
 $plTemplate["content"] = pl_template('subtemplates/assign_atty.html', $z);

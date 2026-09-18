@@ -270,8 +270,22 @@ function vc_duration($start_time, $hours) {
 	*/
 	
 //	$C .= pl_template($a, "subtemplates/activity{$a['act_type']}.html");
-	header("Content-type:text/calendar");
-	header("Content-Disposition:filename=export.vcf");
+	/*	Two things were missing from these. "Content-Disposition: filename=..."
+		names a filename with no disposition type in front of it, which is not
+		a disposition at all -- a browser is entitled to read it as inline and
+		render the body. And a text/* type with no charset is read in the
+		browser's default encoding, which decides how the bytes of an
+		activity's summary and notes are interpreted. PHP's default_charset
+		appends one for a text/* type today, so this says out loud what an
+		ini setting was supplying quietly.
+		
+		Neither one is a way in on this deployment: text/calendar is not a type
+		a browser renders as markup, and nosniff is sent on every response. But
+		"not rendered as markup" is the whole of what stops the export echoing
+		an activity's text back, and it should not be the whole of it.
+	*/
+	header("Content-Type: text/calendar; charset=utf-8");
+	header("Content-Disposition: attachment; filename=export.vcf");
 	
 	echo pl_template($a, "templates/vcal.txt");
 //echo pl_template($plTemplate, 'templates/default.html');
