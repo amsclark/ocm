@@ -10527,6 +10527,38 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 				ok "${vc_page} serves a body (HTTP ${vc_code}, ${vc_size} bytes)"
 			fi
 		done
+
+		# 68e. The export's own two headers. "Content-Disposition:
+		# filename=..." names a filename with no disposition type in front
+		# of it, which is not a disposition at all, and a text/* type with
+		# no charset is read in the browser's default encoding -- which is
+		# what decides how the bytes of an activity's summary and notes are
+		# interpreted -- and PHP's default_charset appends one for a text/*
+		# type today, so this check holds the explicit header rather than
+		# catching a missing charset. Neither is a way in here, because text/calendar is
+		# not a type a browser renders as markup and nosniff is on every
+		# response, but "not rendered as markup" should not be the whole of
+		# what stops the export echoing an activity's text back.
+		VC_HDR="$BODY.vcal68e"
+		curl -s --max-time 30 -b "$COOKIES" -D "$VC_HDR" -o "$BODY" \
+			"$OCM_URL/ops/vcal.php?act_id=${VC_ID}" >/dev/null
+
+		if ! grep -q 'BEGIN:VCALENDAR' "$BODY"
+		then
+			bad "the vCalendar header check did not get an export back"
+		elif ! grep -qiE '^content-type:[ ]*text/calendar' "$VC_HDR"
+		then
+			bad "the vCalendar export does not send Content-Type: text/calendar"
+		elif ! grep -qiE '^content-type:.*charset=' "$VC_HDR"
+		then
+			bad "the vCalendar export sends text/calendar with no charset"
+		elif ! grep -qiE '^content-disposition:[ ]*attachment' "$VC_HDR"
+		then
+			bad "the vCalendar export sends a filename with no disposition type"
+		else
+			ok "the vCalendar export is an attachment with a charset"
+		fi
+		rm -f "$VC_HDR"
 	fi
 
 	cleanup_vc
@@ -11982,6 +12014,91 @@ if grep -qF 'if (!is_array($result))' cms/app/scripts/cms-csv-download.php; then
 	ok "the csv download checks it got a list of tables"
 else
 	bad "the csv download loops over whatever json_decode returned"
+fi
+
+# 76k. Static. system-mac_download.php generates that script, and the URL it
+# writes into it is the address the script posts this operator's OCM username
+# and password to, from cron, for as long as it is installed. It was built out
+# of $_SERVER['HTTP_HOST'] -- the Host header, unvalidated, and under Apache's
+# default UseCanonicalName Off whatever was sent. pl_canonical_origin() is what
+# the rest of the tree uses for this: it prefers the canonical_url setting, so a
+# deployment that cannot trust the Host header has somewhere to say so, and it
+# holds the host to a hostname shape instead of pasting it in.
+#
+# Asserted statically rather than by forging a Host header, because Apache
+# answers 400 to a Host containing a quote or CRLF before PHP is reached, so a
+# forged-Host request tests Apache and not this file.
+#
+# Read off the assignment rather than the file, for the reason 76i gives: the
+# comment above this code names HTTP_HOST to explain why it is gone, and a
+# whole-file grep matches that sentence.
+if grep -F "'url' =>" cms/system-mac_download.php | grep -qF 'HTTP_HOST'; then
+	bad "the mac download script's URL is built from the Host header again"
+else
+	ok "the mac download script's URL does not come from the Host header"
+fi
+
+if grep -qF "pl_canonical_origin('https')" cms/system-mac_download.php; then
+	ok "the mac download script's URL comes from pl_canonical_origin()"
+else
+	bad "the mac download script does not use pl_canonical_origin()"
+fi
+
+# Both download branches also used to answer "Content-Type: text/txt", which is
+# not a media type -- nothing registers it, so what a browser does with it is a
+# matter of policy rather than of specification.
+# Read off the header calls, again because the comment names the old type.
+if grep -F 'header(' cms/system-mac_download.php | grep -qF 'text/txt'; then
+	bad "the mac download branches still answer with the made-up type text/txt"
+else
+	ok "the mac download branches do not answer with text/txt"
+fi
+
+if [ "$(grep -F 'header(' cms/system-mac_download.php | grep -cF 'text/plain; charset=')" -eq 2 ]; then
+	ok "both mac download branches answer with text/plain and a charset"
+else
+	bad "the mac download branches do not both answer with text/plain and a charset"
+fi
+
+# 76l. The same two things over HTTP, on an ordinary request: the generated
+# script must arrive as a text/plain attachment, and the URL inside it must be
+# the https origin of this deployment rather than anything else.
+MD_TOK="$(curl -s --max-time 30 -b "$COOKIES" "$OCM_URL/system-mac_download.php" \
+	| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' | head -1 \
+	| sed -e 's/.*value="//' -e 's/"$//')"
+
+if [ "${#MD_TOK}" -ne 64 ]; then
+	printf '  skip the mac download response check (no csrf token on the page)\n'
+else
+	MD_HDR="$BODY.mac76l"
+	curl -s --max-time 30 -b "$COOKIES" -D "$MD_HDR" -o "$BODY" \
+		-X POST \
+		--data-urlencode "_csrf=${MD_TOK}" \
+		--data-urlencode 'script=Download Script' \
+		--data-urlencode 'home_path=/Users/zzsmoke' \
+		--data-urlencode 'password=zzsmokepw' \
+		"$OCM_URL/system-mac_download.php" >/dev/null
+
+	if ! grep -qF '$url' "$BODY"
+	then
+		bad "the mac download did not return the generated script"
+	elif ! grep -qiE '^content-type:[ ]*text/plain' "$MD_HDR"
+	then
+		bad "the generated mac download script is not served as text/plain"
+	elif ! grep -qiE '^content-disposition:[ ]*attachment' "$MD_HDR"
+	then
+		bad "the generated mac download script is not served as an attachment"
+	else
+		ok "the generated mac download script is a text/plain attachment"
+	fi
+
+	if grep -qE "^\\\$url = 'https://" "$BODY"
+	then
+		ok "the generated mac download script posts to an https URL"
+	else
+		bad "the generated mac download script's URL is not https ($(grep -m1 -E '^\$url' "$BODY"))"
+	fi
+	rm -f "$MD_HDR"
 fi
 
 echo
