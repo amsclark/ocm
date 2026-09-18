@@ -67,15 +67,24 @@ jobs:
         # this, one Snyk Code finding aborts the job and the dependency, IaC
         # and container scans never run at all.
 
-        # Runs Snyk Open Source (SCA) analysis and uploads result to Snyk.
-      - name: Snyk Open Source monitor
-        if: always()
-        run: snyk monitor --all-projects
-
-        # Runs Snyk Infrastructure as Code (IaC) analysis and uploads result to Snyk.
-      - name: Snyk IaC test and report
-        if: always()
-        run: snyk iac test --report --severity-threshold=low
+        # Two steps from the sample workflow are deliberately not here.
+        #
+        # "snyk monitor --all-projects" is Snyk Open Source, which reads a
+        # dependency manifest. This repository has none -- no composer.json,
+        # no package.json, nothing Snyk Open Source supports -- so the step
+        # answered "Could not detect supported target files" and exited 3 on
+        # every run since it was added. The PHP dependencies of this codebase
+        # are vendored, and the image's system packages are what Snyk
+        # Container reports on below.
+        #
+        # "snyk iac test" reads Terraform, CloudFormation, Kubernetes and ARM.
+        # A Dockerfile is not an IaC file to Snyk and neither is a compose
+        # file, so that step answered "Could not find any valid IaC files" and
+        # also exited 3 on every run.
+        #
+        # Both failures were structural: no change to this codebase could have
+        # cleared them. Keeping them meant the Snyk Security check was red
+        # whatever the code said, which is the same as having no check.
 
         # Build the docker image for testing
       - name: Build a Docker image
