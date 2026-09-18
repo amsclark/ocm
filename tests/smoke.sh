@@ -4067,6 +4067,30 @@ ZZA | Alpha Again'
 		bad "the duplicate guard blocked an edit it should have let through"
 	fi
 
+	# 33f. pikaMenu::save() used to echo the DELETE and the INSERT it had just
+	# run, so every menu save answered with the table name, the column list and
+	# the values ahead of its Location header. Not script injection -- the
+	# request values arrive with < and > already entities, and a browser
+	# discards a 302 body -- but curl, a proxy log and any error page that
+	# renders the body do not.
+	#
+	# -s and not -sL on purpose: following the redirect would fetch the page
+	# after the save and throw away the body being checked.
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/system-menus.php?action=update&menu_name=${MN_NAME}&old_value=ZZA&value=ZZA&label=Alpha%20Again" >/dev/null
+	if grep -qE "INSERT ${MN_TABLE}|DELETE FROM ${MN_TABLE}" "$BODY"
+	then
+		bad "system-menus.php prints the SQL it just ran into the save response"
+	else
+		ok "system-menus.php does not print the SQL it just ran"
+	fi
+	if [ "$(adb "SELECT label FROM \`${MN_TABLE}\` WHERE value = 'ZZA'")" = 'Alpha Again' ]
+	then
+		ok "the save behind that check still saved"
+	else
+		bad "the save behind the SQL-echo check did not save"
+	fi
+
 	cleanup_mn
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 else
@@ -10579,6 +10603,38 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 				ok "${vc_page} serves a body (HTTP ${vc_code}, ${vc_size} bytes)"
 			fi
 		done
+
+		# 68e. The export's own two headers. "Content-Disposition:
+		# filename=..." names a filename with no disposition type in front
+		# of it, which is not a disposition at all, and a text/* type with
+		# no charset is read in the browser's default encoding -- which is
+		# what decides how the bytes of an activity's summary and notes are
+		# interpreted -- and PHP's default_charset appends one for a text/*
+		# type today, so this check holds the explicit header rather than
+		# catching a missing charset. Neither is a way in here, because text/calendar is
+		# not a type a browser renders as markup and nosniff is on every
+		# response, but "not rendered as markup" should not be the whole of
+		# what stops the export echoing an activity's text back.
+		VC_HDR="$BODY.vcal68e"
+		curl -s --max-time 30 -b "$COOKIES" -D "$VC_HDR" -o "$BODY" \
+			"$OCM_URL/ops/vcal.php?act_id=${VC_ID}" >/dev/null
+
+		if ! grep -q 'BEGIN:VCALENDAR' "$BODY"
+		then
+			bad "the vCalendar header check did not get an export back"
+		elif ! grep -qiE '^content-type:[ ]*text/calendar' "$VC_HDR"
+		then
+			bad "the vCalendar export does not send Content-Type: text/calendar"
+		elif ! grep -qiE '^content-type:.*charset=' "$VC_HDR"
+		then
+			bad "the vCalendar export sends text/calendar with no charset"
+		elif ! grep -qiE '^content-disposition:[ ]*attachment' "$VC_HDR"
+		then
+			bad "the vCalendar export sends a filename with no disposition type"
+		else
+			ok "the vCalendar export is an attachment with a charset"
+		fi
+		rm -f "$VC_HDR"
 	fi
 
 	cleanup_vc
@@ -12034,6 +12090,91 @@ if grep -qF 'if (!is_array($result))' cms/app/scripts/cms-csv-download.php; then
 	ok "the csv download checks it got a list of tables"
 else
 	bad "the csv download loops over whatever json_decode returned"
+fi
+
+# 76k. Static. system-mac_download.php generates that script, and the URL it
+# writes into it is the address the script posts this operator's OCM username
+# and password to, from cron, for as long as it is installed. It was built out
+# of $_SERVER['HTTP_HOST'] -- the Host header, unvalidated, and under Apache's
+# default UseCanonicalName Off whatever was sent. pl_canonical_origin() is what
+# the rest of the tree uses for this: it prefers the canonical_url setting, so a
+# deployment that cannot trust the Host header has somewhere to say so, and it
+# holds the host to a hostname shape instead of pasting it in.
+#
+# Asserted statically rather than by forging a Host header, because Apache
+# answers 400 to a Host containing a quote or CRLF before PHP is reached, so a
+# forged-Host request tests Apache and not this file.
+#
+# Read off the assignment rather than the file, for the reason 76i gives: the
+# comment above this code names HTTP_HOST to explain why it is gone, and a
+# whole-file grep matches that sentence.
+if grep -F "'url' =>" cms/system-mac_download.php | grep -qF 'HTTP_HOST'; then
+	bad "the mac download script's URL is built from the Host header again"
+else
+	ok "the mac download script's URL does not come from the Host header"
+fi
+
+if grep -qF "pl_canonical_origin('https')" cms/system-mac_download.php; then
+	ok "the mac download script's URL comes from pl_canonical_origin()"
+else
+	bad "the mac download script does not use pl_canonical_origin()"
+fi
+
+# Both download branches also used to answer "Content-Type: text/txt", which is
+# not a media type -- nothing registers it, so what a browser does with it is a
+# matter of policy rather than of specification.
+# Read off the header calls, again because the comment names the old type.
+if grep -F 'header(' cms/system-mac_download.php | grep -qF 'text/txt'; then
+	bad "the mac download branches still answer with the made-up type text/txt"
+else
+	ok "the mac download branches do not answer with text/txt"
+fi
+
+if [ "$(grep -F 'header(' cms/system-mac_download.php | grep -cF 'text/plain; charset=')" -eq 2 ]; then
+	ok "both mac download branches answer with text/plain and a charset"
+else
+	bad "the mac download branches do not both answer with text/plain and a charset"
+fi
+
+# 76l. The same two things over HTTP, on an ordinary request: the generated
+# script must arrive as a text/plain attachment, and the URL inside it must be
+# the https origin of this deployment rather than anything else.
+MD_TOK="$(curl -s --max-time 30 -b "$COOKIES" "$OCM_URL/system-mac_download.php" \
+	| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' | head -1 \
+	| sed -e 's/.*value="//' -e 's/"$//')"
+
+if [ "${#MD_TOK}" -ne 64 ]; then
+	printf '  skip the mac download response check (no csrf token on the page)\n'
+else
+	MD_HDR="$BODY.mac76l"
+	curl -s --max-time 30 -b "$COOKIES" -D "$MD_HDR" -o "$BODY" \
+		-X POST \
+		--data-urlencode "_csrf=${MD_TOK}" \
+		--data-urlencode 'script=Download Script' \
+		--data-urlencode 'home_path=/Users/zzsmoke' \
+		--data-urlencode 'password=zzsmokepw' \
+		"$OCM_URL/system-mac_download.php" >/dev/null
+
+	if ! grep -qF '$url' "$BODY"
+	then
+		bad "the mac download did not return the generated script"
+	elif ! grep -qiE '^content-type:[ ]*text/plain' "$MD_HDR"
+	then
+		bad "the generated mac download script is not served as text/plain"
+	elif ! grep -qiE '^content-disposition:[ ]*attachment' "$MD_HDR"
+	then
+		bad "the generated mac download script is not served as an attachment"
+	else
+		ok "the generated mac download script is a text/plain attachment"
+	fi
+
+	if grep -qE "^\\\$url = 'https://" "$BODY"
+	then
+		ok "the generated mac download script posts to an https URL"
+	else
+		bad "the generated mac download script's URL is not https ($(grep -m1 -E '^\$url' "$BODY"))"
+	fi
+	rm -f "$MD_HDR"
 fi
 
 echo
@@ -14027,6 +14168,113 @@ else
 fi
 
 rm -f "$TL_BODY"
+
+# ---------------------------------------------------------------------------
+# 83. Request values inside quoted HTML attributes.
+#
+# pl_grab_var() and pl_grab_get()'s default filter turn < and > into entities
+# and leave everything else alone, so a value that went through them cannot
+# open a tag. Both pages below put such a value inside a quoted attribute,
+# where the quote is what matters and the quote is not on that list.
+#
+# The current CSP -- script-src 'self' with a nonce, no 'unsafe-inline' --
+# stops an on* attribute written this way from running, so what these checks
+# describe is attribute injection rather than script execution. They assert on
+# the markup rather than on any consequence of it, because the CSP is a second
+# line and this is the first one.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 83. request values stay inside their quoted attributes =="
+
+XA_BODY="$BODY.attr83"
+
+# 83a. assign_atty.php, single-quoted hidden input. case_id and field are
+# request values and the template writes them as value='...'.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode "case_id=1' zzatty=1 x='" \
+	--data-urlencode "field=atty_id" \
+	"$OCM_URL/assign_atty.php" >/dev/null
+
+if grep -qF "value='1' zzatty=1" "$XA_BODY"
+then
+	bad "assign_atty.php lets case_id break out of a single-quoted attribute"
+elif grep -qE "value='1&[A-Za-z0-9#]+; zzatty=1" "$XA_BODY"
+then
+	# Any character reference will do. htmlspecialchars() writes &apos; under
+	# ENT_HTML5 and &#039; under ENT_HTML401, and which one is not the point.
+	ok "assign_atty.php escapes the quote in case_id"
+else
+	bad "assign_atty.php did not render the case_id input at all"
+fi
+
+# 83b. The same page, double-quoted, and a different value: county comes from
+# the search form and $z is the filter array itself.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'case_id=1' \
+	--data-urlencode 'field=atty_id' \
+	--data-urlencode 'county=ZZ" zzcounty=1 x="' \
+	"$OCM_URL/assign_atty.php" >/dev/null
+
+if grep -qF 'value="ZZ" zzcounty=1' "$XA_BODY"
+then
+	bad "assign_atty.php lets county break out of a double-quoted attribute"
+elif grep -qE 'value="ZZ&[A-Za-z0-9#]+; zzcounty=1' "$XA_BODY"
+then
+	ok "assign_atty.php escapes the quote in a search field"
+else
+	bad "assign_atty.php did not render the county input at all"
+fi
+
+# 83c. Positive control for both: an ordinary search term still comes back in
+# the box, unchanged, so the escape has not eaten the form.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'case_id=1' \
+	--data-urlencode 'field=atty_id' \
+	--data-urlencode 'county=Wayne' \
+	"$OCM_URL/assign_atty.php" >/dev/null
+
+if grep -qF 'name="county" value="Wayne"' "$XA_BODY"
+then
+	ok "assign_atty.php still hands an ordinary search term back to the form"
+else
+	bad "assign_atty.php lost the search term it was given"
+fi
+
+# 83d. system-outcomes.php builds a form action out of ?outcome=. The value
+# reaches it through DB::escapeString(), which backslash-escapes the quote for
+# SQL and leaves it in the string -- and in HTML a backslashed quote is still
+# the end of the attribute.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'action=edit' \
+	--data-urlencode 'outcome=housing" zzoutcome=1 x="' \
+	"$OCM_URL/system-outcomes.php" >/dev/null
+
+if grep -qF 'zzoutcome=1' "$XA_BODY"
+then
+	bad "system-outcomes.php lets outcome break out of the form action"
+elif grep -qF 'zzoutcome%3D1' "$XA_BODY"
+then
+	ok "system-outcomes.php encodes the outcome in the form action"
+else
+	bad "system-outcomes.php did not render the form action at all"
+fi
+
+# 83e. Positive control. The form still points at the outcome it is editing,
+# so the encoding has not broken the save.
+curl -s --max-time 30 -b "$COOKIES" -o "$XA_BODY" -w '' --get \
+	--data-urlencode 'action=edit' \
+	--data-urlencode 'outcome=housing' \
+	"$OCM_URL/system-outcomes.php" >/dev/null
+
+if grep -qF 'outcome=housing" method="POST"' "$XA_BODY"
+then
+	ok "system-outcomes.php still aims the edit form at the outcome it opened"
+else
+	bad "system-outcomes.php no longer aims the edit form at its outcome"
+fi
+
+rm -f "$XA_BODY"
 
 echo
 echo "smoke: $pass passed, $fail failed"

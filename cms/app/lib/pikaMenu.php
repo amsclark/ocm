@@ -504,10 +504,8 @@ class pikaMenu extends plBase
 				WHERE `value` = '{$this->old_menu_value}' 
 				LIMIT 1;";
 		DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
-		echo $sql;
 		
 		$sql = $this->tableAutosqlInsert($this->values);
-		echo $sql;
 		DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		$this->last_query = $sql;
 		$this->is_new = false;
