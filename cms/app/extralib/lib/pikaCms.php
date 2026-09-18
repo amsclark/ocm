@@ -866,10 +866,34 @@ class pikaCms
 	}
 
 	
-	// look for other contacts matching a name (using metaphone)
+	/*	Look for other contacts matching a name, using metaphone.
+		
+		This is a second copy of pikaContact::metaphoneContactCheck(). That copy
+		was fixed to bind its parameters; this one was missed, and kept building
+		the statement by interpolation:
+		
+		  - on the short-metaphone branch below, $mp_last and $mp_first are the
+		    caller's raw $last_name and $first_name, and they went straight into
+		    LIKE '$mp_last'. metaphone('A') is one character, so a last name of
+		    "A" with any first name at all took that branch;
+		  - $ssn went into ssn='$ssn' on every branch.
+		
+		A contact record is typed in by whoever takes the intake, so that was a
+		way to run a statement of your choosing against the case database from
+		the address book.
+		
+		Nothing in this tree calls this copy -- the one caller,
+		cms/merge_contacts.php, holds a pikaContact -- so it was not reachable.
+		It is hardened rather than deleted because pikaCms is a public class and
+		somebody's fork may well call it.
+		
+		The two column names are still written into the statement, because a
+		bound parameter cannot name a column. They are chosen by the branch below
+		and are never anything the caller supplied; the check says so out loud so
+		that a later edit which starts passing a column name in has to notice.
+	*/
 	function metaphoneContactCheck($last_name="", $first_name='', $ssn='')
 	{
-		$ssn_sql = '';
 		$mp_last = metaphone($last_name);
 		$mp_first = metaphone(_pika_first_name_only($first_name));
 		
@@ -893,11 +917,22 @@ class pikaCms
 			$match_last = 'last_name';
 		}
 		
-		if ($ssn)
+		$valid_columns = array('mp_first', 'mp_last', 'first_name', 'last_name');
+		
+		if (!in_array($match_first, $valid_columns, true)
+			|| !in_array($match_last, $valid_columns, true))
 		{
-			$ssn_sql = "OR aliases.ssn='$ssn' ";
+			trigger_error('Invalid column name in metaphoneContactCheck',
+				E_USER_WARNING);
+			return false;
 		}
 		
+		$params = array();
+		$ssn_sql = '';
+		$has_ssn = ('' !== (string) $ssn);
+		
+		$order = ' ORDER BY aliases.last_name, aliases.first_name,'
+			. ' aliases.extra_name, aliases.middle_name';
 		
 		/*
 		Organizations will only have a $last_name, which makes them a
@@ -907,34 +942,46 @@ class pikaCms
 		// If $mp_last has a trailing wild card, it will generate too many false hits
 		if (!$mp_first && $mp_last)
 		{
+			$params[] = $mp_last;
+			
+			if ($has_ssn)
+			{
+				$ssn_sql = 'OR aliases.ssn = ? ';
+				$params[] = $ssn;
+			}
+			
 			$sql = "SELECT contacts.*
 				    FROM aliases LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-				    WHERE aliases.$match_last LIKE '$mp_last' 
-					$ssn_sql
-				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
+				    WHERE (aliases.{$match_last} LIKE ? {$ssn_sql})" . $order;
 		}
 		
 		else if ($mp_last)
 		{
+			$params[] = $mp_last;
+			$params[] = $mp_first;
+			
+			if ($has_ssn)
+			{
+				$ssn_sql = 'OR aliases.ssn = ? ';
+				$params[] = $ssn;
+			}
+			
 			$sql = "SELECT contacts.*
 				    FROM aliases LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-				    WHERE (aliases.$match_last LIKE '$mp_last' 
-				    AND aliases.$match_first LIKE '$mp_first')
-					$ssn_sql
-				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
+				    WHERE (aliases.{$match_last} LIKE ?
+				    AND aliases.{$match_first} LIKE ? {$ssn_sql})" . $order;
 		}
 		
 		else
 		{
+			$params[] = $ssn;
+			
 			$sql = "SELECT contacts.*, aliases.ssn AS ssn
 				    FROM aliases LEFT JOIN contacts ON aliases.contact_id=contacts.contact_id
-				    WHERE aliases.ssn='$ssn'
-				    ORDER BY aliases.last_name, aliases.first_name, aliases.extra_name, aliases.middle_name";
+				    WHERE aliases.ssn = ?" . $order;
 		}
 		
-		//		echo $sql;
-		
-		return DB::query($sql);
+		return DB::preparedQuery($sql, $params);
 	}
 	
 	/*

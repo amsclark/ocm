@@ -3343,7 +3343,33 @@ function pl_menu_list()
 }
 
 
-function pl_menu_set($menu_name, $menu_array)
+/*	How many rows a menu holds right now.
+
+	$safe_menu_name has already been through pl_safe_identifier(). Returns false
+	if the count cannot be read, which is deliberately different from 0: the
+	caller must not treat "I could not ask" as "the menu is empty".
+*/
+function pl_menu_row_count($safe_menu_name)
+{
+	$result = DB::query("SELECT COUNT(*) AS tally FROM menu_$safe_menu_name");
+	
+	if (!$result)
+	{
+		return false;
+	}
+	
+	$row = DBResult::fetchRow($result);
+	
+	if (!is_array($row) || !isset($row['tally']))
+	{
+		return false;
+	}
+	
+	return (int) $row['tally'];
+}
+
+
+function pl_menu_set($menu_name, $menu_array, $allow_empty = false)
 {
 	global $plMenus;
 	
@@ -3371,6 +3397,37 @@ function pl_menu_set($menu_name, $menu_array)
 		addslashes() is removed in the same change, because escaping twice
 		stored a literal backslash before every apostrophe.
 	*/
+	/*	This function's whole job is DELETE-then-INSERT, so an empty $menu_array
+		deletes the menu and puts nothing back. cms/system-ops.php builds that
+		array by splitting a textarea on newlines and dropping every row that is
+		blank, so one submit of an empty or whitespace-only box wipes the menu.
+		
+		menu_* rows are typed in by the customer's administrator and are not
+		shipped with an upgrade, so there is nothing to restore them from.
+		
+		Refuse the replacement instead. $allow_empty is there for a caller that
+		means it, and a count of false means the count could not be read, which
+		is not a reason to go ahead.
+	*/
+	if (!$allow_empty && (!is_array($menu_array) || 0 === count($menu_array)))
+	{
+		$rows_before = pl_menu_row_count($menu_name);
+		
+		if (false === $rows_before || $rows_before > 0)
+		{
+			/*	No trigger_error() here. OCM's error handler ends the request,
+				so raising one would turn a refusal the caller is written to
+				handle into an error page. The audit row is the durable record.
+			*/
+			pl_audit('menu.replace_refused', 'menu', $menu_name, array(
+				'rows_before' => $rows_before,
+				'rows_after' => 0,
+			));
+			
+			return false;
+		}
+	}
+	
 	$plMenus[$menu_name] = array();
 	DB::query("DELETE FROM menu_$menu_name");
 	
