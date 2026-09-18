@@ -31,6 +31,26 @@ $action = pl_grab_get('action');
 $case_id = pl_grab_get('case_id');
 $act_id = pl_grab_get('act_id');
 $act_type = pl_grab_get('act_type','C');
+
+/*	act_type picks a template file further down --
+	"subtemplates/activity{$act_type}.html" -- so the request has a say in
+	which file is read. pikaTempLib refuses to read outside the template
+	directories, and this is the other half: a value that is not the shape of
+	a menu code cannot describe a path at all.
+	
+	Seeded act_type codes are single letters, and the column behind them is
+	char(1); the range here is wider than that on purpose, matching the shape
+	gate cal_week.php already applies to user_id, so a deployment that has
+	added its own codes keeps working.
+	
+	A value that fails falls back to the same default an absent one gets
+	rather than stopping the page, because no such code can have a record
+	behind it and the screen has somewhere sensible to go.
+*/
+if (!preg_match('/^[A-Za-z0-9_-]{1,20}$/', (string) $act_type))
+{
+	$act_type = 'C';
+}
 $act_date = pl_grab_get('act_date');
 $act_url = pl_grab_get('act_url');
 

@@ -80,12 +80,35 @@ class pikaTempLib {
 			// String mode - For document assembly primarily
 			$this->_template_string = $template_file;
 		} 
+		else if (!$this->fileIsContained($template_file))
+		{
+			/*	The name of the file to read reaches some callers from the
+				request. activity.php builds it out of act_type, which is a
+				query value, so a template name is partly chosen by whoever
+				asks for the page -- and file_get_contents() below puts what
+				it reads into the page. Without this, a name that walks up
+				out of the template directories reads a file the application
+				serves to the browser.
+				
+				Refusing rather than repairing the path: a template outside
+				these directories is never a template this application meant
+				to render, so there is nothing to fall back to. The message
+				names no path, because the path is the part the request
+				chose.
+			*/
+			/*	Defined behaviour if the refusal ever runs somewhere the error
+				handler is not installed: an empty template renders nothing,
+				rather than leaving the string unset and the file read from.
+			*/
+			$this->_template_string = '';
+			trigger_error('Template file is not inside the template directories');
+		}
 		else 
 		{
 			// File mode
 			$this->_file_name = $template_file;
 			$this->_template_string = file_get_contents($template_file);
-		} 
+		}  
 		// Set the subtemplate if provided
 		$this->_subtemplate_name = $subtemplate_name;
 		// Catch PHP USER notices/warnings/errors
@@ -95,6 +118,81 @@ class pikaTempLib {
 		{
 			trigger_error('System settings were not found');
 		}
+	}
+	
+	/**
+	 * templateRoots() - The directories a template file may be read from.
+	 *
+	 * Three, because the callers use all three. The application directory
+	 * comes from this file's own location -- cms/app/lib/pikaTempLib.php,
+	 * so two levels up is cms -- and holds subtemplates/ and reports/. The
+	 * custom directory holds a deployment's overrides, and the constructor
+	 * looks there first. The working directory is the third because the
+	 * callers pass relative names such as "subtemplates/activity.html",
+	 * which resolve against the directory of the script handling the
+	 * request -- cms/, cms/ops/ or cms/m/.
+	 *
+	 * A deployment with a template_path extension that returns paths from
+	 * somewhere else entirely needs that somewhere reachable from one of
+	 * these, a symlink under the custom directory being the simplest way.
+	 *
+	 * @return array - absolute directory paths, each with a trailing separator
+	 */
+	private function templateRoots()
+	{
+		$roots = array(
+			dirname(dirname(__DIR__)),
+			pl_custom_directory(),
+			getcwd(),
+		);
+		
+		$real = array();
+		
+		foreach ($roots as $root)
+		{
+			$r = @realpath($root);
+			
+			if (is_string($r) && '' !== $r)
+			{
+				$real[] = rtrim($r, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+			}
+		}
+		
+		return $real;
+	}
+	
+	/**
+	 * fileIsContained() - Is this file inside a template directory?
+	 *
+	 * realpath() first, so that a name holding .. or passing through a
+	 * symlink is answered for where it actually lands rather than for how it
+	 * is spelled. The separator is appended to both sides before comparing,
+	 * so a directory named cms-custom-elsewhere is not read as being inside
+	 * cms-custom.
+	 *
+	 * @return bool
+	 * @param $template_file string - the path the constructor is about to read
+	 */
+	private function fileIsContained($template_file)
+	{
+		$real = @realpath($template_file);
+		
+		if (!is_string($real) || '' === $real)
+		{
+			return false;
+		}
+		
+		$real .= DIRECTORY_SEPARATOR;
+		
+		foreach ($this->templateRoots() as $root)
+		{
+			if (0 === strncmp($real, $root, strlen($root)))
+			{
+				return true;
+			}
+		}
+		
+		return false;
 	}
 	
 	/**
