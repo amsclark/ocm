@@ -94,6 +94,11 @@ $act_interval = pl_settings_get('act_interval');
 
 $act_id = pl_grab_post('act_id');
 $act_date = pl_grab_post('act_date', date('Y-m-d'));
+/*	Where to send the browser once the save finishes, as the form gave it. It
+	is a request value, so every redirect below runs it through
+	pl_safe_redirect_path() -- see app/lib/pl.php for what that refuses, and
+	why this field is worth refusing anything in.
+*/
 $act_url = pl_grab_post('act_url');
 $act_type = pl_grab_post('act_type', 'C');
 $funding = pl_grab_post('funding');
@@ -305,7 +310,20 @@ if($act_id && is_numeric($act_id)) {
 
 if ($next_act) 
 {
-	header("Location: {$base_url}/activity.php?act_type={$act_type}&act_date={$act_date}&case_id={$case_id}&funding={$funding}&user_id={$user_id}&pba_id={$pba_id}&act_url={$act_url}");
+	/*	act_url rides along as a query value here rather than as the path, so
+		it is encoded rather than reduced to a path. The others are encoded
+		with it: each one is a form value, and an unencoded & or = in any of
+		them folds the rest of the string into the wrong parameter.
+	*/
+	$carry = 'act_type=' . urlencode($act_type)
+		. '&act_date=' . urlencode($act_date)
+		. '&case_id=' . urlencode($case_id)
+		. '&funding=' . urlencode($funding)
+		. '&user_id=' . urlencode($user_id)
+		. '&pba_id=' . urlencode($pba_id)
+		. '&act_url=' . urlencode($act_url);
+	
+	header("Location: {$base_url}/activity.php?{$carry}");
 } 
 
 else if ($close_act)
@@ -314,7 +332,7 @@ else if ($close_act)
 	{
 		if (strpos($act_url,'case_id') !== false)
 		{	
-			header("Location: {$base_url}/{$act_url}");	
+			header('Location: ' . $base_url . '/' . pl_safe_redirect_path($act_url));	
 		}
 		
 		else 
@@ -325,12 +343,13 @@ else if ($close_act)
 	
 	else if(preg_match('/cal_(day|week|adv).php$/',$act_url)) 
 	{
-		header("Location: {$base_url}/{$act_url}?cal_date={$act_date}");
+		header('Location: ' . $base_url . '/' . pl_safe_redirect_path($act_url)
+			. '?cal_date=' . urlencode($act_date));
 	}
 	
 	else 
 	{
-		header("Location: {$base_url}/{$act_url}");
+		header('Location: ' . $base_url . '/' . pl_safe_redirect_path($act_url));
 	}
 } 
 

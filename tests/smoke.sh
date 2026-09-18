@@ -4263,6 +4263,82 @@ if [ "$HAVE_DB" = 1 ]; then
 		else
 			bad "the lock also refuses the system group, which it must not"
 		fi
+
+		# 34i. ops/update_activity.php must not let act_url reach outside
+		# this site.
+		#
+		# The form carries act_url, the page to return to once the save
+		# finishes, and three redirects put it straight into a Location
+		# header as "{base_url}/{act_url}". base_url comes from
+		# cms-custom/config/settings.php, so it is "/cms" here and under
+		# Docker, and on that deployment "/cms" . "/" . "//host" is
+		# "/cms///host" -- still a path on this host, and not a way out.
+		#
+		# It is a way out where base_url is "", which is what an install
+		# serving the application at the domain root writes (the shipped
+		# settings.php.example carries 'base_url' => "/cms" for a subdirectory
+		# install, and that value is edited per deployment). There
+		# "" . "/" . "//host" is "///host", and a browser resolves that to
+		# http://host/ -- the URL parser skips the extra slashes before
+		# reading the authority. A request that set act_url then chose the
+		# next page a logged-in staff member saw, and the
+		# credential-phishing page it lands on was reached by following a
+		# real link inside the application they already trust. Confirmed by
+		# hand against this stack with base_url emptied.
+		#
+		# So this asserts on what the code appends rather than on where the
+		# header happens to point, which is the part the fix controls and the
+		# only part that is the same on both deployments: after base_url
+		# there must be exactly one slash. Two would be the request's own
+		# slashes surviving. Note the correct answer still carries the
+		# attacker hostname -- the fix keeps the path and drops the leading
+		# slashes, so "/cms/zz-evil.example/steal" is right -- which is why
+		# the dataops check above greps for the name and this one cannot.
+		ULOC="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D - -X POST \
+			--data-urlencode "_csrf=$(lk_token "$COOKIES")" \
+			-d "act_type=C" -d "close_act=1" -d "user_id=${LKUID}" \
+			-d "act_id=${LKACT}" -d "act_date=${LK_OLD}" -d "hours=8.00" \
+			--data-urlencode "summary=ZZLK admin edit" \
+			--data-urlencode "act_url=//zz-evil.example/steal" \
+			"$OCM_URL/ops/update_activity.php" \
+			| grep -i '^location:' | tr -d '\r' | head -1)"
+		UTARGET="$(printf '%s' "$ULOC" | sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+		# The path base_url gives this deployment, taken from OCM_URL so the
+		# check does not have to know it: "http://host:port/cms" -> "/cms".
+		UBASE="$(printf '%s' "$OCM_URL" \
+			| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]*##' -e 's#/*$##')"
+		case "$UTARGET" in
+			'')
+				bad "ops/update_activity.php sent no Location header at all" ;;
+			*://*)
+				bad "ops/update_activity.php still redirects to an absolute URL (${ULOC})" ;;
+			//*)
+				bad "ops/update_activity.php still redirects off-site, protocol-relative (${ULOC})" ;;
+			"${UBASE}//"*)
+				bad "ops/update_activity.php still appends act_url's leading slashes, which is an off-site redirect wherever base_url is empty (${ULOC})" ;;
+			"${UBASE}/zz-evil.example/steal")
+				ok "ops/update_activity.php reduces an off-site act_url to a path on this site" ;;
+			*)
+				bad "ops/update_activity.php redirected somewhere unexpected (${ULOC})" ;;
+		esac
+
+		# Positive control: an act_url the form really does send must still
+		# reach the page it names, or the check above only proves the
+		# redirect is broken.
+		ULOC="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D - -X POST \
+			--data-urlencode "_csrf=$(lk_token "$COOKIES")" \
+			-d "act_type=C" -d "close_act=1" -d "user_id=${LKUID}" \
+			-d "act_id=${LKACT}" -d "act_date=${LK_OLD}" -d "hours=8.00" \
+			--data-urlencode "summary=ZZLK admin edit" \
+			--data-urlencode "act_url=cal_day.php" \
+			"$OCM_URL/ops/update_activity.php" \
+			| grep -i '^location:' | tr -d '\r' | head -1)"
+		case "$ULOC" in
+			*/cal_day.php\?cal_date=*)
+				ok "a real act_url still redirects to the page it names" ;;
+			*)
+				bad "a real act_url no longer reaches its page (${ULOC})" ;;
+		esac
 	fi
 
 	cleanup_lk
@@ -13853,6 +13929,104 @@ then
 else
 	bad "$mark_attr inline on* handler attributes are back in the templates"
 fi
+
+# ---------------------------------------------------------------------------
+# 82. pikaTempLib reads the file it is handed, whatever file that is.
+#
+# The constructor calls file_exists() and then file_get_contents(), with no
+# check that the path is a template. Handed /etc/hostname it returns the
+# container hostname as the template string, which the caller then renders into
+# a page. Confirmed against the unpatched class.
+#
+# No request reaches that today. The only caller whose path is influenced by a
+# request is activity.php, which builds "subtemplates/activity{$act_type}.html"
+# out of ?act_type=, and the fixed prefix and the .html suffix are what stop a
+# traversal from landing anywhere interesting -- not any check. So this is the
+# class being made to refuse rather than a live leak being closed, and the
+# checks below are written to hold whichever caller arrives next.
+#
+# Section 82a runs inside the container rather than over HTTP, because that is
+# where a caller handing the class an outside path can be arranged. It writes a
+# file with a marker in it somewhere the template roots do not cover, and
+# asserts the marker does not come back. Note that trigger_error() only stops
+# the request where pl_error_handler() is installed, which a php -r is not, so
+# the assertion is on the template string and not on the exit status.
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 82. the template engine refuses a file outside the template roots =="
+
+if [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip section 82 (needs a compose stack)\n'
+else
+	# 82a. A file outside the roots must not be read.
+	TL_OUT="$(docker compose "${COMPOSE_ARGS[@]}" exec -T -w /var/www/html/cms app php -r '
+		file_put_contents("/tmp/zz-templib-outside.html", "ZZTEMPLIBLEAK");
+		$_SERVER["custom_directory"] = "/var/www/html/cms-custom";
+		require_once("app/lib/pl.php");
+		require_once("app/lib/pikaTempLib.php");
+		$t = new pikaTempLib("/tmp/zz-templib-outside.html", array());
+		$r = new ReflectionClass($t);
+		$p = $r->getProperty("_template_string");
+		$p->setAccessible(true);
+		echo "STRING:" . trim((string) $p->getValue($t));
+	' </dev/null 2>/dev/null | tr -d '\r')"
+
+	case "$TL_OUT" in
+		*ZZTEMPLIBLEAK*)
+			bad "pikaTempLib read a file outside the template roots (${TL_OUT})" ;;
+		*STRING:*)
+			ok "pikaTempLib refuses a file outside the template roots" ;;
+		*)
+			bad "pikaTempLib containment check did not run (${TL_OUT})" ;;
+	esac
+
+	# 82b. Positive control. A refusal that refuses everything would pass 82a
+	# and break every screen, so a real template must still be read.
+	TL_IN="$(docker compose "${COMPOSE_ARGS[@]}" exec -T -w /var/www/html/cms app php -r '
+		$_SERVER["custom_directory"] = "/var/www/html/cms-custom";
+		require_once("app/lib/pl.php");
+		require_once("app/lib/pikaTempLib.php");
+		$t = new pikaTempLib("subtemplates/activity.html", array());
+		$r = new ReflectionClass($t);
+		$p = $r->getProperty("_template_string");
+		$p->setAccessible(true);
+		echo "LEN:" . strlen((string) $p->getValue($t));
+	' </dev/null 2>/dev/null | tr -d '\r')"
+
+	TL_LEN="$(printf '%s' "$TL_IN" | sed -e 's/.*LEN://')"
+	case "$TL_LEN" in
+		''|*[!0-9]*)
+			bad "pikaTempLib positive control did not run (${TL_IN})" ;;
+		0)
+			bad "pikaTempLib no longer reads subtemplates/activity.html - the containment check is refusing real templates" ;;
+		*)
+			ok "pikaTempLib still reads a real template (${TL_LEN} bytes)" ;;
+	esac
+fi
+
+# 82c. The caller. A traversing act_type must leave the screen working and
+# nothing of the filesystem on it. Asserting the screen still renders as well
+# as the absence of the file, because a blank page would also hold no passwd.
+TL_BODY="$BODY.templib82c"
+TL_CODE="$(curl -s --max-time 30 -b "$COOKIES" -o "$TL_BODY" -w '%{http_code}' \
+	"$OCM_URL/activity.php?act_type=../../../../etc/passwd")"
+
+if grep -q 'root:x:' "$TL_BODY"
+then
+	bad "activity.php served /etc/passwd for a traversing act_type"
+elif [ "$TL_CODE" != 200 ]
+then
+	bad "activity.php returned ${TL_CODE} for a traversing act_type"
+elif grep -qi 'act_date' "$TL_BODY"
+then
+	ok "activity.php falls back to the default activity screen for a traversing act_type"
+else
+	bad "activity.php rendered no activity screen for a traversing act_type"
+fi
+
+rm -f "$TL_BODY"
 
 echo
 echo "smoke: $pass passed, $fail failed"

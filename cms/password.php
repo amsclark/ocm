@@ -17,10 +17,6 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 require_once('pikaTempLib.php');
 require_once('pikaUser.php');
 require_once('app/lib/plPasswordBreach.php');
-if (PHP_VERSION_ID >= 50303)
-{
-	require_once('password_hash_compat.php');
-}
 
 $main_html = $html = array();
 

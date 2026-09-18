@@ -255,7 +255,12 @@ function vc_duration($start_time, $hours) {
 	}
 	$a['vc_summary'] = nl2encbr($a['summary']);
 	$a['vc_description'] = nl2encbr($a['notes']);
-	$a['uid'] = md5(uniqid(rand(), true));
+	/*	rand() is seeded from the clock and uniqid() is the clock, so the old
+		md5(uniqid(rand(), true)) was predictable to anyone who knew roughly
+		when the export ran. Calendar clients quote a UID back and match on
+		it, so it wants to be unguessable. Still 32 hex characters.
+	*/
+	$a['uid'] = bin2hex(random_bytes(16));
 	
 	/* SpellCheck??
 	if ($sc)
