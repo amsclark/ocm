@@ -50,7 +50,12 @@ class pikaCms
 		
 		if (!isset($a['fingerprint']) || !(strlen($a['fingerprint']) > 0))
 		{
-			$a['fingerprint'] = md5(uniqid(rand(), true));
+			/*	The fingerprint identifies a case row, so it must not be
+				derivable from the time the row was made. md5(uniqid(rand(),
+				true)) was: both of its inputs are the clock. random_bytes()
+				is not, and 16 bytes keeps the same 32-character width.
+			*/
+			$a['fingerprint'] = bin2hex(random_bytes(16));
 		}
 		
 		// Open date always needs to be set, so that the client age can be calculated

@@ -1229,11 +1229,14 @@ function pika_xchg_appt_add($username, $start_time, $end_time, $subject)
 	$a = array();  // template tag values
 	$cal_dir = $plSettings['xchg_directory'] . "/$username/Calendar";
 	
-	// Generate a UID
-	$x = microtime();
-	$y = microtime();
-	$z = md5($x . $y);
-	$z = strtoupper($z);
+	/*	Generate a UID. This was md5(microtime() . microtime()), which is a
+		guess away rather than a secret: the clock is public and two reads of
+		it a line apart are almost the same number, so the digest came from a
+		search space of a few thousand values. random_bytes() is the
+		cryptographic source, and 16 bytes is exactly the 32 hex characters
+		the GUID shape below slices up.
+	*/
+	$z = strtoupper(bin2hex(random_bytes(16)));
 	$uid = '{' . substr($z, 0, 8);
 	$uid .= '-' . substr($z, 8, 4);
 	$uid .= '-' . substr($z, 12, 4);
@@ -1243,7 +1246,7 @@ function pika_xchg_appt_add($username, $start_time, $end_time, $subject)
 	$filename = $cal_dir . '/' . $uid . '.EML';
 	
 	// Populate $a with template tag values.
-	$a['thread_index'] = substr(md5(microtime()), 0, 30);
+	$a['thread_index'] = substr(bin2hex(random_bytes(16)), 0, 30);
 	$a['tzid'] = 'Eastern Time (US & Canada)';
 	$a['timestamp'] = date('Ymd') ."T154814Z";
 	$a['start_date'] = date('Ymd', $start_time) . "T133000";
