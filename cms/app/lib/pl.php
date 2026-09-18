@@ -4168,17 +4168,33 @@ if (!function_exists('pl_safe_redirect_path'))
 	 * returns '' for anything it will not vouch for, which leaves the caller
 	 * emitting "{base_url}/" -- the site root.
 	 *
-	 * A CR or LF is stripped as well. PHP's own header() refuses a value
-	 * holding one, so a request cannot add headers of its own through here,
-	 * but refusing means a fatal error on a page that was working, and this
-	 * field never needs a newline.
+	 * Every ASCII control character is stripped, not just CR and LF.
+	 *
+	 * CR and LF are the header-splitting pair: PHP's own header() refuses a
+	 * value holding one, so a request cannot add headers of its own through
+	 * here, but refusing means a fatal error on a page that was working, and
+	 * this field never needs a newline.
+	 *
+	 * A tab is the one that gets past a scheme test. The URL parser a browser
+	 * uses deletes every tab and newline from the input before it reads
+	 * anything, so "ht<TAB>tps://evil.example" is parsed as
+	 * "https://evil.example" -- but the scheme pattern below does not match
+	 * it, because the character after "ht" is a tab rather than a colon or a
+	 * scheme character. header() allows a lone tab through. So the value
+	 * arrived here looking like a relative path, was emitted as one, and the
+	 * browser left the site. Stripping the controls first means the scheme
+	 * test reads the same string the browser will.
+	 *
+	 * The rest of the C0 range and DEL go too. They have no meaning in this
+	 * field, and each one is another chance for something downstream to read
+	 * a string this function did not.
 	 *
 	 * @return string - a relative path, or '' meaning the site root
 	 * @param $url string - the return path as the request supplied it
 	 */
 	function pl_safe_redirect_path($url)
 	{
-		$url = str_replace(array("\r", "\n", "\0"), '', trim((string) $url));
+		$url = trim(preg_replace('/[\x00-\x1F\x7F]/', '', (string) $url));
 		
 		/*	A scheme cannot reach another host from inside a path, but it has no
 			business in this field either, and letting one through would put a
