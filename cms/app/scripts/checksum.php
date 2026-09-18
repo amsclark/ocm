@@ -23,7 +23,11 @@ function directory_checksum($directory_name)
 		{
 			if (!is_dir("{$directory_name}/{$file}"))
 			{
-				echo md5_file("{$directory_name}/{$file}") . "  {$directory_name}/{$file}\n";			
+				/*	sha256, not md5: this manifest exists so an operator can
+					tell a stock file from an edited one, and md5 collisions
+					are cheap enough to forge that answer.
+				*/
+				echo hash_file('sha256', "{$directory_name}/{$file}") . "  {$directory_name}/{$file}\n";			
 			}
 		}
 	}
