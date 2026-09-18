@@ -50,10 +50,36 @@ jobs:
         #    node-version: 20
 
         # Runs Snyk Code (SAST) analysis and uploads result into GitHub.
-        # The threshold is deliberate, not the default: any finding of low
-        # severity or worse fails the build.
+        #
+        # The threshold is deliberate, not the default: Snyk reports any
+        # finding of low severity or worse. What it does NOT do is decide this
+        # check on its own, because it has no working way to record that a
+        # finding has been read and answered. .snyk ignore entries are not
+        # applied to Snyk Code by the CLI -- checked against SnykCode 1.1307.3,
+        # which produced a SARIF with zero suppressions while nine paths were
+        # listed under ignore: -- and dismissing an alert in the GitHub
+        # Security tab changes only what GitHub displays, never the exit code
+        # of the scan that found it.
+        #
+        # So the exit code here is treated as "the scan ran" or "the scan did
+        # not run", and the gate below decides pass or fail against
+        # .snyk-code-accepted, which is in the repository and reviewed in the
+        # diff like any other file.
       - name: Snyk Code test
-        run: snyk code test --severity-threshold=low --sarif > snyk-code.sarif
+        run: |
+          set +e
+          snyk code test --severity-threshold=low --sarif-file-output=snyk-code.sarif
+          rc=$?
+          set -e
+          # 0 is a clean scan and 1 is a scan that found something. Both mean
+          # the scan ran, and the gate step reads the report either way.
+          # Anything else -- 2 for an error, 3 for nothing to scan -- is a scan
+          # that did not happen, and that must not be allowed to read green.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "snyk code test did not complete (exit $rc)"
+            exit "$rc"
+          fi
+          echo "snyk code test completed (exit $rc); the gate step decides this check"
 
       - name: Save Snyk Code report
         if: ${{ always() && hashFiles('snyk-code.sarif') != '' }}
@@ -103,3 +129,15 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-code.sarif
+
+        # Decide the check. Every finding Snyk reported has to appear in
+        # .snyk-code-accepted with a written reason, or this fails. A finding
+        # of a rule in a file where none was accepted fails, and so does a
+        # second finding of a rule where one was accepted. A missing or
+        # unreadable report fails too.
+        #
+        # This runs last so the report reaches the artifact and the Security
+        # tab even on the runs where the gate fails.
+      - name: Gate Snyk Code findings against the accepted list
+        if: always()
+        run: python3 .github/scripts/snyk_code_gate.py

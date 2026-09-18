@@ -1,0 +1,75 @@
+# Snyk Code findings that have been read and accepted, with the reason for each.
+#
+# Why this file exists instead of the ignore: block in .snyk
+#
+# `snyk code test` does not apply .snyk ignore entries. Checked against
+# SnykCode 1.1307.3 on 2026-09-18: with nine paths listed under ignore:, the
+# SARIF it produced carried zero suppressions and the command still exited 1.
+# Dismissing an alert in the GitHub Security tab does not help either; that
+# changes what GitHub displays and has no effect on the exit code of the scan
+# that produced it. The exclude: block in .snyk does work, so files that are
+# not application code are still handled there.
+#
+# So the check had two possible states: red forever, or a threshold raised
+# until it stopped asking. A red check that is red for reasons nobody has
+# looked at in months tells nobody anything, and that is what it had become.
+#
+# This file is the third option. The scan still runs at --severity-threshold=low,
+# so Snyk still reports everything it finds. Its findings are then compared
+# against this list. Anything not on the list fails the build, and so does a
+# second finding of a rule in a file where one was accepted. The reasons stay
+# in the repository, where a reviewer reads them in the diff and a contributor
+# can check them against the code.
+#
+# Format, one accepted finding group per line:
+#
+#     rule | path | count | reason
+#
+# count is how many findings of that rule in that file have been accepted. Line
+# numbers are deliberately absent: they move whenever the file above them
+# changes, and a gate that fails on a refactor gets switched off.
+#
+# Adding a line is a decision that the finding is not a vulnerability, or is
+# one that cannot be fixed here. It is not a way to get a green check. If the
+# reason cannot be written down, the finding is not accepted.
+
+# --- Rules that read a protocol's choice of algorithm as this code's choice ---
+
+php/InsecureHash | cms/app/lib/plPasswordBreach.php | 1 | The Have I Been Pwned range API is defined in terms of SHA-1: the client sends the first five characters of the SHA-1 of the password and matches the returned suffixes. SHA-1 is the wire format, not a choice, and the digest is never stored. Sending anything else would simply return no results.
+php/InsecureHash | cms/services/twilio.php | 1 | Twilio signs its webhooks with HMAC-SHA1 and sends the result in X-Twilio-Signature. Verifying the signature means computing the same HMAC-SHA1; any other algorithm would reject every genuine request. The comparison already uses hash_equals().
+php/InsecureHash | cms/app/lib/pikaCrypto.php | 1 | TOTP is RFC 6238, whose default and near-universal algorithm is HMAC-SHA1. Authenticator apps generate codes that way, so the server has to check them that way. The secret is 20 bytes from random_bytes().
+php/InsecureHash | cms/ops/transfer_case.php | 1 | The v5 transfer receiver rejects a packet with no "checksum" field, so the field stays for interoperability with deployments this code cannot upgrade. It is not the authenticity check: that is HTTP Basic plus the HMAC signature build_transfer_packet() adds.
+
+# --- Stored md5 digests that have to stay readable until the last row migrates ---
+
+php/InsecureHash | cms/app/lib/pikaAuthDb.php | 2 | Legacy password migration. Rows created before password_hash() hold an md5 digest, so sign-in has to try md5 to let those users in at all. The match is hash_equals(), not ==, and a successful legacy match immediately rewrites the row with password_hash() and audits it as legacy_md5_upgraded, so each account passes through this path once and never again.
+php/InsecureHash | cms/app/lib/pl.php | 1 | Same legacy digest as pikaAuthDb.php, read here during the password-plus-TOTP reauthentication check. password_verify() is tried first and md5 only as the fallback, through hash_equals().
+php/InsecureHash | cms/password.php | 2 | The change-password form has to recognise the current password to accept a change, and for a not-yet-migrated account that means comparing the md5 digest on the row. Both comparisons use hash_equals(); the replacement password is written with password_hash().
+php/InsecureHash | cms/dataops.php | 1 | The same current-password check as password.php, on the form-post path. hash_equals() against the stored digest, password_verify() first.
+
+# --- A rule scoped to a PHP version this application does not support ---
+
+php/XxePrePHP8 | cms/ops/upload_report.php | 1 | The rule covers PHP versions before 8.0, where libxml loaded external entities by default. This application supports PHP 8 only: the Dockerfile pins php:8.2-apache by digest and CI lints on 8.2. The call also passes LIBXML_NONET, so the parser cannot fetch a DTD or an entity over the network, and LIBXML_NOENT is deliberately not passed, so entity substitution stays off.
+
+# --- Sanitisers the taint analysis does not recognise ---
+
+php/OR | cms/dataops.php | 3 | The three Location headers are built by safe_redirect_url(), which routes the request value through pl_safe_redirect_path(): every ASCII control character is stripped, anything carrying a scheme is refused, and leading slashes and backslashes are removed, so what comes back is a relative path or the site root. The control strip is what makes the scheme test read the same string a browser's URL parser will.
+php/OR | cms/pika-danio.php | 1 | The redirect target is pl_canonical_origin("https"), which prefers the canonical_url setting and otherwise validates the host against a hostname shape and returns "" on failure -- and the empty case is checked before the header is sent. Only REQUEST_URI is appended, as a path.
+php/FileInclusion | cms/pm.php | 2 | pm.php decodes the path, strips traversal, refuses the request if any remains, then holds every segment to [a-zA-Z0-9._-], so no segment can carry a separator or a null byte. The extension directory must appear in the parsed extensions setting (in_array, strict) and the target must end in .php.
+php/PT | cms/ops/update_extensions.php | 1 | The POST field name is held to preg_match(#^(/[A-Za-z0-9._-]+)+$#), then each / segment is rejected if it is . or .., before any path is built from it. Traversal, a bare separator, a null byte and the : that separates entries are all refused.
+php/PT | cms/ops/upload_document.php | 1 | This call hands the upload array to pikaDocument::uploadDoc(), which derives the stored filename itself rather than taking the client-supplied name as a path. The name here never reaches a filesystem path unchecked.
+php/Sqli | cms/ops/vcal.php | 1 | pikaCms::fetchCaseList() escapes every filter value with DB::escapeString() on the way in, and the case_id branch additionally interpolates "(int) $filter[case_id]". A cast to int cannot carry SQL.
+php/XSS | cms/app/lib/pl.php | 2 | Both sites are the reauthentication form. The action comes from pl_reauth_self_action(), which htmlspecialchars SCRIPT_NAME plus QUERY_STRING; owner, scope and error are escaped into $safe_* before use; and carried POST fields go through pl_csrf_carry_hidden_inputs(), which escapes both name and value with ENT_QUOTES|ENT_HTML5 and drops names containing "password". No request value reaches this markup unescaped.
+php/XSS | cms/pika_cms.php | 1 | The flagged echo is $esc($title) . " : " . $esc($message) . " <br> " . $d -- both interpolated values go through the escaper held in $esc, and $d was escaped field by field above it.
+
+# --- Not a finding ---
+
+php/HardcodedPassword | cms/app/lib/pikaUserAdminControls.php | 1 | Not a password. The flagged literal is an $options array mapping the sign-in method values "password" and "sso" to their display labels for a select element. No credential is present.
+php/Ssrf | cms/ops/upload_document.php | 1 | No outbound request is made from this call. uploadDoc() writes the uploaded temporary file into the document store; there is no URL and no fetch anywhere on the path.
+php/TooPermissiveXFrameOptions | cms/app/lib/pl.php | 1 | The header sent is "X-Frame-Options: DENY", which is the strictest value the header has; there is no ALLOW-FROM and no SAMEORIGIN. The CSP on the same responses also sends frame-ancestors none.
+
+# --- Command-line scripts, where the output is job output and not a response ---
+
+php/ServerLeak | cms/sms_cron.php | 1 | cms/sms_cron.php is a command-line cron script, not an HTTP endpoint. The flagged echo writes the send failure to the job output; there is no response for it to leak into.
+php/XSS | cms/app/scripts/cms-csv-download.php | 2 | A command-line script that runs from the operator's own cron on their own machine; its echo goes to the job output, not to a browser. The interpolated table name is also held to preg_match("/^[A-Za-z0-9_]+$/") before the loop body runs.
+php/PT | cms/app/scripts/cms-csv-download.php | 1 | $v is held to preg_match(/^[A-Za-z0-9_]+$/) a few lines above and anything else is skipped with a continue. $save_folder_path is a local folder the operator typed; this file is a CLI script run from the operator's cron, not a server endpoint.

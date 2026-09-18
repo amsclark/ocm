@@ -23,70 +23,19 @@ exclude:
     - .semgrep/**
     - tests/fixtures/**
 
-# Findings below are real sightings of md5 or sha1 that cannot be changed.
-# Each one is either an algorithm another party picked, or a stored digest
-# this code has to keep reading until the last row is migrated. They are
-# listed here rather than left to fail the build, because the threshold is
-# deliberately "low or higher" and a permanently red check tells nobody
-# anything. Anything NOT listed here is expected to pass.
-ignore:
-  php/InsecureHash:
-    - cms/app/lib/plPasswordBreach.php:
-        reason: >-
-          The Have I Been Pwned range API is defined in terms of SHA-1: the
-          client sends the first five characters of the SHA-1 of the password
-          and matches the returned suffixes. SHA-1 is the wire format, not a
-          choice, and the digest is never stored. Sending anything else would
-          simply return no results.
-    - cms/services/twilio.php:
-        reason: >-
-          Twilio signs its webhooks with HMAC-SHA1 and sends the result in
-          X-Twilio-Signature. Verifying the signature means computing the same
-          HMAC-SHA1; any other algorithm would reject every genuine request.
-          The comparison already uses hash_equals().
-    - cms/app/lib/pikaCrypto.php:
-        reason: >-
-          TOTP is RFC 6238, whose default and near-universal algorithm is
-          HMAC-SHA1. Authenticator apps generate codes that way, so the server
-          has to check them that way. The secret is 20 bytes from
-          random_bytes().
-    - cms/app/lib/pikaAuthDb.php:
-        reason: >-
-          Legacy password migration. Rows created before password_hash() hold
-          an md5 digest, so sign-in has to try md5 to let those users in at
-          all. The match is hash_equals(), not ==, and a successful legacy
-          match immediately rewrites the row with password_hash() and audits
-          it as legacy_md5_upgraded, so each account passes through this path
-          once and never again.
-    - cms/app/lib/pl.php:
-        reason: >-
-          Same legacy digest as pikaAuthDb.php, read here during the
-          password-plus-TOTP reauthentication check. password_verify() is
-          tried first and md5 only as the fallback, through hash_equals().
-    - cms/password.php:
-        reason: >-
-          The change-password form has to recognise the current password to
-          accept a change, and for a not-yet-migrated account that means
-          comparing the md5 digest on the row. Both comparisons use
-          hash_equals(); the replacement password is written with
-          password_hash().
-    - cms/dataops.php:
-        reason: >-
-          The same current-password check as password.php, on the form-post
-          path. hash_equals() against the stored digest, password_verify()
-          first.
-    - cms/ops/transfer_case.php:
-        reason: >-
-          The v5 transfer receiver rejects a packet with no "checksum" field,
-          so the field stays for interoperability with deployments this code
-          cannot upgrade. It is not the authenticity check: that is HTTP Basic
-          plus the HMAC signature build_transfer_packet() adds.
-  php/XxePrePHP8:
-    - cms/ops/upload_report.php:
-        reason: >-
-          The rule covers PHP versions before 8.0, where libxml loaded
-          external entities by default. This application supports PHP 8 only:
-          the Dockerfile pins php:8.2-apache by digest and CI lints on 8.2.
-          The call also passes LIBXML_NONET, so the parser cannot fetch a DTD
-          or an entity over the network, and LIBXML_NOENT is deliberately not
-          passed, so entity substitution stays off.
+# There is no ignore: block here, and that is deliberate.
+#
+# snyk code test does not apply .snyk ignore entries. Checked against SnykCode
+# 1.1307.3 on 2026-09-18: with nine paths listed under ignore:, the SARIF it
+# produced carried zero suppressions and the command still exited 1. Dismissing
+# an alert in the GitHub Security tab does not help either -- that changes what
+# GitHub displays, not the exit code of the scan that found it.
+#
+# So the findings that have been read and accepted, with the reason for each,
+# are in .snyk-code-accepted instead, and .github/scripts/snyk_code_gate.py
+# enforces that list in CI. They were here until 2026-09-18; they moved rather
+# than went away. Keeping a copy in both files would be two lists of the same
+# reasons, free to drift apart.
+#
+# The exclude: block above does work, so files that are not application code
+# stay there.
