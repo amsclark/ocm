@@ -151,11 +151,21 @@ class pikaAuthDb
 			
 			if (DBResult::numRows($result) == 1)
 			{
-				if (PHP_VERSION_ID >= 50303)
-				{
-					require_once('password_hash_compat.php');
-				}
-				
+				/*	password_hash() and password_verify() are used below
+					without asking whether they exist. They are native from
+					PHP 5.5 on, and the application already calls them
+					unconditionally elsewhere -- system-users.php and
+					pb_attorneys.php hash a new password that way, and
+					neither ever loaded a polyfill -- so an installation on a
+					PHP old enough to need one would fail at the first account
+					it created, whatever this file did.
+
+					There used to be a require_once of a bundled polyfill
+					here, behind PHP_VERSION_ID >= 50303, which asked for the
+					polyfill on exactly the versions that do not need it and
+					skipped it on the ones that do. It has been deleted along
+					with the guards that went with it.
+				*/
 				$row = DBResult::fetchRow($result);
 				
 				/*	An account that signs in through the identity provider
@@ -231,7 +241,7 @@ class pikaAuthDb
 				}
 				
 				// one user record matched the username and password
-				if (PHP_VERSION_ID >= 50303 && password_verify((string) $credential, (string) $row['password']) && $totp_ok)
+				if (password_verify((string) $credential, (string) $row['password']) && $totp_ok)
 				{  // Identity & Credential match existing records - allow login
 					$this->is_authorized = true;
 					$this->auth_row = $row;
@@ -269,16 +279,13 @@ class pikaAuthDb
 					$this->is_authorized = true;
 					$this->auth_row = $row;
 					
-					if (PHP_VERSION_ID >= 50303)
-					{
-						/*	While we have the password in memory, replace the 
-							stored md5 value with a password_hash value.
-							*/
-						require_once('pikaUser.php');
-						$u = new pikaUser($row['user_id']);
-						$u->setValue('password', password_hash($credential, PASSWORD_DEFAULT));
-						$u->save();
-					}
+					/*	While we have the password in memory, replace the
+						stored md5 value with a password_hash value.
+						*/
+					require_once('pikaUser.php');
+					$u = new pikaUser($row['user_id']);
+					$u->setValue('password', password_hash($credential, PASSWORD_DEFAULT));
+					$u->save();
 					
 					if (null !== $totp_window)
 					{
@@ -294,7 +301,7 @@ class pikaAuthDb
 						caller is told nothing more than that the attempt was
 						refused.
 					*/
-					$password_ok = (PHP_VERSION_ID >= 50303 && password_verify((string) $credential, (string) $row['password']))
+					$password_ok = password_verify((string) $credential, (string) $row['password'])
 						|| hash_equals((string) $row['password'], md5((string) $credential));
 					
 					if (!$password_ok)
