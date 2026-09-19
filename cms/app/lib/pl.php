@@ -3478,6 +3478,26 @@ function pl_mysql_column_exists($table, $column)
 }
 
 
+/*	Does $table exist in this database?
+	
+	SHOW COLUMNS raises an error on a table that is not there, so a caller
+	that wants to know whether an optional table was installed has to ask
+	this first. Used by pika_report_require_schema().
+*/
+function pl_mysql_table_exists($table)
+{
+	if (!preg_match('/\A[A-Za-z0-9_]+\z/', (string) $table))
+	{
+		return false;
+	}
+	
+	$clean_table = DB::escapeString($table);
+	$result = DB::query("SHOW TABLES LIKE '{$clean_table}'");
+	
+	return ($result && DBResult::numRows($result) > 0);
+}
+
+
 function pl_mysql_init()
 {
 	require_once('DB.php');

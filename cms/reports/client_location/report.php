@@ -30,6 +30,23 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	This report reads pension_* and annuity_* columns of `cases`. They are
+	an optional add-on that no install or upgrade script creates, so on a stock
+	database the SELECT fails and the trigger_error() after it halts the request
+	with a blank HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'annuity_cash_accumulated',
+	'annuity_interest',
+	'annuity_lump_sum',
+	'annuity_not_recovered',
+	'annuity_present_value',
+	'annuity_retro_payment',
+	'annuity_total_cash_accumulated',
+	'annuity_total_present_value',
+	'pension_services',
+));
+
 $report_format = pl_grab_post('report_format');
 
 

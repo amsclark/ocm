@@ -30,6 +30,15 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	The activity counts all come from pension_services, a `cases` column that
+	only a program doing pension counselling has. No install or upgrade script
+	creates it, so on a stock database the SELECT fails and the trigger_error()
+	after it halts the request with a blank HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'pension_services',
+));
+
 $report_format = pl_grab_post('report_format');
 
 

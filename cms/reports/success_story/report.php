@@ -30,6 +30,18 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	This report reads annuity_total_cash_accumulated,
+	pension_case_closure_notes and media_friendly from `cases`. All three
+	are an optional add-on that no install or upgrade script creates, so on a
+	stock database the SELECT fails and the trigger_error() after it halts the
+	request with a blank HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'annuity_total_cash_accumulated',
+	'media_friendly',
+	'pension_case_closure_notes',
+));
+
 $report_format = pl_grab_post('report_format');
 
 

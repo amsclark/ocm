@@ -432,6 +432,85 @@ function pika_report_authorize($report_name)
 }
 
 
+/*	Stop a report that needs schema the database does not have.
+
+	Five of the shipped reports -- annuity_recoveries, client_location,
+	client_matters_closed, pension_grant and success_story -- read `cases`
+	columns that only a program doing pension counselling has, and
+	pension_grant also joins nine menu_* lookup tables of the same kind.
+	Nothing in app/sql/install or app/sql/upgrades creates any of it, and no
+	application code adds it. On a stock install the SELECT fails,
+	DB::query() returns false, and the trigger_error() that follows halts
+	the request, so the user gets a blank HTTP 500 instead of a report.
+
+	This renders the ordinary report page with an explanation instead. The
+	reports stay in the list and run unchanged wherever the schema does
+	exist, which is what the check is for -- it asks the database rather
+	than assuming either way.
+
+	@param string $report_title - title for the page heading and nav
+	@param array $columns - columns the report cannot run without, either a
+		bare `cases` column name or 'table.column'
+	@param array $tables - tables the report cannot run without
+	@return void - returns only when every column and table is present
+*/
+function pika_report_require_schema($report_title, $columns, $tables = array())
+{
+	$missing = array();
+
+	foreach ($tables as $table)
+	{
+		if (!pl_mysql_table_exists($table))
+		{
+			$missing[] = $table;
+		}
+	}
+
+	foreach ($columns as $column)
+	{
+		$table = 'cases';
+		$name = $column;
+		
+		if (false !== strpos($column, '.'))
+		{
+			list($table, $name) = explode('.', $column, 2);
+		}
+		
+		if (in_array($table, $missing, true))
+		{
+			continue;
+		}
+		
+		if (!pl_mysql_column_exists($table, $name))
+		{
+			$missing[] = $column;
+		}
+	}
+
+	if (empty($missing))
+	{
+		return;
+	}
+
+	$base_url = pl_settings_get('base_url');
+
+	$main_html = array();
+	$main_html['base_url'] = $base_url;
+	$main_html['page_title'] = $report_title;
+	$main_html['nav'] = '<a href="' . pl_html_escape($base_url) . '/">Pika Home</a>
+					  &gt; <a href="' . pl_html_escape($base_url) . '/reports/">Reports</a>
+					  &gt; ' . pl_html_escape($report_title);
+	$main_html['content'] = '<p>This report reads case data that this database does not have: '
+		. pl_html_escape(implode(', ', $missing)) . '.</p>
+		<p>Those fields and lookup lists are an optional add-on for pension
+		counselling work. Ask whoever administers this installation to add them
+		if you need this report.</p>';
+
+	$buffer = pl_template('templates/default.html', $main_html);
+	pika_exit($buffer);
+}
+
+
 /*	May the current user look at $target_user_id's calendar?
 	
 	cal_day.php, cal_week.php and cal_adv.php all took a user id off the query

@@ -30,6 +30,51 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	This report reads twenty `cases` columns and joins twelve menu_* lookup
+	tables. Most of it -- the annuity_* and pension_* columns, issue1 to
+	issue3, case_state, issue_inequity, jurisdiction_reason,
+	timing_distribution and the three benefit_* columns, and nine of the menu
+	tables -- is an optional add-on that no install or upgrade script creates,
+	so on a stock database the SELECT fails and the trigger_error() after it
+	halts the request with a blank HTTP 500. Say so on the page instead.
+	
+	menu_intake_type, menu_referred_by and menu_yes_no are on the list too
+	even though a stock install has them: the check asks the database rather
+	than assuming which pieces any given install was given.
+*/
+pika_report_require_schema($report_title, array(
+	'annuity_cash_accumulated',
+	'annuity_interest',
+	'annuity_lump_sum',
+	'annuity_not_recovered',
+	'annuity_present_value',
+	'annuity_retro_payment',
+	'annuity_total_cash_accumulated',
+	'annuity_total_present_value',
+	'benefit_claimant',
+	'benefit_form',
+	'benefit_qualifier',
+	'case_state',
+	'issue1',
+	'issue2',
+	'issue3',
+	'issue_inequity',
+	'jurisdiction_reason',
+	'pension_case_closure',
+	'pension_services',
+	'timing_distribution',
+), array(
+	'menu_benefit_claimant',
+	'menu_benefit_form',
+	'menu_benefit_qualifier',
+	'menu_inequity',
+	'menu_jurisdiction_reason',
+	'menu_pension_case_closure',
+	'menu_pension_issue',
+	'menu_pension_services',
+	'menu_timing_distribution',
+));
+
 $report_format = pl_grab_post('report_format');
 $report_output = pl_grab_post('report_output',3);
 $redact = pl_grab_post('redact');
