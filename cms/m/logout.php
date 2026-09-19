@@ -38,3 +38,8 @@ if (is_array($signing_out) && isset($signing_out['auth_method'])
 }
 
 header("Location: " . $settings['base_url'] . '/m');
+
+/*	The single sign-on branch above exits, so this one does too rather than
+	falling off the end of the file with a redirect already queued.
+*/
+exit();
