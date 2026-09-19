@@ -64,7 +64,7 @@ if (strlen((string) $user_id) > 0 && 'mine' != $user_id)
 {
 	if ('office_' == substr($user_id, 0, 7))
 	{
-		if (!preg_match('/^office_[A-Za-z0-9_-]{1,20}$/', $user_id))
+		if (!preg_match('/^office_[A-Za-z0-9_-]{1,20}\z/', $user_id))
 		{
 			pl_log_error('calendar user_id rejected', 'malformed office filter');
 			$user_id = '';

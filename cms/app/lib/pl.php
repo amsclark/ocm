@@ -3261,7 +3261,7 @@ function pl_menu_get($menu_name, $key = null)
 		can end up naming a menu.  The name is pasted straight into the
 		statement below, so refuse anything that is not a bare identifier.
 		*/
-		if (!is_string($menu_name) || !preg_match('/^[A-Za-z0-9_]+$/', $menu_name))
+		if (!is_string($menu_name) || !preg_match('/^[A-Za-z0-9_]+\z/', $menu_name))
 		{
 			return false;
 		}
@@ -3287,9 +3287,9 @@ function pl_menu_get($menu_name, $key = null)
 		request data.  Hold them to the same rule anyway so that a future
 		definition cannot open the statement up.
 		*/
-		if (!preg_match('/^[A-Za-z0-9_]+$/', (string) $key)
-			|| !preg_match('/^[A-Za-z0-9_]+$/', (string) $val)
-			|| !preg_match('/^[A-Za-z0-9_]+$/', (string) $ord))
+		if (!preg_match('/^[A-Za-z0-9_]+\z/', (string) $key)
+			|| !preg_match('/^[A-Za-z0-9_]+\z/', (string) $val)
+			|| !preg_match('/^[A-Za-z0-9_]+\z/', (string) $ord))
 		{
 			return false;
 		}
@@ -3636,7 +3636,7 @@ if (!function_exists('pl_safe_identifier')) {
 		// One optional table qualifier, because public callers pass
 		// 'contacts.last_name' as well as bare column names.
 		if (!is_string($ident) || $ident === ''
-			|| !preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/', $ident))
+			|| !preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?\z/', $ident))
 		{
 			// Log which call site rejected and what it was handed, with
 			// control characters removed (log injection) and the length
@@ -3682,7 +3682,7 @@ if (!function_exists('pl_safe_identifier')) {
 if (!function_exists('pl_template_section_callable')) {
 	function pl_template_section_callable($name)
 	{
-		if (!is_string($name) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name))
+		if (!is_string($name) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*\z/', $name))
 		{
 			return false;
 		}
@@ -3722,7 +3722,7 @@ if (!function_exists('pl_safe_js_file_name')) {
 			return false;
 		}
 		
-		if (!preg_match('/^[A-Za-z0-9_][A-Za-z0-9._-]*\.js$/', $name))
+		if (!preg_match('/^[A-Za-z0-9_][A-Za-z0-9._-]*\.js\z/', $name))
 		{
 			return false;
 		}
@@ -4354,7 +4354,7 @@ if (!function_exists('pl_canonical_origin'))
 		
 		$host = isset($_SERVER['SERVER_NAME']) ? (string) $_SERVER['SERVER_NAME'] : '';
 		
-		if ('' === $host || !preg_match('/^[A-Za-z0-9._-]+(:[0-9]{1,5})?$/', $host))
+		if ('' === $host || !preg_match('/^[A-Za-z0-9._-]+(:[0-9]{1,5})?\z/', $host))
 		{
 			pl_log_error('pl_canonical_origin rejected host', $host);
 			return '';
@@ -4383,7 +4383,7 @@ if (!function_exists('pl_canonical_origin'))
 			$port = (string) $_SERVER['SERVER_PORT'];
 			$default_port = ('https' === $scheme) ? '443' : '80';
 			
-			if (preg_match('/^[0-9]{1,5}$/', $port) && $port !== $default_port)
+			if (preg_match('/^[0-9]{1,5}\z/', $port) && $port !== $default_port)
 			{
 				$host .= ':' . $port;
 			}

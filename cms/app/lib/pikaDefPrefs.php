@@ -210,7 +210,7 @@ class pikaDefPrefs extends pikaFileArray
 					of the files in that directory. A name holding '../'
 					used to be followed.
 				*/
-				if (preg_match('/^[A-Za-z0-9_ -]+$/', $value)
+				if (preg_match('/^[A-Za-z0-9_ -]+\z/', $value)
 					&& is_file(__DIR__ . "/../../themes/{$value}.php"))
 				{
 					return $value;

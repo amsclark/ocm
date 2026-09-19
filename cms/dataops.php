@@ -184,9 +184,28 @@ switch($action)
 	
 	else
 	{
-		$act_url = urlencode($_REQUEST['act_url']);
+		/*	Every value below arrives from the request and is being written
+			back into a URL. Only act_url was encoded, so an "&" or a "#" in
+			any of the others added or truncated parameters in the next
+			request. http_build_query() encodes the whole set, and the ?? ''
+			keeps an absent field from raising a warning on PHP 8.
+
+			The target stays a fixed local file, so this is about the query
+			string, not about where the redirect goes.
+		*/
 		$act_date_tmp = pl_date_mogrify($_REQUEST['act_date']);
-		header("Location: activity.php?screen=compose&user_id={$_REQUEST['user_id']}&pba_id={$_REQUEST['pba_id']}&case_id={$_REQUEST['case_id']}&funding={$_REQUEST['funding']}&act_date=$act_date_tmp&completed={$_REQUEST['completed']}&act_url=$act_url&act_type={$_REQUEST['act_type']}");
+		$compose_query = http_build_query(array(
+			'screen' => 'compose',
+			'user_id' => $_REQUEST['user_id'] ?? '',
+			'pba_id' => $_REQUEST['pba_id'] ?? '',
+			'case_id' => $_REQUEST['case_id'] ?? '',
+			'funding' => $_REQUEST['funding'] ?? '',
+			'act_date' => $act_date_tmp,
+			'completed' => $_REQUEST['completed'] ?? '',
+			'act_url' => $_REQUEST['act_url'] ?? '',
+			'act_type' => $_REQUEST['act_type'] ?? '',
+		));
+		header('Location: activity.php?' . $compose_query);
 	}
 	
 	break;
@@ -1160,9 +1179,23 @@ switch($action)
 	$event->setValues($a);
 	
 	// decide where to go from here
-	$act_url = urlencode($_REQUEST['act_url']);
+	/*	Same as the compose redirect in the activity branch above: only
+		act_url was encoded, so an "&" or a "#" in any of the other request
+		values added or truncated parameters in the next request.
+	*/
 	$act_date_tmp = pl_date_mogrify($_REQUEST['act_date']);
-	header("Location: event.php?screen=compose&user_id={$_REQUEST['user_id']}&pba_id={$_REQUEST['pba_id']}&case_id={$_REQUEST['case_id']}&funding={$_REQUEST['funding']}&act_date=$act_date_tmp&completed={$_REQUEST['completed']}&act_url=$act_url&act_type={$_REQUEST['act_type']}");
+	$compose_query = http_build_query(array(
+		'screen' => 'compose',
+		'user_id' => $_REQUEST['user_id'] ?? '',
+		'pba_id' => $_REQUEST['pba_id'] ?? '',
+		'case_id' => $_REQUEST['case_id'] ?? '',
+		'funding' => $_REQUEST['funding'] ?? '',
+		'act_date' => $act_date_tmp,
+		'completed' => $_REQUEST['completed'] ?? '',
+		'act_url' => $_REQUEST['act_url'] ?? '',
+		'act_type' => $_REQUEST['act_type'] ?? '',
+	));
+	header('Location: event.php?' . $compose_query);
 	
 	break;
 	

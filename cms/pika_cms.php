@@ -297,7 +297,7 @@ to implement the theme.
 */
 $pika_theme_name = isset($_SESSION['theme']) ? (string) $_SESSION['theme'] : '';
 
-if (!preg_match('/^[A-Za-z0-9_ -]+$/', $pika_theme_name)
+if (!preg_match('/^[A-Za-z0-9_ -]+\z/', $pika_theme_name)
 	|| !is_file(__DIR__ . "/themes/{$pika_theme_name}.php"))
 {
 	$pika_theme_name = 'Blue';
