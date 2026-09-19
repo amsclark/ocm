@@ -76,10 +76,24 @@ switch($_POST['action'])
 		}
 	}
 
+	/*	Every blank line was dropped above, so an empty or whitespace-only box
+		arrives here as an empty array. pl_menu_set() refuses to replace a menu
+		that has rows with nothing, but it cannot tell the administrator why, and
+		"Invalid menu name" would be the wrong answer. Say what happened.
+	*/
+	if (0 === count($menu_array))
+	{
+		die(pika_error_notice('Nothing to save',
+			'The list was empty, so nothing was saved and the menu is unchanged. '
+			. 'To empty this menu on purpose, remove its items one at a time.'));
+	}
+	
 	if (!pl_menu_set($menu, $menu_array))
 	{
-		die(pika_error_notice('Invalid menu name',
-			'That menu name is not a valid identifier, so nothing was saved.'));
+		die(pika_error_notice('Menu not saved',
+			'That menu could not be saved. The menu name may not be a valid '
+			. 'identifier, or the replacement would have emptied the menu. '
+			. 'Nothing was changed.'));
 	}
 
 	// $menu is request data going into a URL, so encode it.
