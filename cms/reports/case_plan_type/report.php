@@ -30,6 +30,20 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	This report joins the pension_plans table and its two plan-type menus, and
+	reads pension_plan_id from `cases`. All of it is an optional add-on for
+	pension counselling work that no install or upgrade script creates, so on a
+	stock database the SELECT fails and the trigger_error() after it halts the
+	request with a blank HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'pension_plan_id',
+), array(
+	'menu_plan_type_1',
+	'menu_plan_type_2',
+	'pension_plans',
+));
+
 $report_format = pl_grab_post('report_format');
 
 

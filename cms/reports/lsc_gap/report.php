@@ -54,7 +54,12 @@ else
 }
 
 
-$sql = "select 
+/*	MariaDB rejects WITH ROLLUP combined with ORDER BY in the same SELECT, so
+	the rolled-up result is wrapped as a subquery and sorted on the outer
+	SELECT below. Without this the query fails and the trigger_error() after it
+	halts the request with a blank HTTP 500.
+*/
+$sql = "select * from (select 
 if(length(problem) < 1 || ISNULL(problem), 'blank', concat(substring(lpad(problem, 2, '0'), 1, 1), '0s')) as category, 
 sum(IF(lsc_justice_gap = 1, 1, 0)) AS a,
 sum(IF(lsc_justice_gap = 2, 1, 0)) AS b,
@@ -114,7 +119,10 @@ if ($x != false) {
 	$sql .= " AND status IN $x";
 }
 
-$sql .= " GROUP BY category WITH ROLLUP ORDER BY category ASC";
+/*	`category IS NULL` sorts the ROLLUP grand-total row last, where the
+	fetch loop relabels it as "Totals".
+*/
+$sql .= " GROUP BY category WITH ROLLUP) t ORDER BY category IS NULL, category ASC";
 
 $t->set_title($report_title);
 $t->display_row_count(false);

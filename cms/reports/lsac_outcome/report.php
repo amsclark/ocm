@@ -24,6 +24,36 @@ if(!pika_report_authorize($report_name))
 	pika_exit($buffer);
 }
 
+/*	Every figure in this report comes from an lsac_* `cases` column. They are an
+	optional add-on for programs that report on the LSAC outcome measures, and
+	no install or upgrade script creates any of them, so on a stock database the
+	SELECT fails and the trigger_error() after it halts the request with a blank
+	HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'lsac_obtain_annual_benefits',
+	'lsac_obtain_benefits',
+	'lsac_obtain_child_support',
+	'lsac_obtain_fed_benefit',
+	'lsac_obtain_other',
+	'lsac_obtain_payment',
+	'lsac_obtain_state_benefit',
+	'lsac_protect_annual_benefits',
+	'lsac_protect_benefits',
+	'lsac_protect_child_support',
+	'lsac_protect_fed_benefit',
+	'lsac_protect_other',
+	'lsac_protect_payment',
+	'lsac_protect_state_benefit',
+	'lsac_result_conditions',
+	'lsac_result_creditors',
+	'lsac_result_housing',
+	'lsac_result_job',
+	'lsac_result_necessities',
+	'lsac_result_quality',
+	'lsac_result_safety',
+));
+
 $report_format = pl_grab_post('report_format');
 $close_date_begin = pl_grab_post('close_date_begin');
 $close_date_end = pl_grab_post('close_date_end');

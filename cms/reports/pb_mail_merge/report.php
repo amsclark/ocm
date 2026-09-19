@@ -30,6 +30,16 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	This report reads pai_number and panel_status from pb_attorneys. Neither
+	column is in the table this project installs, so on a stock database the
+	SELECT fails and the trigger_error() after it halts the request with a blank
+	HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'pb_attorneys.pai_number',
+	'pb_attorneys.panel_status',
+));
+
 $report_format = 'csv';
 $show_sql = pl_grab_post('show_sql');
 

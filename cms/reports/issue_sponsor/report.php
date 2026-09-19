@@ -30,6 +30,27 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	The three issue and sub-issue columns, pension_plan_id, the pension_plans
+	table and three menu_* lookups are an optional add-on for pension
+	counselling work that no install or upgrade script creates, so on a stock
+	database the SELECT fails and the trigger_error() after it halts the request
+	with a blank HTTP 500. Say so on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'issue1',
+	'issue2',
+	'issue3',
+	'sub_issue1',
+	'sub_issue2',
+	'sub_issue3',
+	'pension_plan_id',
+), array(
+	'menu_pension_issue',
+	'menu_pension_sub_issue',
+	'menu_sponsor_type_1',
+	'pension_plans',
+));
+
 $report_format = pl_grab_post('report_format');
 
 

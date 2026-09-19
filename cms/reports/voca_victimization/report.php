@@ -22,6 +22,41 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
+/*	This report sums 26 voca2017_* `cases` columns, one per victimisation type.
+	They are an optional add-on for programs that report to VOCA, and no install
+	or upgrade script creates them, so on a stock database the SELECT fails and
+	the trigger_error() after it halts the request with a blank HTTP 500. Say so
+	on the page instead.
+*/
+pika_report_require_schema($report_title, array(
+	'voca2017_01',
+	'voca2017_02',
+	'voca2017_03',
+	'voca2017_04',
+	'voca2017_05',
+	'voca2017_06',
+	'voca2017_07',
+	'voca2017_08',
+	'voca2017_09',
+	'voca2017_10',
+	'voca2017_11',
+	'voca2017_12',
+	'voca2017_13',
+	'voca2017_14',
+	'voca2017_15',
+	'voca2017_16',
+	'voca2017_17',
+	'voca2017_18',
+	'voca2017_19',
+	'voca2017_20',
+	'voca2017_21',
+	'voca2017_22',
+	'voca2017_23',
+	'voca2017_24',
+	'voca2017_25',
+	'voca2017_26',
+));
+
 $report_format = pl_grab_post('report_format');
 $close_date_begin = pl_grab_post('close_date_begin');
 $close_date_end = pl_grab_post('close_date_end');

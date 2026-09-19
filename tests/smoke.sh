@@ -626,6 +626,35 @@ else
 	bad "reports/index.php listed NOTHING for the admin (status $code)"
 fi
 
+# 8e2. Every shipped report has to open on a stock database. Eleven of them read
+# `cases` columns, a pb_attorneys column, the pension_plans table or menu_*
+# lookups that only a program doing pension counselling has, and no install or
+# upgrade script creates any of it. The SELECT failed, and the trigger_error()
+# after it halts the request, so the report was a blank HTTP 500.
+# pika_report_require_schema() now asks the database first and explains instead.
+# A twelfth, lsc_gap, failed for a different reason: MariaDB rejects WITH ROLLUP
+# combined with ORDER BY. This walks every report directory, so a new report
+# that cannot open on the schema this project installs is caught too.
+for rpt_dir in "${REPO_DIR}"/cms/reports/*/report.php; do
+	[ -f "$rpt_dir" ] || continue
+	rpt="$(basename "$(dirname "$rpt_dir")")"
+	code="$(curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		-X POST \
+		-d "report_format=html" \
+		-d "date_start=01/01/2000" -d "date_end=12/31/2030" \
+		-d "report_output=1" \
+		-d "close_date_begin=01/01/2000" -d "close_date_end=12/31/2030" \
+		-d "open_date_begin=01/01/2000" -d "open_date_end=12/31/2030" \
+		"$OCM_URL/reports/$rpt/report.php")"
+	if [ "$code" = 500 ]; then
+		bad "REPORT $rpt RETURNED HTTP 500 ON A STOCK DATABASE"
+	elif grep -qi "Unknown column\|Unknown table" "$BODY"; then
+		bad "REPORT $rpt LEAKED A MISSING-SCHEMA SQL ERROR TO THE PAGE"
+	else
+		ok "report $rpt opens on a stock database (status $code)"
+	fi
+done
+
 # 8f. The branded error documents. A 404 has to be the project's page, not
 # Apache's, and it must not carry the server version or echo the path back.
 ROOT_URL="${OCM_URL%/cms}"
