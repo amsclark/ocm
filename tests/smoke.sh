@@ -1333,7 +1333,7 @@ fi
 # directive carrying ../ cannot make require_once() leave
 # template_plugins/.
 templib="$(cd "$(dirname "$0")/.." && pwd)/cms/app/lib/pikaTempLib.php"
-if [ -f "$templib" ] && grep -qF "preg_match('/^[A-Za-z_][A-Za-z0-9_]*\$/'" "$templib"; then
+if [ -f "$templib" ] && grep -qF "preg_match('/^[A-Za-z_][A-Za-z0-9_]*\\z/'" "$templib"; then
 	ok "pikaTempLib::loadModule constrains the plugin name to an identifier"
 else
 	bad "pikaTempLib::loadModule no longer checks the plugin name"
@@ -12080,7 +12080,7 @@ fi
 # where the operator's cron job writes. Two things are asserted: the name
 # is held to a plain identifier, and the decoded answer is checked to be a
 # list at all before the loop reads it.
-if grep -qF "preg_match('/^[A-Za-z0-9_]+\$/', (string) \$v)" cms/app/scripts/cms-csv-download.php; then
+if grep -qF "preg_match('/^[A-Za-z0-9_]+\\z/', (string) \$v)" cms/app/scripts/cms-csv-download.php; then
 	ok "the csv download only accepts plain table names"
 else
 	bad "the csv download takes any table name the server sends"
@@ -13321,7 +13321,7 @@ echo "== 84. pl_menu_get() only accepts a bare identifier for a menu name =="
 
 if [ -f cms/app/lib/pl.php ]
 then
-	if grep -qF -e 'preg_match('\''/^[A-Za-z0-9_]+$/'\'', $menu_name)' cms/app/lib/pl.php
+	if grep -qF -e 'preg_match('\''/^[A-Za-z0-9_]+\z/'\'', $menu_name)' cms/app/lib/pl.php
 	then
 		ok "pl_menu_get() holds the menu name to a bare identifier"
 	else
