@@ -792,6 +792,96 @@ else
 fi
 
 
+# ── 9B. The per-report permission reaches a real group ─────────────────
+# 8e above only proves the admin sees reports, and the admin is in the `system`
+# group, which pika_report_authorize() short-circuits to true on its first
+# line. So 8e passes no matter what the permission does, and it did: the list
+# was keyed by report directory name, pikaMisc::reportList() ended with sort(),
+# and sort() throws the keys away and reindexes from 0. A group granted one
+# report by name then matched nothing and saw the refusal, while the group
+# editor offered the sort positions as its checkbox values, so a grant saved
+# there pointed at a position rather than a report.
+#
+# This checks the permission the way a deployment uses it: a throwaway group
+# with one report named in groups.reports, a throwaway user in it, and the
+# listing that user actually gets. Both rows are removed at the end whether
+# the assertions pass or fail.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	RGROUP='zz_rpt_grp'
+	RUSER='zz_rpt_user'
+	RPASS='zz-rpt-Passw0rd'
+	RJAR="$(mktemp)"
+	RREPORT='megareport'
+
+	cleanup_rpt() {
+		adb "DELETE FROM users WHERE username = '${RUSER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${RGROUP}'" >/dev/null
+		rm -f "$RJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rpt' EXIT
+	cleanup_rpt
+
+	# read_all/edit_all so nothing else refuses the page first. The only
+	# thing under test here is groups.reports.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, reports)
+		VALUES ('${RGROUP}', NULL, 1, NULL, 1, 0, 0, 0, '${RREPORT}')" >/dev/null
+	RHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$RPASS" </dev/null 2>/dev/null)"
+	RUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${RUID}, '${RUSER}', '${RHASH}', 1, '${RGROUP}', 0)" >/dev/null
+
+	if [ -z "$RHASH" ] || [ -z "${RUID:-}" ]; then
+		bad "could not seed the report permission fixtures (hash/user)"
+	else
+		: > "$RJAR"
+		curl -sL --max-time 30 -c "$RJAR" -b "$RJAR" -o "$BODY" \
+			-X POST -d "login_user=${RUSER}&login_pass=${RPASS}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		if grep -q 'login_pass' "$BODY"; then
+			bad "the throwaway report user could not log in - section 9B is untested"
+		else
+			ok "the throwaway report user can log in"
+
+			curl -sL --max-time 30 -b "$RJAR" -o "$BODY" "$OCM_URL/reports/" >/dev/null
+			if grep -q 'not authorized to run any reports' "$BODY"; then
+				bad "A GROUP GRANTED ${RREPORT} BY NAME WAS DENIED EVERY REPORT (reportList() lost its keys)"
+			elif grep -q "${RREPORT}" "$BODY"; then
+				ok "a group granted ${RREPORT} by name gets it"
+			else
+				bad "reports/index.php gave neither ${RREPORT} nor the refusal ($(wc -c < "$BODY") bytes)"
+			fi
+
+			# ...and only that one. A list that ignores the grant in the
+			# other direction would pass the check above.
+			if grep -q 'reports/demographics/' "$BODY"; then
+				bad "THE REPORT LIST INCLUDED A REPORT THE GROUP WAS NOT GRANTED"
+			else
+				ok "the report list leaves out a report the group was not granted"
+			fi
+
+			# The group editor's checkbox values are what an administrator
+			# saves into groups.reports, so they have to be report names.
+			# Integers here mean a grant points at a sort position.
+			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
+				"$OCM_URL/system-groups.php?action=add" >/dev/null
+			ropts="$(grep -oE '<option[^>]*value="[A-Za-z0-9_-]+"' "$BODY" \
+				| sed -e 's/.*value="//' -e 's/"$//' | sort -u)"
+			if printf '%s\n' "$ropts" | grep -qx "$RREPORT"; then
+				ok "the group editor offers report names as its option values"
+			else
+				bad "THE GROUP EDITOR DOES NOT OFFER ${RREPORT} AS AN OPTION VALUE (keys lost)"
+			fi
+		fi
+	fi
+
+	cleanup_rpt
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip report permission checks (needs a running docker compose stack)\n'
+fi
+
+
 # ── 10. SQL injection through the list sort and calendar filters ───────────
 # The list builders interpolated ?order_field= and ?order= straight into
 # ORDER BY, and pikaCms::fetchActivitiesCaseClient() interpolated the calendar
