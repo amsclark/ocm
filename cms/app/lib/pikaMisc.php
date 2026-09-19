@@ -1024,7 +1024,20 @@ class pikaMisc
 		}
 		// End AMW
 		
-		sort($reports);
+		/*	This was sort(), which throws the keys away and reindexes from 0.
+			The keys are the report directory names, and that is exactly the
+			value stored in groups.reports, so losing them breaks the report
+			permission both ways: reports/index.php compared an integer
+			against the granted names and showed a permitted group nothing,
+			and the group editor in system-groups.php offered integers as the
+			checkbox values, so a grant saved there pointed at a sort
+			position instead of a report and moved when a report was added.
+			
+			asort() sorts by value and keeps the keys. The ordering is
+			unchanged because each value starts with the "<!-- Title -->"
+			comment that exists to make a value sort by its title.
+		*/
+		asort($reports);
 		
 		return $reports;
 	}
