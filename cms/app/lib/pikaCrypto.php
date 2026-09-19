@@ -479,7 +479,7 @@ if (!function_exists('pl_totp_verify_once'))
 			submission costs no query. pl_totp_verify_window() re-checks the
 			same thing; it has to, because enrollment calls it directly.
 		*/
-		if (!preg_match('/^[0-9]{6}$/', str_replace(array(' ', '-'), '', trim($code))))
+		if (!preg_match('/^[0-9]{6}\z/', str_replace(array(' ', '-'), '', trim($code))))
 		{
 			return false;
 		}
@@ -555,7 +555,7 @@ if (!function_exists('pl_totp_verify_window'))
 		// display. Anything else is not a code.
 		$code = str_replace(array(' ', '-'), '', trim($code));
 		
-		if (!preg_match('/^[0-9]{6}$/', $code))
+		if (!preg_match('/^[0-9]{6}\z/', $code))
 		{
 			return false;
 		}

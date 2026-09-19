@@ -122,7 +122,7 @@ function pl_cal_token_issue($user_id = null)
 		column is new, so the only way to get one is by hand, and a short or
 		non-hex value is not a 256-bit secret whatever it looks like.
 	*/
-	if (64 === strlen($token) && preg_match('/^[0-9a-f]{64}$/', $token))
+	if (64 === strlen($token) && preg_match('/^[0-9a-f]{64}\z/', $token))
 	{
 		return $token;
 	}

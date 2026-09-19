@@ -162,7 +162,7 @@ class pikaMisc
 	{
 		static $known = array();
 		
-		if (!preg_match('/^[a-z_]+$/', $column))
+		if (!preg_match('/^[a-z_]+\z/', $column))
 		{
 			return false;
 		}

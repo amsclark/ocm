@@ -58,7 +58,7 @@ foreach ($result as $v)
 		operator -- write a file of the server's choosing anywhere that user
 		can write. Hold the name to the shape a table name has.
 	*/
-	if (!preg_match('/^[A-Za-z0-9_]+$/', (string) $v))
+	if (!preg_match('/^[A-Za-z0-9_]+\z/', (string) $v))
 	{
 		echo "Skipped a table name that is not a plain identifier.\n";
 		continue;

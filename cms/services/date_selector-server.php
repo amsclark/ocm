@@ -28,7 +28,7 @@ $year = pl_grab_get('year');
 // field (column_name / cf_<field_key>), all of which validate upstream to
 // [A-Za-z0-9_-] and 64 chars or fewer; brackets are allowed so array-style
 // names like foo[1] keep working.
-if (!preg_match('/^[A-Za-z0-9_\[\]-]{1,64}$/', (string)$field_name))
+if (!preg_match('/^[A-Za-z0-9_\[\]-]{1,64}\z/', (string)$field_name))
 {
 	header('Content-Type: text/plain; charset=UTF-8', true, 400);
 	exit('Invalid field_name.');
@@ -36,7 +36,7 @@ if (!preg_match('/^[A-Za-z0-9_\[\]-]{1,64}$/', (string)$field_name))
 
 // The container is a DOM id we generate ourselves as "date_selector-NNNNN";
 // hold it to the same shape for the same reason.
-if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', (string)$container))
+if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', (string)$container))
 {
 	header('Content-Type: text/plain; charset=UTF-8', true, 400);
 	exit('Invalid container.');

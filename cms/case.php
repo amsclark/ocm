@@ -49,7 +49,7 @@ $screen = pl_grab_get('screen', 'act');
 	is named with letters, digits, underscore and dash, so use that as an
 	allowlist and fall back to the default tab for anything else.
 */
-$clean_screen = preg_match('/^[A-Za-z0-9_-]+$/', (string) $screen) ? $screen : 'act';
+$clean_screen = preg_match('/^[A-Za-z0-9_-]+\z/', (string) $screen) ? $screen : 'act';
 
 /*	is_numeric() - the old test, a few lines down - accepts '1e3', '12.0',
 	'+12' and ' 12', all of which then reached SQL through pikaCase. Ask for an
@@ -497,7 +497,7 @@ pl_menu_set_temp('case_handlers', pikaMisc::getCaseHandlerArray($case1->getValue
 	is not written to in between, but these four lines are the ones that put it
 	in a path, so check it here too.
 */
-if (!preg_match('/^[A-Za-z0-9_-]+$/', (string) $clean_screen))
+if (!preg_match('/^[A-Za-z0-9_-]+\z/', (string) $clean_screen))
 {
 	$clean_screen = 'act';
 }

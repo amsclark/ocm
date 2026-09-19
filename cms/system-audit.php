@@ -45,7 +45,7 @@ $offset   = ((int)$page - 1) * $per_page;
 
 $where   = array();
 $params  = array();
-if (is_string($filter_action) && preg_match('/^[a-z0-9._]{1,64}$/', (string)$filter_action)) {
+if (is_string($filter_action) && preg_match('/^[a-z0-9._]{1,64}\z/', (string)$filter_action)) {
     $where[]  = 'action = ?';
     $params[] = $filter_action;
 }

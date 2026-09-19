@@ -47,7 +47,7 @@ $act_type = pl_grab_get('act_type','C');
 	rather than stopping the page, because no such code can have a record
 	behind it and the screen has somewhere sensible to go.
 */
-if (!preg_match('/^[A-Za-z0-9_-]{1,20}$/', (string) $act_type))
+if (!preg_match('/^[A-Za-z0-9_-]{1,20}\z/', (string) $act_type))
 {
 	$act_type = 'C';
 }

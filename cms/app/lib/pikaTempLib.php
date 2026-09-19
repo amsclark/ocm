@@ -485,7 +485,7 @@ class pikaTempLib {
 			what a PHP function name can actually be; every real plugin
 			already matches.
 		*/
-		if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $op_name))
+		if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*\z/', (string) $op_name))
 		{
 			return false;
 		}
