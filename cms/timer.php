@@ -44,6 +44,73 @@ if (!array_key_exists('case_id',$act_row))
 	$act_row['case_id'] = null;
 }
 
+/*	This page had no authorization check at all. It takes case_id from the
+	query string and hands it to the case_menu plugin and to pikaCase, so a
+	signed-in user whose group grants no access to a case still read that
+	case's number and the client's name off a page case.php answers 403 for.
+
+	Ending the timer is a write, and it was ungated too: the branch further
+	down builds an Activity out of this same query string and saves it
+	against the case, so a caller with no access to the case could file a
+	time slip on it. That branch needs edit_case. read_act and edit_act are
+	not substitutes - they answer for the activity, not for the case it
+	lands on.
+
+	The row for the decision comes from a plain SELECT rather than from
+	pikaCase or pikaCms::fetchCaseList(): a pikaCase built on an id that
+	names no case calls trigger_error() and prints the generic error screen
+	at HTTP 200, which both tells the caller the id is unused and loses the
+	refusal, and fetchCaseList() does not select intake_user_id, which
+	pika_authorize() reads.
+
+	A case_id that is not a positive integer, and one that names no case,
+	answer exactly as a case the caller may not read. Naming no case at all
+	is untouched: the "(No Case #)" timer is a supported path.
+*/
+$timer_case_named = false;
+
+if (!is_null($act_row['case_id']))
+{
+	/*	An array, as ?case_id[]=42 sends, survives pl_clean_form_input() as
+		an array. It is not a case id, so it is not silently dropped here.
+	*/
+	$timer_case_named = !is_scalar($act_row['case_id'])
+		|| '' !== (string) $act_row['case_id'];
+}
+
+if ($timer_case_named)
+{
+	$timer_base_url = pl_settings_get('base_url');
+
+	$timer_case_id = filter_var($act_row['case_id'], FILTER_VALIDATE_INT,
+		array('options' => array('min_range' => 1)));
+
+	if (false === $timer_case_id)
+	{
+		pl_case_not_viewable($timer_base_url);
+	}
+
+	$timer_result = DB::query("SELECT * FROM cases WHERE case_id = "
+		. (int) $timer_case_id . " LIMIT 1");
+
+	if (!$timer_result || DBResult::numRows($timer_result) < 1)
+	{
+		pl_case_not_viewable($timer_base_url);
+	}
+
+	$timer_case_row = DBResult::fetchRow($timer_result);
+
+	if (!pika_authorize('read_case', $timer_case_row))
+	{
+		pl_case_not_viewable($timer_base_url);
+	}
+
+	if (!is_null($end_butt) && !pika_authorize('edit_case', $timer_case_row))
+	{
+		pl_case_not_viewable($timer_base_url);
+	}
+}
+
 if (pl_settings_get('autofill_time_funding') == 0)
 {
 	$act_row['funding'] = null;
