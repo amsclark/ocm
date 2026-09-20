@@ -61,6 +61,57 @@ foreach ($uri as $uri_segment)
 var_dump($uri);
 pika_exit();
 */
+/*	Read access to the case is checked here, before either branch below
+	includes anything.
+
+	Both require() calls load a deployment's own extension code, which is not in
+	this repository, so nothing here can make that code hold a gate. Until this
+	check, pm.php asked only pika_init() - is the caller signed in - and then
+	handed the request, case_id and all, to the extension. Measured on a
+	throwaway stack with an extension that prints a case number: a signed-in user
+	whose group grants no case access read the number of a case that case.php
+	answers 403 for, on the reports path and on the plain one.
+
+	The check has to run before the chdir('app/lib') in the reports branch as
+	well. pl_case_not_viewable() reads templates/default.html by a relative path,
+	so from app/lib it would find no template.
+
+	A request that names no case is unaffected: with no case_id there is nothing
+	to check, and an extension that reports across cases still runs.
+
+	A case_id that is not a positive integer, or that names no case, gets the
+	same refusal as a case the caller may not read, so the answer cannot be used
+	to tell real case numbers from invented ones. This is the rule
+	legacy_report.php uses, for the same reason. An extension that passes 0 to
+	mean "no case" should pass nothing instead.
+*/
+$pm_case_id = pl_grab_var('case_id');
+
+if (!is_null($pm_case_id) && '' !== $pm_case_id)
+{
+	$pm_base_url = pl_settings_get('base_url');
+	$pm_case_id = filter_var($pm_case_id, FILTER_VALIDATE_INT,
+		array('options' => array('min_range' => 1)));
+
+	if (false === $pm_case_id)
+	{
+		pl_case_not_viewable($pm_base_url);
+	}
+
+	$pm_result = DB::query("SELECT * FROM cases WHERE case_id = "
+		. (int) $pm_case_id . " LIMIT 1");
+
+	if (!$pm_result || DBResult::numRows($pm_result) < 1)
+	{
+		pl_case_not_viewable($pm_base_url);
+	}
+
+	if (!pika_authorize('read_case', DBResult::fetchRow($pm_result)))
+	{
+		pl_case_not_viewable($pm_base_url);
+	}
+}
+
 if ($uri[0] != '') 
 {
 	trigger_error("General URL error.");
