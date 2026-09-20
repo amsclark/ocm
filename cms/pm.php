@@ -76,18 +76,28 @@ pika_exit();
 	well. pl_case_not_viewable() reads templates/default.html by a relative path,
 	so from app/lib it would find no template.
 
-	$_GET and $_POST are both read, rather than $_REQUEST or one pl_grab_*()
-	call, because the extension chooses its own getter and the two can disagree.
-	With request_order at its "GP" default a POST body wins in $_REQUEST, so
+	Every request source is read, not one of them and not $_REQUEST alone,
+	because the extension chooses its own getter and the sources can disagree.
+	One gate reading $_REQUEST is not enough:
 
 		POST pm.php/reports/<ext>/<file>.php?case_id=42
 		case_id=
 
-	left a $_REQUEST gate reading blank while an extension calling
-	pl_grab_get('case_id') still read case 42. Measured on the same stack, on
-	both branches. Two different non-blank values are refused rather than
-	ranked, because there is no way to know here which one the extension will
-	read.
+	leaves a $_REQUEST gate reading blank on a GP request_order while an
+	extension calling pl_grab_get('case_id') still reads case 42. Reading only
+	$_GET and $_POST is not enough either, and is worse: request_order is unset
+	in the container this repository ships, so $_REQUEST is built in
+	variables_order, EGPCS, and a cookie overwrites both. Measured on that
+	runtime: with ?case_id=7, a body of case_id=99 and a Cookie of case_id=42,
+	$_REQUEST holds 42. So a cookie alone can hand an extension a case that
+	nothing on the query string or in the body ever named.
+
+	Every distinct id any source names has to pass, so there is nothing to rank
+	and no need to guess which getter the extension uses. Two spellings of one
+	readable case, '42' and ' 42 ', are one id and are allowed: the getters trim
+	and so does filter_var(). Two genuinely different ids are both checked, and
+	one unreadable id refuses the request however many readable ones accompany
+	it.
 
 	A request that names no case is unaffected: with no case_id there is nothing
 	to check, and an extension that reports across cases still runs.
@@ -102,10 +112,14 @@ pika_exit();
 	other parameter it is handed is in the deployment's own code, which this
 	repository does not carry and these checks cannot speak for.
 */
-$pm_case_ids = array();
+$pm_case_values = array();
 $pm_case_id_unusable = false;
 
-foreach (array($_GET, $_POST) as $pm_source)
+/*	$_REQUEST is read as well as the three it is built from. It is the value
+	pl_grab_var() returns, and on a runtime that leaves request_order unset it
+	can differ from every one of them.
+*/
+foreach (array($_GET, $_POST, $_COOKIE, $_REQUEST) as $pm_source)
 {
 	if (!isset($pm_source['case_id']))
 	{
@@ -125,38 +139,50 @@ foreach (array($_GET, $_POST) as $pm_source)
 
 	if ('' !== $pm_value)
 	{
-		$pm_case_ids[] = $pm_value;
+		$pm_case_values[] = $pm_value;
 	}
 }
 
-if ($pm_case_id_unusable || 0 < count($pm_case_ids))
+if ($pm_case_id_unusable || 0 < count($pm_case_values))
 {
 	$pm_base_url = pl_settings_get('base_url');
 
-	if ($pm_case_id_unusable || 1 < count(array_unique($pm_case_ids)))
+	if ($pm_case_id_unusable)
 	{
 		pl_case_not_viewable($pm_base_url);
 	}
 
-	$pm_case_id = filter_var($pm_case_ids[0], FILTER_VALIDATE_INT,
-		array('options' => array('min_range' => 1)));
+	$pm_case_seen = array();
 
-	if (false === $pm_case_id)
+	foreach ($pm_case_values as $pm_value)
 	{
-		pl_case_not_viewable($pm_base_url);
-	}
+		$pm_case_id = filter_var($pm_value, FILTER_VALIDATE_INT,
+			array('options' => array('min_range' => 1)));
 
-	$pm_result = DB::query("SELECT * FROM cases WHERE case_id = "
-		. (int) $pm_case_id . " LIMIT 1");
+		if (false === $pm_case_id)
+		{
+			pl_case_not_viewable($pm_base_url);
+		}
 
-	if (!$pm_result || DBResult::numRows($pm_result) < 1)
-	{
-		pl_case_not_viewable($pm_base_url);
-	}
+		if (isset($pm_case_seen[$pm_case_id]))
+		{
+			continue;
+		}
 
-	if (!pika_authorize('read_case', DBResult::fetchRow($pm_result)))
-	{
-		pl_case_not_viewable($pm_base_url);
+		$pm_case_seen[$pm_case_id] = true;
+
+		$pm_result = DB::query("SELECT * FROM cases WHERE case_id = "
+			. (int) $pm_case_id . " LIMIT 1");
+
+		if (!$pm_result || DBResult::numRows($pm_result) < 1)
+		{
+			pl_case_not_viewable($pm_base_url);
+		}
+
+		if (!pika_authorize('read_case', DBResult::fetchRow($pm_result)))
+		{
+			pl_case_not_viewable($pm_base_url);
+		}
 	}
 }
 

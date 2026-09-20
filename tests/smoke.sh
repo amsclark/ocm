@@ -6996,16 +6996,82 @@ PMSEED
 				fi
 			done
 
-			# Two different non-blank values, one per source. Nothing here can know
-			# which one the extension will read, so the request is refused.
+			# A POST body naming a case id of 0 next to a real one in the query
+			# string. Both reasons to refuse are present here -- 0 is not a case
+			# id, and this reader may not read the case in the query string --
+			# so this check does not isolate either rule. It is kept because it
+			# is the shape that exposed the gate reading only $_REQUEST.
 			if ! pm_post "$PMRJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=0'; then
-				bad "the reader's POST with a conflicting case_id failed (curl exit $pm_curl)"
+				bad "the reader's POST with a second case_id failed (curl exit $pm_curl)"
 			elif grep -qF "$PMNUM" "$BODY"; then
 				bad "pm.php PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN THE QUERY STRING AND THE POST BODY NAMED DIFFERENT CASES"
 			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 				ok "pm.php refuses a request whose query string and POST body name different cases"
 			else
-				bad "pm.php answered a conflicting case_id ${pm_code} instead of the refusal"
+				bad "pm.php answered two different case_id values ${pm_code} instead of the refusal"
+			fi
+
+			# Send the jar's cookies by hand so an extra case_id cookie can ride
+			# along with the session. curl's -b file and -H Cookie: cannot be
+			# combined: the header replaces the jar, and the session goes with it.
+			# The #HttpOnly_ prefix is stripped because the session cookie carries
+			# it, and a line starting with # would otherwise look like a comment.
+			pm_cookie() {
+				pm_pairs="$(sed 's/^#HttpOnly_//' "$1" \
+					| awk 'BEGIN { FS = "\t" } !/^#/ && NF >= 7 { printf "%s=%s; ", $6, $7 }')"
+				: > "$BODY"
+				pm_code="$(curl -s --max-time 60 -o "$BODY" -w '%{http_code}' \
+					--path-as-is -H "Cookie: ${pm_pairs}$3" "$OCM_URL/$2")"
+				pm_curl=$?
+				[ "$pm_curl" = 0 ] && [ -n "$pm_pairs" ]
+			}
+
+			# request_order is unset in the shipped container, so $_REQUEST is
+			# built in variables_order -- EGPCS -- and a cookie overwrites the
+			# query string and the body both. A gate reading only $_GET and
+			# $_POST sees no case at all here, while pl_grab_var() in the
+			# extension reads the one in the cookie.
+			if ! pm_cookie "$PMRJAR" "pm.php/zzcasex/zzcase.php" "case_id=${PMCASE}"; then
+				bad "the reader's cookie request to pm.php failed (curl exit $pm_curl)"
+			elif grep -qF "$PMNUM" "$BODY"; then
+				bad "pm.php PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN THE case_id ARRIVED ONLY IN A COOKIE"
+			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "pm.php refuses a case_id that arrives only in a cookie"
+			else
+				bad "pm.php answered a cookie-only case_id ${pm_code} instead of the refusal"
+			fi
+
+			# The case's own handler, with a readable case in the query string and
+			# an unreadable one in a second source. Authorizing only the first
+			# value found would let these through, and the extension may read
+			# either one.
+			if ! pm_cookie "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=99999999'; then
+				bad "the handler's mixed cookie request to pm.php failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "pm.php refuses a readable case in the query string beside an unreadable one in a cookie"
+			else
+				bad "pm.php ANSWERED A READABLE case_id BESIDE AN UNREADABLE ONE IN A COOKIE ${pm_code} INSTEAD OF THE REFUSAL, SO ONLY THE FIRST SOURCE IS AUTHORIZED"
+			fi
+
+			if ! pm_post "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=99999999'; then
+				bad "the handler's mixed POST to pm.php failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "pm.php refuses a readable case in the query string beside an unreadable one in the POST body"
+			else
+				bad "pm.php ANSWERED A READABLE case_id BESIDE AN UNREADABLE ONE IN THE POST BODY ${pm_code} INSTEAD OF THE REFUSAL, SO ONLY THE FIRST SOURCE IS AUTHORIZED"
+			fi
+
+			# One case, two spellings. The getters trim and so does filter_var(),
+			# so ' 42 ' and '42' are the same case and the handler keeps the
+			# report. Comparing the raw strings instead refused this.
+			if ! pm_post "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" "case_id=%20${PMCASE}%20"; then
+				bad "the handler's spaced-value POST to pm.php failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 403 ] || grep -q 'This case is not viewable' "$BODY"; then
+				bad "pm.php refused the case's own handler for spelling one case id two ways (status ${pm_code})"
+			elif [ "$pm_code" = 200 ]; then
+				ok "pm.php allows two spellings of one case the caller may read"
+			else
+				bad "pm.php answered two spellings of one readable case ${pm_code}"
 			fi
 
 			# The same extension, read by the case's own handler: the gate must not
