@@ -3605,20 +3605,24 @@ if [ "$HAVE_DB" = 1 ]; then
 			fi
 
 			# Retired questionnaire actions must not bypass the system gate.
-			# The legacy gate does not echo its permission template. Its only
-			# output is the benchmark table when benchmarking is enabled.
-			rq_bench_pattern='^<br><table align=center width=500><tr><td><pre>Execution Speed:  [0-9]+([.][0-9]+)? seconds<br>File Size:  [0-9]+([.][0-9]+)?K<br></pre></td></tr></table>$'
+			# The refusal must also be visible: this check used to accept an
+			# empty body, because the gate called pl_template() without echoing
+			# it and threw its own "Permission denied" page away. That made the
+			# denial indistinguishable from a crash, so the check now demands
+			# the words, and rejects an empty body outright.
 			for rq_action in save_questionnaire add_questionnaire toggle_questionnaires diag update_answers; do
 				AZTOK="$(az_token "$AZJAR")"
 				code="$(curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -w '%{http_code}' \
 					--data-urlencode "action=${rq_action}" -d "_csrf=${AZTOK}" \
 					"$OCM_URL/system-ops.php")"
-				rq_denial_body="$(tr -d '\r\n' < "$BODY")"
-				if [ "${#AZTOK}" -eq 64 ] && [ "$code" = 200 ] \
-					&& { [ -z "$rq_denial_body" ] || [[ "$rq_denial_body" =~ $rq_bench_pattern ]]; }; then
-					ok "$rq_action remains denied to a non-admin user"
-				else
+				if [ "${#AZTOK}" -ne 64 ] || [ "$code" != 200 ]; then
 					bad "$rq_action did not reach the system permission gate (status $code)"
+				elif [ ! -s "$BODY" ]; then
+					bad "$rq_action was denied with an empty body, so the user cannot tell a refusal from a crash"
+				elif grep -qi 'Permission denied' "$BODY"; then
+					ok "$rq_action is denied to a non-admin user, and says so"
+				else
+					bad "$rq_action answered a non-admin user something other than a refusal"
 				fi
 			done
 
@@ -12624,6 +12628,161 @@ if sm78_signed_in "$COOKIES"; then
 	ok "the main session survived the sweep"
 else
 	bad "the sweep ended the main session, so every page check above proved nothing"
+fi
+
+# 78g. The same sweep again, as a user whose group holds no permissions.
+#
+# 78f proves the pages do not crash for the admin, and the admin is in the
+# `system` group, which short-circuits pika_authorize() to true on its first
+# line -- so 78f cannot see an authorization failure at all. This section
+# repeats the sweep as a throwaway user with every group flag off and adds the
+# two checks that only mean something for such a user:
+#
+#   - No page may answer HTTP 200 with an empty body. A refusal that renders
+#     nothing is a white screen, indistinguishable from a crash: system-ops.php
+#     assembled its "Permission denied" page and then dropped it, because
+#     pl_template() returns the page rather than printing it.
+#   - The admin-console pages must show this user a refusal, and must not hand
+#     back the bytes they hand the admin.
+#
+# Pages that gate on a case row (case.php, activity.php, transfer.php,
+# documents.php) are deliberately absent from the must-refuse table below.
+# Sections 9, 54 and 79 already gate those against a seeded case, which is a
+# stronger check than a bare GET with no case_id.
+#
+# An empty body is only a fault when the admin gets a page there, so the one
+# check that cannot be read off the response alone -- pl_report.php and
+# sms_cron.php are not pages and are empty for everybody -- asks the admin the
+# same question before it fails.
+if [ "$HAVE_DB" = 1 ]; then
+	SM78G_GROUP='zz_78g_grp'
+	SM78G_USER='zz_78g_user'
+	SM78G_PASS='zz-78g-Passw0rd'
+	SM78G_JAR="$(mktemp)"
+
+	cleanup_78g() {
+		adb "DELETE FROM users WHERE username = '${SM78G_USER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${SM78G_GROUP}'" >/dev/null
+		rm -f "$SM78G_JAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_78g' EXIT
+	cleanup_78g
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${SM78G_GROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	SM78G_HASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$SM78G_PASS" </dev/null 2>/dev/null)"
+	SM78G_UID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${SM78G_UID}, '${SM78G_USER}', '${SM78G_HASH}', 1, '${SM78G_GROUP}', 0)" >/dev/null
+
+	curl -sL --max-time 30 -c "$SM78G_JAR" -b "$SM78G_JAR" -o "$BODY" \
+		-X POST -d "login_user=${SM78G_USER}&login_pass=${SM78G_PASS}&auth_id=1" \
+		"$OCM_URL/" >/dev/null
+	if sm78_signed_in "$SM78G_JAR"; then
+		ok "the no-permission sweep holds a session for ${SM78G_USER}"
+	else
+		bad "the no-permission sweep could not sign in, so its page checks would pass on login redirects alone"
+	fi
+
+	# The pages whose only gate is a group flag. Each must refuse this user.
+	sm78g_must_refuse=" assign_atty.php assign_pba.php motd.php pb_attorneys.php
+		system-audit.php system-case_numbers.php system-case_tabs.php
+		system-default_prefs.php system-extensions.php system-forms.php
+		system-groups.php system-interviews.php system-mac_download.php
+		system-maint.php system-menus.php system-ops.php system-outcomes.php
+		system-red_flags.php system-reset_counters.php system-screen.php
+		system-settings.php system-sms.php system-users.php
+		transfer_options.php transfers.php zipcode.php "
+	# The table above is wrapped, so its entries are separated by newlines and
+	# tabs. Word splitting collapses them to the single spaces the `case` glob
+	# below matches on.
+	# shellcheck disable=SC2086
+	sm78g_must_refuse=" $(echo $sm78g_must_refuse) "
+
+	sm78g_refused() {
+		grep -qi 'Access denied\|Permission denied\|not viewable\|not authorized' "$1"
+	}
+
+	sm78g_n=0
+	sm78g_gated=0
+	for sm78g_p in cms/*.php cms/m/*.php; do
+		[ -f "$sm78g_p" ] || continue
+		sm78g_rel="${sm78g_p#cms/}"
+		[ "$sm78g_rel" = pika_cms.php ] && continue
+		[ "$sm78g_rel" = pika-danio.php ] && continue
+		[ "$sm78g_rel" = m/logout.php ] && continue
+
+		sm78g_n=$((sm78g_n+1))
+		code="$(curl -s --max-time 60 -b "$SM78G_JAR" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/${sm78g_rel}")"
+		sm78g_bytes="$(wc -c < "$BODY")"
+
+		if [ "$code" = 500 ]; then
+			bad "PAGE $sm78g_rel RETURNED HTTP 500 FOR A USER WITH NO PERMISSIONS"
+			continue
+		fi
+		if grep -qi "Unknown column\|Unknown table" "$BODY"; then
+			bad "PAGE $sm78g_rel LEAKED A MISSING-SCHEMA SQL ERROR TO A USER WITH NO PERMISSIONS"
+			continue
+		fi
+		if grep -qi 'Fatal error\|Uncaught ' "$BODY"; then
+			bad "PAGE $sm78g_rel PRINTED A PHP FATAL ERROR FOR A USER WITH NO PERMISSIONS"
+			continue
+		fi
+		if [ "$code" = 200 ] && [ "$sm78g_bytes" -eq 0 ]; then
+			# Empty for everybody means it is not a page. Empty only here is a
+			# refusal that rendered nothing.
+			if [ "$(curl -s --max-time 60 -b "$COOKIES" "$OCM_URL/${sm78g_rel}" | wc -c)" -eq 0 ]; then
+				ok "page $sm78g_rel is empty for everyone, not a page"
+			else
+				bad "PAGE $sm78g_rel ANSWERED 200 WITH AN EMPTY BODY: A WHITE SCREEN INSTEAD OF A REFUSAL"
+			fi
+			continue
+		fi
+
+		case "$sm78g_must_refuse" in
+			*" $sm78g_rel "*)
+				sm78g_gated=$((sm78g_gated+1))
+				if ! sm78g_refused "$BODY"; then
+					bad "PAGE $sm78g_rel GAVE A USER WITH NO PERMISSIONS ITS CONTENT INSTEAD OF A REFUSAL (status $code)"
+				elif [ "$(curl -s --max-time 60 -b "$COOKIES" "$OCM_URL/${sm78g_rel}" | wc -c)" = "$sm78g_bytes" ]; then
+					bad "PAGE $sm78g_rel ANSWERED A USER WITH NO PERMISSIONS EXACTLY AS IT ANSWERED THE ADMIN"
+				else
+					ok "page $sm78g_rel refuses a user with no permissions (status $code)"
+				fi
+				;;
+			*)
+				ok "page $sm78g_rel opens for a user with no permissions without crashing (status $code)"
+				;;
+		esac
+	done
+
+	if [ "$sm78g_n" -ge 60 ]; then
+		ok "the no-permission sweep covered $sm78g_n page entry points"
+	else
+		bad "the no-permission sweep covered only $sm78g_n page entry points"
+	fi
+	if [ "$sm78g_gated" -ge 26 ]; then
+		ok "the no-permission sweep checked $sm78g_gated gated admin pages"
+	else
+		bad "the no-permission sweep checked only $sm78g_gated of the 26 gated admin pages -- did one get renamed?"
+	fi
+	if sm78_signed_in "$SM78G_JAR"; then
+		ok "the no-permission session survived the sweep"
+	else
+		bad "the no-permission session ended during the sweep, so the refusals above prove nothing"
+	fi
+	if sm78_signed_in "$COOKIES"; then
+		ok "the main session survived the no-permission sweep"
+	else
+		bad "the no-permission sweep ended the main session"
+	fi
+
+	cleanup_78g
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the no-permission page sweep (needs a running docker compose stack)\n'
 fi
 
 # 79. The two case-transfer pages are gated.

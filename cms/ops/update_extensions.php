@@ -28,7 +28,13 @@ if (!pika_authorize("system", $dummy))
 	$plTemplate["page_title"] = "System Operations";
 	$plTemplate["nav"] = "<a href=\"{$base_url}/\" class=light>$pikaNavRootLabel</a> &gt; System Operations";
 	
-	pl_template($plTemplate, 'templates/default.html');
+	/*	echo, not a bare call: pl_template() returns the page rather than
+		printing it, so this refusal was built and discarded and the
+		request answered 200 with an empty body. Same defect, and the same
+		note, as cms/system-ops.php. The gate held either way -- exit()
+		stops the request before anything is written.
+	*/
+	echo pl_template($plTemplate, 'templates/default.html');
 	echo pl_bench('results');
 	exit();
 }

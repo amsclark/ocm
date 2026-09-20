@@ -25,7 +25,20 @@ if (!pika_authorize("system", $dummy))
 	$plTemplate["page_title"] = "System Operations";
 	$plTemplate["nav"] = "<a href=\".\" class=light>$pikaNavRootLabel</a> &gt; System Operations";
 
-	pl_template($plTemplate, 'templates/default.html');
+	/*	pl_template() returns the rendered page, it does not print it: it
+		builds $out and hands it back, which is why every other caller
+		writes $buffer = pl_template(...) or echoes the call. Called bare,
+		the refusal above was assembled and thrown away, so a user whose
+		group lacks the system flag received HTTP 200 with a zero-byte body
+		-- a white screen that looks like a crash and says nothing to the
+		user or to anything reading the response.
+
+		The gate itself always held: exit() below stops the request before
+		any of the save work. This restores the message only. The sibling
+		admin pages avoid the trap by going through pikaTempLib->draw() and
+		pika_exit(), which do print.
+	*/
+	echo pl_template($plTemplate, 'templates/default.html');
 	echo pl_bench('results');
 	exit();
 }
