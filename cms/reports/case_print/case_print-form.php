@@ -137,6 +137,28 @@ $tmpstaff = $pk->fetchStaffArray();
 $result = $pk->fetchCase($case_id);
 $a = DBResult::fetchRow($result);
 
+/*	This is the printable case: number, client, contacts, activities and
+	notes. The comment above says $case_id is not checked against the cases
+	table before this point, and it was not checked against the reader's
+	permissions either -- legacy_report.php, which includes this file, has no
+	gate of its own, so any signed-in user could print any case.
+
+	The gate is read access to the case, not the `reports` group flag: the
+	Docs tab posts report=case_print for ordinary users, so a report-level
+	flag would take case printing away from everyone outside the system
+	group.
+
+	An unknown case is refused here rather than printed blank. The
+	$a = array() fallback below stays for the report body, which still has to
+	cope with a case that holds no client.
+*/
+$base_url = pl_settings_get('base_url');
+
+if (!is_array($a) || empty($a['case_id']) || !pika_authorize('read_case', $a))
+{
+	pl_case_not_viewable($base_url);
+}
+
 if (!is_array($a))
 {
 	$a = array();

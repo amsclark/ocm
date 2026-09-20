@@ -17,6 +17,26 @@ $case_id = pl_grab_get('case_id');
 $case = new pikaCase($case_id);
 $a = $case->getValues();
 
+/*	This form prints the case number, the client's name and full address, and
+	the case's billing lines. Nothing above reads a permission: $case_id comes
+	straight off the query string, so before this gate any signed-in user could
+	read any case's billing here, including a case that case.php refuses them.
+
+	The gate is read access to the case, not the `reports` group flag. The Docs
+	tab reaches these per-case reports for ordinary users, so a report-level
+	flag would take case printing away from everyone outside the system group.
+
+	An empty or unknown case row is refused rather than passed on, because
+	pika_authorize('read_case', ...) reads $row['user_id'] and would be
+	judging a row that does not exist.
+*/
+$base_url = pl_settings_get('base_url');
+
+if (!is_array($a) || empty($a['case_id']) || !pika_authorize('read_case', $a))
+{
+	pl_case_not_viewable($base_url);
+}
+
 if($a['client_id']) {
 	$contact = new pikaContact($a['client_id']);
 	$b = $contact->getValues();
