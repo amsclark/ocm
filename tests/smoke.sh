@@ -16013,6 +16013,101 @@ else
 	fi
 fi
 
+# 92. Every filter box on a report form reaches the report that runs it.
+#
+# Three bugs in a row were the same shape: a report form offers a box, the
+# handler builds a clause from a variable of that name, and nothing ever reads
+# the posted field, so the variable stays unset and the box silently does
+# nothing. The lsc_gap report read the wrong name, the time report never read
+# number, and lsac_outcome never read close_code. A request cannot show this
+# for the reports whose figures need columns no install script creates, so the
+# check is static: for every report, take the controls inside the form that
+# posts to report.php and require that report.php reads each one by name.
+#
+# Only the form aimed at report.php counts. megareport and megapartyreport also
+# carry a second form that posts to ops/upload_document.php, and its fields are
+# read there, not by the report.
+echo
+echo "92. report forms post nothing the report ignores"
+
+if ! command -v python3 >/dev/null 2>&1; then
+	printf '  skip the report control check (needs python3)\n'
+else
+	RC_PY="$(mktemp)"
+	cat > "$RC_PY" <<'RCPY'
+import io, os, re, sys
+
+root = os.path.join(sys.argv[1], 'cms', 'reports')
+htmlc = re.compile(r'<!--.*?-->', re.S)
+blockc = re.compile(r'/\*.*?\*/', re.S)
+# the form that submits to the report, up to its close tag
+form = re.compile(r'<\s*form\b[^>]*\baction\s*=\s*["\'][^"\']*report\.php[^"\']*["\']'
+                  r'(.*?)(?:</\s*form\s*>|\Z)', re.I | re.S)
+control = re.compile(r'<\s*(?:input|select|textarea|button)\b([^>]*)>', re.I | re.S)
+nameattr = re.compile(r'\bname\s*=\s*["\']([A-Za-z_][\w\-]*)(?:\[\])?["\']', re.I)
+tag = re.compile(r'%%\[([A-Za-z_][\w\-]*),([A-Za-z_][\w\-\.]*)')
+read = re.compile(r'pl_grab_\w+\s*\(\s*["\']([\w\-]+)["\']'
+                  r'|\$_(?:POST|GET|REQUEST)\s*\[\s*["\']([\w\-]+)["\']')
+# A submit button posts nothing a report reads. Nor does a widget that renders
+# a link, a table or a set of controls it names itself: file_list draws a table
+# of document links, and field_list uses its tag name only to pick which table
+# to describe, then emits a checkbox per column called cases.<column>. In both
+# the tag name never reaches the request.
+skip = set('gen submit reset button action csrf_token pl_csrf_token'.split())
+display = set('javascript css parse file_list field_list'.split())
+
+seen = 0
+for d in sorted(os.listdir(root)):
+    f = os.path.join(root, d, 'form.html')
+    r = os.path.join(root, d, 'report.php')
+    if not (os.path.isfile(f) and os.path.isfile(r)):
+        continue
+    body = htmlc.sub(' ', io.open(f, encoding='utf-8', errors='replace').read())
+    php = blockc.sub(' ', io.open(r, encoding='utf-8', errors='replace').read())
+    names = set()
+    for blk in form.findall(body):
+        for m in control.finditer(blk):
+            n = nameattr.search(m.group(1))
+            # a disabled control posts nothing
+            if n and not re.search(r'\bdisabled\b', m.group(1), re.I):
+                names.add(n.group(1))
+        for m in tag.finditer(blk):
+            if m.group(2) not in display:
+                names.add(m.group(1))
+    names -= skip
+    seen += len(names)
+    reads = set(a or b for a, b in read.findall(php))
+    missing = sorted(names - reads)
+    if missing:
+        print('%s\t%s' % (d, ','.join(missing)))
+print('TOTAL\t%d' % seen)
+RCPY
+
+	rc_dirs="$(ls -d "${REPO_DIR}"/cms/reports/*/ 2>/dev/null | wc -l)"
+	rc_out="$(python3 "$RC_PY" "$REPO_DIR" 2>/dev/null)"
+	rc_seen="$(printf '%s\n' "$rc_out" | sed -n 's/^TOTAL\t//p')"
+	rc_bad="$(printf '%s\n' "$rc_out" | grep -v '^TOTAL' | tr '\n' ' ')"
+
+	# Both counts guard the sweep. A wrong path or a broken pattern would find
+	# no reports and no controls, and then the check below would pass without
+	# having looked at anything.
+	if [ "${rc_dirs:-0}" -lt 30 ]; then
+		bad "section 92 found only ${rc_dirs} report directories - the sweep is broken"
+	elif [ "${rc_seen:-0}" -lt 100 ]; then
+		bad "section 92 read only ${rc_seen} controls off ${rc_dirs} report forms - the sweep is broken"
+	else
+		ok "section 92 read ${rc_seen} filter controls off ${rc_dirs} report forms"
+
+		if [ -n "$(printf '%s' "$rc_bad" | tr -d ' ')" ]; then
+			bad "A REPORT FORM OFFERS A FILTER BOX ITS OWN report.php NEVER READS: ${rc_bad}"
+		else
+			ok "every report reads every filter box its form posts to it"
+		fi
+	fi
+
+	rm -f "$RC_PY"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
