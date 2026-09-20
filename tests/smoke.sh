@@ -12557,6 +12557,47 @@ else
 	bad "page(s) rendering with no session:${sm78_open}"
 fi
 
+# 78f. Every page entry point must open without HTTP 500 or a missing-schema
+# SQL error for a signed-in user. Other statuses are covered by the gate tests.
+if [ "$HAVE_DB" != 1 ]; then
+	echo "  skip signed-in page sweep: database access is needed to preserve the session after m/logout.php"
+else
+	for sm78_p in cms/*.php cms/m/*.php; do
+		[ -f "$sm78_p" ] || continue
+		sm78_rel="${sm78_p#cms/}"
+		[ "$sm78_rel" = pika_cms.php ] && continue
+		[ "$sm78_rel" = pika-danio.php ] && continue
+
+		# The logout page changes this session even on GET. Save its flag so
+		# the remaining pages and later tests keep the same signed-in session.
+		if [ "$sm78_rel" = m/logout.php ]; then
+			sm78_sid_hex="$(awk 'NF == 7 && ($1 !~ /^#/ || $1 ~ /^#HttpOnly_/) { printf "%s", $7; exit }' "$COOKIES" | od -An -tx1 | tr -d ' \n')"
+			sm78_session="$(adb "SELECT CONCAT(user_session_id, ' ', COALESCE(logout, 'NULL')) FROM user_sessions WHERE session_id = UNHEX('$sm78_sid_hex')")"
+			if [[ ! "$sm78_session" =~ ^[0-9]+\ (0|NULL)$ ]]; then
+				bad "cannot preserve the signed-in session for m/logout.php"
+				break
+			fi
+			read -r sm78_session_id sm78_logout <<< "$sm78_session"
+		fi
+
+		code="$(curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/${sm78_rel}")"
+		if [ "$sm78_rel" = m/logout.php ]; then
+			if ! adb "UPDATE user_sessions SET logout = $sm78_logout WHERE user_session_id = $sm78_session_id AND session_id = UNHEX('$sm78_sid_hex')" >/dev/null; then
+				bad "cannot restore the signed-in session after m/logout.php"
+				break
+			fi
+		fi
+		if [ "$code" = 500 ]; then
+			bad "PAGE $sm78_rel RETURNED HTTP 500 ON A STOCK DATABASE"
+		elif grep -qi "Unknown column\|Unknown table" "$BODY"; then
+			bad "PAGE $sm78_rel LEAKED A MISSING-SCHEMA SQL ERROR TO THE PAGE"
+		else
+			ok "page $sm78_rel opens signed in (status $code)"
+		fi
+	done
+fi
+
 # ---------------------------------------------------------------------------
 # 79. The two case-transfer pages are gated.
 #
