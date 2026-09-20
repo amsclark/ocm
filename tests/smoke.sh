@@ -6714,16 +6714,52 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	# Keep whatever this deployment already had in the setting.
 	PMPREV="$(adb "SELECT value FROM settings WHERE label = 'extensions'")"
 
+	# The case fixture for the gate checks further down.
+	PMG=zz_pm_grp
+	PMRD=zz_pm_reader
+	PMOW=zz_pm_owner
+	PMPWD='zz-pm-Passw0rd'
+	PMNUM=ZZ-PM-1
+
 	cleanup_pm() {
 		adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
 		if [ -n "${PMPREV:-}" ]; then
 			adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMPREV}')" >/dev/null
 		fi
-		# Only the three fixture directories, never the whole extensions tree.
+		# Only the four fixture directories, never the whole extensions tree.
 		docker compose "${COMPOSE_ARGS[@]}" exec -T app rm -rf \
 			/var/www/html/cms-custom/extensions/zzextra \
 			/var/www/html/cms-custom/extensions/zzext \
+			/var/www/html/cms-custom/extensions/zzcasex \
 			"/var/www/html/cms-custom/extensions/zzextra:zzother" </dev/null >/dev/null 2>&1
+
+		# The case fixture the gate checks below need. csrf_tokens is deleted by
+		# literal session id: its session_id column is utf8mb4_unicode_ci while
+		# user_sessions.session_id takes the database default, so comparing the
+		# two answers "Illegal mix of collations" and, with adb sending stderr
+		# to /dev/null, would remove nothing and say nothing.
+		pm_sids="$(adb "SELECT CONCAT(CHAR(39), session_id, CHAR(39)) FROM user_sessions
+			WHERE user_id IN (SELECT user_id FROM users
+				WHERE username IN ('${PMRD}', '${PMOW}'))" | paste -sd, -)"
+		if [ -n "$pm_sids" ]; then
+			adb "DELETE FROM csrf_tokens WHERE session_id IN (${pm_sids})" >/dev/null
+		fi
+		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users
+			WHERE username IN ('${PMRD}', '${PMOW}'))" >/dev/null
+		adb "DELETE FROM cases WHERE number = '${PMNUM}'" >/dev/null
+		adb "DELETE FROM users WHERE username IN ('${PMRD}', '${PMOW}')" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${PMG}'" >/dev/null
+
+		# audit_log keeps its login rows on purpose. Everything else the fixture
+		# made has to be gone, or the next run measures this one's leftovers.
+		pm_left="$(adb "SELECT COUNT(*) FROM users WHERE username IN ('${PMRD}', '${PMOW}')")"
+		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM cases WHERE number = '${PMNUM}'")"
+		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${PMG}'")"
+		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM user_sessions WHERE user_id IN
+			(SELECT user_id FROM users WHERE username IN ('${PMRD}', '${PMOW}'))")"
+		if [ -n "${pm_swept:-}" ] && [ "$pm_left" != "0000" ]; then
+			bad "the extension case fixture could not be removed (users, case, group, sessions still present: ${pm_left})"
+		fi
 	}
 	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
 	cleanup_pm
@@ -6731,7 +6767,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	# Two entries, so a directory named across the ':' that separates them can
 	# be tried below.
 	adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
-	adb "INSERT INTO settings (label, value) VALUES ('extensions', '/zzextra:/zzother')" >/dev/null
+	adb "INSERT INTO settings (label, value) VALUES ('extensions', '/zzextra:/zzother:/zzcasex')" >/dev/null
 
 	# zzextra is enabled. zzext is a prefix of it and is NOT enabled.
 	# 'zzextra:zzother' spans the separator and is not one of the names.
@@ -6742,6 +6778,27 @@ printf '<?php echo "ZZPM-ENABLED-OK";\n' > "$D/zzextra/zzhello.php"
 printf '<?php echo "ZZPM-SUBSTRING-OK";\n' > "$D/zzext/zzhello.php"
 printf '<?php echo "ZZPM-SPAN-OK";\n' > "$D/zzextra:zzother/zzhello.php"
 printf 'ZZPM-SECRET-TXT\n' > "$D/zzextra/zzsecret.txt"
+mkdir -p "$D/zzcasex"
+cat > "$D/zzcasex/zzcase.php" <<'PMPHP'
+<?php
+/*	A case-scoped extension report, the shape a deployment writes. It reads
+	nothing but case_id, which is the point: pm.php has to decide whether the
+	caller may see this case, because this file is not in the repository and
+	cannot be made to.
+*/
+$q = DB::query("SELECT number FROM cases WHERE case_id = " . (int) pl_grab_var('case_id') . " LIMIT 1");
+
+if ($q && DBResult::numRows($q) > 0)
+{
+	$r = DBResult::fetchRow($q);
+	echo "ZZPM-CASE-NUMBER:" . $r['number'];
+}
+
+else
+{
+	echo "ZZPM-NO-CASE";
+}
+PMPHP
 PMSEED
 
 	# --path-as-is: the fixture paths are the point, curl must not normalise
@@ -6803,6 +6860,122 @@ PMSEED
 		else
 			bad "a substring directory was loaded on the reports path"
 		fi
+
+		# Both require() calls in pm.php load a deployment's own extension,
+		# which is not in this repository, so the gate has to be in pm.php.
+		# Before it, the file asked only pika_init() - is the caller signed in -
+		# and handed the request, case_id and all, to the extension. Measured
+		# with this fixture on the unpatched file: a user whose group grants no
+		# case access read ZZPM-CASE-NUMBER:ZZ-PM-1 with HTTP 200 on both paths,
+		# while case.php answered the same user 403.
+		#
+		# pika_authorize() short-circuits to true for the system group, so the
+		# reader below cannot be an administrator.
+		pm_swept=1
+		adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+			VALUES ('${PMG}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+		PMHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$PMPWD" </dev/null 2>/dev/null)"
+		PMRDID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+		PMOWID=$((PMRDID + 1))
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire, must_change_password)
+			VALUES (${PMRDID}, '${PMRD}', '${PMHASH}', 1, '${PMG}', 0, 0),
+				(${PMOWID}, '${PMOW}', '${PMHASH}', 1, '${PMG}', 0, 0)" >/dev/null
+		PMCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+		# cases.office is char(3): a longer name is truncated on the shipped
+		# non-strict database and rejected under strict SQL mode.
+		adb "INSERT INTO cases (case_id, number, user_id, office, open_date, status)
+			VALUES (${PMCASE}, '${PMNUM}', ${PMOWID}, 'ZZO', CURDATE(), 'O')" >/dev/null
+
+		PMRJAR="$(mktemp)"
+		PMOJAR="$(mktemp)"
+
+		# Every request checks curl's exit status. Without that a transfer that
+		# died after the refusal text had arrived would read as a refusal.
+		pm_as() {
+			: > "$BODY"
+			pm_code="$(curl -s --max-time 60 -b "$1" -o "$BODY" -w '%{http_code}' \
+				--path-as-is "$OCM_URL/$2")"
+			pm_curl=$?
+			[ "$pm_curl" = 0 ]
+		}
+
+		pm_login() {
+			: > "$1"
+			: > "$BODY"
+			pm_code="$(curl -sL --max-time 30 -c "$1" -b "$1" -o "$BODY" -w '%{http_code}' \
+				-X POST -d "login_user=${2}&login_pass=${PMPWD}&auth_id=1" "$OCM_URL/")"
+			pm_curl=$?
+			[ "$pm_curl" = 0 ] && [ "$pm_code" = 200 ] && [ -s "$BODY" ] \
+				&& ! grep -q 'login_pass' "$BODY"
+		}
+
+		if [ -z "$PMHASH" ] || [ -z "$PMCASE" ]; then
+			bad "could not seed the extension case fixture"
+		elif ! pm_login "$PMRJAR" "$PMRD"; then
+			bad "the throwaway extension reader could not log in (status ${pm_code}, curl ${pm_curl})"
+		elif ! pm_login "$PMOJAR" "$PMOW"; then
+			bad "the throwaway case owner could not log in (status ${pm_code}, curl ${pm_curl})"
+		else
+			ok "both throwaway extension users can log in"
+
+			# The reader has to be refused on both of pm.php's branches.
+			for pm_path in "reports/zzcasex/zzcase.php" "zzcasex/zzcase.php"; do
+				if ! pm_as "$PMRJAR" "pm.php/${pm_path}?case_id=${PMCASE}"; then
+					bad "the reader's request for pm.php/${pm_path} failed (curl exit $pm_curl)"
+				elif grep -qF "$PMNUM" "$BODY"; then
+					bad "pm.php/${pm_path} PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT"
+				elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+					ok "pm.php/${pm_path} refuses a case the caller cannot read"
+				else
+					bad "pm.php/${pm_path} answered the reader ${pm_code} instead of the refusal"
+				fi
+			done
+
+			# An id that names no case, and an id that is not a case id at all,
+			# have to answer the same way as a case the reader may not read.
+			# Otherwise the answer tells a caller which case ids are real.
+			pm_none="$(adb "SELECT COALESCE(MAX(case_id), 0) + 500 FROM cases")"
+			for pm_id in "$pm_none" '0' '1e3'; do
+				if ! pm_as "$PMRJAR" "pm.php/reports/zzcasex/zzcase.php?case_id=${pm_id}"; then
+					bad "the reader's request for case_id='${pm_id}' failed (curl exit $pm_curl)"
+				elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+					ok "pm.php answers case_id='${pm_id}' the same refusal an existing case gets"
+				else
+					bad "pm.php ANSWERED case_id='${pm_id}' WITH ${pm_code} INSTEAD OF THE REFUSAL AN EXISTING CASE GETS, SO A SIGNED-IN USER CAN TELL REAL CASE IDS FROM INVENTED ONES"
+				fi
+			done
+
+			# An extension that names no case is not case-scoped and must still
+			# run. This is the check that fails if the gate refuses too much.
+			if ! pm_as "$PMRJAR" "pm.php/zzcasex/zzcase.php"; then
+				bad "the reader's request for an extension with no case_id failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 200 ] && grep -q 'ZZPM-NO-CASE' "$BODY"; then
+				ok "an extension that names no case still runs"
+			else
+				bad "an extension with no case_id answered ${pm_code} instead of running"
+			fi
+
+			# The case's own handler still gets the report.
+			if ! pm_as "$PMOJAR" "pm.php/reports/zzcasex/zzcase.php?case_id=${PMCASE}"; then
+				bad "the owner's request for the extension report failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 200 ] && grep -qF "ZZPM-CASE-NUMBER:${PMNUM}" "$BODY"; then
+				ok "the case's own handler still gets the extension report"
+			else
+				bad "the extension report answered the case's own handler ${pm_code}"
+			fi
+
+			# So does an administrator.
+			if ! pm_as "$COOKIES" "pm.php/reports/zzcasex/zzcase.php?case_id=${PMCASE}"; then
+				bad "the admin's request for the extension report failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 200 ] && grep -qF "ZZPM-CASE-NUMBER:${PMNUM}" "$BODY"; then
+				ok "the admin still gets the extension report"
+			else
+				bad "the extension report answered the admin ${pm_code}"
+			fi
+		fi
+
+		rm -f "$PMRJAR" "$PMOJAR"
 	fi
 
 	cleanup_pm
