@@ -58,6 +58,12 @@ $report_format = pl_grab_post('report_format');
 $close_date_begin = pl_grab_post('close_date_begin');
 $close_date_end = pl_grab_post('close_date_end');
 // $open_on_date = pl_grab_post('open_on_date');
+/*	The form's Closing Code(s) box posts close_code, and the filter further
+	down builds AND close_code IN from it, but nothing here read it, so that
+	box did nothing. The three boxes either side of it - status, problem and
+	case_county - are read here and work.
+*/
+$close_code = pl_grab_post('close_code');
 $status = pl_grab_post('status');
 
 $show_sql = pl_grab_post('show_sql');

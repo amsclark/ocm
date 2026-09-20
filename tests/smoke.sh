@@ -15797,6 +15797,85 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 fi
 
+# 90. A filter box the report never reads.
+#
+# The time report's Case Number box posts number, and lsac_outcome's Closing
+# Code(s) box posts close_code. Both handlers build a SQL clause from that
+# field, and neither read it, so the variable was never set, the clause was
+# never added, and the report came back unfiltered with nothing to say the box
+# had been ignored. Same shape as the lsc_gap report reading the wrong name.
+echo
+echo "90. report filter boxes reach the SQL"
+
+tf_url="$OCM_URL/reports/time/report.php"
+tf_dates='date_start=01/01/2000&date_end=12/31/2030&show_sql=1'
+
+tf_post() {
+	: > "$BODY"
+	tf_code="$(curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		-X POST -d "$1" "$tf_url")"
+	tf_curl=$?
+	[ "$tf_curl" = 0 ]
+}
+
+# show_sql renders the statement the report ran, so the clause is either in it
+# or it is not. Check that the statement is on the page before reading it, or
+# every check below would pass on a page with no SQL to look at.
+if ! tf_post "$tf_dates"; then
+	bad "the admin's request for the time report failed (curl exit $tf_curl) - section 90 proves nothing"
+elif [ "$tf_code" != 200 ]; then
+	bad "the admin got $tf_code from the time report - section 90 proves nothing"
+elif ! grep -qF 'SELECT act_date' "$BODY"; then
+	bad "the time report did not print the SQL it ran - section 90 proves nothing"
+else
+	ok "the time report prints the SQL it ran (status 200)"
+
+	# An empty box must add nothing. The form posts number on every submission,
+	# so this is the ordinary case and it has to stay unfiltered.
+	if grep -qF 'AND number=' "$BODY"; then
+		bad "the time report filtered on a case number that was never posted"
+	else
+		ok "the time report adds no case-number clause when the box is empty"
+	fi
+
+	# Second positive control: the funding box already worked, so its clause
+	# proves this probe can see a filter reach the SQL at all.
+	if ! tf_post "${tf_dates}&funding=ZZ-SMOKE-FUND"; then
+		bad "the admin's funding request for the time report failed (curl exit $tf_curl)"
+	elif grep -qF 'activities.funding=' "$BODY" && grep -qF 'ZZ-SMOKE-FUND' "$BODY"; then
+		ok "the time report's funding box reaches the SQL, so a filter is visible here"
+	else
+		bad "the time report's funding box did not reach the SQL - section 90 proves nothing"
+	fi
+
+	# The fix. The clause has to be in the statement and the report has to name
+	# the parameter it applied; the value alone would also appear in the
+	# parameter line, so it is not proof on its own.
+	if ! tf_post "${tf_dates}&number=ZZ-SMOKE-CASE"; then
+		bad "the admin's case-number request for the time report failed (curl exit $tf_curl)"
+	elif ! grep -qF 'AND number=' "$BODY"; then
+		bad "THE TIME REPORT IGNORED ITS CASE NUMBER BOX: no clause for it in the SQL it ran"
+	elif ! grep -qF 'ZZ-SMOKE-CASE' "$BODY"; then
+		bad "the time report added a case-number clause without the number that was posted"
+	elif grep -qF 'Case Number' "$BODY"; then
+		ok "the time report's Case Number box reaches the SQL and is named as a parameter"
+	else
+		bad "the time report filtered on the case number without listing it as a parameter"
+	fi
+fi
+
+# lsac_outcome has the same defect and cannot be shown the same way. Every
+# figure in it comes from an lsac_* `cases` column that no install or upgrade
+# script creates, so on the database this project installs the report stops at
+# its schema guard - section 8e2 - before it reaches any filter, and its
+# working boxes cannot be demonstrated either. So the read itself is asserted.
+if grep -qF "pl_grab_post('close_code')" \
+	"${REPO_DIR}/cms/reports/lsac_outcome/report.php"; then
+	ok "lsac_outcome reads the close_code its form posts"
+else
+	bad "LSAC_OUTCOME BUILDS 'AND close_code IN' FROM A FIELD IT NEVER READS"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
