@@ -26,7 +26,14 @@ if(!pika_report_authorize($report_name)) {
 	pika_exit($buffer);
 }
 
-$output_format = pl_grab_post('output_format');
+/*	The checkbox on this report's form posts report_format, which is the name
+	every other report reads and the name the test further down uses. This read
+	named output_format, a field the form does not have and a variable nothing
+	here touches again, so the test was comparing against a variable that was
+	never set and the CSV branch could not be reached at all: ticking "Send to
+	a spreadsheet" returned the HTML report.
+*/
+$report_format = pl_grab_post('report_format');
 
 $open_date_begin = pl_grab_post('open_date_begin');
 $open_date_end = pl_grab_post('open_date_end');

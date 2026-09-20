@@ -15797,6 +15797,77 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 fi
 
+# 87. The LSC justice gap report sends a spreadsheet when the form asks for one.
+#
+# The report read pl_grab_post('output_format') into a variable it never used
+# again, then chose its output class on $report_format, which nothing assigned.
+# The comparison was therefore against a variable that was never set, the CSV
+# branch could not be reached, and ticking "Send to a spreadsheet" returned the
+# HTML report with no sign that anything had been ignored. Every other report in
+# the tree reads report_format, and so does this one's own form.
+echo
+echo "87. the LSC justice gap report honours the spreadsheet checkbox"
+
+# The report refuses a range with only one end, so both dates are sent. Without
+# them the request ends on the error page and every check below would pass or
+# fail on that page rather than on the output format.
+lg_url="$OCM_URL/reports/lsc_gap/report.php"
+lg_dates='open_date_begin=2019-01-01&open_date_end=2026-12-31'
+
+lg_post() {
+	: > "$BODY"
+	: > "${BODY}.lg"
+	lg_code="$(curl -s --max-time 60 -b "$COOKIES" -D "$BODY" -o "${BODY}.lg" \
+		-w '%{http_code}' -X POST -d "$1" "$lg_url")"
+	lg_curl=$?
+	[ "$lg_curl" = 0 ]
+}
+
+# Positive control first. If the admin cannot run the report at all then the
+# format checks below would be comparing two error pages.
+if ! lg_post "$lg_dates"; then
+	bad "the admin's request for the LSC gap report failed (curl exit $lg_curl) - section 87 proves nothing"
+elif [ "$lg_code" != 200 ]; then
+	bad "the admin got $lg_code from the LSC gap report - section 87 proves nothing"
+elif ! grep -qF 'Category' "${BODY}.lg"; then
+	bad "the LSC gap report did not print its header row - section 87 proves nothing"
+else
+	ok "the admin can run the LSC gap report (status 200)"
+
+	# The default is unchanged: no checkbox means the HTML report.
+	if grep -qiE '^content-type:[[:space:]]*text/html' "$BODY"; then
+		ok "the LSC gap report still answers HTML when the checkbox is not ticked"
+	else
+		bad "the LSC gap report no longer answers HTML by default: $(grep -i '^content-type:' "$BODY" | tr -d '\r')"
+	fi
+
+	# The fix. report_format=csv is what the form's checkbox posts.
+	if ! lg_post "report_format=csv&${lg_dates}"; then
+		bad "the admin's CSV request for the LSC gap report failed (curl exit $lg_curl)"
+	elif ! grep -qiE '^content-type:[[:space:]]*text/x-comma-separated-values' "$BODY"; then
+		bad "THE LSC GAP REPORT IGNORED report_format=csv AND ANSWERED $(grep -i '^content-type:' "$BODY" | tr -d '\r')"
+	elif ! grep -qiE '^content-disposition:[[:space:]]*(attachment|inline);' "$BODY"; then
+		bad "the LSC gap report sent CSV with no Content-Disposition, so it has no filename"
+	elif grep -qi '<html' "${BODY}.lg"; then
+		bad "the LSC gap report sent a CSV content type with an HTML body"
+	elif grep -qF 'Category' "${BODY}.lg"; then
+		ok "the LSC gap report sends a CSV spreadsheet when report_format=csv is posted"
+	else
+		bad "the LSC gap report sent CSV headers with no header row in the body"
+	fi
+
+	# The name the report used to read. It is not a field this form has, so it
+	# must not be a second way to ask for the spreadsheet.
+	if ! lg_post "output_format=csv&${lg_dates}"; then
+		bad "the admin's output_format request for the LSC gap report failed (curl exit $lg_curl)"
+	elif grep -qiE '^content-type:[[:space:]]*text/html' "$BODY"; then
+		ok "output_format=csv is not a second name for the checkbox"
+	else
+		bad "the LSC gap report answered output_format=csv with $(grep -i '^content-type:' "$BODY" | tr -d '\r')"
+	fi
+fi
+
+rm -f "${BODY}.lg"
 # 90. A filter box the report never reads.
 #
 # The time report's Case Number box posts number, and lsac_outcome's Closing
