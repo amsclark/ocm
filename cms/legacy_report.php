@@ -31,9 +31,11 @@ if (isset($_GET['report']))
 
 /*	Read access to the case is checked here, before anything is included.
 
-	The two stock per-case forms check it themselves, and have to, because both
-	can be requested directly. This check is for what else this dispatcher can
-	reach. The branch below prefers
+	The two stock per-case forms check it themselves as well. compen_bill's form
+	has to: it runs on its own and can be requested directly. case_print's form
+	cannot be, and now refuses a direct request with a 404, so its own check
+	guards only what this dispatcher hands it. This check is for what else this
+	dispatcher can reach. The branch below prefers
 	pl_custom_directory()/extensions/case_print/case_print-form.php whenever that
 	file exists - for any value of $report, not just case_print - and a
 	deployment's own copy of that form lives outside this repository, so nothing

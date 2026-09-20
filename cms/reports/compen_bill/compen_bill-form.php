@@ -1,5 +1,12 @@
 <?php
-chdir('../../');
+/*	cms/ is where the include_path below is written from, and this file is
+	reached two ways: fetched directly, where the working directory is this
+	directory, and included by legacy_report.php, where it is already cms/.
+	A relative chdir is right for the first and one level too far for the
+	second, which left the dispatcher answering 500 with an empty body. The
+	path is taken from this file instead, so both ways land on cms/.
+*/
+chdir(__DIR__ . '/../../');
 
 require_once('pika-danio.php');
 
