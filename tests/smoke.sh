@@ -12648,11 +12648,35 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	sm77_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
 
 	SM77_ACT=9931
-	sm77_drop() { adb "DELETE FROM activities WHERE act_id = ${SM77_ACT}" >/dev/null; }
+	SM77_OWN_CASE=0
+	SM77_CASE=''
+	sm77_drop() {
+		adb "DELETE FROM activities WHERE act_id = ${SM77_ACT}" >/dev/null
+		if [ "$SM77_OWN_CASE" = 1 ] && [ -n "$SM77_CASE" ]; then
+			adb "DELETE FROM cases WHERE case_id = ${SM77_CASE}
+				AND number = 'ZZ-SQL-1'" >/dev/null
+		fi
+	}
 	sm77_drop
 
 	SM77_CASE="$(adb "SELECT case_id FROM cases ORDER BY case_id LIMIT 1")"
 	SM77_CASE="$(printf '%s' "$SM77_CASE" | tr -d '[:space:]')"
+
+	# 77c and 77d used to borrow whatever case the database happened to hold,
+	# and to skip in silence when it held none. A suite that reports a
+	# different number of checks depending on the data it finds cannot be read,
+	# and the two checks that did not run were the ones covering the case list.
+	# So make a case when there is none, and delete it again below.
+	if [ -z "$SM77_CASE" ]; then
+		SM77_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+		SM77_CASE="$(printf '%s' "$SM77_CASE" | tr -d '[:space:]')"
+		SM77_OWN_CASE=1
+
+		adb "INSERT INTO cases
+			(case_id, number, client_id, user_id, office, open_date, status, problem)
+			VALUES (${SM77_CASE:-0}, 'ZZ-SQL-1', 0, 1, 'ZZO', CURDATE(), 'O', '01')" \
+			>/dev/null
+	fi
 
 	adb "INSERT INTO activities (act_id, case_id, user_id, act_type, act_date)
 		VALUES (${SM77_ACT}, ${SM77_CASE:-0}, 1, 'C', '2026-01-01')" >/dev/null
@@ -12696,7 +12720,9 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		bad "an activity id can still break out of its quotes [$SM77_OUT]"
 	fi
 
-	if [ -n "$SM77_CASE" ]; then
+	if [ -z "$SM77_CASE" ]; then
+		bad "77 HAD NO CASE TO LOOK UP, SO THE CASE LIST INJECTION CHECKS DID NOT RUN"
+	else
 		# 77c. Positive control for the case list.
 		if sm77_says 'CASE_PLAIN:1'; then
 			ok "a case is still found by its own id"
