@@ -15205,6 +15205,291 @@ if [ "$HAVE_DB" = 1 ]; then
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 fi
 
+# 85. The pop-up timer gates on read access to the case, and on edit access
+# before it writes a time slip onto it.
+#
+# cms/timer.php had no authorization call at all. It takes case_id off the query
+# string, hands it to the case_menu plugin and to pikaCase, and prints the case
+# number and the client's name, so any signed-in user read a case that case.php
+# refuses them. Ending the timer is a write and was ungated too: that branch
+# builds an Activity out of the same query string and saves it against the case,
+# so the same user could file a time slip on any case id. Measured before the
+# gate: a user whose group grants no case access got HTTP 200 with the number
+# and the client's surname, and an activity row landed on the case.
+#
+# Three users, because the two halves need different answers from the same
+# fixture. The reader is refused outright. The viewer may read every case and
+# edit none, so the timer opens for them and only the end branch is refused --
+# read access is not a licence to write. The case's own handler keeps both.
+#
+# The "(No Case #)" timer is checked as well: a gate that refused a timer naming
+# no case would be a regression, not a fix.
+if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
+	TMG='zz_tmr_none'
+	TMRG='zz_tmr_read'
+	TMRD='zz_tmr_reader'
+	TMVW='zz_tmr_viewer'
+	TMOW='zz_tmr_owner'
+	TMPWD='zz-tmr-Passw0rd'
+	TMSECRET='ZZTMRSECRETCLIENT'
+	TMNUM='ZZ-TMR-1'
+	TMJAR="$(mktemp)"
+	TMVJAR="$(mktemp)"
+	TMOJAR="$(mktemp)"
+
+	cleanup_tmr() {
+		# The activities go first: they are what the end branch writes, and a
+		# leftover row would be counted by the next run as a leak.
+		if [ -n "${TMCASE:-}" ]; then
+			adb "DELETE FROM activities WHERE case_id = ${TMCASE}" >/dev/null
+		fi
+		# Session ids are read into the shell, not compared between the two
+		# tables in SQL: csrf_tokens.session_id is utf8mb4_unicode_ci and
+		# user_sessions.session_id takes the database default, so joining them
+		# answers "Illegal mix of collations" -- which adb sends to /dev/null,
+		# leaving a DELETE that removes nothing and says nothing.
+		tmr_uids="$(adb "SELECT user_id FROM users
+			WHERE username IN ('${TMRD}', '${TMVW}', '${TMOW}')" | paste -sd, -)"
+		tmr_sids=''
+		if [ -n "$tmr_uids" ]; then
+			tmr_sids="$(adb "SELECT CONCAT(CHAR(39), session_id, CHAR(39)) FROM user_sessions
+				WHERE user_id IN (${tmr_uids})" | paste -sd, -)"
+		fi
+		if [ -n "$tmr_sids" ]; then
+			adb "DELETE FROM csrf_tokens WHERE session_id IN (${tmr_sids})" >/dev/null
+		fi
+		if [ -n "$tmr_uids" ]; then
+			adb "DELETE FROM user_sessions WHERE user_id IN (${tmr_uids})" >/dev/null
+		fi
+		adb "DELETE FROM cases WHERE number = '${TMNUM}'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = '${TMSECRET}'" >/dev/null
+		adb "DELETE FROM users WHERE username IN ('${TMRD}', '${TMVW}', '${TMOW}')" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id IN ('${TMG}', '${TMRG}')" >/dev/null
+
+		# A DELETE that failed has to be said out loud, or this run reports a
+		# clean finish and the next one measures a dirty database. The login
+		# rows in audit_log are kept on purpose and are not counted.
+		tmr_left="$(adb "SELECT COUNT(*) FROM users WHERE username IN ('${TMRD}', '${TMVW}', '${TMOW}')")"
+		tmr_left="${tmr_left}$(adb "SELECT COUNT(*) FROM cases WHERE number = '${TMNUM}'")"
+		tmr_left="${tmr_left}$(adb "SELECT COUNT(*) FROM contacts WHERE last_name = '${TMSECRET}'")"
+		tmr_left="${tmr_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id IN ('${TMG}', '${TMRG}')")"
+		if [ -n "$tmr_uids" ]; then
+			tmr_left="${tmr_left}$(adb "SELECT COUNT(*) FROM user_sessions
+				WHERE user_id IN (${tmr_uids})")"
+		else
+			tmr_left="${tmr_left}0"
+		fi
+		if [ -n "$tmr_sids" ]; then
+			tmr_left="${tmr_left}$(adb "SELECT COUNT(*) FROM csrf_tokens
+				WHERE session_id IN (${tmr_sids})")"
+		else
+			tmr_left="${tmr_left}0"
+		fi
+		if [ "$tmr_left" != 000000 ]; then
+			bad "the timer fixture could not be removed (users, case, contact, groups, sessions, csrf rows still present: ${tmr_left})"
+		fi
+		rm -f "$TMJAR" "$TMVJAR" "$TMOJAR"
+	}
+
+	# curl's own exit status is checked on every request: a request that timed
+	# out after the expected words had arrived would otherwise read as a
+	# refusal. $BODY is emptied first, because a stale body left by the
+	# previous request would read as one too.
+	tmr_fetch() {
+		: > "$BODY"
+		tmr_code="$(curl -s --max-time 60 -b "$1" -o "$BODY" -w '%{http_code}' "$2")"
+		tmr_curl=$?
+		[ "$tmr_curl" = 0 ]
+	}
+
+	tmr_login() {
+		: > "$1"
+		: > "$BODY"
+		tmr_code="$(curl -sL --max-time 30 -c "$1" -b "$1" -o "$BODY" -w '%{http_code}' \
+			-X POST -d "login_user=${2}&login_pass=${TMPWD}&auth_id=1" "$OCM_URL/")"
+		tmr_curl=$?
+		[ "$tmr_curl" = 0 ] && [ "$tmr_code" = 200 ] && [ -s "$BODY" ] \
+			&& ! grep -q 'login_pass' "$BODY"
+	}
+
+	# How many activities sit on the fixture case. The end branch writing one is
+	# the leak itself on the write side, not a proxy for it.
+	tmr_acts() {
+		adb "SELECT COUNT(*) FROM activities WHERE case_id = ${TMCASE}"
+	}
+
+	TMCASE=''
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tmr' EXIT
+	cleanup_tmr
+
+	# One group with every flag off, and one that may read every case and edit
+	# none. read_all without edit_all is the shape that separates the two gates.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${TMG}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${TMRG}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	TMHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$TMPWD" </dev/null 2>/dev/null)"
+	TMRUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${TMRUID}, '${TMRD}', '${TMHASH}', 1, '${TMG}', 0)" >/dev/null
+	TMVUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${TMVUID}, '${TMVW}', '${TMHASH}', 1, '${TMRG}', 0)" >/dev/null
+	TMOUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${TMOUID}, '${TMOW}', '${TMHASH}', 1, '${TMG}', 0)" >/dev/null
+
+	# The client's surname is a marker: the case menu prints it, so finding it in
+	# a response is the read leak itself. cases.office is char(3) -- a longer
+	# value is silently truncated on the shipped non-strict database and rejected
+	# under strict SQL mode, where the failed insert would take the positive
+	# controls down with it.
+	TMCID="$(adb "SELECT COALESCE(MAX(contact_id), 0) + 1 FROM contacts")"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${TMCID}, 'Zz', '${TMSECRET}')" >/dev/null
+	TMCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, client_id, user_id, office, open_date, status, problem)
+		VALUES (${TMCASE}, '${TMNUM}', ${TMCID}, ${TMOUID}, 'ZZO', CURDATE(), 'O', '01')" >/dev/null
+
+	tmr_case="$OCM_URL/timer.php?case_id=${TMCASE}"
+	tmr_end="${tmr_case}&end=1&elapsed_mins=60&act_type=C"
+
+	if [ -z "$TMHASH" ] || [ -z "${TMCASE:-}" ] || [ -z "${TMCID:-}" ] \
+		|| [ "$(adb "SELECT COUNT(*) FROM cases WHERE case_id = ${TMCASE} AND number = '${TMNUM}'")" != 1 ]; then
+		bad "could not seed the timer authorization fixture"
+	else
+		# Positive control. adb hides stderr, so a fixture insert that failed is
+		# silent; if the admin cannot see the marker then every refusal below
+		# would pass on a page that never had anything to leak.
+		if ! tmr_fetch "$COOKIES" "$tmr_case"; then
+			bad "the admin's request for timer.php failed (curl exit $tmr_curl) - section 85 proves nothing"
+		elif [ "$tmr_code" = 200 ] && grep -qF "$TMSECRET" "$BODY" && grep -qF "$TMNUM" "$BODY"; then
+			ok "the admin sees the case number and the client name in timer.php (status 200)"
+		else
+			bad "the admin got $tmr_code from timer.php without the case fixture in it - section 85 proves nothing"
+		fi
+
+		# Each login is checked on its own. A user who could not log in would
+		# otherwise be refused for want of a session and filed as the gate working.
+		if ! tmr_login "$TMJAR" "$TMRD"; then
+			bad "the timer reader could not log in (curl exit $tmr_curl, status $tmr_code) - section 85 is untested"
+		elif ! tmr_login "$TMVJAR" "$TMVW"; then
+			bad "the read-only timer user could not log in (curl exit $tmr_curl, status $tmr_code) - section 85 is untested"
+		elif ! tmr_login "$TMOJAR" "$TMOW"; then
+			bad "the case's own handler could not log in (curl exit $tmr_curl, status $tmr_code) - section 85 is untested"
+		else
+			ok "all three throwaway timer users can log in"
+
+			# Control on the fixture: the case page itself refuses the reader.
+			# Everything below is the timer reaching the same answer, so if
+			# case.php lets this user in there is nothing to say.
+			if ! tmr_fetch "$TMJAR" "$OCM_URL/case.php?case_id=${TMCASE}"; then
+				bad "the reader's request for case.php failed (curl exit $tmr_curl) - section 85 proves nothing"
+			elif [ "$tmr_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "the fixture case is refused to the reader on case.php (status 403)"
+			else
+				bad "case.php answered the reader $tmr_code, not the refusal - section 85 proves nothing"
+			fi
+
+			if ! tmr_fetch "$TMJAR" "$tmr_case"; then
+				bad "the reader's request for timer.php failed (curl exit $tmr_curl), so the refusal is unproven"
+			elif grep -qF "$TMSECRET" "$BODY" || grep -qF "$TMNUM" "$BODY"; then
+				bad "timer.php PRINTED CASE ${TMNUM} AND ITS CLIENT TO A USER WHO CANNOT READ THE CASE"
+			elif [ "$tmr_code" != 403 ]; then
+				bad "timer.php hid the case from the reader but answered $tmr_code, not 403"
+			elif grep -q 'This case is not viewable' "$BODY"; then
+				ok "timer.php refuses a user who cannot read the case"
+			else
+				bad "timer.php answered 403 without saying why"
+			fi
+
+			# An id that names no case, and an id that is not a case id at all,
+			# have to answer the same way as a case the reader may not read.
+			# Before the gate both printed the generic error page at HTTP 200,
+			# which both lost the refusal and told the caller the id was unused.
+			for tmr_id in 99999999 abc; do
+				if ! tmr_fetch "$TMJAR" "$OCM_URL/timer.php?case_id=${tmr_id}"; then
+					bad "the reader's request for timer.php?case_id=${tmr_id} failed (curl exit $tmr_curl)"
+				elif [ "$tmr_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+					ok "timer.php answers case_id='${tmr_id}' the same refusal an existing case gets"
+				else
+					bad "timer.php ANSWERED case_id='${tmr_id}' WITH $tmr_code INSTEAD OF THE REFUSAL AN EXISTING CASE GETS, SO A SIGNED-IN USER CAN TELL REAL CASE IDS FROM INVENTED ONES"
+				fi
+			done
+
+			# A timer naming no case at all is a supported path and has nothing
+			# to authorize.
+			if ! tmr_fetch "$TMJAR" "$OCM_URL/timer.php"; then
+				bad "the reader's request for a timer with no case failed (curl exit $tmr_curl)"
+			elif [ "$tmr_code" = 200 ] && grep -qF '(No Case #)' "$BODY"; then
+				ok "a timer naming no case still opens for a user with no case access"
+			else
+				bad "timer.php answered a request naming no case $tmr_code, so the gate took the (No Case #) timer away"
+			fi
+
+			# The write half. The viewer may read every case, so the timer opens
+			# and prints the number; ending it writes an Activity onto a case
+			# they may not edit, and that is what has to be refused.
+			if ! tmr_fetch "$TMVJAR" "$tmr_case"; then
+				bad "the read-only user's request for timer.php failed (curl exit $tmr_curl)"
+			elif [ "$tmr_code" = 200 ] && grep -qF "$TMNUM" "$BODY"; then
+				ok "timer.php still opens for a user who may read the case but not edit it"
+			else
+				bad "timer.php answered a user who may read the case $tmr_code, so the gate refused a reader it should allow"
+			fi
+
+			tmr_before="$(tmr_acts)"
+
+			for tmr_pair in "$TMVJAR:a user who may read the case but not edit it" \
+				"$TMJAR:a user who cannot read the case"; do
+				tmr_jar="${tmr_pair%%:*}"
+				tmr_who="${tmr_pair#*:}"
+
+				if ! tmr_fetch "$tmr_jar" "$tmr_end"; then
+					bad "the end-timer request by ${tmr_who} failed (curl exit $tmr_curl)"
+				elif [ "$tmr_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+					ok "ending a timer on the case is refused to ${tmr_who}"
+				else
+					bad "timer.php answered the end-timer request by ${tmr_who} ${tmr_code} instead of the refusal"
+				fi
+
+				if [ "$(tmr_acts)" != "$tmr_before" ]; then
+					bad "ENDING A TIMER WROTE AN ACTIVITY ONTO CASE ${TMNUM} FOR ${tmr_who}"
+				else
+					ok "no activity was written onto the case for ${tmr_who}"
+				fi
+			done
+
+			# The other half of the write gate: the case's own handler keeps the
+			# time slip. Without this the two refusals above would also pass on
+			# a timer that had stopped saving for everyone.
+			#
+			# Counted from the row count immediately before this request, not
+			# from the one taken before the loop: if a refusal above had let a
+			# write through, this check would then be measuring that write and
+			# would report the handler's own slip as missing.
+			tmr_before_own="$(tmr_acts)"
+
+			if ! tmr_fetch "$TMOJAR" "$tmr_end"; then
+				bad "the handler's end-timer request failed (curl exit $tmr_curl), so the write is unproven"
+			elif [ "$tmr_code" != 200 ]; then
+				bad "the case's own handler got $tmr_code ending a timer on their own case"
+			elif [ "$(tmr_acts)" = "$((tmr_before_own + 1))" ]; then
+				ok "the case's own handler still files a time slip on the case"
+			else
+				bad "the case's own handler ended a timer and no activity was written (was ${tmr_before_own}, now $(tmr_acts))"
+			fi
+		fi
+	fi
+
+	cleanup_tmr
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+else
+	printf '  skip the timer authorization checks (needs the database and the container)\n'
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
