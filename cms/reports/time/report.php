@@ -42,6 +42,13 @@ $category = pl_grab_post('category');
 $office = pl_grab_post('office');
 $user_id = pl_grab_post('user_id');
 $pba_id = pl_grab_post('pba_id');
+/*	The form's Case Number box posts number, and the filter further down builds
+	AND number= from $number, but nothing here read it. So the variable was
+	never set, the filter was never applied, and typing a case number returned
+	every row in the date range with nothing to say the box had been ignored.
+	Only `cases` has a number column, so the clause is unambiguous.
+*/
+$number = pl_grab_post('number');
 $date_start = pl_grab_post('date_start');
 $date_end = pl_grab_post('date_end');
 $funding = pl_grab_post('funding'); 
