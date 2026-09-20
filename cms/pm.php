@@ -76,6 +76,19 @@ pika_exit();
 	well. pl_case_not_viewable() reads templates/default.html by a relative path,
 	so from app/lib it would find no template.
 
+	$_GET and $_POST are both read, rather than $_REQUEST or one pl_grab_*()
+	call, because the extension chooses its own getter and the two can disagree.
+	With request_order at its "GP" default a POST body wins in $_REQUEST, so
+
+		POST pm.php/reports/<ext>/<file>.php?case_id=42
+		case_id=
+
+	left a $_REQUEST gate reading blank while an extension calling
+	pl_grab_get('case_id') still read case 42. Measured on the same stack, on
+	both branches. Two different non-blank values are refused rather than
+	ranked, because there is no way to know here which one the extension will
+	read.
+
 	A request that names no case is unaffected: with no case_id there is nothing
 	to check, and an extension that reports across cases still runs.
 
@@ -84,13 +97,48 @@ pika_exit();
 	to tell real case numbers from invented ones. This is the rule
 	legacy_report.php uses, for the same reason. An extension that passes 0 to
 	mean "no case" should pass nothing instead.
-*/
-$pm_case_id = pl_grab_var('case_id');
 
-if (!is_null($pm_case_id) && '' !== $pm_case_id)
+	This gate covers the case_id parameter. What an extension does with any
+	other parameter it is handed is in the deployment's own code, which this
+	repository does not carry and these checks cannot speak for.
+*/
+$pm_case_ids = array();
+$pm_case_id_unusable = false;
+
+foreach (array($_GET, $_POST) as $pm_source)
+{
+	if (!isset($pm_source['case_id']))
+	{
+		continue;
+	}
+
+	/*	An array, as ?case_id[]=42 sends, is not a case id at all. Skipping it
+		would leave the gate silent about a parameter the extension still sees.
+	*/
+	if (!is_scalar($pm_source['case_id']))
+	{
+		$pm_case_id_unusable = true;
+		continue;
+	}
+
+	$pm_value = (string) $pm_source['case_id'];
+
+	if ('' !== $pm_value)
+	{
+		$pm_case_ids[] = $pm_value;
+	}
+}
+
+if ($pm_case_id_unusable || 0 < count($pm_case_ids))
 {
 	$pm_base_url = pl_settings_get('base_url');
-	$pm_case_id = filter_var($pm_case_id, FILTER_VALIDATE_INT,
+
+	if ($pm_case_id_unusable || 1 < count(array_unique($pm_case_ids)))
+	{
+		pl_case_not_viewable($pm_base_url);
+	}
+
+	$pm_case_id = filter_var($pm_case_ids[0], FILTER_VALIDATE_INT,
 		array('options' => array('min_range' => 1)));
 
 	if (false === $pm_case_id)

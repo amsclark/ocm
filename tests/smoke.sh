@@ -6738,27 +6738,48 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		# user_sessions.session_id takes the database default, so comparing the
 		# two answers "Illegal mix of collations" and, with adb sending stderr
 		# to /dev/null, would remove nothing and say nothing.
-		pm_sids="$(adb "SELECT CONCAT(CHAR(39), session_id, CHAR(39)) FROM user_sessions
-			WHERE user_id IN (SELECT user_id FROM users
-				WHERE username IN ('${PMRD}', '${PMOW}'))" | paste -sd, -)"
+		# The fixture's own ids, read before anything is deleted. Counting
+		# sessions through a subquery on the users table answered 0 as soon as
+		# those users were gone, so a session delete that removed nothing still
+		# looked like a clean sweep.
+		pm_uids="$(adb "SELECT user_id FROM users
+			WHERE username IN ('${PMRD}', '${PMOW}')" | paste -sd, -)"
+		pm_sids=''
+		if [ -n "$pm_uids" ]; then
+			pm_sids="$(adb "SELECT CONCAT(CHAR(39), session_id, CHAR(39)) FROM user_sessions
+				WHERE user_id IN (${pm_uids})" | paste -sd, -)"
+		fi
 		if [ -n "$pm_sids" ]; then
 			adb "DELETE FROM csrf_tokens WHERE session_id IN (${pm_sids})" >/dev/null
 		fi
-		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users
-			WHERE username IN ('${PMRD}', '${PMOW}'))" >/dev/null
+		if [ -n "$pm_uids" ]; then
+			adb "DELETE FROM user_sessions WHERE user_id IN (${pm_uids})" >/dev/null
+		fi
 		adb "DELETE FROM cases WHERE number = '${PMNUM}'" >/dev/null
 		adb "DELETE FROM users WHERE username IN ('${PMRD}', '${PMOW}')" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${PMG}'" >/dev/null
 
 		# audit_log keeps its login rows on purpose. Everything else the fixture
 		# made has to be gone, or the next run measures this one's leftovers.
+		# Sessions and CSRF rows are counted by the ids captured above: by now the
+		# users table cannot answer for them either way.
 		pm_left="$(adb "SELECT COUNT(*) FROM users WHERE username IN ('${PMRD}', '${PMOW}')")"
 		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM cases WHERE number = '${PMNUM}'")"
 		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${PMG}'")"
-		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM user_sessions WHERE user_id IN
-			(SELECT user_id FROM users WHERE username IN ('${PMRD}', '${PMOW}'))")"
-		if [ -n "${pm_swept:-}" ] && [ "$pm_left" != "0000" ]; then
-			bad "the extension case fixture could not be removed (users, case, group, sessions still present: ${pm_left})"
+		if [ -n "$pm_uids" ]; then
+			pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM user_sessions
+				WHERE user_id IN (${pm_uids})")"
+		else
+			pm_left="${pm_left}0"
+		fi
+		if [ -n "$pm_sids" ]; then
+			pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM csrf_tokens
+				WHERE session_id IN (${pm_sids})")"
+		else
+			pm_left="${pm_left}0"
+		fi
+		if [ -n "${pm_swept:-}" ] && [ "$pm_left" != "00000" ]; then
+			bad "the extension case fixture could not be removed (users, case, group, sessions, csrf rows still present: ${pm_left})"
 		fi
 	}
 	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
@@ -6799,6 +6820,26 @@ else
 	echo "ZZPM-NO-CASE";
 }
 PMPHP
+cat > "$D/zzcasex/zzcaseget.php" <<'PMGETPHP'
+<?php
+/*	The same report, reading $_GET instead of $_REQUEST. A deployment picks its
+	own getter, and the two disagree: with request_order at its "GP" default a
+	POST body wins in $_REQUEST, so a gate reading $_REQUEST saw a blank case_id
+	while this file still read the one in the query string.
+*/
+$q = DB::query("SELECT number FROM cases WHERE case_id = " . (int) pl_grab_get('case_id') . " LIMIT 1");
+
+if ($q && DBResult::numRows($q) > 0)
+{
+	$r = DBResult::fetchRow($q);
+	echo "ZZPM-CASE-NUMBER:" . $r['number'];
+}
+
+else
+{
+	echo "ZZPM-NO-CASE";
+}
+PMGETPHP
 PMSEED
 
 	# --path-as-is: the fixture paths are the point, curl must not normalise
@@ -6931,6 +6972,51 @@ PMSEED
 					bad "pm.php/${pm_path} answered the reader ${pm_code} instead of the refusal"
 				fi
 			done
+
+			pm_post() {
+				: > "$BODY"
+				pm_code="$(curl -s --max-time 60 -b "$1" -o "$BODY" -w '%{http_code}' \
+					--path-as-is -X POST -d "$3" "$OCM_URL/$2")"
+				pm_curl=$?
+				[ "$pm_curl" = 0 ]
+			}
+
+			# zzcaseget.php reads the query string, so a POST body that blanks
+			# case_id hid the case from a gate reading the merged $_REQUEST array
+			# while the extension still read it. Both branches.
+			for pm_path in "reports/zzcasex/zzcaseget.php" "zzcasex/zzcaseget.php"; do
+				if ! pm_post "$PMRJAR" "pm.php/${pm_path}?case_id=${PMCASE}" 'case_id='; then
+					bad "the reader's POST to pm.php/${pm_path} failed (curl exit $pm_curl)"
+				elif grep -qF "$PMNUM" "$BODY"; then
+					bad "pm.php/${pm_path} PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN A POST BODY BLANKED THE case_id IN THE QUERY STRING"
+				elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+					ok "pm.php/${pm_path} refuses when a POST body blanks the case_id in the query string"
+				else
+					bad "pm.php/${pm_path} answered a blanked POST body ${pm_code} instead of the refusal"
+				fi
+			done
+
+			# Two different non-blank values, one per source. Nothing here can know
+			# which one the extension will read, so the request is refused.
+			if ! pm_post "$PMRJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=0'; then
+				bad "the reader's POST with a conflicting case_id failed (curl exit $pm_curl)"
+			elif grep -qF "$PMNUM" "$BODY"; then
+				bad "pm.php PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN THE QUERY STRING AND THE POST BODY NAMED DIFFERENT CASES"
+			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "pm.php refuses a request whose query string and POST body name different cases"
+			else
+				bad "pm.php answered a conflicting case_id ${pm_code} instead of the refusal"
+			fi
+
+			# The same extension, read by the case's own handler: the gate must not
+			# have cost the $_GET reader its report.
+			if ! pm_as "$PMOJAR" "pm.php/zzcasex/zzcaseget.php?case_id=${PMCASE}"; then
+				bad "the owner's request for the query-string extension report failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 200 ] && grep -qF "ZZPM-CASE-NUMBER:${PMNUM}" "$BODY"; then
+				ok "the case's own handler still gets a report that reads the query string"
+			else
+				bad "the query-string extension report answered the case's own handler ${pm_code}"
+			fi
 
 			# An id that names no case, and an id that is not a case id at all,
 			# have to answer the same way as a case the reader may not read.
