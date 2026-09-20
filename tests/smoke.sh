@@ -6720,6 +6720,10 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	PMOW=zz_pm_owner
 	PMPWD='zz-pm-Passw0rd'
 	PMNUM=ZZ-PM-1
+	# The mixed-source checks need a case that EXISTS and that the caller may
+	# not read. With a case_id nothing owns, a gate that only checked the row
+	# exists would pass them, and they would not be about authorization at all.
+	PMNUM2=ZZ-PM-2
 
 	cleanup_pm() {
 		adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
@@ -6755,7 +6759,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		if [ -n "$pm_uids" ]; then
 			adb "DELETE FROM user_sessions WHERE user_id IN (${pm_uids})" >/dev/null
 		fi
-		adb "DELETE FROM cases WHERE number = '${PMNUM}'" >/dev/null
+		adb "DELETE FROM cases WHERE number IN ('${PMNUM}', '${PMNUM2}')" >/dev/null
 		adb "DELETE FROM users WHERE username IN ('${PMRD}', '${PMOW}')" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${PMG}'" >/dev/null
 
@@ -6764,7 +6768,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		# Sessions and CSRF rows are counted by the ids captured above: by now the
 		# users table cannot answer for them either way.
 		pm_left="$(adb "SELECT COUNT(*) FROM users WHERE username IN ('${PMRD}', '${PMOW}')")"
-		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM cases WHERE number = '${PMNUM}'")"
+		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM cases
+			WHERE number IN ('${PMNUM}', '${PMNUM2}')")"
 		pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${PMG}'")"
 		if [ -n "$pm_uids" ]; then
 			pm_left="${pm_left}$(adb "SELECT COUNT(*) FROM user_sessions
@@ -6927,6 +6932,9 @@ PMSEED
 		# non-strict database and rejected under strict SQL mode.
 		adb "INSERT INTO cases (case_id, number, user_id, office, open_date, status)
 			VALUES (${PMCASE}, '${PMNUM}', ${PMOWID}, 'ZZO', CURDATE(), 'O')" >/dev/null
+		PMCASE2=$((PMCASE + 1))
+		adb "INSERT INTO cases (case_id, number, user_id, office, open_date, status)
+			VALUES (${PMCASE2}, '${PMNUM2}', ${PMRDID}, 'ZZO', CURDATE(), 'O')" >/dev/null
 
 		PMRJAR="$(mktemp)"
 		PMOJAR="$(mktemp)"
@@ -7026,6 +7034,25 @@ PMSEED
 				[ "$pm_curl" = 0 ] && [ -n "$pm_pairs" ]
 			}
 
+			# Controls for the second case. Without these the two mixed-source
+			# checks below could pass because the row was never inserted, which
+			# is the same silence the missing-case branch produces.
+			if ! pm_as "$PMRJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE2}"; then
+				bad "the reader's request for its own case failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 200 ] && grep -qF "ZZPM-CASE-NUMBER:${PMNUM2}" "$BODY"; then
+				ok "the second case exists and its own owner reads it"
+			else
+				bad "THE SECOND CASE FIXTURE DID NOT RENDER FOR ITS OWNER (status ${pm_code}), SO THE MIXED-SOURCE CHECKS PROVE NOTHING"
+			fi
+
+			if ! pm_as "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE2}"; then
+				bad "the handler's request for the other case failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "the second case is refused to the first case's handler"
+			else
+				bad "pm.php ANSWERED CASE ${PMNUM2} ${pm_code} TO A USER WHO CANNOT READ IT"
+			fi
+
 			# request_order is unset in the shipped container, so $_REQUEST is
 			# built in variables_order -- EGPCS -- and a cookie overwrites the
 			# query string and the body both. A gate reading only $_GET and
@@ -7042,10 +7069,11 @@ PMSEED
 			fi
 
 			# The case's own handler, with a readable case in the query string and
-			# an unreadable one in a second source. Authorizing only the first
-			# value found would let these through, and the extension may read
-			# either one.
-			if ! pm_cookie "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=99999999'; then
+			# a case it may not read in a second source. Authorizing only the
+			# first value found would let these through, and the extension may
+			# read either one. The second id names a real row, so a refusal here
+			# is a refusal on permission and not on a missing case.
+			if ! pm_cookie "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" "case_id=${PMCASE2}"; then
 				bad "the handler's mixed cookie request to pm.php failed (curl exit $pm_curl)"
 			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 				ok "pm.php refuses a readable case in the query string beside an unreadable one in a cookie"
@@ -7053,7 +7081,7 @@ PMSEED
 				bad "pm.php ANSWERED A READABLE case_id BESIDE AN UNREADABLE ONE IN A COOKIE ${pm_code} INSTEAD OF THE REFUSAL, SO ONLY THE FIRST SOURCE IS AUTHORIZED"
 			fi
 
-			if ! pm_post "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=99999999'; then
+			if ! pm_post "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" "case_id=${PMCASE2}"; then
 				bad "the handler's mixed POST to pm.php failed (curl exit $pm_curl)"
 			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 				ok "pm.php refuses a readable case in the query string beside an unreadable one in the POST body"
@@ -7068,10 +7096,21 @@ PMSEED
 				bad "the handler's spaced-value POST to pm.php failed (curl exit $pm_curl)"
 			elif [ "$pm_code" = 403 ] || grep -q 'This case is not viewable' "$BODY"; then
 				bad "pm.php refused the case's own handler for spelling one case id two ways (status ${pm_code})"
-			elif [ "$pm_code" = 200 ]; then
+			elif [ "$pm_code" = 200 ] && grep -qF "ZZPM-CASE-NUMBER:${PMNUM}" "$BODY"; then
 				ok "pm.php allows two spellings of one case the caller may read"
 			else
-				bad "pm.php answered two spellings of one readable case ${pm_code}"
+				bad "pm.php answered two spellings of one readable case ${pm_code} without the report"
+			fi
+
+			# A leading zero is the same case to every reader of case_id, because
+			# they all cast to int. filter_var() disagrees, so the gate has to
+			# normalize before it compares, or it refuses the case's own handler.
+			if ! pm_post "$PMOJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" "case_id=0${PMCASE}"; then
+				bad "the handler's leading-zero POST to pm.php failed (curl exit $pm_curl)"
+			elif [ "$pm_code" = 200 ] && grep -qF "ZZPM-CASE-NUMBER:${PMNUM}" "$BODY"; then
+				ok "pm.php reads a leading-zero case id as the case it names"
+			else
+				bad "pm.php refused the case's own handler for writing its case id with a leading zero (status ${pm_code})"
 			fi
 
 			# The same extension, read by the case's own handler: the gate must not
@@ -12650,12 +12689,12 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	SM77_ACT=9931
 	SM77_OWN_CASE=0
 	SM77_CASE=''
+	# The row is deleted by its number, not by the id this run chose, so a run
+	# that died between the insert and the checks does not leave a case behind
+	# for the next one to borrow and never clean up.
 	sm77_drop() {
 		adb "DELETE FROM activities WHERE act_id = ${SM77_ACT}" >/dev/null
-		if [ "$SM77_OWN_CASE" = 1 ] && [ -n "$SM77_CASE" ]; then
-			adb "DELETE FROM cases WHERE case_id = ${SM77_CASE}
-				AND number = 'ZZ-SQL-1'" >/dev/null
-		fi
+		adb "DELETE FROM cases WHERE number = 'ZZ-SQL-1'" >/dev/null
 	}
 	sm77_drop
 

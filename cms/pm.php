@@ -135,12 +135,28 @@ foreach (array($_GET, $_POST, $_COOKIE, $_REQUEST) as $pm_source)
 		continue;
 	}
 
-	$pm_value = (string) $pm_source['case_id'];
+	/*	Trimmed before the empty test, so that a case_id of one space is
+		treated the same way as an empty one. The getters trim as well, so
+		neither of them names a case.
+	*/
+	$pm_value = trim((string) $pm_source['case_id']);
 
-	if ('' !== $pm_value)
+	if ('' === $pm_value)
 	{
-		$pm_case_values[] = $pm_value;
+		continue;
 	}
+
+	/*	filter_var() refuses a decimal written with leading zeros, but every
+		reader of case_id casts to int, and (int) '042' is 42. Refusing the
+		request would refuse a case the caller is allowed to read, so drop the
+		zeros here and let the validation below see the number they wrote.
+	*/
+	if (preg_match('/^\+?0+[0-9]+$/', $pm_value))
+	{
+		$pm_value = ltrim(ltrim($pm_value, '+'), '0');
+	}
+
+	$pm_case_values[] = $pm_value;
 }
 
 if ($pm_case_id_unusable || 0 < count($pm_case_values))
