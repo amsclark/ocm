@@ -13952,15 +13952,21 @@ else
 		bad "a case with no client returned ${cp_code} - the report is a fatal, not a page"
 	fi
 
-	# An id that names no case at all is a bad request, not a crash. Every
-	# field comes out blank; the point is that the page renders.
+	# An id that names no case at all is a bad request, not a crash. It used
+	# to render a report with every field blank. Section 84's read_case gate
+	# refuses it instead, because there is no row to judge the reader
+	# against, so the answer is now the same 403 case.php gives. Either way
+	# the point of this check is unchanged: a page, not a TypeError.
 	cp_code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 		"$OCM_URL/legacy_report.php?report=case_print&case_id=${cp_none}")"
-	if [ "$cp_code" = "200" ] && [ -s "$BODY" ]
+	if [ ! -s "$BODY" ] || grep -qF 'Fatal error' "$BODY"
 	then
-		ok "a case_id that names no case does not fatal"
+		bad "an unknown case_id returned ${cp_code} with a fatal or an empty body"
+	elif [ "$cp_code" = "403" ] && grep -qF 'This case is not viewable' "$BODY"
+	then
+		ok "a case_id that names no case is refused, not printed blank"
 	else
-		bad "an unknown case_id returned ${cp_code}"
+		bad "an unknown case_id returned ${cp_code} instead of a refusal"
 	fi
 
 	adb "DELETE FROM cases WHERE number = 'ZZCPNOCLIENT'" >/dev/null 2>&1
@@ -14701,6 +14707,244 @@ else
 fi
 
 rm -f "$XA_BODY"
+
+# 84. The two per-case report forms gate on read access to the case.
+#
+# cms/legacy_report.php has no authorization call of its own, and neither
+# cms/reports/case_print/case_print-form.php nor
+# cms/reports/compen_bill/compen_bill-form.php read a permission before
+# printing the case. Both take case_id off the query string, so before the gate
+# any signed-in user could print any case, including one case.php refuses them.
+#
+# The gate is read access to the case, not the `reports` group flag: the case
+# Docs tab posts report=case_print for ordinary users, so a report-level flag
+# would take case printing away from everyone outside the system group. Both
+# halves are checked here - the refusal for a user who cannot read the case,
+# and the print for a user who can.
+if [ "$HAVE_DB" = 1 ]; then
+	RGROUP='zz_rpt_grp'
+	RREADER='zz_rpt_reader'
+	ROWNER='zz_rpt_owner'
+	RPWD='zz-rpt-Passw0rd'
+	RSECRET='ZZRPTSECRETCLIENT'
+	RJAR="$(mktemp)"
+	ROJAR="$(mktemp)"
+
+	cleanup_rpt() {
+		# Two tables outlive the users unless they go first. user_sessions has no
+		# cascading foreign key on user_id, and csrf_tokens holds the row
+		# pl_csrf_rotate() wrote at login, keyed by session id.
+		#
+		# The session ids are read into the shell rather than compared between the
+		# two tables in SQL. csrf_tokens.session_id is declared
+		# utf8mb4_unicode_ci; user_sessions.session_id takes the database default,
+		# utf8mb4_general_ci on a stock install. Comparing the two columns answers
+		# "Illegal mix of collations", and adb sends stderr to /dev/null, so that
+		# DELETE would remove nothing and say nothing.
+		rpt_sids="$(adb "SELECT CONCAT(CHAR(39), session_id, CHAR(39)) FROM user_sessions
+			WHERE user_id IN (SELECT user_id FROM users
+				WHERE username IN ('${RREADER}', '${ROWNER}'))" | paste -sd, -)"
+		if [ -n "$rpt_sids" ]; then
+			adb "DELETE FROM csrf_tokens WHERE session_id IN (${rpt_sids})" >/dev/null
+		fi
+		adb "DELETE FROM user_sessions WHERE user_id IN
+			(SELECT user_id FROM users WHERE username IN ('${RREADER}', '${ROWNER}'))" >/dev/null
+		adb "DELETE FROM cases WHERE number = 'ZZ-RPT-1'" >/dev/null
+		adb "DELETE FROM contacts WHERE last_name = '${RSECRET}'" >/dev/null
+		adb "DELETE FROM users WHERE username IN ('${RREADER}', '${ROWNER}')" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${RGROUP}'" >/dev/null
+		# A DELETE that failed has to be said out loud, or the run reports a clean
+		# finish while the next run measures a dirty database. The login rows in
+		# audit_log are kept on purpose and are not counted here.
+		rpt_left="$(adb "SELECT COUNT(*) FROM users WHERE username IN ('${RREADER}', '${ROWNER}')")"
+		rpt_left="${rpt_left}$(adb "SELECT COUNT(*) FROM cases WHERE number = 'ZZ-RPT-1'")"
+		rpt_left="${rpt_left}$(adb "SELECT COUNT(*) FROM contacts WHERE last_name = '${RSECRET}'")"
+		rpt_left="${rpt_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${RGROUP}'")"
+		if [ -n "$rpt_sids" ]; then
+			rpt_left="${rpt_left}$(adb "SELECT COUNT(*) FROM csrf_tokens WHERE session_id IN (${rpt_sids})")"
+		else
+			rpt_left="${rpt_left}0"
+		fi
+		if [ "$rpt_left" != 00000 ]; then
+			bad "the report gate fixture could not be removed (users, case, contact, group, csrf rows still present: ${rpt_left})"
+		fi
+		rm -f "$RJAR" "$ROJAR"
+	}
+
+	# Every request below goes through one of these two. Neither the status nor
+	# the body proves anything on its own: curl's own exit status is checked,
+	# because a request that timed out after the expected words had arrived would
+	# otherwise read as a refusal, and $BODY is emptied first, because a stale
+	# body left by the previous request would read as one too.
+	rpt_fetch() {
+		: > "$BODY"
+		rpt_code="$(curl -s --max-time 60 -b "$1" -o "$BODY" -w '%{http_code}' "$2")"
+		rpt_curl=$?
+		[ "$rpt_curl" = 0 ]
+	}
+
+	rpt_login() {
+		: > "$1"
+		: > "$BODY"
+		rpt_code="$(curl -sL --max-time 30 -c "$1" -b "$1" -o "$BODY" -w '%{http_code}' \
+			-X POST -d "login_user=${2}&login_pass=${RPWD}&auth_id=1" "$OCM_URL/")"
+		rpt_curl=$?
+		[ "$rpt_curl" = 0 ] && [ "$rpt_code" = 200 ] && [ -s "$BODY" ] \
+			&& ! grep -q 'login_pass' "$BODY"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rpt' EXIT
+	cleanup_rpt
+
+	# One group with every flag off, and two users in it. The difference
+	# between them is the case's user_id, which is the only thing
+	# pika_authorize('read_case', ...) has left to grant on.
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${RGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+
+	RHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$RPWD" </dev/null 2>/dev/null)"
+	RUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${RUID}, '${RREADER}', '${RHASH}', 1, '${RGROUP}', 0)" >/dev/null
+	ROUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${ROUID}, '${ROWNER}', '${RHASH}', 1, '${RGROUP}', 0)" >/dev/null
+
+	# The client's surname is the marker. Both forms print the client name, so
+	# it appearing in a response is the leak itself, not a proxy for it.
+	RCID="$(adb "SELECT COALESCE(MAX(contact_id), 0) + 1 FROM contacts")"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name)
+		VALUES (${RCID}, 'Zz', '${RSECRET}')" >/dev/null
+	RCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
+	# cases.office is char(3). A longer value is silently truncated on the
+	# shipped non-strict database and rejected under strict SQL mode, where the
+	# failed insert would take the positive controls down with it.
+	adb "INSERT INTO cases (case_id, number, client_id, user_id, office, status)
+		VALUES (${RCASE}, 'ZZ-RPT-1', ${RCID}, ${ROUID}, 'ZZO', '1')" >/dev/null
+
+	rpt_print="$OCM_URL/legacy_report.php?report=case_print&case_id=${RCASE}"
+	rpt_bill="$OCM_URL/reports/compen_bill/compen_bill-form.php?case_id=${RCASE}"
+
+	if [ -z "$RHASH" ] || [ -z "${RCASE:-}" ] || [ -z "${RCID:-}" ]; then
+		bad "could not seed the report authorization fixtures"
+	else
+		# Positive control on the fixture. If the admin cannot see the marker
+		# then the two refusal checks below would pass on a blank page.
+		for rpt_url in "$rpt_print" "$rpt_bill"; do
+			if ! rpt_fetch "$COOKIES" "$rpt_url"; then
+				bad "the admin's request for ${rpt_url##*/} failed (curl exit $rpt_curl) - section 84 proves nothing"
+			elif [ "$rpt_code" != 200 ]; then
+				bad "the admin got $rpt_code from ${rpt_url##*/} - section 84 proves nothing"
+			elif grep -qF "$RSECRET" "$BODY"; then
+				ok "the admin sees the client name in ${rpt_url##*/} (status 200)"
+			else
+				bad "the admin does NOT see the client name in ${rpt_url##*/} - section 84 proves nothing"
+			fi
+		done
+
+		# Each login is checked on its own. Both used to be POSTed into the same
+		# body file and only the second one read, so a reader who could not log in
+		# was reported as logged in, and an anonymous request refused for want of a
+		# session would have been filed as the gate working.
+		if ! rpt_login "$RJAR" "$RREADER"; then
+			bad "the report reader could not log in (curl exit $rpt_curl, status $rpt_code) - section 84 is untested"
+		elif ! rpt_login "$ROJAR" "$ROWNER"; then
+			bad "the case's own handler could not log in (curl exit $rpt_curl, status $rpt_code) - section 84 is untested"
+		else
+			ok "both throwaway report users can log in"
+
+			# Control on the fixture: the case page itself refuses the reader.
+			# Everything below is about the report forms reaching the same
+			# answer, so if case.php lets this user in there is nothing to say.
+			if ! rpt_fetch "$RJAR" "$OCM_URL/case.php?case_id=${RCASE}"; then
+				bad "the reader's request for case.php failed (curl exit $rpt_curl) - section 84 proves nothing"
+			elif [ "$rpt_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+				ok "the fixture case is refused to the reader on case.php (status 403)"
+			else
+				bad "case.php answered the reader $rpt_code, not the refusal - section 84 proves nothing"
+			fi
+
+			for rpt_url in "$rpt_print" "$rpt_bill"; do
+				if ! rpt_fetch "$RJAR" "$rpt_url"; then
+					bad "the reader's request for ${rpt_url##*/} failed (curl exit $rpt_curl), so the refusal is unproven"
+				elif grep -qF "$RSECRET" "$BODY"; then
+					bad "A USER WHO CANNOT READ THE CASE CAN PRINT IT THROUGH ${rpt_url##*/}"
+				elif [ "$rpt_code" != 403 ]; then
+					bad "${rpt_url##*/} hid the case from the reader but answered $rpt_code, not 403"
+				elif grep -q 'This case is not viewable' "$BODY"; then
+					ok "${rpt_url##*/} refuses a user who cannot read the case"
+				else
+					bad "${rpt_url##*/} answered 403 without saying why"
+				fi
+			done
+
+			# The refusal has to come before the dispatch, not from the form that
+			# gets included. legacy_report.php prefers a deployment's own copy of
+			# case_print-form.php for any report name at all, and that copy is not in
+			# this repository, so a gate that only lives in the stock forms does not
+			# cover this file. A report name that reaches a different form, and one
+			# that reaches no form, both have to answer the refusal.
+			for rpt_name in compen_bill zz_no_such_report; do
+				if ! rpt_fetch "$RJAR" "$OCM_URL/legacy_report.php?report=${rpt_name}&case_id=${RCASE}"; then
+					bad "the reader's request for legacy_report.php?report=${rpt_name} failed (curl exit $rpt_curl)"
+				elif [ "$rpt_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+					ok "legacy_report.php refuses the case before it dispatches report=${rpt_name}"
+				elif grep -qF "$RSECRET" "$BODY"; then
+					bad "legacy_report.php?report=${rpt_name} PRINTED THE CLIENT NAME TO A USER WHO CANNOT READ THE CASE"
+				else
+					bad "legacy_report.php?report=${rpt_name} answered the reader $rpt_code instead of refusing the case before dispatch"
+				fi
+			done
+
+			# An id that names no case, and an id that is not a case id at all, have
+			# to be answered the same way as a case the reader may not read.
+			#
+			# The billing form used to construct pikaCase before the gate. A SELECT
+			# that matched no row ends in trigger_error(), which the pl error
+			# handler turns into the generic "currently unavailable" screen and
+			# exits, so an unknown id answered 200 and that screen while an existing
+			# case the reader may not read answered 403 - enough to tell real case
+			# numbers from invented ones. An absent or non-integer id was worse:
+			# plBase treats it as a new record and allocates the next free case id.
+			rpt_none="$(adb "SELECT COALESCE(MAX(case_id), 0) + 5000 FROM cases")"
+			for rpt_id in "$rpt_none" '0' '1e3' ''; do
+				for rpt_form in case_print compen_bill; do
+					case "$rpt_form" in
+						case_print)
+							rpt_url="$OCM_URL/legacy_report.php?report=case_print&case_id=${rpt_id}"
+							;;
+						*)
+							rpt_url="$OCM_URL/reports/compen_bill/compen_bill-form.php?case_id=${rpt_id}"
+							;;
+					esac
+					if ! rpt_fetch "$RJAR" "$rpt_url"; then
+						bad "the reader's request for $rpt_form with case_id='${rpt_id}' failed (curl exit $rpt_curl)"
+					elif [ "$rpt_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
+						ok "$rpt_form answers case_id='${rpt_id}' the same refusal an existing case gets"
+					else
+						bad "$rpt_form ANSWERED case_id='${rpt_id}' WITH $rpt_code INSTEAD OF THE REFUSAL AN EXISTING CASE GETS, SO A SIGNED-IN USER CAN TELL REAL CASE IDS FROM INVENTED ONES"
+					fi
+				done
+			done
+
+			# The other half. The gate must not cost an ordinary user the case
+			# printing they already had: this user holds no group flag at all
+			# and reads the case only by owning it.
+			for rpt_url in "$rpt_print" "$rpt_bill"; do
+				if ! rpt_fetch "$ROJAR" "$rpt_url"; then
+					bad "the handler's request for ${rpt_url##*/} failed (curl exit $rpt_curl), so the print is unproven"
+				elif [ "$rpt_code" = 200 ] && grep -qF "$RSECRET" "$BODY"; then
+					ok "${rpt_url##*/} still prints for the case's own handler"
+				else
+					bad "${rpt_url##*/} no longer prints for the case's own handler (status $rpt_code)"
+				fi
+			done
+		fi
+	fi
+
+	cleanup_rpt
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
 
 echo
 echo "smoke: $pass passed, $fail failed"
