@@ -15947,6 +15947,72 @@ else
 	bad "LSAC_OUTCOME BUILDS 'AND close_code IN' FROM A FIELD IT NEVER READS"
 fi
 
+# 91. The include fragments answer nothing when they are asked for directly.
+#
+# cms/modules/ and cms/template_plugins/ are include fragments. They carry no
+# bootstrap require and no authorization of their own, because the page that
+# includes them has already done both. Every one of them is nonetheless a file
+# under the docroot, so any request can ask for it by name, and it then runs
+# with none of the variables its including page was going to set - $case_id
+# among them.
+#
+# Measured on a stock install, all of them answer an empty body: the plugins
+# only define functions, and the case modules die on the first call to a
+# framework function that was never loaded. Nothing is exposed. This section
+# holds that still. What it is watching for is a fragment that grows top-level
+# code which draws something before it dies, because such a fragment would
+# print it to whoever asked - signed in or not, and with no case check in
+# front of it. That is the shape of the extension-include hole in cms/pm.php.
+echo
+echo "91. the include fragments give nothing away when asked for directly"
+
+fr_list="$(cd "${REPO_DIR}/cms" 2>/dev/null && ls modules/*.php template_plugins/*.php 2>/dev/null)"
+fr_count="$(printf '%s\n' "$fr_list" | grep -c '\.php$')"
+
+# Count the files first. A path typo or a moved directory would leave the loop
+# with nothing to do, and every check below would pass on an empty list.
+if [ "${fr_count:-0}" -lt 40 ]; then
+	bad "section 91 found only ${fr_count} include fragments - the sweep is broken"
+else
+	ok "section 91 found ${fr_count} include fragments to ask for"
+
+	fr_body=""
+	fr_leak=""
+	for fr in $fr_list; do
+		# Anonymous, then signed in as the admin. A fragment that draws
+		# anything would draw it for at least one of the two.
+		for fr_cookie in "" "$COOKIES"; do
+			if [ -n "$fr_cookie" ]; then
+				curl -s --max-time 20 -b "$fr_cookie" -o "$BODY" \
+					"$OCM_URL/$fr" >/dev/null 2>&1
+			else
+				curl -s --max-time 20 -o "$BODY" \
+					"$OCM_URL/$fr" >/dev/null 2>&1
+			fi
+			if [ -s "$BODY" ]; then
+				fr_body="${fr_body} ${fr}"
+			fi
+			# display_errors is off on a correct install, so a path in the
+			# body means the server is describing its own filesystem.
+			if grep -qE '/var/www/html|Fatal error|Uncaught' "$BODY"; then
+				fr_leak="${fr_leak} ${fr}"
+			fi
+		done
+	done
+
+	if [ -z "$fr_body" ]; then
+		ok "every include fragment answers an empty body, signed in or not"
+	else
+		bad "AN INCLUDE FRAGMENT DREW SOMETHING WHEN ASKED FOR DIRECTLY, WITH NO PAGE AND NO CASE CHECK IN FRONT OF IT:${fr_body}"
+	fi
+
+	if [ -z "$fr_leak" ]; then
+		ok "no include fragment prints a filesystem path or a PHP error"
+	else
+		bad "AN INCLUDE FRAGMENT PRINTED A PHP ERROR OR A FILESYSTEM PATH:${fr_leak}"
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
