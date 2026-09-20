@@ -4,6 +4,7 @@ chdir('../../');
 
 require_once ('pika-danio.php');
 pika_init(); 
+require_once('pikaTempLib.php');
 
 // VARIABLES
 

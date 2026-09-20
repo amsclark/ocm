@@ -15621,6 +15621,124 @@ else
 	printf '  skip the timer authorization checks (needs the database and the container)\n'
 fi
 
+# 86. A report the caller may not run answers the refusal page, not a fatal.
+#
+# cms/reports/lsc_gap/report.php built its refusal page with pikaTempLib and
+# never required the file that declares the class, so the refusal branch died
+# with "Class pikaTempLib not found" and the user got HTTP 500 with no page.
+# Measured on the unpatched file with the user below: 500 and no refusal text,
+# while reports/lsc_gap/index.php and reports/red_flag/report.php, which have
+# the require, both answered the refusal.
+#
+# Every reports/*/report.php is swept, not just the one that was broken. The
+# fault is a missing require in a file that is a copy of its siblings, and
+# nothing stops the next copy leaving it out again.
+#
+# pika_report_authorize() returns true for the system group, so the user here
+# cannot be an administrator. It also denies by default: a group whose reports
+# column is NULL may run none of them.
+if [ "$HAVE_DB" = 1 ]; then
+	QGROUP='zz_rq_grp'
+	QREADER='zz_rq_reader'
+	QPWD='zz-rq-Passw0rd'
+	QJAR="$(mktemp)"
+
+	cleanup_rq() {
+		# user_sessions has no cascading key on user_id and csrf_tokens holds the
+		# row login wrote, keyed by session id. The ids are read into the shell
+		# because the two session_id columns take different collations and
+		# comparing them in SQL answers "Illegal mix of collations", which adb
+		# would swallow.
+		rq_sids="$(adb "SELECT CONCAT(CHAR(39), session_id, CHAR(39)) FROM user_sessions
+			WHERE user_id IN (SELECT user_id FROM users WHERE username = '${QREADER}')" \
+			| paste -sd, -)"
+		if [ -n "$rq_sids" ]; then
+			adb "DELETE FROM csrf_tokens WHERE session_id IN (${rq_sids})" >/dev/null
+		fi
+		adb "DELETE FROM user_sessions WHERE user_id IN
+			(SELECT user_id FROM users WHERE username = '${QREADER}')" >/dev/null
+		adb "DELETE FROM users WHERE username = '${QREADER}'" >/dev/null
+		adb "DELETE FROM \`groups\` WHERE group_id = '${QGROUP}'" >/dev/null
+		rq_left="$(adb "SELECT COUNT(*) FROM users WHERE username = '${QREADER}'")"
+		rq_left="${rq_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${QGROUP}'")"
+		if [ -n "$rq_sids" ]; then
+			rq_left="${rq_left}$(adb "SELECT COUNT(*) FROM csrf_tokens
+				WHERE session_id IN (${rq_sids})")"
+		else
+			rq_left="${rq_left}0"
+		fi
+		if [ "$rq_left" != 000 ]; then
+			bad "the report refusal fixture could not be removed (user, group, csrf rows still present: ${rq_left})"
+		fi
+		rm -f "$QJAR"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rq' EXIT
+	cleanup_rq
+
+	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+		VALUES ('${QGROUP}', NULL, 0, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
+	QHASH="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' "$QPWD" </dev/null 2>/dev/null)"
+	QUID="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+		VALUES (${QUID}, '${QREADER}', '${QHASH}', 1, '${QGROUP}', 0)" >/dev/null
+
+	rq_fetch() {
+		: > "$BODY"
+		rq_code="$(curl -s --max-time 60 -b "$QJAR" -o "$BODY" -w '%{http_code}' "$OCM_URL/$1")"
+		rq_curl=$?
+		[ "$rq_curl" = 0 ]
+	}
+
+	: > "$QJAR"
+	: > "$BODY"
+	rq_code="$(curl -sL --max-time 30 -c "$QJAR" -b "$QJAR" -o "$BODY" -w '%{http_code}' \
+		-X POST -d "login_user=${QREADER}&login_pass=${QPWD}&auth_id=1" "$OCM_URL/")"
+	rq_curl=$?
+
+	QREPORTS="$(find cms/reports -mindepth 2 -maxdepth 2 -name 'report.php' 2>/dev/null | sort)"
+
+	if [ -z "$QHASH" ] || [ -z "$QUID" ]; then
+		bad "could not seed the report refusal fixture"
+	elif [ "$rq_curl" != 0 ] || [ "$rq_code" != 200 ] || grep -q 'login_pass' "$BODY"; then
+		bad "the throwaway report reader could not log in (status ${rq_code}, curl ${rq_curl})"
+	elif [ -z "$QREPORTS" ]; then
+		bad "NO reports/*/report.php WAS FOUND, SO SECTION 85 DID NOT RUN"
+	else
+		ok "the throwaway report reader can log in and may run no report"
+
+		# The refusal has to be recognisable before the sweep can rely on it.
+		if ! rq_fetch 'reports/red_flag/report.php'; then
+			bad "the reader's request for the control report failed (curl exit $rq_curl)"
+		elif grep -qF 'not authorized to run this report' "$BODY"; then
+			ok "a report entry point that has the require prints the refusal"
+		else
+			bad "THE CONTROL REPORT DID NOT PRINT THE REFUSAL (status ${rq_code}), SO THE SWEEP BELOW PROVES NOTHING"
+		fi
+
+		rq_bad=''
+		rq_seen=0
+		for rq_file in $QREPORTS; do
+			rq_seen=$((rq_seen + 1))
+			rq_path="${rq_file#cms/}"
+			if ! rq_fetch "$rq_path"; then
+				rq_bad="${rq_bad} ${rq_path}(curl ${rq_curl})"
+			elif ! grep -qF 'not authorized to run this report' "$BODY"; then
+				rq_bad="${rq_bad} ${rq_path}(${rq_code})"
+			fi
+		done
+
+		if [ -z "$rq_bad" ]; then
+			ok "all ${rq_seen} report entry points print the refusal to a user who may run none"
+		else
+			bad "A REPORT ANSWERED SOMETHING OTHER THAN THE REFUSAL TO A USER WHO MAY RUN NONE OF THEM:${rq_bad}"
+		fi
+	fi
+
+	cleanup_rq
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
