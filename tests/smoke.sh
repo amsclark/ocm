@@ -12557,7 +12557,75 @@ else
 	bad "page(s) rendering with no session:${sm78_open}"
 fi
 
-# ---------------------------------------------------------------------------
+# 78f. Every page entry point must open without HTTP 500 or a missing-schema
+# SQL error for a signed-in user. Other statuses are covered by the gate tests.
+#
+# m/logout.php ends the session it is handed, so it gets a throwaway session of
+# its own and the main cookie jar is never sent to it. A second login for the
+# same user does not disturb the first: only password.php and system-users.php
+# call pl_user_sessions_invalidate_others(), and neither runs on a GET.
+#
+# Both sessions are checked before the sweep and the main one again after it,
+# because a sweep that had quietly lost its session would still pass: every
+# page would answer a redirect to the login form, and a redirect is not a 500.
+# The page count is asserted for the same reason -- a glob that matched nothing
+# would otherwise report success.
+sm78_signed_in() {
+	curl -sL --max-time 30 -b "$1" -o "$BODY" "$OCM_URL/" >/dev/null
+	! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"
+}
+
+sm78_jar="$(mktemp)"
+curl -sL --max-time 30 -c "$sm78_jar" -b "$sm78_jar" -o /dev/null \
+	-X POST -d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
+	"$OCM_URL/"
+if sm78_signed_in "$sm78_jar"; then
+	ok "the sweep holds a throwaway session for the logout page"
+else
+	bad "the sweep cannot open a throwaway session, so its page checks would pass on login redirects alone"
+fi
+if sm78_signed_in "$COOKIES"; then
+	ok "the sweep still holds the main session after a second login"
+else
+	bad "a second login ended the main session, so the page checks below would pass on login redirects alone"
+fi
+
+sm78_n=0
+for sm78_p in cms/*.php cms/m/*.php; do
+	[ -f "$sm78_p" ] || continue
+	sm78_rel="${sm78_p#cms/}"
+	[ "$sm78_rel" = pika_cms.php ] && continue
+	[ "$sm78_rel" = pika-danio.php ] && continue
+
+	case "$sm78_rel" in
+		m/logout.php) sm78_use="$sm78_jar" ;;
+		*)            sm78_use="$COOKIES" ;;
+	esac
+
+	sm78_n=$((sm78_n+1))
+	code="$(curl -s --max-time 60 -b "$sm78_use" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/${sm78_rel}")"
+	if [ "$code" = 500 ]; then
+		bad "PAGE $sm78_rel RETURNED HTTP 500 ON A STOCK DATABASE"
+	elif grep -qi "Unknown column\|Unknown table" "$BODY"; then
+		bad "PAGE $sm78_rel LEAKED A MISSING-SCHEMA SQL ERROR TO THE PAGE"
+	else
+		ok "page $sm78_rel opens signed in (status $code)"
+	fi
+done
+rm -f "$sm78_jar"
+
+if [ "$sm78_n" -ge 60 ]; then
+	ok "the signed-in sweep covered $sm78_n page entry points"
+else
+	bad "the signed-in sweep covered only $sm78_n page entry points"
+fi
+if sm78_signed_in "$COOKIES"; then
+	ok "the main session survived the sweep"
+else
+	bad "the sweep ended the main session, so every page check above proved nothing"
+fi
+
 # 79. The two case-transfer pages are gated.
 #
 # cms/transfer.php drew the "send this case to another organisation" form for
