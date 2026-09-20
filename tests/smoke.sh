@@ -12559,46 +12559,42 @@ fi
 
 # 78f. Every page entry point must open without HTTP 500 or a missing-schema
 # SQL error for a signed-in user. Other statuses are covered by the gate tests.
-if [ "$HAVE_DB" != 1 ]; then
-	echo "  skip signed-in page sweep: database access is needed to preserve the session after m/logout.php"
-else
-	for sm78_p in cms/*.php cms/m/*.php; do
-		[ -f "$sm78_p" ] || continue
-		sm78_rel="${sm78_p#cms/}"
-		[ "$sm78_rel" = pika_cms.php ] && continue
-		[ "$sm78_rel" = pika-danio.php ] && continue
-
-		# The logout page changes this session even on GET. Save its flag so
-		# the remaining pages and later tests keep the same signed-in session.
-		if [ "$sm78_rel" = m/logout.php ]; then
-			sm78_sid_hex="$(awk 'NF == 7 && ($1 !~ /^#/ || $1 ~ /^#HttpOnly_/) { printf "%s", $7; exit }' "$COOKIES" | od -An -tx1 | tr -d ' \n')"
-			sm78_session="$(adb "SELECT CONCAT(user_session_id, ' ', COALESCE(logout, 'NULL')) FROM user_sessions WHERE session_id = UNHEX('$sm78_sid_hex')")"
-			if [[ ! "$sm78_session" =~ ^[0-9]+\ (0|NULL)$ ]]; then
-				bad "cannot preserve the signed-in session for m/logout.php"
-				break
-			fi
-			read -r sm78_session_id sm78_logout <<< "$sm78_session"
-		fi
-
-		code="$(curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
-			"$OCM_URL/${sm78_rel}")"
-		if [ "$sm78_rel" = m/logout.php ]; then
-			if ! adb "UPDATE user_sessions SET logout = $sm78_logout WHERE user_session_id = $sm78_session_id AND session_id = UNHEX('$sm78_sid_hex')" >/dev/null; then
-				bad "cannot restore the signed-in session after m/logout.php"
-				break
-			fi
-		fi
-		if [ "$code" = 500 ]; then
-			bad "PAGE $sm78_rel RETURNED HTTP 500 ON A STOCK DATABASE"
-		elif grep -qi "Unknown column\|Unknown table" "$BODY"; then
-			bad "PAGE $sm78_rel LEAKED A MISSING-SCHEMA SQL ERROR TO THE PAGE"
-		else
-			ok "page $sm78_rel opens signed in (status $code)"
-		fi
-	done
+#
+# m/logout.php ends the session it is handed, so it gets a throwaway session of
+# its own and the main cookie jar is never sent to it. A second login for the
+# same user does not disturb the first: only password.php and system-users.php
+# call pl_user_sessions_invalidate_others(), and neither runs on a GET.
+sm78_jar="$(mktemp)"
+curl -sL --max-time 30 -c "$sm78_jar" -b "$sm78_jar" -o "$BODY" \
+	-X POST -d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
+	"$OCM_URL/" >/dev/null
+if grep -q 'login_pass' "$BODY"; then
+	bad "cannot open a throwaway session for the logout pages"
 fi
 
-# ---------------------------------------------------------------------------
+for sm78_p in cms/*.php cms/m/*.php; do
+	[ -f "$sm78_p" ] || continue
+	sm78_rel="${sm78_p#cms/}"
+	[ "$sm78_rel" = pika_cms.php ] && continue
+	[ "$sm78_rel" = pika-danio.php ] && continue
+
+	case "$sm78_rel" in
+		m/logout.php) sm78_use="$sm78_jar" ;;
+		*)            sm78_use="$COOKIES" ;;
+	esac
+
+	code="$(curl -s --max-time 60 -b "$sm78_use" -o "$BODY" -w '%{http_code}' \
+		"$OCM_URL/${sm78_rel}")"
+	if [ "$code" = 500 ]; then
+		bad "PAGE $sm78_rel RETURNED HTTP 500 ON A STOCK DATABASE"
+	elif grep -qi "Unknown column\|Unknown table" "$BODY"; then
+		bad "PAGE $sm78_rel LEAKED A MISSING-SCHEMA SQL ERROR TO THE PAGE"
+	else
+		ok "page $sm78_rel opens signed in (status $code)"
+	fi
+done
+rm -f "$sm78_jar"
+
 # 79. The two case-transfer pages are gated.
 #
 # cms/transfer.php drew the "send this case to another organisation" form for
