@@ -1,4 +1,27 @@
 <?php
+/*	This form is included, never requested. It calls pl_table_array(), which
+	pika_cms.php loads and pika_init() alone does not, so nothing here can
+	bootstrap it on its own without rebuilding what legacy_report.php sets up.
+
+	Requested directly it used to reach the include below, find no
+	pl_report.php - the include is relative and so is the include_path - and
+	then call pl_grab_var() before anything had defined it. The answer was
+	HTTP 500 with an empty body, from a URL that is served because this file
+	sits under the document root.
+
+	So the request is refused before any of that, with the 404 a file that is
+	not a page should give. Being included leaves SCRIPT_FILENAME pointing at
+	the includer, so this costs the working route nothing. The gate further
+	down stays where it is: it is what protects the case data when the
+	dispatcher runs this form.
+*/
+if (isset($_SERVER['SCRIPT_FILENAME'])
+	&& realpath($_SERVER['SCRIPT_FILENAME']) === realpath(__FILE__))
+{
+	http_response_code(404);
+	exit;
+}
+
 include ('pl_report.php');
 
 $case_id = pl_grab_var('case_id');

@@ -15329,6 +15329,64 @@ if [ "$HAVE_DB" = 1 ]; then
 					bad "${rpt_url##*/} no longer prints for the case's own handler (status $rpt_code)"
 				fi
 			done
+
+			# Each form has two routes and the checks above take one each: the
+			# billing form directly, the print form through the dispatcher. The
+			# other two routes both answered HTTP 500 with an empty body, and no
+			# check said so, which is why they stayed broken.
+			#
+			# compen_bill-form.php did chdir('../../'). That is right for a direct
+			# request, where the working directory is the form's own directory, and
+			# one level too far when legacy_report.php includes the form with the
+			# working directory already cms/. The include_path pika_init() writes is
+			# relative to cms/, so from one level up the form's own require of
+			# pika-danio.php found nothing.
+			rpt_url="$OCM_URL/legacy_report.php?report=compen_bill&case_id=${RCASE}"
+			if ! rpt_fetch "$ROJAR" "$rpt_url"; then
+				bad "the handler's request for legacy_report.php?report=compen_bill failed (curl exit $rpt_curl)"
+			elif [ "$rpt_code" = 200 ] && grep -qF "$RSECRET" "$BODY"; then
+				ok "legacy_report.php prints the billing form for the case's own handler"
+			else
+				bad "legacy_report.php?report=compen_bill ANSWERED THE CASE'S OWN HANDLER $rpt_code, NOT THE BILLING FORM"
+			fi
+
+			# The same route still has to refuse a reader who may not read the
+			# case. That 403 comes from the dispatcher's own gate, not the form's:
+			# reverting the form to prove the check above showed the reader still
+			# refused 403 while the handler got the 500. So this holds the
+			# dispatcher's gate in place on the route the chdir fix touched.
+			if ! rpt_fetch "$RJAR" "$rpt_url"; then
+				bad "the reader's request for legacy_report.php?report=compen_bill failed (curl exit $rpt_curl)"
+			elif grep -qF "$RSECRET" "$BODY"; then
+				bad "legacy_report.php?report=compen_bill GAVE THE READER THE CLIENT NAME ON A CASE THEY MAY NOT READ"
+			elif [ "$rpt_code" = 403 ]; then
+				ok "legacy_report.php?report=compen_bill refuses the reader 403"
+			else
+				bad "legacy_report.php?report=compen_bill answered the reader $rpt_code, not 403"
+			fi
+
+			# case_print-form.php is included, never requested: it calls
+			# pl_table_array(), which pika_cms.php loads and pika_init() alone does
+			# not. Requested directly it reached its own relative include, missed
+			# pl_report.php, then called pl_grab_var() before anything had defined
+			# it, and answered 500 with an empty body from a URL that is served
+			# because the file sits under the document root. It answers 404 now.
+			#
+			# Both users are asked, because a refusal that depends on who asks
+			# would be a gate, and this is not one: the file is not a page. The
+			# client name must not appear whatever the status is.
+			for rpt_who in "handler:$ROJAR" "reader:$RJAR"; do
+				rpt_url="$OCM_URL/reports/case_print/case_print-form.php?case_id=${RCASE}"
+				if ! rpt_fetch "${rpt_who#*:}" "$rpt_url"; then
+					bad "the ${rpt_who%%:*}'s direct request for case_print-form.php failed (curl exit $rpt_curl)"
+				elif grep -qF "$RSECRET" "$BODY"; then
+					bad "A DIRECT REQUEST FOR case_print-form.php PRINTED THE CLIENT NAME TO THE ${rpt_who%%:*}"
+				elif [ "$rpt_code" = 404 ]; then
+					ok "a direct request for case_print-form.php answers the ${rpt_who%%:*} 404"
+				else
+					bad "a direct request for case_print-form.php answered the ${rpt_who%%:*} $rpt_code, not the 404 a file that is not a page should give"
+				fi
+			done
 		fi
 	fi
 
