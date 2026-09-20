@@ -35,8 +35,9 @@ if (!pika_authorize("system", $dummy))
 
 		The gate itself always held: exit() below stops the request before
 		any of the save work. This restores the message only. The sibling
-		admin pages avoid the trap by going through pikaTempLib->draw() and
-		pika_exit(), which do print.
+		admin pages avoid the trap by handing the page to pika_exit(), which
+		prints what it is given; pikaTempLib->draw() returns a string too, so
+		it is the pika_exit() call, not draw(), that gets the page out.
 	*/
 	echo pl_template($plTemplate, 'templates/default.html');
 	echo pl_bench('results');

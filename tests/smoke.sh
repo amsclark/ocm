@@ -3619,6 +3619,11 @@ if [ "$HAVE_DB" = 1 ]; then
 					bad "$rq_action did not reach the system permission gate (status $code)"
 				elif [ ! -s "$BODY" ]; then
 					bad "$rq_action was denied with an empty body, so the user cannot tell a refusal from a crash"
+				elif grep -qi 'Fatal error\|Uncaught ' "$BODY"; then
+					# The refusal has to be the whole answer. A body that carries the
+					# words and a PHP error beside them would satisfy the check below
+					# while the handler was still running past its own gate.
+					bad "$rq_action printed a PHP error beside its refusal"
 				elif grep -qi 'Permission denied' "$BODY"; then
 					ok "$rq_action is denied to a non-admin user, and says so"
 				else
@@ -12659,11 +12664,24 @@ if [ "$HAVE_DB" = 1 ]; then
 	SM78G_USER='zz_78g_user'
 	SM78G_PASS='zz-78g-Passw0rd'
 	SM78G_JAR="$(mktemp)"
+	SM78G_ADMIN="$(mktemp)"
 
 	cleanup_78g() {
+		# user_sessions holds a row per login and has no cascading foreign key on
+		# user_id, so the login row outlives the user unless it goes first.
+		adb "DELETE FROM user_sessions WHERE user_id IN
+			(SELECT user_id FROM users WHERE username = '${SM78G_USER}')" >/dev/null
 		adb "DELETE FROM users WHERE username = '${SM78G_USER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SM78G_GROUP}'" >/dev/null
-		rm -f "$SM78G_JAR"
+		# A DELETE that failed has to be said out loud. Without this the run
+		# reports a clean finish while its user and group are still there, and
+		# the next run's counts are measured against a dirty database.
+		sm78g_left="$(adb "SELECT COUNT(*) FROM users WHERE username = '${SM78G_USER}'")"
+		sm78g_left="${sm78g_left}$(adb "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${SM78G_GROUP}'")"
+		if [ "$sm78g_left" != 00 ]; then
+			bad "the no-permission sweep could not remove its fixture (users and groups still present: ${sm78g_left})"
+		fi
+		rm -f "$SM78G_JAR" "$SM78G_ADMIN"
 	}
 	trap 'rm -f "$COOKIES" "$BODY"; cleanup_78g' EXIT
 	cleanup_78g
@@ -12704,6 +12722,23 @@ if [ "$HAVE_DB" = 1 ]; then
 		grep -qi 'Access denied\|Permission denied\|not viewable\|not authorized' "$1"
 	}
 
+	# The admin's copy of the same page is the baseline the refusal is measured
+	# against, so it has to be a real response first. A request that fails
+	# answers zero bytes, and a zero-byte baseline would make any refusal look
+	# both different from the admin's and smaller than it.
+	sm78g_admin_copy() {
+		sm78g_admin_code="$(curl -s --max-time 60 -b "$COOKIES" -o "$SM78G_ADMIN" \
+			-w '%{http_code}' "$OCM_URL/$1")"
+		[ "$sm78g_admin_code" = 200 ] && [ -s "$SM78G_ADMIN" ]
+	}
+
+	# The only two entry points under cms/ that answer everybody with nothing:
+	# pl_report.php is an include, and sms_cron.php is a cron script. The list is
+	# spelled out rather than worked out from the admin's response, because a
+	# real page that went blank for both users would otherwise be filed as a
+	# non-page and pass.
+	sm78g_not_pages=" pl_report.php sms_cron.php "
+
 	sm78g_n=0
 	sm78g_gated=0
 	for sm78g_p in cms/*.php cms/m/*.php; do
@@ -12731,23 +12766,44 @@ if [ "$HAVE_DB" = 1 ]; then
 			continue
 		fi
 		if [ "$code" = 200 ] && [ "$sm78g_bytes" -eq 0 ]; then
-			# Empty for everybody means it is not a page. Empty only here is a
-			# refusal that rendered nothing.
-			if [ "$(curl -s --max-time 60 -b "$COOKIES" "$OCM_URL/${sm78g_rel}" | wc -c)" -eq 0 ]; then
-				ok "page $sm78g_rel is empty for everyone, not a page"
-			else
-				bad "PAGE $sm78g_rel ANSWERED 200 WITH AN EMPTY BODY: A WHITE SCREEN INSTEAD OF A REFUSAL"
-			fi
+			case "$sm78g_not_pages" in
+				*" $sm78g_rel "*)
+					ok "page $sm78g_rel is empty because it is not a page"
+					;;
+				*)
+					bad "PAGE $sm78g_rel ANSWERED 200 WITH AN EMPTY BODY: A WHITE SCREEN INSTEAD OF A REFUSAL"
+					;;
+			esac
 			continue
 		fi
 
 		case "$sm78g_must_refuse" in
 			*" $sm78g_rel "*)
 				sm78g_gated=$((sm78g_gated+1))
+				# Three ways a refusal can be a lie, in order: the words are
+				# missing; the response is the admin's page byte for byte; or the
+				# page printed the refusal and then carried on into the content
+				# anyway. Comparing lengths is not enough for the second one --
+				# two different responses of the same length would read as
+				# identical -- so the bodies are compared with cmp.
+				#
+				# The third is checked by shape, not by size. A refusal is the same
+				# default.html shell as the page itself with a short message where
+				# the content goes, and the shell carries one form and two inputs
+				# (the nav search) and nothing else, while what these pages print
+				# is data grids and pick lists. So a refusal that still contains a
+				# table or a dropdown has printed content it refused to print.
+				# This does not catch content made of nothing but text, and size
+				# cannot be used instead: cms/system-ops.php answers the admin
+				# 2109 bytes, which is smaller than its own refusal page.
 				if ! sm78g_refused "$BODY"; then
 					bad "PAGE $sm78g_rel GAVE A USER WITH NO PERMISSIONS ITS CONTENT INSTEAD OF A REFUSAL (status $code)"
-				elif [ "$(curl -s --max-time 60 -b "$COOKIES" "$OCM_URL/${sm78g_rel}" | wc -c)" = "$sm78g_bytes" ]; then
-					bad "PAGE $sm78g_rel ANSWERED A USER WITH NO PERMISSIONS EXACTLY AS IT ANSWERED THE ADMIN"
+				elif ! sm78g_admin_copy "$sm78g_rel"; then
+					bad "page $sm78g_rel refused this user, but the admin answered $sm78g_admin_code, so the comparison proves nothing"
+				elif cmp -s "$BODY" "$SM78G_ADMIN"; then
+					bad "PAGE $sm78g_rel ANSWERED A USER WITH NO PERMISSIONS BYTE FOR BYTE AS IT ANSWERED THE ADMIN"
+				elif grep -qi '<table\|<select' "$BODY"; then
+					bad "PAGE $sm78g_rel PRINTED A REFUSAL AND A TABLE OR A DROPDOWN AS WELL, SO IT CARRIED ON PAST ITS OWN GATE"
 				else
 					ok "page $sm78g_rel refuses a user with no permissions (status $code)"
 				fi
@@ -12757,6 +12813,30 @@ if [ "$HAVE_DB" = 1 ]; then
 				;;
 		esac
 	done
+
+	# The sweep walks cms/*.php and cms/m/*.php, so it never reaches the two
+	# handlers under cms/ops/ that threw away the same refusal. Both are
+	# CSRF-checked, so the POST needs a token cut from this session.
+	sm78g_token="$(curl -sL --max-time 30 -b "$SM78G_JAR" "$OCM_URL/password.php" \
+		| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+		| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+	if [ "${#sm78g_token}" -ne 64 ]; then
+		bad "could not read a CSRF token for the no-permission user, so the two ops handlers are untested"
+	else
+		for sm78g_op in ops/save_settings.php ops/update_extensions.php; do
+			code="$(curl -s --max-time 60 -b "$SM78G_JAR" -o "$BODY" -w '%{http_code}' \
+				-d "_csrf=${sm78g_token}" "$OCM_URL/${sm78g_op}")"
+			if grep -qi 'Fatal error\|Uncaught ' "$BODY"; then
+				bad "$sm78g_op PRINTED A PHP FATAL ERROR FOR A USER WITH NO PERMISSIONS"
+			elif [ ! -s "$BODY" ]; then
+				bad "$sm78g_op REFUSED A USER WITH NO PERMISSIONS WITH AN EMPTY BODY (status $code)"
+			elif sm78g_refused "$BODY"; then
+				ok "$sm78g_op refuses a user with no permissions, and says so (status $code)"
+			else
+				bad "$sm78g_op ANSWERED A USER WITH NO PERMISSIONS SOMETHING OTHER THAN A REFUSAL (status $code)"
+			fi
+		done
+	fi
 
 	if [ "$sm78g_n" -ge 60 ]; then
 		ok "the no-permission sweep covered $sm78g_n page entry points"
