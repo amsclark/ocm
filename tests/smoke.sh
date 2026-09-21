@@ -701,10 +701,12 @@ from html.parser import HTMLParser
 CLASS_SPLIT = re.compile('[ \t\n\r\f]+')
 
 # A browser reads the content of these as text, so a calendar written inside one
-# is not a calendar. html.parser already does this for script and style. desc is
-# SVG's, where a table is described, not drawn.
+# is not a calendar. html.parser has its own raw-text mode for script and style,
+# but it does not enter that mode for the <script/> spelling, so those two are
+# named here as well and the guard below covers both spellings. desc is SVG's,
+# where a table is described, not drawn.
 TEXT_ONLY = ('title', 'textarea', 'iframe', 'noembed', 'noframes', 'noscript',
-	'desc', 'xmp')
+	'desc', 'xmp', 'script', 'style')
 
 # The content of these IS markup, and still never reaches the page as a drawn
 # calendar: a template's content is held in a separate inert fragment, a
@@ -718,14 +720,22 @@ NOT_DRAWN = ('template', 'frameset', 'select')
 # calendar at all and cannot be clicked.
 CELLS = ('td', 'th')
 
-# A start tag for a table section or a column group closes an open cell, and
+# A start tag for one of these, and a matching end tag, close an open cell, and
 # what is written after it is tokenised in a table mode, so a browser foster
 # parents it to just before the table -- out of the calendar element with it.
-# caption is deliberately absent: it closes the cell too, but a caption is
-# still inside the table, so a day inside one is still reachable.
 SECTIONS = ('tbody', 'thead', 'tfoot')
 
 COLUMNS = ('col', 'colgroup')
+
+# A caption closes an open cell as a section does, but a caption is still inside
+# the table, so a day written in one is drawn and the client reaches the
+# calendar from it. It is the one table structure that is neither a cell nor
+# outside the calendar, so it is tracked separately from both.
+CAPTION = 'caption'
+
+# What a row, a cell, a section or a caption closes when it opens: everything
+# down to the section or the table that holds it.
+ROW_CONTENT = CELLS + ('tr', CAPTION)
 
 # A trailing slash closes these and only these. On anything else HTML ignores
 # it, so <textarea/> opens a textarea whose content is still text and
@@ -743,11 +753,13 @@ class Calendar(HTMLParser):
 		self.tag = None
 		self.depth = 0
 		# The table structure open inside the calendar element, innermost last,
-		# as 'table' and 'tr' markers and the cell's own tag name. A count of
-		# open cells is not enough: </tr> closes the cell it holds without the
-		# cell's own end tag ever being written, and a count cannot say whether
-		# what is open now is a cell or the row above it. The cell keeps its own
-		# name because </th> does not close a <td>.
+		# as 'table', 'tr' and 'caption' markers, the section's own tag name and
+		# the cell's own tag name. A count of open cells is not enough: </tr>
+		# closes the cell it holds without the cell's own end tag ever being
+		# written, and a count cannot say whether what is open now is a cell or
+		# the row above it. Each structure keeps its own name because an end tag
+		# for one that is not open is a parse error a browser ignores: </th>
+		# does not close a <td>, and </thead> does not close a <tbody>.
 		self.tstack = []
 		self.closed = 0
 		self.field = None
@@ -760,8 +772,41 @@ class Calendar(HTMLParser):
 		self.stop = 0
 
 	def in_cell(self):
-		"""True where a day anchor written next would be inside a cell."""
+		"""True where the innermost open table structure is a cell."""
 		return bool(self.tstack) and self.tstack[-1] in CELLS
+
+	def reachable(self):
+		"""True where a day anchor written next is inside the calendar.
+
+		A cell holds one. So does a caption, which is not a cell but is still
+		inside the table, so a browser draws a day written there and the
+		client's closest('.js-date-selector') finds the calendar from it.
+		"""
+		return bool(self.tstack) and self.tstack[-1] in CELLS + (CAPTION, )
+
+	def in_table_scope(self, name):
+		"""True where name is open in the innermost table.
+
+		A browser looks no further out than the table it is in, so a </tbody>
+		written inside a nested table cannot close the outer table's section.
+		"""
+		for open_tag in reversed(self.tstack):
+			if open_tag == name:
+				return True
+			if open_tag == 'table':
+				return False
+		return False
+
+	def close_to(self, name):
+		"""Close everything the innermost open name holds, and it."""
+		while self.tstack:
+			if self.tstack.pop() == name:
+				return
+
+	def close_row_content(self):
+		"""Close an open cell, row or caption, and the section holding them."""
+		while self.tstack and self.tstack[-1] in ROW_CONTENT + SECTIONS:
+			self.tstack.pop()
 
 	def handle_startendtag(self, tag, attrs):
 		# html.parser calls the start handler and then the end handler for
@@ -811,6 +856,9 @@ class Calendar(HTMLParser):
 		if tag == self.tag:
 			# A table opened where a cell should be closes the one above it and
 			# takes the rows after it. Inside a cell it is a real nested table.
+			# A caption counts as closing here: a table written in one closes
+			# the caption first and is then read in a table, where it closes
+			# the table too.
 			if tag == 'table' and not self.in_cell():
 				self.depth = 0
 				self.closed = 1
@@ -823,25 +871,39 @@ class Calendar(HTMLParser):
 			self.tstack.append('table')
 			return
 		if tag == 'tr':
-			# A row closes the row before it, and any cell still open in it.
-			while self.tstack and 'table' != self.tstack[-1]:
+			# A row closes the row before it, any cell still open in it, and a
+			# caption. It does not close the section that holds it.
+			while self.tstack and self.tstack[-1] in ROW_CONTENT:
 				self.tstack.pop()
 			self.tstack.append('tr')
 			return
 		if tag in CELLS:
-			# A cell closes the cell before it in the same row, and nothing
-			# above that row.
-			while self.in_cell():
+			# A cell closes the cell before it in the same row, and a caption,
+			# and nothing above that row.
+			while self.tstack and self.tstack[-1] in CELLS + (CAPTION, ):
 				self.tstack.pop()
 			self.tstack.append(tag)
 			return
-		if tag in SECTIONS or tag in COLUMNS:
+		if tag in SECTIONS:
 			# The cell closes here, and a browser moves what comes next out of
-			# the table altogether.
-			while self.in_cell():
-				self.tstack.pop()
+			# the table altogether. The section is kept on the stack so that an
+			# end tag naming a different one can be seen not to match it.
+			self.close_row_content()
+			self.tstack.append(tag)
 			return
-		if tag == 'a' and self.in_cell() and attr.get('data-date-action') == 'select':
+		if tag in COLUMNS:
+			# A column group holds no days and closes the cell the same way.
+			# Neither tag is kept: col is void, and a colgroup closes on the
+			# next thing written whatever it is.
+			self.close_row_content()
+			return
+		if tag == CAPTION:
+			# The cell closes, and the caption is still inside the table, so
+			# the days written in it are reachable.
+			self.close_row_content()
+			self.tstack.append(CAPTION)
+			return
+		if tag == 'a' and self.reachable() and attr.get('data-date-action') == 'select':
 			self.dates.append(attr.get('data-date'))
 
 	def handle_endtag(self, tag):
@@ -866,11 +928,15 @@ class Calendar(HTMLParser):
 			if self.tstack and tag == self.tstack[-1]:
 				self.tstack.pop()
 			return
-		if tag in SECTIONS:
-			# The section's end tag closes the cell inside it, and what follows
-			# is foster parented out of the table.
-			while self.in_cell():
-				self.tstack.pop()
+		if tag in SECTIONS or tag == CAPTION:
+			# Closing a section closes the cell inside it, and what follows is
+			# foster parented out of the table. Closing a caption does the same
+			# to what follows it, because the caption is where the table's
+			# content was being written. An end tag naming a section or a
+			# caption that is not open in this table is a parse error a browser
+			# ignores, and it must not close the one that is.
+			if self.in_table_scope(tag):
+				self.close_to(tag)
 			return
 		if tag == 'tr':
 			# The row's end tag closes the cell inside it. This is the one the
@@ -882,8 +948,7 @@ class Calendar(HTMLParser):
 				self.tstack.pop()
 			return
 		if tag == 'table':
-			while self.tstack and self.tstack[-1] in ('td', 'th', 'tr'):
-				self.tstack.pop()
+			self.close_row_content()
 			if self.tstack and 'table' == self.tstack[-1]:
 				self.tstack.pop()
 			# A table is also the calendar element itself, so this falls
@@ -915,18 +980,28 @@ PY
 	# for, so a parser that printed a traceback, or six words, or eight, used
 	# to arrive here as an endpoint that rendered the wrong calendar. The
 	# seven numbers are the protocol between the two halves of this check, so
-	# they are checked before any of them is believed. Trailing blank lines are
+	# they are checked before any of them is believed, and so is the exit status
+# of each grep that checks them: a grep that fails outright exits 2, and
+# reading that as "no match" reported the tool's own failure as bad parser
+# output, which is a measurement this run did not make. Trailing blank lines are
 	# deliberately not counted as extra lines: command substitution strips
 	# them, so seven numbers followed by blank lines and seven numbers followed
 	# by nothing are the same string by the time they arrive here.
 	cal_lines="$(printf '%s\n' "$cal_out" | grep -c '')"
+	cal_lines_rc=$?
+	printf '%s' "$cal_out" | grep -qE '^[0-9]+( [0-9]+){6}$'
+	cal_shape_rc=$?
 	if [ "$cal_rc" != 0 ]; then
 		cal_stat="the parser exited $cal_rc"
 	elif [ -z "$cal_out" ]; then
 		cal_stat="the parser printed nothing"
+	elif [ "$cal_lines_rc" -gt 1 ]; then
+		cal_stat="grep could not count the parser output, exiting $cal_lines_rc"
 	elif [ "$cal_lines" != 1 ]; then
 		cal_stat="the parser printed $cal_lines lines, not one"
-	elif ! printf '%s' "$cal_out" | grep -qE '^[0-9]+( [0-9]+){6}$'; then
+	elif [ "$cal_shape_rc" -gt 1 ]; then
+		cal_stat="grep could not read the parser output, exiting $cal_shape_rc"
+	elif [ "$cal_shape_rc" != 0 ]; then
 		cal_stat="the parser printed something other than seven numbers"
 	else
 		cal_stat=ok
@@ -950,6 +1025,18 @@ fi
 # through this parser, through headless Chrome driving this repository's own
 # date_selector-events.js, and through html5lib with scripting disabled, which
 # is the mode a DOMParser document has. Chrome and html5lib agreed on all 56.
+# A later review measured five more replies the same way and showed three
+# defects, all fixed here. An end tag for a table section popped the open cell
+# whether or not that section was open, so <td></thead> failed a reply a
+# browser draws all 31 days from; a section end tag now has to match a section
+# open in the same table, which is why the sections are on the stack by name.
+# <script/> and <style/> passed a reply a browser draws nothing from, because
+# html.parser enters its own raw-text mode for <script> but not for that
+# spelling; both tags are named in TEXT_ONLY now so the guard here covers
+# either spelling. And </caption> was ignored, so the days written after one
+# were counted as being in the cell the caption had already closed; a caption
+# is its own state on the stack now, which also fixes the days written INSIDE
+# one, reachable to the client and formerly reported as a failure.
 # Five of the constructs they showed are not modelled here, and each one makes
 # a reply that a browser draws nothing from pass this check. A <select> in a
 # cell swallows a real </td> or <tr>, because in select in table those act as
