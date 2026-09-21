@@ -4276,16 +4276,23 @@ if (!function_exists('pl_safe_redirect_path'))
 	 * is "///evil.example". A browser resolves that to http://evil.example/:
 	 * the URL parser skips the extra slashes before it reads the authority.
 	 *
-	 * So this returns a page inside this application -- a name, optionally a
-	 * path below it, optionally a query string and a fragment -- and nothing
-	 * else. What the pattern below does not recognise is refused outright and
-	 * comes back as '', which leaves the caller emitting "{base_url}/": the site
-	 * root.
+	 * So this returns a local path -- a name, optionally a path below it,
+	 * optionally a query string and a fragment -- and nothing else. What the
+	 * pattern below does not recognise is refused outright and comes back as
+	 * '', which leaves the caller emitting "{base_url}/": the site root.
+	 *
+	 * What comes back is a path shape, and only that. "no-such-page.php" and
+	 * "images/logo.png" both pass it. This function does not ask whether a page
+	 * of that name exists, what it does, or whether the staff member is allowed
+	 * to open it. It answers one question -- can this value resolve anywhere
+	 * other than inside the directory the application is served from -- and the
+	 * page it reaches still does its own authorisation, as it did before.
 	 *
 	 * The list of what is allowed is the whole control, and that is deliberate.
 	 * Two attempts to write this as a list of what is forbidden both got out,
-	 * and both were live open redirects on this application, confirmed by hand
-	 * against it:
+	 * and both were live open redirects on this application. Section 23 of
+	 * tests/smoke.sh carries both shapes as payloads, and each one fails
+	 * against the version of this guard that let it through:
 	 *
 	 *   - A scheme test that ran before the leading slashes were stripped.
 	 *     "/http://evil.example/steal" does not start with a letter, so the test
@@ -4305,18 +4312,27 @@ if (!function_exists('pl_safe_redirect_path'))
 	 * be read as the start of a host name.
 	 *
 	 * Every ASCII control character is stripped before the pattern runs. CR and
-	 * LF are the header-splitting pair -- PHP's own header() refuses a value
-	 * holding one, so a request cannot add headers of its own through here, but
-	 * refusing means a fatal error on a page that was working. A tab is the one
-	 * that gets past a scheme test: the URL parser a browser uses deletes every
-	 * tab and newline from the input before it reads anything, so
-	 * "ht<TAB>tps://evil.example" is parsed as "https://evil.example" while a
-	 * literal test sees a relative path. Stripping the controls first means the
-	 * pattern reads the same string the browser will.
+	 * LF are the header-splitting pair -- PHP's own header() already refuses a
+	 * value holding one, so a request cannot add headers of its own through
+	 * here, but it refuses by raising a warning and dropping the header, which
+	 * leaves the save done and the browser sitting on the handler with no
+	 * redirect at all. A tab is the one that gets past a scheme test: the URL
+	 * parser a browser uses deletes every tab and newline from the input before
+	 * it reads anything, so "ht<TAB>tps://evil.example" is parsed as
+	 * "https://evil.example" while a literal test sees a relative path.
 	 *
-	 * ".." is refused wherever it appears. Nothing this field carries needs it,
-	 * and a caller that prepends base_url should not be walked above the
-	 * directory the application is served from.
+	 * The strip takes every control, not only those three, which is more than a
+	 * browser deletes. That is deliberate, and it is not a claim that the two
+	 * read the same bytes. It means no control character can sit inside a value
+	 * this function accepts, so none can sit inside what the caller emits.
+	 *
+	 * ".." is refused in the path, which is where a caller that prepends
+	 * base_url could be walked above the directory the application is served
+	 * from. The pattern already refuses a "." or ".." segment on its own,
+	 * because a segment has to start with a letter or a digit; this refuses it
+	 * inside a longer name as well. The query string and the fragment are not
+	 * searched. They are data for the page, "case.php?q=a..b" is not a
+	 * traversal, and no URL parser reads either of them as path.
 	 *
 	 * The shapes this field carries in practice are "cal_day.php",
 	 * "case_list.php" and "case.php?case_id=12&screen=act" -- activity.php and
@@ -4326,7 +4342,7 @@ if (!function_exists('pl_safe_redirect_path'))
 	 * directory, so dropping the leading slash made "/cms/cms/case.php" and
 	 * reached no page at all.
 	 *
-	 * @return string - a page in this application, or '' meaning the site root
+	 * @return string - a local path, or '' meaning the site root
 	 * @param $url string - the return path as the request supplied it
 	 */
 	function pl_safe_redirect_path($url)
@@ -4334,18 +4350,27 @@ if (!function_exists('pl_safe_redirect_path'))
 		$url = trim(preg_replace('/[\x00-\x1F\x7F]/', '', (string) $url));
 		
 		/*	A name, then any further segments below it, then optionally a query
-			string and a fragment. The characters allowed in the query and the
-			fragment are the ones RFC 3986 allows there. The segments are
-			narrower than RFC 3986 on purpose: a page in this application does
-			not need more than a letter or digit to start, and letters, digits,
-			underscore, dot and dash after it.
+			string and a fragment.
+			
+			The segments are narrower than RFC 3986 on purpose: a page in this
+			application does not need more than a letter or a digit to start,
+			and letters, digits, underscore, dot and dash after it.
+			
+			The query and the fragment allow the ASCII characters a URL parser
+			reads as query or fragment data and never as a scheme, an authority
+			or a path. That set is close to the one RFC 3986 gives those two
+			parts, but it is not the same one: this does not require a percent
+			sign to be followed by two hex digits, it leaves the apostrophe
+			out, and it keeps "?" out of the query.
 		*/
 		if (!preg_match('#^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*(?:\?[A-Za-z0-9_.\-~%!$&()*+,;=:@/\[\]]*)?(?:\#[A-Za-z0-9_.\-~%!$&()*+,;=:@/?\[\]]*)?$#', $url))
 		{
 			return '';
 		}
 		
-		if (false !== strpos($url, '..'))
+		$path = preg_replace('/[?#].*$/s', '', $url);
+		
+		if (false !== strpos($path, '..'))
 		{
 			return '';
 		}

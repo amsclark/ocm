@@ -304,13 +304,19 @@ switch($_POST['action'])
 		which table it opened. The target itself is a fixed local file, so
 		this is about the query string, not about where the redirect goes.
 		
-		http_build_query() encodes the whole set, and the ?? '' keeps an
-		absent field from raising a warning on PHP 8.
+		http_build_query() encodes the whole set. The separator is given
+		explicitly because the default is whatever arg_separator.output
+		holds, and a deployment that sets that to "&amp;" would name the
+		parameters wrong.
+		
+		The ?? '' covers this line only. The branches above read
+		$_POST['table'] directly and an absent field there still warns,
+		as it did before. That is not what this change is about.
 	*/
 	header('Location: system-tables.php?' . http_build_query(array(
 		'screen' => 'edit',
 		'table' => $_POST['table'] ?? '',
-	)));
+	), '', '&'));
 	exit();
 
 	break;
@@ -329,7 +335,7 @@ switch($_POST['action'])
 	header('Location: system-tables.php?' . http_build_query(array(
 		'screen' => 'edit',
 		'table' => $_POST['table'] ?? '',
-	)));
+	), '', '&'));
 	exit();
 
 	break;

@@ -2263,14 +2263,19 @@ if [ "$HAVE_DB" = 1 ]; then
 			# that was here only ever posted the first. Both go through
 			# safe_redirect_url(), so both are tested.
 			#
-			# pl_safe_redirect_path() answers a request-supplied return path in
-			# one of two ways and there is no third. A value that reads as a
-			# page in this application -- a name, optionally a path below it,
-			# optionally a query string and a fragment, and no ".." anywhere --
-			# comes back unchanged. Everything else comes back as '', and this
-			# file then emits "{base_url}/": the site root. So every payload
-			# below is either refused to the root or returned exactly as it was
-			# sent, and each check says which of the two it wants.
+			# pl_safe_redirect_path() either refuses a request-supplied return
+			# path or hands back a local path. A value that reads as a local
+			# path -- a name, optionally a path below it, optionally a query
+			# string and a fragment, and no ".." in the path part -- is what
+			# comes back. Everything else comes back as '', and this file then
+			# emits "{base_url}/": the site root. Each check below says which
+			# of the two results it wants.
+			#
+			# What comes back is not always byte-for-byte what was sent: the
+			# guard trims the value and drops control characters before it
+			# reads it, so a payload carrying either can come back shorter. No
+			# payload below depends on that, and every one holding a space or a
+			# tab is refused.
 			#
 			# The guard used to be a list of what to reject, and shapes got out
 			# of it twice. The first was an absolute URL behind one slash: the
@@ -2292,7 +2297,11 @@ if [ "$HAVE_DB" = 1 ]; then
 			# every request carries a marker summary and cleanup_dops deletes
 			# them.
 			DR_SUM='ZZDOPSREDIR'
-			# The date the application itself is keeping, not this shell's.
+			# The date the database session is keeping. It only goes into a
+			# payload that the guard has to refuse or return whole, so the
+			# database and PHP disagreeing across midnight cannot change the
+			# result. Section 34 takes its dates from PHP instead, because
+			# there the date decides what the handler does.
 			DRDATE="$(adb "SELECT CURDATE()")"
 			# base_url as this deployment writes it, read off OCM_URL so the
 			# check does not have to know it: http://host:port/cms -> /cms.
@@ -2450,14 +2459,18 @@ if [ "$HAVE_DB" = 1 ]; then
 					exact 'the case activity screen'
 			done
 
-			# The close_act branch wrote one activity per request. If any are
-			# missing the branch was refused somewhere before the redirect,
-			# and half the run above proved nothing.
+			# The close_act branch writes one activity per request, so 21
+			# requests should leave 21 rows carrying the marker. This is a
+			# total and not a result per request: it catches a branch that was
+			# refused before it ever reached the redirect, but it cannot say
+			# which request is missing, and one request writing twice would
+			# cover for one writing not at all. cleanup_dops clears the marker
+			# rows before this block runs, so the count belongs to this run.
 			DR_WROTE="$(adb "SELECT COUNT(*) FROM activities WHERE summary = '${DR_SUM} close_act'")"
 			if [ "$DR_WROTE" = 21 ]; then
-				ok "every close_act request reached the redirect with the activity written"
+				ok "the close_act requests left 21 marker activities, one per request"
 			else
-				bad "the close_act branch wrote ${DR_WROTE} activities, not 21 - those requests never reached the redirect"
+				bad "the close_act branch wrote ${DR_WROTE} marker activities, not 21 - at least one request never reached the redirect"
 			fi
 
 			# --- add_pb without the pba flag ---
@@ -4685,12 +4698,18 @@ if [ "$HAVE_DB" = 1 ]; then
 			--data-urlencode "act_url=cal_day.php" \
 			"$OCM_URL/ops/update_activity.php" \
 			| grep -i '^location:' | tr -d '\r' | head -1)"
-		case "$ULOC" in
-			*/cal_day.php\?cal_date=*)
-				ok "a real act_url still redirects to the page it names" ;;
-			*)
-				bad "a real act_url no longer reaches its page (${ULOC})" ;;
-		esac
+		# The whole target, not a substring. A match on "/cal_day.php?cal_date="
+		# would also accept https://evil.example/cal_day.php?cal_date= with no
+		# date on the end of it. cal_(day|week|adv) is the branch at
+		# ops/update_activity.php:344-348, and it appends the posted act_date.
+		UWANT="${UBASE}/cal_day.php?cal_date=${LK_OLD}"
+		UTARGET="$(printf '%s' "$ULOC" \
+			| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+		if [ "$UTARGET" = "$UWANT" ]; then
+			ok "a real act_url still redirects to the page it names"
+		else
+			bad "a real act_url no longer reaches its page (wanted ${UWANT}, got ${UTARGET})"
+		fi
 	fi
 
 	cleanup_lk
