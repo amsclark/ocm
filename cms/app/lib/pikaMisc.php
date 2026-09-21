@@ -717,9 +717,11 @@ class pikaMisc
 			Each of those reached LIMIT as written, made the statement a
 			syntax error, and answered the page with a 500.
 
-			Cast instead, and hold the result at the smallest value LIMIT
-			accepts, so a request can no longer choose a value that does not
-			parse.
+			Cast instead, and hold each one at the lowest value it is allowed,
+			so a request can no longer choose a value that does not parse. A
+			count of zero is allowed, and reachable: the paging preference
+			accepts a digit string like 00, and an address book of no rows is
+			what that setting asks for. A negative count is not allowed.
 		*/
 		$clean_offset = (int) $offset;
 
@@ -730,9 +732,9 @@ class pikaMisc
 
 		$clean_limit = (int) $limit;
 
-		if ($clean_limit < 1)
+		if ($clean_limit < 0)
 		{
-			$clean_limit = 1;
+			$clean_limit = 0;
 		}
 
 		// get the total number of contacts ## modified 072219 following db server version upgrade: replaced "Rows" alias (reserved word as of version 10.2.4) ##
@@ -1690,10 +1692,8 @@ class pikaMisc
 	public static function getCompens($case_id)
 	{
 		/*	The case id is interpolated, so escape it. A search of the
-			repository finds no caller for this method, which is why the raw
-			interpolation survived, but a query that is unsafe only because
-			it is unreachable is worth no less fixing than one that is
-			reached.
+			repository finds no caller for this method. It is public, so
+			escaping is required here either way.
 		*/
 		$sql = "SELECT compens.*
 						FROM compens

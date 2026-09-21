@@ -744,8 +744,9 @@ function pl_table_autosql_insert($table, $data)
 		So refuse it, the way this function already refuses a $data that is
 		not an array. system-ops.php's add_group is the reachable case: a
 		POST carrying action=add_group and a valid token, with no group
-		field filled in, arrived here with an empty SET list and returned a
-		500.
+		fields supplied, arrived here with an empty SET list and returned
+		a 500. A supplied but empty field is a different case: that one
+		is still assigned.
 	*/
 	if (0 == $i)
 	{
