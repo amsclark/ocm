@@ -615,10 +615,14 @@ cal_head="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
 	-w '%{http_code} %{content_type}' \
 	"$CAL?field_name=open_date&container=date_selector-00001&month=1&year=2020")"
 cal_curl=$?
-# The content type is read as well as the status. The same bytes served as
-# text/plain are shown to the user as source: the client hands the reply to
-# DOMParser as text/html regardless, but the browser that fetched it renders a
-# <pre>. This endpoint sets a Content-Type header on its 400 paths only and
+# The content type is read as well as the status. It does not change what this
+# client draws: date_selector.js hands the reply to DOMParser as text/html
+# whatever the header says, and the reply never becomes a page in the browser
+# that fetched it. It is asserted because it is what the endpoint promises, and
+# because anything that opens the same URL on its own -- a copied link, a saved
+# bookmark, a crawler -- is shown whatever this header says, and text/plain is
+# shown as source. This endpoint sets a Content-Type header on its 400 paths
+# only and
 # leaves the success path to PHP's default_mimetype, so a configuration that
 # changes that default is a regression this check could not see before. An
 # absent header prints as an empty field and leaves cal_type empty.
@@ -626,28 +630,47 @@ code=""
 cal_type=""
 read -r code cal_type <<<"$cal_head"
 cal_mime="$(printf '%s' "${cal_type%%;*}" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
+cal_mime_rc=$?
 # A transfer that failed part way can leave this file stale or absent. The
 # stderr redirect goes BEFORE the input redirect: bash applies redirections left
 # to right, so the other order still prints the missing file. The exit status
 # above is what decides whether any of these values mean anything.
 size="$(wc -c 2>/dev/null < "$BODY")"
+cal_size_rc=$?
+# wc failing is not an empty reply, and an empty size is not a zero one. Read as
+# a number, an unread size compared as less than one byte and this check called
+# that "an empty 200", which is a fault in the endpoint that this run had not
+# measured. The two are kept apart: cal_size_read says whether there is a byte
+# count at all, and only then is it compared.
+cal_size_read=1
+if [ "$cal_size_rc" != 0 ] || ! printf '%s' "$size" | grep -qE '^[0-9]+$'; then
+	cal_size_read=0
+	size="an unread number of"
+fi
 # The reply is read as HTML here, not searched as text. Every version of this
 # check before the last one matched strings, and a string has no element and no
 # attribute, so complete replies passed that a browser reads as something else.
 #
-# Reading it with python3's html.parser closed those, but html.parser is a
-# tokenizer, not an HTML5 tree builder: it reports tags in the order they are
-# written and builds no tree. Six more complete replies were then measured
-# passing this check while Chrome 24 put no usable calendar on the page -- the
-# calendar inside a <template>, inside a <frameset>, inside a <select>, after a
-# <plaintext>, and two where the table is real but its day anchors are not
-# reachable: anchors written as direct children of a row, which the browser
-# foster-parents out of the table, and a bare <table> opened where a cell should
-# be, which implies the end of the calendar and puts the days in a sibling.
-# Those last two are the shape a real markup regression takes. The rules below
-# are the parts of the tree builder this check needs, written out: elements
-# whose content is text, elements whose content is never drawn in the page the
-# client builds, and the cell a day anchor has to be inside.
+# Reading it with html.parser closed those, but html.parser is a tokenizer, not
+# an HTML5 tree builder: it reports tags in the order they are written and
+# builds no tree. NINE complete replies were then measured passing this check
+# while Chrome 24 put no usable calendar on the page, against 31 clickable days
+# from the bundled plugin. Six of them: the calendar inside a <template>,
+# inside a <frameset>, inside a <select>, after a <plaintext>, and two where the
+# table is real but its day anchors are not reachable -- anchors written as
+# direct children of a row, which the browser foster-parents out of the table,
+# and a bare <table> opened where a cell should be, which implies the end of the
+# calendar and puts the days in a sibling. The last three are the same mistake
+# in the rules written for those: <textarea/>, whose self-closing spelling the
+# tokenizer reports as an immediate end tag where HTML ignores the slash;
+# <tr><td></tr><tr>, where the row's end tag closes the cell and only the cell's
+# own end tag was read as closing it; and <template></select>, where one shared
+# counter let a mismatched end tag clear the guard.
+#
+# The rules below are the parts of the tree builder this check needs, written
+# out: elements whose content is text, elements whose content is never drawn in
+# the page the client builds, the elements a trailing slash really closes, and
+# the cell a day anchor has to be inside.
 #
 # The parser prints seven numbers: the elements whose class list holds the
 # calendar token, whether the first of them closed, whether its own
@@ -695,6 +718,12 @@ NOT_DRAWN = ('template', 'frameset', 'select')
 # calendar at all and cannot be clicked.
 CELLS = ('td', 'th')
 
+# A trailing slash closes these and only these. On anything else HTML ignores
+# it, so <textarea/> opens a textarea whose content is still text and
+# <table class="js-date-selector"/> opens a table that never closes.
+VOID = ('area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+	'meta', 'param', 'source', 'track', 'wbr')
+
 
 class Calendar(HTMLParser):
 	"""Counts the calendar elements and reads the first one's reachable days."""
@@ -704,14 +733,33 @@ class Calendar(HTMLParser):
 		self.elements = 0
 		self.tag = None
 		self.depth = 0
-		self.cells = 0
+		# The table structure open inside the calendar element, innermost last,
+		# as 'table', 'tr' and 'cell' markers. A count of open cells is not
+		# enough: </tr> closes the cell it holds without the cell's own end tag
+		# ever being written, and a count cannot say whether what is open now is
+		# a cell or the row above it.
+		self.tstack = []
 		self.closed = 0
 		self.field = None
 		self.container = None
 		self.dates = []
 		self.text_only = ''
-		self.not_drawn = 0
+		# The inert elements open now, innermost last. A count let any one of
+		# template, frameset or select close any other.
+		self.not_drawn = []
 		self.stop = 0
+
+	def in_cell(self):
+		"""True where a day anchor written next would be inside a cell."""
+		return bool(self.tstack) and 'cell' == self.tstack[-1]
+
+	def handle_startendtag(self, tag, attrs):
+		# html.parser calls the start handler and then the end handler for
+		# every <x/>. That is right for a void element and wrong for anything
+		# else: HTML ignores the slash there, so the element stays open.
+		self.handle_starttag(tag, attrs)
+		if tag in VOID:
+			self.handle_endtag(tag)
 
 	def handle_starttag(self, tag, attrs):
 		if self.stop or self.text_only:
@@ -726,7 +774,7 @@ class Calendar(HTMLParser):
 			self.text_only = tag
 			return
 		if tag in NOT_DRAWN:
-			self.not_drawn += 1
+			self.not_drawn.append(tag)
 			return
 		if self.not_drawn:
 			return
@@ -742,7 +790,9 @@ class Calendar(HTMLParser):
 			if self.depth == 0 and not self.closed:
 				self.tag = tag
 				self.depth = 1
-				self.cells = 0
+				# The calendar element is itself the outermost table when it is
+				# one, and the rows below it belong to it.
+				self.tstack = ['table'] if tag == 'table' else []
 				self.field = attr.get('data-field-name')
 				self.container = attr.get('data-container-name')
 				return
@@ -751,16 +801,31 @@ class Calendar(HTMLParser):
 		if tag == self.tag:
 			# A table opened where a cell should be closes the one above it and
 			# takes the rows after it. Inside a cell it is a real nested table.
-			if tag == 'table' and self.cells == 0:
+			if tag == 'table' and not self.in_cell():
 				self.depth = 0
 				self.closed = 1
 			else:
 				self.depth += 1
+				if tag == 'table':
+					self.tstack.append('table')
+			return
+		if tag == 'table':
+			self.tstack.append('table')
+			return
+		if tag == 'tr':
+			# A row closes the row before it, and any cell still open in it.
+			while self.tstack and 'table' != self.tstack[-1]:
+				self.tstack.pop()
+			self.tstack.append('tr')
 			return
 		if tag in CELLS:
-			self.cells += 1
+			# A cell closes the cell before it in the same row, and nothing
+			# above that row.
+			while self.in_cell():
+				self.tstack.pop()
+			self.tstack.append('cell')
 			return
-		if tag == 'a' and self.cells and attr.get('data-date-action') == 'select':
+		if tag == 'a' and self.in_cell() and attr.get('data-date-action') == 'select':
 			self.dates.append(attr.get('data-date'))
 
 	def handle_endtag(self, tag):
@@ -770,16 +835,35 @@ class Calendar(HTMLParser):
 			if tag == self.text_only:
 				self.text_only = ''
 			return
-		if tag in NOT_DRAWN:
-			if self.not_drawn:
-				self.not_drawn -= 1
+		if self.not_drawn:
+			# Only the element that opened the inert content closes it. A
+			# </select> written after a <template> closes nothing.
+			if tag == self.not_drawn[-1]:
+				self.not_drawn.pop()
 			return
-		if self.not_drawn or not self.depth:
+		# An end tag for inert content that was never opened is ignored.
+		if tag in NOT_DRAWN or not self.depth:
 			return
 		if tag in CELLS:
-			if self.cells:
-				self.cells -= 1
+			if self.in_cell():
+				self.tstack.pop()
 			return
+		if tag == 'tr':
+			# The row's end tag closes the cell inside it. This is the one the
+			# cell counter missed: a day anchor after it is in a row, not a
+			# cell, and the browser foster-parents it out of the table.
+			while self.in_cell():
+				self.tstack.pop()
+			if self.tstack and 'tr' == self.tstack[-1]:
+				self.tstack.pop()
+			return
+		if tag == 'table':
+			while self.tstack and self.tstack[-1] in ('cell', 'tr'):
+				self.tstack.pop()
+			if self.tstack and 'table' == self.tstack[-1]:
+				self.tstack.pop()
+			# A table is also the calendar element itself, so this falls
+			# through to the depth below rather than returning.
 		if tag == self.tag:
 			self.depth -= 1
 			if self.depth == 0:
@@ -807,7 +891,10 @@ PY
 	# for, so a parser that printed a traceback, or six words, or eight, used
 	# to arrive here as an endpoint that rendered the wrong calendar. The
 	# seven numbers are the protocol between the two halves of this check, so
-	# they are checked before any of them is believed.
+	# they are checked before any of them is believed. Trailing blank lines are
+	# deliberately not counted as extra lines: command substitution strips
+	# them, so seven numbers followed by blank lines and seven numbers followed
+	# by nothing are the same string by the time they arrive here.
 	cal_lines="$(printf '%s\n' "$cal_out" | grep -c '')"
 	if [ "$cal_rc" != 0 ]; then
 		cal_stat="the parser exited $cal_rc"
@@ -832,16 +919,17 @@ fi
 # 31 distinct days of January 2020 and no other day. That rules out a prefix of
 # a calendar, a calendar for another month or another field, anchors that all
 # select the same day, invented days, days of another month beside the right
-# ones, a second calendar, a body that only mentions the class, and the six
+# ones, a second calendar, a body that only mentions the class, and the nine
 # replies above whose days a browser never makes clickable.
 #
 # What it does NOT show, measured rather than assumed: this check reads no CSS
 # and no hidden attribute, so a calendar that is present and correct and styled
 # out of sight passes it. It decodes the reply as UTF-8 only. It reads a comment
-# as ending at --> where HTML5 also ends one at --!>, and it treats title as
-# text everywhere, including inside SVG where a browser does not -- both of
-# those make it stricter than a browser, not looser, and the bundled plugin
-# emits neither. Short of a conforming HTML5 tree builder, which would be a new
+# as ending at --> where HTML5 also ends one at --!>, it treats title as text
+# everywhere, including inside SVG where a browser does not, and it ignores a
+# trailing slash on every element outside the void list, including inside SVG
+# where <desc/> really does close -- all three of those make it stricter than a
+# browser, not looser, and the bundled plugin emits none of them. Short of a conforming HTML5 tree builder, which would be a new
 # dependency for this suite, a browser test is the only thing that shows the
 # calendar works.
 #
@@ -855,14 +943,21 @@ if [ "$cal_curl" != 0 ]; then
 	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
 elif [ "$cal_stat" = "python3 is absent" ] && [ "$code" != 200 ]; then
 	bad "date_selector-server.php answered a LEGITIMATE field with HTTP $code, not 200 ($size bytes); python3 is absent, so this run did not read the reply either"
-elif [ "$cal_stat" = "python3 is absent" ] && [ "${size:-0}" -lt 1 ]; then
+elif [ "$cal_stat" = "python3 is absent" ] && [ "$cal_size_read" = 1 ] \
+	&& [ "$size" -lt 1 ]; then
 	# An empty 200 is what this endpoint answers a stranger with, so a signed-in
 	# request getting one is a failure whether or not the reply can be parsed.
 	bad "date_selector-server.php answered a LEGITIMATE field with an empty 200, which is what it answers a stranger with; python3 is absent, so this run could not read a reply either way"
+elif [ "$cal_stat" = "python3 is absent" ] && [ "$cal_size_read" = 0 ]; then
+	printf '  skip the calendar render check (needs python3 to read the reply as HTML; the status was 200, and wc exited %s so this run has no byte count either)\n' "$cal_size_rc"
 elif [ "$cal_stat" = "python3 is absent" ]; then
-	printf '  skip the calendar render check (needs python3 to read the reply as HTML; the status was 200 and the reply %s bytes, neither of which this run read)\n' "$size"
+	printf '  skip the calendar render check (needs python3 to read the reply as HTML; the status was 200 and the reply %s bytes, which is as far as this run got)\n' "$size"
 elif [ "$cal_stat" != ok ]; then
 	bad "the calendar reply could not be read as HTML by this check ($cal_stat), so this run says nothing about what date_selector-server.php rendered"
+elif [ "$cal_mime_rc" != 0 ]; then
+	# tr failing leaves cal_mime empty, which reads exactly like a reply served
+	# with no Content-Type at all. Only one of those is the endpoint's fault.
+	bad "the calendar reply's content type could not be folded to lower case by this check (exit $cal_mime_rc), so this run says nothing about what date_selector-server.php served"
 elif [ "$code" = 200 ] && [ "$cal_mime" = "text/html" ] \
 	&& [ "$cal_n" = 1 ] && [ "$cal_z" = 1 ] \
 	&& [ "$cal_f" = 1 ] && [ "$cal_c" = 1 ] \
