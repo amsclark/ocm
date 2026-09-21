@@ -619,75 +619,149 @@ cal_curl=$?
 # to right, so the other order still prints the missing file. The exit status
 # above is what decides whether any of these values mean anything.
 size="$(wc -c 2>/dev/null < "$BODY")"
-# Everything below is read out of ONE table, the calendar, and not out of the
-# page. Starting a new line at every opening table tag puts each table on a line
-# of its own; keeping the lines whose tag carries the class token leaves the
-# calendars. There has to be exactly one. A reply holding TWO calendars -- one
-# for the field that was asked for, drawn for February, and one for another
-# field, drawn for January -- passed when the dates were counted over the page
-# while the field and the container were read from the first table. Neither half
-# was wrong on its own; they were about different tables.
+# The reply is read as HTML here, not searched as text. Every earlier version of
+# this check matched strings: it took the class, the field, the container and the
+# anchors as substrings of the body. Three complete replies passed it that a
+# browser reads differently -- a table whose real data-field-name was close_date,
+# with the asked-for names sitting inside a quoted data-note value; a January
+# calendar written inside an HTML comment; and one written inside a script
+# string. Python's html.parser reports elements and their real attributes, and it
+# does not read tags out of comments or script text, so those three now fail.
+# The elements whose content a browser reads as text rather than as markup are
+# skipped as well, because html.parser does that for script and style only.
 #
-# The class token has to follow whitespace, so that data-class="js-date-selector"
-# is not read as a class attribute.
-CALT="$(mktemp)"
-sed 's|<table|\n<table|g' "$BODY" 2>/dev/null \
-	| grep -E '<table[^>]*[[:space:]]class="([^"]+ )?js-date-selector( [^"]+)?"' > "$CALT" 2>/dev/null
-cal_count="$(wc -l 2>/dev/null < "$CALT" | tr -d ' ')"
-# Whether the calendar closes is a property of the calendar. A closing tag
-# somewhere in the reply said nothing about the table being read here.
-cal_closed=0
-grep -q '</table>' "$CALT" 2>/dev/null && cal_closed=1
-# Drop whatever follows the calendar's own closing tag, so what is counted below
-# is inside it.
-sed -i 's|</table>.*||' "$CALT" 2>/dev/null
-cal_tag="$(grep -o '<table[^>]*>' "$CALT" 2>/dev/null | head -1)"
-cal_field=0
-cal_cont=0
-case "$cal_tag" in
-*' data-field-name="&quot;open_date&quot;"'*) cal_field=1 ;;
-esac
-case "$cal_tag" in
-*' data-container-name="&quot;date_selector-00001&quot;"'*) cal_cont=1 ;;
-esac
-# The select anchors of that calendar, and the distinct January days they carry.
-# The anchor is part of the pattern because the client binds to anchors: the same
-# calendar drawn with buttons passed while holding no select anchor at all.
-# Requiring a real January day rules out days numbered 31 to 61, which read as 31
-# distinct dates while the day was matched as two digits.
-cal_days="$(grep -o '<a data-date-action="select" data-date="01/[0-9][0-9]/2020">' "$CALT" 2>/dev/null | wc -l | tr -d ' ')"
-cal_dates="$(grep -oE '<a data-date-action="select" data-date="01/(0[1-9]|[12][0-9]|3[01])/2020">' "$CALT" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
+# The parser prints seven numbers: the tables whose class list holds the calendar
+# token, whether the first of them closed, whether its own data-field-name and
+# data-container-name are the two values that were asked for, how many select
+# anchors it holds, how many distinct days of January 2020 those anchors carry,
+# and how many of them select something that is not a day of January 2020.
+cal_stat="the parser did not run"
+cal_n=""
+cal_z=""
+cal_f=""
+cal_c=""
+cal_a=""
+cal_u=""
+cal_x=""
+if ! command -v python3 >/dev/null 2>&1; then
+	cal_stat="python3 is absent"
+elif [ "$cal_curl" = 0 ]; then
+	cal_out="$(python3 - "$BODY" <<'PY'
+import sys
+from html.parser import HTMLParser
+
+# A browser reads the content of these as text, so a calendar written inside one
+# is not a calendar. html.parser already does this for script and style.
+TEXT_ONLY = ('title', 'textarea', 'iframe', 'noembed', 'noframes', 'noscript',
+	'xmp')
+
+
+class Calendar(HTMLParser):
+	"""Counts the calendar tables and reads the first one's own contents."""
+
+	def __init__(self):
+		super().__init__(convert_charrefs=True)
+		self.tables = 0
+		self.depth = 0
+		self.closed = 0
+		self.field = None
+		self.container = None
+		self.dates = []
+		self.text_only = ''
+
+	def handle_starttag(self, tag, attrs):
+		if self.text_only:
+			return
+		if tag in TEXT_ONLY:
+			self.text_only = tag
+			return
+		# A repeated attribute is read as its first spelling, which is what a
+		# browser does with one; dict() would keep the last.
+		attr = {}
+		for name, value in attrs:
+			attr.setdefault(name, value)
+		if tag == 'table':
+			if 'js-date-selector' in (attr.get('class') or '').split():
+				self.tables += 1
+				if self.depth == 0 and not self.closed:
+					self.depth = 1
+					self.field = attr.get('data-field-name')
+					self.container = attr.get('data-container-name')
+					return
+			# A table nested in a cell of the calendar is still inside it.
+			if self.depth:
+				self.depth += 1
+		elif tag == 'a' and self.depth and attr.get('data-date-action') == 'select':
+			self.dates.append(attr.get('data-date'))
+
+	def handle_endtag(self, tag):
+		if self.text_only:
+			if tag == self.text_only:
+				self.text_only = ''
+			return
+		if tag == 'table' and self.depth:
+			self.depth -= 1
+			if self.depth == 0:
+				self.closed = 1
+
+
+parser = Calendar()
+with open(sys.argv[1], 'rb') as reply:
+	parser.feed(reply.read().decode('utf-8', 'replace'))
+parser.close()
+
+january = set('01/%02d/2020' % day for day in range(1, 32))
+days = [date for date in parser.dates if date in january]
+print(parser.tables,
+	parser.closed,
+	1 if parser.field == '"open_date"' else 0,
+	1 if parser.container == '"date_selector-00001"' else 0,
+	len(parser.dates),
+	len(set(days)),
+	len(parser.dates) - len(days))
+PY
+)"
+	cal_rc=$?
+	if [ "$cal_rc" = 0 ] && [ -n "$cal_out" ]; then
+		cal_stat=ok
+		read -r cal_n cal_z cal_f cal_c cal_a cal_u cal_x <<<"$cal_out"
+	else
+		cal_stat="the parser exited $cal_rc"
+	fi
+fi
 # A status, a byte count and one marker do not say a calendar arrived. A body
 # cut off part way through still carries the opening tag, and curl reports HTTP
 # 200 for a reply whose transfer then failed, so its exit status is part of the
-# answer. What is asserted is text. One table carries the class, it closes, its
-# own tag names the field and the container that were asked for, and inside it
-# are 31 select anchors carrying the 31 distinct days of January 2020: that rules
+# answer. What is asserted: the reply holds exactly one element whose class list
+# carries the calendar token, that element closes, its own two attributes name
+# the field and the container that were asked for, and it holds 31 select
+# anchors carrying 31 distinct days of January 2020 and no other day. That rules
 # out a prefix of a calendar, a calendar for another month or another field,
-# anchors that all select the same day, invented days, a second calendar beside
-# the right one, and a page that merely mentions the class. The container is
-# checked because the client reads it to navigate and to close. What none of it
-# shows is that the calendar WORKS in a browser -- that needs a client test,
-# which this suite does not have.
+# anchors that all select the same day, invented days, days of another month
+# beside the right ones, a second calendar, and a body that only mentions the
+# class. The container is checked because the client reads it to navigate and to
+# close. What none of it shows is that the calendar WORKS in a browser -- that
+# needs a client test, which this suite does not have.
 #
-# These patterns are written for the markup the bundled plugin emits, and they
-# are strict about its spelling: double quotes, &quot; around the two JSON
-# values, single spaces between class tokens, and data-date-action immediately
-# before data-date in the anchor. A site that overrides
-# template_plugins/date_selector.php may spell the same calendar with single
-# quotes, numeric entities, a tab between class tokens or the anchor's two
-# attributes the other way round; each of those is a working calendar that this
-# check reports as a failure, and would have to update it.
+# What is still spelled exactly: the class token, the two JSON-encoded attribute
+# values, data-date-action="select" on an anchor element, and m/d/Y dates. A site
+# that overrides template_plugins/date_selector.php and renames any of those is
+# rendering a working calendar that this check reports as a failure, and would
+# have to update it. Quoting, attribute order, entities and whitespace are the
+# parser's problem now, not this check's.
 if [ "$cal_curl" != 0 ]; then
 	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
-elif [ "$code" = 200 ] && [ "$cal_count" = 1 ] && [ "$cal_closed" = 1 ] \
-	&& [ "$cal_days" = 31 ] && [ "$cal_dates" = 31 ] \
-	&& [ "$cal_field" = 1 ] && [ "$cal_cont" = 1 ]; then
-	ok "date_selector-server.php renders one calendar, tagged with the field and the container that were asked for, holding the 31 days of January 2020 as select anchors ($size bytes)"
+elif [ "$cal_stat" = "python3 is absent" ]; then
+	printf '  skip the calendar render check (needs python3 to read the reply as HTML)\n'
+elif [ "$cal_stat" != ok ]; then
+	bad "the calendar reply could not be read as HTML by this check ($cal_stat), so this run says nothing about what date_selector-server.php rendered"
+elif [ "$code" = 200 ] && [ "$cal_n" = 1 ] && [ "$cal_z" = 1 ] \
+	&& [ "$cal_f" = 1 ] && [ "$cal_c" = 1 ] \
+	&& [ "$cal_a" = 31 ] && [ "$cal_u" = 31 ] && [ "$cal_x" = 0 ]; then
+	ok "date_selector-server.php renders one calendar element, tagged with the field and the container that were asked for, holding the 31 days of January 2020 as select anchors and no other day ($size bytes)"
 else
-	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, $size bytes, $cal_count tables carrying the calendar class, closed $cal_closed, $cal_days select anchors, $cal_dates distinct January dates, field in the calendar tag $cal_field, container in it $cal_cont, tag ${cal_tag:-absent})"
+	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, $size bytes, $cal_n elements carrying the calendar class, closed $cal_z, field $cal_f, container $cal_c, $cal_a select anchors, $cal_u distinct January days, $cal_x anchors selecting another day)"
 fi
-rm -f "$CALT"
 
 # 8e. reports/index.php filters the list by the per-report permission. The admin
 # must still see reports; an empty list here is the over-enforcement failure.
@@ -17919,14 +17993,14 @@ fi
 # The session check has to come before the input validation, not after it. The
 # order is set by the file itself: pika_init() runs before the pl_grab_get()
 # calls that read the request. What this check adds is the observable half of
-# that -- the text "Invalid field_name." is what this endpoint's validation
-# sends and nothing else here sends, so a stranger receiving it is a stranger
-# being answered by that validation's own reply, and an empty reply is what a
-# request that reaches authentication looks like from outside. Receiving the
-# text is not the same as watching the code run: it cannot show on its own that
-# nothing was read first, or where execution stopped, only what came back.
-# Section 8d is the regression guard on the validation itself, for a caller that
-# does hold a session.
+# that: a stranger sending a malformed field_name gets the same empty 200 as a
+# stranger sending a valid one, and not the 400 with "Invalid field_name." that
+# this endpoint's validation sends a caller who holds a session. The text is
+# reported when it comes back, because it is the reply this endpoint's own
+# validation is written to send, but finding a string in a reply does not show
+# which code wrote it -- only the empty 200 is asserted. Section 8d is the
+# regression guard on the validation itself, for a caller that does hold a
+# session.
 SV_MAL_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' -G \
 	--data-urlencode "field_name=a b\"c" \
 	--data-urlencode "container=date_selector-1" \
@@ -17935,12 +18009,14 @@ SV_MAL_CURL=$?
 SV_MAL_BYTES="$(wc -c 2>/dev/null < "$BODY" | tr -d ' ')"
 if [ "$SV_MAL_CURL" != 0 ]; then
 	bad "the date selector could not be reached without a session at all (curl exit ${SV_MAL_CURL}), so this run says nothing about what a stranger's malformed request gets"
-elif grep -q 'Invalid field_name' "$BODY"; then
-	bad "the date selector sent a stranger the text its own field_name validation sends, so a request with no session was answered by that validation"
-elif [ "$SV_MAL_CODE" != 200 ] || [ "$SV_MAL_BYTES" != 0 ]; then
-	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes, and an empty 200 is what a request that reaches authentication here gets"
-else
+elif [ "$SV_MAL_CODE" = 200 ] && [ "$SV_MAL_BYTES" = 0 ]; then
 	ok "the date selector says nothing to a stranger who sends a malformed field_name (empty 200)"
+else
+	SV_MAL_SEEN=""
+	if grep -q 'Invalid field_name\.' "$BODY"; then
+		SV_MAL_SEEN=', and it holds the text "Invalid field_name.", which is what this endpoint sends a caller whose field_name it rejected'
+	fi
+	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes, not the empty 200 that a request reaching authentication here gets${SV_MAL_SEEN}"
 fi
 
 # pl_grab_get() returns a value in whatever shape the query string gave it, so
