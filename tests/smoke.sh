@@ -16581,6 +16581,540 @@ ATPY
 	fi
 	fi
 fi
+
+# 96. The holding-pen handler in dataops.php was unreachable and unsafe at the
+# same time, and each fault hid the other.
+#
+# pl_table_autosql_update() built "UPDATE cases SET WHERE case_id='1'" whenever
+# nothing the caller supplied was a column of this install's schema. The handler
+# sets transfer_to, which is not a column of cases here, so a POST that reached
+# its body ended in a MariaDB syntax error and an HTTP 500.
+#
+# Behind that 500 sat a query that interpolated the case id instead of escaping
+# it. The id arrives from pl_grab_vars('cases'), which filters a primary key in
+# 'primary_key' mode, and that mode trims the value and encodes < and >, so a
+# quote arrives intact. Fixing the builder made the unsafe line reachable, which
+# is why both fixes belong to one change.
+#
+# These checks are behavioural, not textual. They post to the handler and then
+# ask the database what it did. Everything the section reads is its own: it seeds
+# its own source case, one conflict row on that case to prove the handler copies
+# what it should, and one conflict row on a case id no request names to catch it
+# copying what it should not.
+#
+# Nothing here deletes a row until the section has proved it owns one. The
+# vacancy query must find the fixture ids free and both marker offices unused,
+# and the seeding must then report every row it asked for. Only then is TH_OWNED
+# set, and only then may cleanup run a DELETE. A collision, a query that cannot
+# answer, or an exit part way through leaves the database alone.
+echo
+echo "96. the holding-pen handler answers a quoted case id without breaking out of its query"
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the holding-pen checks (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 96 cannot reach the database, so it cannot tell what the handler wrote"
+else
+	# Two office codes nothing else uses. office is char(3), and the handler
+	# copies the posted trans_office into the office column of every case it
+	# creates, so this marks the handler's output as this section's property.
+	TH_SRC_OFFICE='Z95'
+	TH_NEW_OFFICE='Z96'
+	# The source case the requests name, a case id they never name, and two
+	# contacts: one that must be copied, one that must not.
+	TH_CASE='9299999'
+	TH_OTHER='9299998'
+	TH_CONTACT_MINE='9242423'
+	TH_CONTACT_OTHER='9242424'
+	TH_ROW_MINE='9777776'
+	TH_ROW_OTHER='9777777'
+	TH_HEAD="$(mktemp)"
+	TH_OWNED=0
+	TH_OWNED_IDS='0'
+	TH_CLEAN_ERR=''
+	TH_SEEN=''
+
+	# The suite's own trap only knows the two files it made at the top.
+	cleanup_th() {
+		rm -f "$TH_HEAD"
+
+		# The gate. Until the vacancy query has passed and the fixture is in
+		# place, this section owns nothing, and a DELETE here would take
+		# somebody else's rows. An exit part way through arrives here too.
+		if [ "$TH_OWNED" != 1 ]; then
+			return 0
+		fi
+
+		# Read the ids before the case rows go, so the checks below can still
+		# name the children. Deleting those by a subquery on cases would lose
+		# them the moment the parent delete ran first, and this schema has no
+		# foreign key to stop that order.
+		#
+		# By the marker office rather than the ids the handler reported: a
+		# request that dies after its insert sends no Location header, and
+		# the case it made would otherwise outlive the section.
+		TH_OWNED_IDS="$(adb "SELECT GROUP_CONCAT(case_id) FROM cases
+			WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}')")"
+		case "$TH_OWNED_IDS" in
+			'' | NULL) TH_OWNED_IDS='0' ;;
+		esac
+
+		adb "DELETE FROM conflict
+			WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER})" \
+			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} seeded-conflict"
+		adb "DELETE FROM conflict WHERE case_id IN (${TH_OWNED_IDS})" \
+			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} conflict"
+		adb "DELETE FROM activities WHERE case_id IN (${TH_OWNED_IDS})" \
+			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} activities"
+		adb "DELETE FROM cases
+			WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}')" \
+			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} cases"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_th' EXIT
+
+	# A token of its own rather than the one section 7 captured, so this section
+	# does not depend on how far away that is or on what ran in between.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php" >/dev/null
+	TH_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+		| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+
+	th_post() {
+		: > "$TH_HEAD"
+		th_code="$(curl -s --max-time 60 -b "$COOKIES" -D "$TH_HEAD" \
+			-o "$BODY" -w '%{http_code}' \
+			--data-urlencode "action=toledo_holding" \
+			--data-urlencode "case_id=$1" \
+			--data-urlencode "trans_office=${TH_NEW_OFFICE}" \
+			--data-urlencode "_csrf=${TH_TOKEN}" \
+			"$OCM_URL/dataops.php")"
+		th_curl=$?
+		# Only the handler's own redirect carries new_case_id, so requiring it
+		# is what tells a completed request apart from a login redirect, a
+		# refusal, or a request that died halfway.
+		th_new="$(grep -i '^location:' "$TH_HEAD" \
+			| grep -oE 'new_case_id=[0-9]+' | head -1 | cut -d= -f2)"
+		[ "$th_curl" = 0 ]
+	}
+
+	# What each request must have produced: a case this section did not seed
+	# and no earlier request reported, carrying the marker office, with the
+	# source case's own conflict row copied onto it.
+	#
+	# The copy is the positive control. Without it a zero in the injection
+	# check below could mean the handler copies nothing at all, and a redirect
+	# naming the source case would let the check count the row the section
+	# seeded itself. The relation code comes from the seeded row rather than a
+	# literal, because what matters is that the field is carried across.
+	#
+	# $1 names the request for the messages, $2 is what to say for a 500.
+	th_made_new_case() {
+		if [ "$th_code" = 500 ]; then
+			bad "$2"
+			return 1
+		fi
+		if [ -z "$th_new" ]; then
+			bad "$1 answered ${th_code} and named no new case, so the handler did not finish"
+			return 1
+		fi
+		if [ "$th_new" = "$TH_CASE" ]; then
+			bad "$1 named the source case ${TH_CASE} as its output, so no case was created"
+			return 1
+		fi
+		case " ${TH_SEEN} " in
+			*" ${th_new} "*)
+				bad "$1 named case ${th_new}, which an earlier request in this section already made"
+				return 1
+				;;
+		esac
+		TH_SEEN="${TH_SEEN} ${th_new}"
+		th_office="$(adb "SELECT office FROM cases WHERE case_id = ${th_new}")"
+		if [ "$th_office" != "$TH_NEW_OFFICE" ]; then
+			bad "$1 named case ${th_new}, which is not a case this run created (office '${th_office}')"
+			return 1
+		fi
+		th_mine="$(adb "SELECT COUNT(*) FROM conflict
+			WHERE case_id = ${th_new}
+			  AND contact_id = ${TH_CONTACT_MINE}
+			  AND relation_code = (SELECT relation_code FROM conflict
+			                       WHERE conflict_id = ${TH_ROW_MINE})")"
+		if [ -z "$th_mine" ] || [ "$th_mine" -lt 1 ]; then
+			bad "$1 did not copy the source case's conflict row onto new case ${th_new} (count '${th_mine}'), so the injection check below would prove nothing"
+			return 1
+		fi
+		return 0
+	}
+
+	# Refuse to seed over anything that is already there: these ids are chosen
+	# to be free, and if they are not, this section does not own them and must
+	# neither write them nor delete them.
+	TH_TAKEN="$(adb "SELECT
+		(SELECT COUNT(*) FROM cases WHERE case_id IN (${TH_CASE}, ${TH_OTHER}))
+		+ (SELECT COUNT(*) FROM conflict
+		   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER}))
+		+ (SELECT COUNT(*) FROM cases
+		   WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}'))")"
+
+	if [ "$TH_TAKEN" = 0 ]; then
+		adb "INSERT INTO cases (case_id, office, status, user_id, client_id)
+			VALUES (${TH_CASE}, '${TH_SRC_OFFICE}', '1', 1, 0)" >/dev/null 2>&1
+		adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
+			VALUES (${TH_ROW_MINE}, ${TH_CONTACT_MINE}, ${TH_CASE}, 'A')" >/dev/null 2>&1
+		adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
+			VALUES (${TH_ROW_OTHER}, ${TH_CONTACT_OTHER}, ${TH_OTHER}, 'A')" >/dev/null 2>&1
+		TH_SEEDED="$(adb "SELECT
+			(SELECT COUNT(*) FROM cases WHERE case_id = ${TH_CASE})
+			+ (SELECT COUNT(*) FROM conflict
+			   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER}))")"
+		if [ "$TH_SEEDED" = 3 ]; then
+			# Three rows this section wrote, on ids nothing else was using.
+			# From here its cleanup has something of its own to remove.
+			TH_OWNED=1
+		fi
+	else
+		TH_SEEDED='not attempted'
+	fi
+
+	if [ "${#TH_TOKEN}" -ne 64 ]; then
+		bad "no CSRF token for the holding-pen POST - section 96 is untested"
+	elif [ -z "$TH_TAKEN" ]; then
+		bad "section 96 could not ask whether its fixture ids are free, so it wrote nothing and will delete nothing"
+	elif [ "$TH_TAKEN" != 0 ]; then
+		bad "section 96's fixture ids are already in use (${TH_TAKEN} rows), so it will not seed over them or delete them"
+	elif [ "$TH_SEEDED" != 3 ]; then
+		bad "section 96 could not seed its case and two conflict rows (count '${TH_SEEDED}'), so it proves nothing"
+	else
+		if ! th_post "$TH_CASE"; then
+			bad "the holding-pen request failed outright (curl exit ${th_curl}) - section 96 is untested"
+		elif th_made_new_case "the holding-pen request for an ordinary case id" \
+			"THE HOLDING-PEN HANDLER 500s ON AN ORDINARY CASE ID: its UPDATE is not a valid statement"
+		then
+			ok "the holding-pen handler answers an ordinary case id with ${th_code} and copies that case's own conflict row to the case it creates"
+		fi
+
+		# A trailing quote on an id the section owns. Unescaped it ended the
+		# string mid-query and the request died on the error page.
+		if ! th_post "${TH_CASE}'"; then
+			bad "the quoted holding-pen request failed outright (curl exit ${th_curl})"
+		elif th_made_new_case "the quoted holding-pen request" \
+			"A QUOTE IN THE CASE ID 500s THE HOLDING-PEN HANDLER: the id reaches its query unescaped"
+		then
+			ok "a quote in the case id does not break the handler's query, and the case it makes still carries the source case's own conflict row (status ${th_code})"
+		fi
+
+		# The payload that mattered. The handler copies the conflict rows of
+		# the case it was given onto the case it creates, so an always-true
+		# clause made that every row in the table.
+		if ! th_post "${TH_CASE}' OR '1'='1"; then
+			bad "the always-true holding-pen request failed outright (curl exit ${th_curl})"
+		elif th_made_new_case "the always-true holding-pen request" \
+			"the always-true holding-pen request answered 500 - section 96's injection check is untested"
+		then
+			TH_LEAKED="$(adb "SELECT COUNT(*) FROM conflict
+				WHERE case_id = ${th_new} AND contact_id = ${TH_CONTACT_OTHER}")"
+			if [ -z "$TH_LEAKED" ]; then
+				bad "section 96 could not count the copied conflict rows, so its result is not proof"
+			elif [ "$TH_LEAKED" != 0 ]; then
+				bad "SQL INJECTION IN THE HOLDING-PEN HANDLER: an always-true case id copied case ${TH_OTHER}'s conflict row onto new case ${th_new}"
+			else
+				ok "an always-true case id copies no other case's conflict rows (status ${th_code})"
+			fi
+		fi
+	fi
+
+	cleanup_th
+
+	# The handler writes on every call, so a section that leaves its cases
+	# behind changes what a later one counts. Only its own rows are counted
+	# here: the marker offices, the two conflict ids it seeded, and the
+	# children of the cases it owned.
+	if [ "$TH_OWNED" != 1 ]; then
+		printf '  section 96 wrote nothing, so it removed nothing\n'
+	elif [ -n "$TH_CLEAN_ERR" ]; then
+		bad "section 96 could not remove its own rows (failed:${TH_CLEAN_ERR}), so a later count would read them"
+	else
+		TH_LEFT="$(adb "SELECT
+			(SELECT COUNT(*) FROM cases
+			 WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}'))
+			+ (SELECT COUNT(*) FROM conflict
+			   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER}))
+			+ (SELECT COUNT(*) FROM conflict WHERE case_id IN (${TH_OWNED_IDS}))
+			+ (SELECT COUNT(*) FROM activities
+			   WHERE case_id IN (${TH_OWNED_IDS}))")"
+
+		if [ "$TH_LEFT" = 0 ]; then
+			ok "section 96 leaves none of its own cases, conflicts or activities behind"
+		else
+			bad "section 96 left ${TH_LEFT} of its own rows in the database, so a later count would read them"
+		fi
+	fi
+
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
+
+# 97. pl_table_autosql_insert() had the same empty-SET-list fault as its UPDATE
+# sibling, and system-ops.php's add_group reaches it from a request: a POST with
+# a valid token and no group fields supplied gave MariaDB "INSERT `groups` SET"
+# and answered HTTP 500. The builder now refuses an insert with nothing in it, on
+# the error page it already uses for a $data that is not an array. Writing must
+# not be the answer either: a row of column defaults is not what was asked for.
+#
+# The refusal's own words are what this checks. A 200 on its own would also be
+# an authorization refusal, a CSRF rejection or a gate redirect, and each of
+# those answers before the builder runs.
+echo
+echo "97. an empty add_group POST is refused rather than answered with a 500"
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the empty-insert check (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 97 cannot reach the database, so it cannot tell whether a group was written"
+else
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php" >/dev/null
+	EI_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+		| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+	EI_BEFORE="$(adb "SELECT COUNT(*) FROM \`groups\`")"
+	: > "$BODY"
+	EI_CODE="$(curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		--data-urlencode "action=add_group" \
+		--data-urlencode "_csrf=${EI_TOKEN}" \
+		"$OCM_URL/system-ops.php")"
+	EI_CURL=$?
+	EI_AFTER="$(adb "SELECT COUNT(*) FROM \`groups\`")"
+
+	if [ "${#EI_TOKEN}" -ne 64 ]; then
+		bad "no CSRF token for the add_group POST - section 97 is untested"
+	elif [ "$EI_CURL" != 0 ]; then
+		bad "the add_group POST failed outright (curl exit ${EI_CURL}) - section 97 is untested"
+	elif [ -z "$EI_BEFORE" ] || [ -z "$EI_AFTER" ]; then
+		bad "section 97 could not count the groups table, so its result is not proof"
+	elif [ "$EI_CODE" = 500 ]; then
+		bad "AN EMPTY add_group POST 500s: the INSERT builder emits a statement with no SET list"
+	elif [ "$EI_CODE" != 200 ]; then
+		bad "the empty add_group POST answered ${EI_CODE}, so it never reached the INSERT builder"
+	elif ! grep -q 'No values were supplied for the new record' "$BODY"; then
+		bad "the empty add_group POST answered 200 without the builder's refusal, so section 97 does not know which answer it got"
+	elif [ "$EI_AFTER" != "$EI_BEFORE" ]; then
+		bad "an empty add_group POST wrote a groups row (${EI_BEFORE} -> ${EI_AFTER})"
+	else
+		ok "an empty add_group POST is refused by the INSERT builder and writes no group (status ${EI_CODE})"
+	fi
+fi
+
+
+# 98. pikaMisc::getContactsAlphabetically() escaped its LIMIT values instead of
+# casting them. The offset arrives from the request through htmlContactList(),
+# which tests it with is_numeric(), and that test passes -1, 1.5 and 1e2. None of
+# the three is a value MariaDB accepts in a LIMIT clause, so each answered the
+# address book with a 500. Both values are cast now and held at the lowest one
+# SQL takes.
+#
+# The checks are behavioural, and they count rows rather than trusting a status:
+# this application answers a PHP error with 200, an account gate redirects to a
+# form, and an empty address book renders happily whatever the offset was. So
+# the section seeds three contacts under a surname letter this install does not
+# use, and every check asks for that letter. Each value the is_numeric() test
+# lets through must return what the integer it casts to returns: -1 the rows of
+# 0, 1.5 the rows of 1, and 1e2 the rows of 100.
+#
+# Ownership works as in section 96: nothing is deleted until the vacancy query
+# has passed and the seeding has reported every row.
+echo
+echo "98. the address book casts an offset MariaDB cannot use in a LIMIT"
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the address book offset checks (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 98 cannot reach the database, so it cannot seed the rows it counts"
+else
+	AB_ID1='9242431'
+	AB_ID2='9242432'
+	AB_ID3='9242433'
+	AB_OWNED=0
+	AB_CLEAN_ERR=''
+	AB_JAR="$(mktemp)"
+
+	# A surname letter with no aliases on it, so every row the address book
+	# returns for that letter is one of the three seeded below. Counting
+	# against whatever contacts the install already holds would not tell one
+	# offset from another.
+	AB_LETTER=''
+	for AB_CAND in Q X Y K J U V Z
+	do
+		if [ "$(adb "SELECT COUNT(*) FROM aliases
+			WHERE last_name LIKE '${AB_CAND}%'")" = 0 ]
+		then
+			AB_LETTER="$AB_CAND"
+			break
+		fi
+	done
+
+	cleanup_ab() {
+		rm -f "$AB_JAR"
+		if [ "$AB_OWNED" != 1 ]; then
+			return 0
+		fi
+		adb "DELETE FROM aliases
+			WHERE alias_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3})" \
+			>/dev/null 2>&1 || AB_CLEAN_ERR="${AB_CLEAN_ERR} aliases"
+		adb "DELETE FROM contacts
+			WHERE contact_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3})" \
+			>/dev/null 2>&1 || AB_CLEAN_ERR="${AB_CLEAN_ERR} contacts"
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ab' EXIT
+
+	AB_TAKEN="$(adb "SELECT
+		(SELECT COUNT(*) FROM contacts
+		 WHERE contact_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3}))
+		+ (SELECT COUNT(*) FROM aliases
+		   WHERE alias_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3}))")"
+
+	if [ -n "$AB_LETTER" ] && [ "$AB_TAKEN" = 0 ]; then
+		AB_N=0
+		for AB_ID in "$AB_ID1" "$AB_ID2" "$AB_ID3"
+		do
+			AB_N=$((AB_N + 1))
+			adb "INSERT INTO contacts (contact_id, first_name, last_name)
+				VALUES (${AB_ID}, 'Smoke', '${AB_LETTER}zsmoke${AB_N}')" \
+				>/dev/null 2>&1
+			adb "INSERT INTO aliases
+				(alias_id, contact_id, primary_name, first_name, last_name)
+				VALUES (${AB_ID}, ${AB_ID}, 1, 'Smoke',
+					'${AB_LETTER}zsmoke${AB_N}')" >/dev/null 2>&1
+		done
+		AB_SEEDED="$(adb "SELECT COUNT(*) FROM aliases
+			WHERE alias_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3})")"
+		if [ "$AB_SEEDED" = 3 ]; then
+			AB_OWNED=1
+		fi
+	else
+		AB_SEEDED='not attempted'
+	fi
+
+	# $1 the offset, $2 the cookie jar. The header row of the matches table is
+	# a plain <tr>; only result rows carry the striping class, so counting it
+	# counts what the query returned.
+	ab_rows() {
+		: > "$BODY"
+		ab_code="$(curl -sL --max-time 60 -b "$2" -o "$BODY" -w '%{http_code}' \
+			"$OCM_URL/addressbook.php?dmodeb=1&last_name=${AB_LETTER}&offset=$1")"
+		ab_curl=$?
+		ab_count="$(grep -c '<tr class="row' "$BODY")"
+		[ "$ab_curl" = 0 ]
+	}
+
+	# $1 the offset, $2 how many of the three seeded rows it must return.
+	ab_check() {
+		if ! ab_rows "$1" "$COOKIES"; then
+			bad "the address book request for offset=$1 failed outright (curl exit ${ab_curl})"
+		elif [ "$ab_code" = 500 ]; then
+			bad "THE ADDRESS BOOK 500s ON offset=$1: the value reaches LIMIT as written"
+		elif [ "$ab_code" != 200 ]; then
+			bad "the address book answered ${ab_code} on offset=$1, so it rendered nothing to count"
+		elif grep -q 'login_pass' "$BODY"; then
+			bad "the address book bounced to the login form on offset=$1, so this proves nothing"
+		elif grep -q 'Pika Error' "$BODY"; then
+			bad "THE ADDRESS BOOK ERRORS ON offset=$1: the value reached the database"
+		elif ! grep -q 'Address Book Matches' "$BODY"; then
+			bad "the address book answered 200 on offset=$1 without its results heading, so the contact query did not run"
+		elif [ "$ab_count" != "$2" ]; then
+			bad "the address book returned ${ab_count} of its three seeded rows on offset=$1, not ${2}"
+		else
+			ok "the address book answers offset=$1 with the ${2} rows that offset selects (status ${ab_code})"
+		fi
+	}
+
+	if [ -z "$AB_LETTER" ]; then
+		printf '  skip the address book offset checks (every candidate surname letter is in use)\n'
+	elif [ -z "$AB_TAKEN" ]; then
+		bad "section 98 could not ask whether its fixture ids are free, so it wrote nothing and will delete nothing"
+	elif [ "$AB_TAKEN" != 0 ]; then
+		bad "section 98's fixture ids are already in use (${AB_TAKEN} rows), so it will not seed over them or delete them"
+	elif [ "$AB_SEEDED" != 3 ]; then
+		bad "section 98 could not seed its three contacts (count '${AB_SEEDED}'), so it has nothing to count"
+	else
+		# The reference values first, from offsets MariaDB has always taken.
+		ab_check 0 3
+		ab_check 1 2
+		ab_check 100 0
+		# Then the three the is_numeric() test lets through.
+		ab_check -1 3
+		ab_check 1.5 2
+		ab_check 1e2 0
+
+		# The count comes from the paging preference, which accepts a digit
+		# string. "00" is truthy in PHP, so it survives the fallback that
+		# replaces an empty preference with a default, and arrives here as a
+		# zero. LIMIT 0 is valid SQL and an empty page is what that setting
+		# asks for, so the cast has to keep it: a floor of one would answer
+		# with a row nobody asked for.
+		#
+		# The preference is stored per user, so this reads the row, writes a
+		# preference set of its own, and puts the original back. Hex in and
+		# hex out, so the serialized value needs no quoting and the copy can
+		# be compared byte for byte. A second cookie jar and its own login
+		# keep the suite's session, and its page size, as they were.
+		AB_WHO="$(adb "SELECT user_id FROM users WHERE username = '${OCM_USER}'")"
+		AB_PREFS="$(adb "SELECT HEX(session_data) FROM users
+			WHERE user_id = ${AB_WHO:-0}")"
+
+		if [ -z "$AB_WHO" ] || [ -z "$AB_PREFS" ]; then
+			bad "section 98 could not read ${OCM_USER}'s stored preferences, so it left them alone and did not test a zero page size"
+		else
+			adb "UPDATE users
+				SET session_data = 'a:1:{s:6:\"paging\";s:2:\"00\";}'
+				WHERE user_id = ${AB_WHO}" >/dev/null 2>&1
+			curl -sL --max-time 30 -c "$AB_JAR" -b "$AB_JAR" -o /dev/null \
+				-X POST \
+				-d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
+				"$OCM_URL/"
+
+			if ! ab_rows 0 "$AB_JAR"; then
+				bad "the address book request for a zero page size failed outright (curl exit ${ab_curl})"
+			elif [ "$ab_code" != 200 ]; then
+				bad "the address book answered ${ab_code} with the paging preference set to 00"
+			elif ! grep -q 'Address Book Matches' "$BODY"; then
+				bad "the address book did not render with the paging preference set to 00, so the zero page size is untested"
+			elif [ "$ab_count" != 0 ]; then
+				bad "A ZERO PAGE SIZE SHOWS ${ab_count} ROWS: the LIMIT count is floored above the value the preference asked for"
+			else
+				ok "a paging preference of 00 gives an empty page rather than a row nobody asked for"
+			fi
+
+			adb "UPDATE users SET session_data = UNHEX('${AB_PREFS}')
+				WHERE user_id = ${AB_WHO}" >/dev/null 2>&1
+			AB_NOW="$(adb "SELECT HEX(session_data) FROM users
+				WHERE user_id = ${AB_WHO}")"
+			if [ "$AB_NOW" = "$AB_PREFS" ]; then
+				ok "section 98 puts ${OCM_USER}'s stored preferences back as they were"
+			else
+				bad "SECTION 98 DID NOT RESTORE ${OCM_USER}'s PREFERENCES: the stored page size is still the test's own"
+			fi
+		fi
+	fi
+
+	cleanup_ab
+
+	if [ "$AB_OWNED" != 1 ]; then
+		printf '  section 98 wrote nothing, so it removed nothing\n'
+	elif [ -n "$AB_CLEAN_ERR" ]; then
+		bad "section 98 could not remove its own rows (failed:${AB_CLEAN_ERR}), so the address book keeps them"
+	else
+		AB_LEFT="$(adb "SELECT
+			(SELECT COUNT(*) FROM contacts
+			 WHERE contact_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3}))
+			+ (SELECT COUNT(*) FROM aliases
+			   WHERE alias_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3}))")"
+
+		if [ "$AB_LEFT" = 0 ]; then
+			ok "section 98 leaves none of its own contacts behind"
+		else
+			bad "section 98 left ${AB_LEFT} of its own rows in the address book"
+		fi
+	fi
+
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

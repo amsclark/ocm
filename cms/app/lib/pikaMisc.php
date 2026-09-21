@@ -710,8 +710,32 @@ class pikaMisc
 	public static function getContactsAlphabetically(&$dataset_size, $letter, $offset, $limit = 5)
 	{
 		$clean_letter = DB::escapeString($letter);
-		$clean_offset = DB::escapeString($offset);
-		$clean_limit = DB::escapeString($limit);
+
+		/*	LIMIT takes integers, and escaping is the wrong tool for one. The
+			offset arrives from the request through addressbook.php, which
+			tests it with is_numeric(), and that test passes 1.5, 1e2 and -1.
+			Each of those reached LIMIT as written, made the statement a
+			syntax error, and answered the page with a 500.
+
+			Cast instead, and hold each one at the lowest value it is allowed,
+			so a request can no longer choose a value that does not parse. A
+			count of zero is allowed, and reachable: the paging preference
+			accepts a digit string like 00, and an address book of no rows is
+			what that setting asks for. A negative count is not allowed.
+		*/
+		$clean_offset = (int) $offset;
+
+		if ($clean_offset < 0)
+		{
+			$clean_offset = 0;
+		}
+
+		$clean_limit = (int) $limit;
+
+		if ($clean_limit < 0)
+		{
+			$clean_limit = 0;
+		}
 
 		// get the total number of contacts ## modified 072219 following db server version upgrade: replaced "Rows" alias (reserved word as of version 10.2.4) ##
 		$result = DB::query("SELECT COUNT(*) AS RowCount FROM aliases WHERE last_name LIKE '{$clean_letter}%'")
@@ -1667,9 +1691,13 @@ class pikaMisc
 	
 	public static function getCompens($case_id)
 	{
+		/*	The case id is interpolated, so escape it. A search of the
+			repository finds no caller for this method. It is public, so
+			escaping is required here either way.
+		*/
 		$sql = "SELECT compens.*
 						FROM compens
-						WHERE compens.case_id=$case_id";
+						WHERE compens.case_id='" . DB::escapeString($case_id) . "'";
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;
 	}

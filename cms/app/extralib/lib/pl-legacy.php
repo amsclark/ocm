@@ -594,6 +594,39 @@ function pl_table_autosql_update($table, $data)
 		}
 	}
 	
+	/*	Nothing in $data named a writable scalar column of this table, so the
+		SET list is empty and what stands above is "UPDATE <table> SET", which
+		MariaDB answers with a syntax error. A failed query here ends the
+		request on the error page, so the caller got an HTTP 500 instead of an
+		update that changed nothing. An array value counts for nothing here
+		either: the loop above leaves arrays out.
+
+		dataops.php's holding-pen handler is the case that proved it. It sets
+		transfer_to, which is not a column of cases in this repo's schema, so
+		the builder produced
+
+			UPDATE cases SET WHERE case_id='1' LIMIT 1
+
+		and a POST that reached the body of that handler ended in a 500.
+
+		Assign the key column to itself instead. Every table this builder is
+		called with has one ordinary key column, and on those the statement is
+		then valid and updates no column, while the caller still gets a result
+		it can test, so no call site has to learn a new return value.
+
+		The length test only keeps this from adding a second malformed clause
+		to a statement that is already malformed: a table with no primary key
+		leaves $primary_key empty, and the WHERE clause below is broken in that
+		case with or without this. It does not make such a table work. Neither
+		this nor the WHERE clause handles a composite key, of which
+		$primary_key holds the last column only; that is an older limit of the
+		builder, and no caller here has such a table.
+	*/
+	if (0 == $i && strlen($primary_key) > 0)
+	{
+		$sql .= " {$primary_key} = {$primary_key}";
+	}
+
 	/*	The primary key was the one value in this builder that never went
 		through the escaper. Every column written into the SET list above is
 		passed through DB::escapeString(), but the key column is deliberately
@@ -696,6 +729,28 @@ function pl_table_autosql_insert($table, $data)
 			
 			$i++;
 		}
+	}
+
+	/*	Nothing in $data named a writable scalar column, so the SET list is
+		empty and what stands above is "INSERT <table> SET", which MariaDB
+		answers with a syntax error, and the caller got an HTTP 500.
+
+		The UPDATE sibling above can assign the key column to itself,
+		because an update that changes no column is still an answer to what
+		was asked. An insert of no columns is not: the statements that would
+		work put a row of defaults in the table, and no caller asked for
+		that.
+
+		So refuse it, the way this function already refuses a $data that is
+		not an array. system-ops.php's add_group is the reachable case: a
+		POST carrying action=add_group and a valid token, with no group
+		fields supplied, arrived here with an empty SET list and returned
+		a 500. A supplied but empty field is a different case: that one
+		is still assigned.
+	*/
+	if (0 == $i)
+	{
+		die(pika_error_notice('Pika is sick', 'No values were supplied for the new record.'));
 	}
 	
 	return $sql;
