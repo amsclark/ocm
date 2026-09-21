@@ -629,9 +629,24 @@ read -r code cal_type <<<"$cal_head"
 # whichever match the search happens to reach, charset=utf-8x is not UTF-8, and a
 # parameter merely spelling charset inside a longer word answers the search too.
 # A browser's own rule is not a search either -- it parses the header and takes
-# the FIRST charset parameter -- so rather than implement that here, the narrow
-# contract is stated whole: this endpoint serves text/html and says UTF-8.
-# Anything else is reported instead of decoded on a guess.
+# the FIRST charset parameter, measured both ways -- so rather than implement
+# that here, the narrow contract is stated whole: this endpoint serves text/html
+# and says UTF-8. Anything else is reported instead of decoded on a guess.
+#
+# Case is folded and NOTHING else is. An earlier round also deleted every space
+# and quote before comparing, which was worse than the search it replaced: it
+# mapped four MALFORMED header values onto the accepted string. Measured in
+# Chrome, "text / html; charset=utf-8", the same with a tab before the slash,
+# "te xt/html; charset=utf-8" and the whole value wrapped in quotes are each
+# accepted by a delete-and-compare rule and each make the browser decode the
+# reply as windows-1252. MIME Sniffing does not strip trailing whitespace from
+# the type, so those values fail to parse; Fetch then returns failure and
+# XMLHttpRequest substitutes text/xml with no charset, which sends it to the XML
+# rules, where an <?xml encoding?> declaration in the reply wins. So the two
+# spellings this endpoint can produce are listed instead, and every other value
+# is reported. curl prints the field verbatim apart from trimming its outer
+# whitespace, and prints only the last of two headers, so both ways of lying
+# about the encoding with a second header are reported as well.
 #
 # It matters because the half of this check that reads the reply decodes it as
 # UTF-8, which is what the client gets: XMLHttpRequest decodes responseText with
@@ -644,7 +659,7 @@ read -r code cal_type <<<"$cal_head"
 # is shown as source. This endpoint sets a Content-Type header on its 400 paths
 # only and leaves the success path to PHP's default_mimetype, so a configuration
 # that changes that default is a regression this check could not see before.
-cal_ctype="$(printf '%s' "$cal_type" | tr 'A-Z' 'a-z' | tr -d '[:space:]"')"
+cal_ctype="$(printf '%s' "$cal_type" | tr 'A-Z' 'a-z')"
 cal_ctype_rc=$?
 # A transfer that failed part way can leave this file stale or absent. The
 # stderr redirect goes BEFORE the input redirect: bash applies redirections left
@@ -753,14 +768,30 @@ TEMPLATE = re.compile('</?template', re.IGNORECASE)
 ALLOWED = frozenset((
 	'html', 'head', 'body', 'table', 'caption', 'colgroup', 'col', 'thead',
 	'tbody', 'tfoot', 'tr', 'th', 'td', 'a', 'div', 'span', 'p', 'b', 'i',
-	'em', 'strong', 'small', 'br', 'hr', 'img', 'script'))
+	'em', 'strong', 'br', 'hr', 'img', 'script'))
+# <small> was in this set and was measured out of it. font-size: smaller
+# compounds, so 103 nested <small> elements around the calendar compute to 0px in
+# Chrome: every day anchor's box is 0 by 0 and a click at its position reaches
+# the <td>, while the text this check reads is unchanged. 102 still draws all 31.
+# The lesson is wider than the one name. A name belongs in this set only after a
+# browser has been asked what it does to this calendar, never because it reads as
+# harmless markup, and the names beyond the ones this endpoint sends have now all
+# been asked.
 # The attribute names this endpoint sends, plus a few harmless neighbours. Every
 # data-* name is allowed, because the client reads three of them. The four that
 # make a drawn element vanish -- hidden, inert, popover and style -- are not in
 # the set, so a reply carrying one is refused instead of measured.
 ALLOWED_ATTRS = frozenset((
-	'class', 'id', 'title', 'href', 'src', 'align', 'valign', 'border',
+	'class', 'id', 'title', 'href', 'src', 'align', 'valign',
 	'cellpadding', 'cellspacing', 'colspan', 'rowspan'))
+# border was in this set and was measured out of it. Chrome's scroll extent stops
+# at 16777216px, and a legacy border contributes about twice its value to the
+# offset, so a spacer table carrying border="8400000" ahead of the calendar puts
+# every day past the furthest the page can scroll: scrollIntoView cannot bring
+# one into view and a click at its position reaches nothing, while this check
+# reads a perfect calendar. 8388610 still draws all 31. cellpadding and
+# cellspacing were measured at every magnitude up to 99999999999 and move
+# nothing, and this endpoint sends both, so they stay. It does not send border.
 # The only script this reply is allowed to carry. It is load bearing: the client
 # appends the reply's nodes into the live document, where a script element
 # parsed by DOMParser has never been started and so runs, and this is how the
@@ -869,9 +900,18 @@ def json_string(element, name):
 	return parsed if isinstance(parsed, str) else None
 
 
+# Characters a browser draws nothing for that str.strip() does not remove: a
+# zero width space, a soft hyphen, the two bidirectional marks, a word joiner and
+# a Mongolian vowel separator. str.strip() does remove U+00A0, U+2003, U+0085,
+# U+2028, U+2029 and U+3000. A day label padded with one of the first group draws
+# and clicks exactly like the bare digit, measured, so this check failed four
+# replies a browser renders correctly; they are taken off before comparing.
+INVISIBLE = '\u200b\u00ad\u200e\u200f\u2060\u180e'
+
+
 def label(element):
 	"""All the text inside the element, which is what a person sees in it."""
-	return ''.join(element.itertext()).strip()
+	return ''.join(element.itertext()).strip().strip(INVISIBLE).strip()
 
 
 reply = open(sys.argv[1], 'rb')
@@ -930,13 +970,17 @@ for element, level in adopted(body):
 		if label(element) or children(element):
 			refuse('script')
 
-# A calendar deeper than the tree limit is not counted, and neither are its day
-# anchors: the days are counted inside the ONE calendar this check accepts, not
-# anywhere under anything carrying the class. Counting them separately let a
-# shallow empty calendar supply the tagging while a refused deep one supplied
-# the days, which is a pass this check must not give.
-calendars = [element for element, level in adopted(body)
-	if is_calendar(element) and level <= DEPTH]
+# EVERY element carrying the class is counted, however deep, and the reply must
+# hold exactly one. Blink does not drop elements past its tree limit -- it stops
+# nesting and appends them at the boundary -- so a calendar past the limit is
+# still drawn. What the clamp breaks is its ANCESTRY: its day anchors are no
+# longer its descendants, so the client's closest() finds nothing and the user
+# sees a calendar whose days do nothing. Measured: a reply carrying a working
+# top-level calendar plus a second one 510 deep draws 62 day anchors of which 31
+# are dead, and an earlier round passed it by refusing to count the deep one.
+# So the depth is applied to the accepted calendar instead, below.
+calendars = [(element, level) for element, level in adopted(body)
+	if is_calendar(element)]
 count = len(calendars)
 field = 0
 container = 0
@@ -944,10 +988,14 @@ anchors = 0
 days = set()
 other = 0
 inside = set()
-if count == 1:
-	calendar = calendars[0]
+if count == 1 and calendars[0][1] <= DEPTH:
+	calendar = calendars[0][0]
 	field = int(json_string(calendar, 'data-field-name') == FIELD)
 	container = int(json_string(calendar, 'data-container-name') == CONTAINER)
+	# The limit is asked of the calendar and NOT of each anchor. Depth inside a
+	# calendar near the surface does not matter: measured, a calendar nested 508
+	# or 509 deep draws and clicks all 31 days, because the clamp flattens rather
+	# than drops. Capping each anchor instead failed both of those replies.
 	for element, level in walk(calendar, 0):
 		if local(element.tag) != 'a' or element.get('data-date-action') != SELECT:
 			continue
@@ -1065,23 +1113,38 @@ fi
 # where a reply it passes and a browser draws nothing from is the exact fault
 # these rounds exist to remove.
 #
-# Measured, not argued. 153 counterexample replies collected over these rounds
+# Measured, not argued. 211 counterexample replies collected over these rounds
 # were each put through this repository's own drawCalendar() and click handler in
 # headless Chrome and asked three questions: can the client reach 31 distinct
 # days of January 2020, does every one of those 31 anchors have a layout box, and
 # is every one of them the element the browser hands a click at the middle of
 # that box. The third question is the one this check is scored against, because
 # the review found replies where a box exists and the anchor is not what a click
-# reaches. Against it, the allowed-markup rule passes NONE of the replies a
-# browser draws no clickable calendar from -- that count is zero, and it is the
-# count that matters -- and agrees with the browser on 130 of the 153. The other
-# 23 are this check refusing a reply a browser does draw: MathML <mi> and
-# <mtext>, a sized <foreignObject>, an open <dialog>, an <embed> whose void tag
-# leaves the calendar as its sibling rather than its fallback, a <select>, a
-# <button>, a <form>, <marquee>, <base>, an SVG calendar, a second <script>, an
-# onclick or width attribute, and three replies carrying a <template>. Every one
-# of those is markup this endpoint does not send, so the cost of the rule is a
-# loud failure if someone changes it to send one.
+# reaches. Against it, this check passes NONE of the replies a browser draws no
+# clickable calendar from -- that count is zero, and it is the count that matters
+# -- and agrees with the browser on 165 of the 211. The other 46 are this check
+# refusing a reply a browser does draw: MathML <mi> and <mtext>, a sized
+# <foreignObject>, an open <dialog>, an <embed> whose void tag leaves the
+# calendar as its sibling rather than its fallback, a <select>, a <button>, a
+# <form>, <marquee>, <base>, <font>, <h3>, an SVG calendar, a second <script>, an
+# onclick or width or style or nowrap attribute, a border attribute, nested
+# <small>, and replies carrying a <template>. Every one of those is markup this
+# endpoint does not send, so the cost of the rule is a loud failure if someone
+# changes it to send one.
+#
+# An allowed NAME is not the same as a drawn calendar, and two families measured
+# this round were built out of allowed names only. 103 nested <small> elements
+# compound font-size: smaller down to a computed 0px, so all 31 anchors have 0x0
+# boxes and the cell is what a click reaches; 102 still draws all 31. And a
+# legacy border attribute contributes about twice its value to the page's scroll
+# extent, which Chrome stops at 16,777,216px: border="8400000" puts every day
+# past the furthest the page can be scrolled, so scrollIntoView cannot reach it
+# and nothing is clickable, where 8388610 still draws all 31. Both were passes
+# before this round. <small> and border were therefore removed from the two
+# allowed sets, and the standing rule is the one those two teach: a name belongs
+# in either set only after a browser has been asked what it does to THIS
+# calendar. cellpadding and cellspacing were asked the same question up to
+# 99999999999 and move nothing, so they stay.
 #
 # Two limits are real and the allowed-markup rule does not close either. The page
 # the reply is appended into has its own stylesheet, and this check reads no CSS:
@@ -1092,15 +1155,27 @@ fi
 # so no static reading of a reply can know it. The second is refused here rather
 # than judged, because <object> is not an allowed name.
 #
-# The tree depth limit is kept, and is only ever used to refuse to count
-# something, never to accept it. Blink stops building the tree past 512 open
-# elements, measured to the element: a calendar wrapped in 509 divs draws all 31
-# days, one wrapped in 510 draws none, and 509 plus html and body plus the table
-# is 512. It is asked of the calendar and not of each anchor, because structure
-# inside a calendar near the surface is drawn however deep it goes -- a day
-# nested 600 deep inside the table is clickable. The days are counted INSIDE the
-# one calendar this check accepts, which is what stops a shallow empty calendar
-# supplying the tagging while a calendar past the limit supplies the days.
+# The tree depth limit is kept, and both halves of how it is applied were got
+# wrong once and corrected by measurement. Blink stops building the tree past 512
+# open elements, measured to the element: a calendar wrapped in 509 divs draws
+# all 31 days, one wrapped in 510 draws none, and 509 plus html and body plus the
+# table is 512. What the clamp does past the limit is FLATTEN, not drop -- the
+# elements are still created and still drawn, they just stop being descendants of
+# what wrapped them -- so what breaks at 510 is the ancestry the client's
+# closest() walks, and the days are drawn but dead.
+#
+# So the count is taken over EVERY element carrying the class, however deep, and
+# the reply must hold exactly one; then that one calendar is required to sit
+# within the limit; then its days are counted with no depth question asked of
+# them. Counting only the calendars within the limit passed a reply carrying a
+# working top-level calendar plus a second one 510 deep, which draws 62 day
+# anchors of which 31 are dead -- a calendar on the screen whose days do nothing.
+# Asking the limit of each ANCHOR instead failed two replies a browser draws
+# perfectly, a calendar nested 508 and one nested 509 deep, for the same
+# flattening reason. Depth inside a calendar near the surface does not matter: a
+# day nested 600 deep inside the table is clickable. The days are counted INSIDE
+# the one accepted calendar, which is what stops a shallow empty calendar
+# supplying the tagging while another supplies the days.
 #
 # What it does NOT read, measured rather than assumed: a reply holding a
 # <template>. That is the one part of the algorithm html5lib 1.x is missing, and
@@ -1153,7 +1228,8 @@ elif [ "$cal_ctype_rc" != 0 ]; then
 	# tr failing leaves cal_ctype empty, which reads exactly like a reply served
 	# with no Content-Type at all. Only one of those is the endpoint's fault.
 	bad "the calendar reply's content type could not be folded to lower case by this check (exit $cal_ctype_rc), so this run says nothing about what date_selector-server.php served"
-elif [ "$cal_ctype" != "text/html;charset=utf-8" ]; then
+elif [ "$cal_ctype" != "text/html; charset=utf-8" ] \
+	&& [ "$cal_ctype" != "text/html;charset=utf-8" ]; then
 	# The reply is read as UTF-8 by the other half of this check. A reply in
 	# another encoding is a different string to it than to the client, so this
 	# is not a parse failure to report as one -- it is this check saying that
