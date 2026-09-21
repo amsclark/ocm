@@ -297,7 +297,20 @@ switch($_POST['action'])
 
 	pl_save_settings();
 
-	header("Location: system-tables.php?screen=edit&table={$_POST['table']}");
+	/*	The table name arrives from the request and was written straight
+		into the query string of the next URL. An "&" in it added a
+		parameter to that request, and a "#" truncated the rest, so the
+		request chose what the next page was asked to do rather than only
+		which table it opened. The target itself is a fixed local file, so
+		this is about the query string, not about where the redirect goes.
+		
+		http_build_query() encodes the whole set, and the ?? '' keeps an
+		absent field from raising a warning on PHP 8.
+	*/
+	header('Location: system-tables.php?' . http_build_query(array(
+		'screen' => 'edit',
+		'table' => $_POST['table'] ?? '',
+	)));
 	exit();
 
 	break;
@@ -313,7 +326,10 @@ switch($_POST['action'])
 		pl_save_settings();
 	}
 
-	header("Location: system-tables.php?screen=edit&table={$_POST['table']}");
+	header('Location: system-tables.php?' . http_build_query(array(
+		'screen' => 'edit',
+		'table' => $_POST['table'] ?? '',
+	)));
 	exit();
 
 	break;

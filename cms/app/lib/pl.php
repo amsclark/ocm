@@ -4308,6 +4308,27 @@ if (!function_exists('pl_safe_redirect_path'))
 	{
 		$url = trim(preg_replace('/[\x00-\x1F\x7F]/', '', (string) $url));
 		
+		/*	The leading slashes and backslashes go before anything else reads the
+			value, and that order is the whole of it.
+			
+			They used to go last, after the scheme test below, and a single
+			leading slash was then enough to hide a scheme from that test:
+			"/http://evil.example/steal" does not start with a letter, so the
+			test did not match, and the strip afterwards handed the caller back
+			"http://evil.example/steal" -- the absolute URL it had just been
+			shown, with the one character that hid it removed. dataops.php emits
+			what this returns with nothing in front of it, so that redirected a
+			logged-in browser straight off this site. Confirmed by hand against
+			this application before the change and after it; tests/smoke.sh
+			section 23 posts the shape to both of the redirects that read the
+			field.
+			
+			Stripping first is the same rule as stripping the control characters
+			first: the scheme test has to read the string the browser will read,
+			not an earlier one.
+		*/
+		$url = ltrim($url, "/\\");
+		
 		/*	A scheme cannot reach another host from inside a path, but it has no
 			business in this field either, and letting one through would put a
 			whole URL in the middle of one.
@@ -4317,7 +4338,7 @@ if (!function_exists('pl_safe_redirect_path'))
 			return '';
 		}
 		
-		return ltrim($url, "/\\");
+		return $url;
 	}
 }
 
