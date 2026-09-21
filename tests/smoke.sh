@@ -608,7 +608,7 @@ if [ "$cal_bad_curl" != 0 ]; then
 elif [ "$code" = 400 ] && grep -q 'Invalid field_name' "$BODY"; then
 	ok "date_selector-server.php refuses a malformed field_name (400)"
 else
-	bad "date_selector-server.php answered a malformed field_name with HTTP $code and no 'Invalid field_name.' refusal"
+	bad "date_selector-server.php did not refuse a malformed field_name with HTTP 400 and 'Invalid field_name.' (status $code)"
 fi
 
 code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
@@ -619,31 +619,52 @@ cal_curl=$?
 # to right, so the other order still prints the missing file. The exit status
 # above is what decides whether any of these values mean anything.
 size="$(wc -c 2>/dev/null < "$BODY")"
-cal_days="$(grep -o 'data-date-action="select"' "$BODY" 2>/dev/null | wc -l | tr -d ' ')"
-cal_dates="$(grep -o 'data-date="01/[0-9][0-9]/2020"' "$BODY" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
+# Count the dates in the LINKS, not in the page: the value has to sit in the
+# same anchor as the select action, and it has to be a real January day, so 31
+# distinct ones are the 31 days of January 2020 and nothing else. Counted over
+# the page instead, 31 hidden elements holding the other dates, or days numbered
+# 32 to 61, both passed.
+cal_days="$(grep -o 'data-date-action="select" data-date="01/[0-9][0-9]/2020"' "$BODY" 2>/dev/null | wc -l | tr -d ' ')"
+cal_dates="$(grep -oE 'data-date-action="select" data-date="01/(0[1-9]|[12][0-9]|3[01])/2020"' "$BODY" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
+# Take the calendar's own opening tag and read the field and the container out of
+# THAT tag, so both values belong to the table the class is on rather than to
+# anything else on the page. js-date-selector has to be a whole class token,
+# which is what the client looks for: "not-js-date-selector-broken" carries the
+# name without being it, and passed a plain substring match.
+cal_tag="$(grep -o '<table[^>]*>' "$BODY" 2>/dev/null | grep -E 'class="([^"]+ )?js-date-selector( [^"]+)?"' | head -1)"
+cal_field=0
+cal_cont=0
+case "$cal_tag" in
+*'data-field-name="&quot;open_date&quot;"'*) cal_field=1 ;;
+esac
+case "$cal_tag" in
+*'data-container-name="&quot;date_selector-00001&quot;"'*) cal_cont=1 ;;
+esac
 # A status, a byte count and one marker do not say a calendar arrived. A body
 # cut off part way through still carries the opening tag, and curl reports HTTP
 # 200 for a reply whose transfer then failed, so its exit status is part of the
-# answer. January 2020 has 31 days, and each one selects a different date: 31 day
-# links carrying 31 DIFFERENT dates, the field name and the container that were
-# asked for, and a closing tag separate a January calendar for this request from
-# a prefix of one, from an unrelated page that mentions the class, from a
-# calendar for some other month, and from 31 links that all select the same day.
-# The container matters because the client reads it to navigate and to close the
-# calendar. The class is matched as a token, not as the whole attribute, because
-# a site may override this plugin with one that adds classes of its own and the
-# client looks for the token too.
+# answer. What is asserted is text, and it is worth being exact about what that
+# text rules out: 31 select links whose own dates are the 31 distinct days of
+# January 2020 rule out a prefix of a calendar, a calendar for another month,
+# links that all select the same day, and invented days; the field and the
+# container read out of the calendar's own table tag rule out an unrelated page
+# that mentions the class, and a table drawn for some other field or container.
+# The container is checked because the client reads it to navigate and to close.
+# What none of this shows is that the calendar WORKS in a browser -- that needs a
+# client test, which this suite does not have.
+#
+# These patterns are written for the markup the bundled plugin emits: attributes
+# in double quotes, and &quot; around the two JSON values. A site that overrides
+# template_plugins/date_selector.php may spell the same calendar with single
+# quotes or numeric entities, and would have to update this check.
 if [ "$cal_curl" != 0 ]; then
 	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
 elif [ "$code" = 200 ] && [ "$cal_days" = 31 ] && [ "$cal_dates" = 31 ] \
-	&& grep -qE 'class="[^"]*js-date-selector' "$BODY" \
-	&& grep -q 'data-field-name="&quot;open_date&quot;"' "$BODY" \
-	&& grep -q 'data-container-name="&quot;date_selector-00001&quot;"' "$BODY" \
-	&& grep -q 'data-date="01/31/2020"' "$BODY" \
+	&& [ "$cal_field" = 1 ] && [ "$cal_cont" = 1 ] \
 	&& grep -q '</table>' "$BODY"; then
-	ok "date_selector-server.php still renders January 2020 for the field and container that were asked for ($size bytes, 31 day links, 31 distinct dates)"
+	ok "date_selector-server.php renders the 31 days of January 2020 as select links, in a table tagged with the field and the container that were asked for ($size bytes)"
 else
-	bad "date_selector-server.php did not render a complete January 2020 calendar for a LEGITIMATE field (status $code, $size bytes, $cal_days day links, $cal_dates distinct dates)"
+	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, $size bytes, $cal_days select links, $cal_dates distinct January dates, field in the calendar tag $cal_field, container in it $cal_cont, tag ${cal_tag:-absent})"
 fi
 
 # 8e. reports/index.php filters the list by the per-report permission. The admin
@@ -17876,11 +17897,13 @@ fi
 # The session check has to come before the input validation, not after it. The
 # order is set by the file itself: pika_init() runs before the pl_grab_get()
 # calls that read the request. What this check adds is the observable half of
-# that -- a stranger who gets "Invalid field_name." back has certainly reached
-# the endpoint's own code, and an empty reply is what a request that ended at
-# authentication looks like from outside. It cannot show on its own that nothing
-# was read first, only that nothing was said. Section 8d is the regression guard
-# on the validation itself, for a caller that does hold a session.
+# that -- "Invalid field_name." coming back to a stranger would mean the
+# endpoint's own validation answered a request with no session, whatever ran
+# before it, and an empty reply is what a request that reaches authentication
+# looks like from outside. It cannot show on its own that nothing was read
+# first, or where execution stopped, only that nothing was said. Section 8d is
+# the regression guard on the validation itself, for a caller that does hold a
+# session.
 SV_MAL_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' -G \
 	--data-urlencode "field_name=a b\"c" \
 	--data-urlencode "container=date_selector-1" \
@@ -17890,7 +17913,7 @@ SV_MAL_BYTES="$(wc -c 2>/dev/null < "$BODY" | tr -d ' ')"
 if [ "$SV_MAL_CURL" != 0 ]; then
 	bad "the date selector could not be reached without a session at all (curl exit ${SV_MAL_CURL}), so this run says nothing about what a stranger's malformed request gets"
 elif grep -q 'Invalid field_name' "$BODY"; then
-	bad "the date selector validated a stranger's field_name, so it reaches its own code before the session is checked"
+	bad "the date selector sent a stranger the answer its own field_name validation gives, so a request with no session reached that validation"
 elif [ "$SV_MAL_CODE" != 200 ] || [ "$SV_MAL_BYTES" != 0 ]; then
 	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes, and an empty 200 is what a request that reaches authentication here gets"
 else
@@ -17925,7 +17948,7 @@ sv_arr_try()
 	elif [ "$sv_arr_code" = 400 ] && grep -q "$sv_arr_mark" "$BODY"; then
 		ok "the date selector refuses ${sv_arr_what} (400, ${sv_arr_mark})"
 	else
-		bad "the date selector answered ${sv_arr_what} with HTTP ${sv_arr_code} and no ${sv_arr_mark} refusal"
+		bad "the date selector did not refuse ${sv_arr_what} with HTTP 400 and ${sv_arr_mark} (status ${sv_arr_code})"
 	fi
 }
 
