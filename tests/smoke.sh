@@ -2147,6 +2147,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	DJAR="$(mktemp)"
 
 	cleanup_dops() {
+		adb "DELETE FROM activities WHERE summary LIKE 'ZZDOPSREDIR%'" >/dev/null
 		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZDOPSATTY'" >/dev/null
 		adb "DELETE FROM cases WHERE number = 'ZZ-DOPS-CASE'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${DUSER}'" >/dev/null
@@ -2255,14 +2256,222 @@ if [ "$HAVE_DB" = 1 ]; then
 			fi
 
 			# --- open redirect ---
-			DTOKEN="$(dops_token)"
-			DLOC="$(curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o /dev/null -D - -X POST \
-				-d "action=add_activity&cancel=1&act_url=https://zz-evil.example/steal&_csrf=${DTOKEN}" \
-				"$OCM_URL/dataops.php" | grep -i '^location:' | tr -d '\r')"
-			case "$DLOC" in
-				*zz-evil.example*) bad "dataops.php still redirects to an off-site URL (${DLOC})" ;;
-				*)                 ok "dataops.php refuses to redirect off-site" ;;
-			esac
+			# act_url arrives from the request and reaches a Location header
+			# twice in the add_activity handler: on the cancel branch, and on
+			# the branch that runs once the activity has been written. The
+			# second one is the line SnykCode alert 975 names, and the check
+			# that was here only ever posted the first. Both go through
+			# safe_redirect_url(), so both are tested.
+			#
+			# pl_safe_redirect_path() either refuses a request-supplied return
+			# path or hands back a local path. A value that reads as a local
+			# path -- a name, optionally a path below it, optionally a query
+			# string and a fragment, and no ".." in the path part -- is what
+			# comes back. Everything else comes back as '', and this file then
+			# emits "{base_url}/": the site root. Each check below says which
+			# of the two results it wants.
+			#
+			# What comes back is not always byte-for-byte what was sent: the
+			# guard trims the value and drops control characters before it
+			# reads it, so a payload carrying either can come back shorter. No
+			# payload below depends on that, and every one holding a space or a
+			# tab is refused.
+			#
+			# The guard used to be a list of what to reject, and shapes got out
+			# of it twice. The first was an absolute URL behind one slash: the
+			# slash hid the scheme from the test, and the strip that ran
+			# afterwards removed it. The second was the same thing behind a
+			# slash and a space, found once the strip had been moved in front of
+			# the test -- stripping the slash exposed the space, a pattern
+			# anchored at the first character does not match a string that
+			# starts with one, and a browser reading a Location header ignores
+			# leading whitespace. That is why the list of rejections was
+			# replaced rather than patched a third time. Both shapes are in the
+			# set below.
+			#
+			# Section 34i checks the same form field in
+			# ops/update_activity.php, where base_url is prepended to whatever
+			# the guard returns.
+			#
+			# The close_act branch writes an activity row per request, so
+			# every request carries a marker summary and cleanup_dops deletes
+			# them.
+			DR_SUM='ZZDOPSREDIR'
+			# The date the database session is keeping. It only goes into a
+			# payload that the guard has to refuse or return whole, so the
+			# database and PHP disagreeing across midnight cannot change the
+			# result. Section 34 takes its dates from PHP instead, because
+			# there the date decides what the handler does.
+			DRDATE="$(adb "SELECT CURDATE()")"
+			# base_url as this deployment writes it, read off OCM_URL so the
+			# check does not have to know it: http://host:port/cms -> /cms.
+			# An install serving the application at the domain root writes ''
+			# here, and then a refusal is '/'.
+			DBASE="$(printf '%s' "$OCM_URL" \
+				| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]*##' -e 's#/*$##')"
+
+			# $1 branch field, $2 act_url. Leaves the response headers in
+			# $DR_HDR, the count of Location headers in $DR_COUNT and the
+			# first Location value in $DR_LOC.
+			dops_redirect() {
+				DR_HDR="$(curl -s --max-time 30 -c "$DJAR" -b "$DJAR" -o /dev/null -D - -X POST \
+					--data-urlencode "_csrf=$(dops_token)" \
+					-d "action=add_activity" -d "$1=1" \
+					-d "user_id=${DUID}" -d "case_id=${DCASE}" \
+					-d "act_type=C" -d "hours=0.25" \
+					--data-urlencode "act_date=${DRDATE}" \
+					--data-urlencode "summary=${DR_SUM} $1" \
+					--data-urlencode "act_url=$2" \
+					"$OCM_URL/dataops.php")"
+				DR_COUNT="$(printf '%s\n' "$DR_HDR" | grep -ci '^location:')"
+				DR_LOC="$(printf '%s\n' "$DR_HDR" | grep -i '^location:' | tr -d '\r' \
+					| head -1 | sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+			}
+
+			# $1 branch field, $2 act_url, $3 expected answer, $4 what to
+			# call the payload. $3 is one of:
+			#   root   the header must be exactly "{base_url}/"
+			#   exact  the header must be exactly the value that was sent
+			#
+			# Both kinds name the one value they will accept. An earlier
+			# version had a third kind that passed on anything without a
+			# scheme or a leading slash, and an empty Location header answers
+			# that description, as does a redirect to the wrong page.
+			dops_redirect_check() {
+				dops_redirect "$1" "$2"
+
+				if [ "$DR_COUNT" = 0 ]; then
+					bad "dataops.php sent no Location header for $4 on the $1 branch, so nothing was tested"
+				elif [ "$DR_COUNT" != 1 ]; then
+					bad "dataops.php sent ${DR_COUNT} Location headers for $4 on the $1 branch - act_url split the header"
+				elif printf '%s\n' "$DR_HDR" | grep -qi '^x-zz-injected:'; then
+					bad "$4 added a header of its own through act_url on the $1 branch"
+				elif [ -z "$DR_LOC" ]; then
+					bad "dataops.php sent an empty Location header for $4 on the $1 branch"
+				elif printf '%s' "$DR_LOC" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]*:'; then
+					bad "dataops.php redirects to a URL carrying a scheme for $4 on the $1 branch (${DR_LOC})"
+				elif [ "$3" = root ]; then
+					if [ "$DR_LOC" = "${DBASE}/" ]; then
+						ok "dataops.php refuses $4 and sends the browser to the site root, on the $1 branch"
+					else
+						bad "dataops.php did not refuse $4 on the $1 branch (${DR_LOC})"
+					fi
+				elif printf '%s' "$DR_LOC" | grep -qE '^[/\\]'; then
+					bad "dataops.php answered ${DR_LOC} for $4 on the $1 branch - the guard returned a value starting with a separator, which it has no shape for"
+				elif [ "$3" = exact ]; then
+					if [ "$DR_LOC" = "$2" ]; then
+						ok "a real act_url ($4) still reaches the page it names, on the $1 branch"
+					else
+						bad "a real act_url ($4) no longer reaches its page on the $1 branch (${DR_LOC})"
+					fi
+				else
+					bad "dops_redirect_check was called with the unknown kind $3"
+				fi
+			}
+
+			# Real control bytes, so the handler sees the characters
+			# themselves rather than the text %0D%0A or %09.
+			#
+			# CR LF is the header-splitting pair. The guard strips every
+			# control character before it reads the value, so the header cannot
+			# split whatever else the value carries; the check still asserts
+			# that no second header and no injected header appeared.
+			#
+			# The tab is the shape a scheme test cannot see: a browser's URL
+			# parser deletes tabs before it reads the scheme, so
+			# "ht<TAB>tps://host" is an absolute URL to a browser while a test
+			# reading it literally sees a relative path. Stripping the controls
+			# first means the guard reads the string the browser will read.
+			#
+			# The space shapes are the second way round the old scheme test.
+			# Stripping the leading slash off "/ http://host" exposed a space,
+			# the trim at the top of the guard had already run, and a pattern
+			# anchored at the first character does not match a string that
+			# starts with one -- while a browser ignores leading whitespace in a
+			# Location value and read the scheme behind it.
+			DR_CRLF="$(printf '/steal\r\nX-Zz-Injected: yes')"
+			DR_TAB="$(printf 'ht\tps://zz-evil.example/steal')"
+			DR_SP_ABS="$(printf '/ http://zz-evil.example/steal')"
+			DR_SP_JS="$(printf '/ javascript:alert(1)')"
+			DR_SP_REL="$(printf '/ //zz-evil.example/steal')"
+			DR_SP_TAB="$(printf '/\thttp://zz-evil.example/steal')"
+
+			for DR_BRANCH in cancel close_act; do
+				# A scheme, plainly.
+				dops_redirect_check "$DR_BRANCH" 'https://zz-evil.example/steal' \
+					root 'an absolute URL'
+				dops_redirect_check "$DR_BRANCH" 'http:/\zz-evil.example/steal' \
+					root 'a scheme with mixed slashes'
+				dops_redirect_check "$DR_BRANCH" 'javascript:alert(1)' \
+					root 'a javascript: URL'
+				dops_redirect_check "$DR_BRANCH" "$DR_TAB" \
+					root 'a tab inside the scheme'
+				dops_redirect_check "$DR_BRANCH" "$DR_CRLF" \
+					root 'a CR LF in act_url'
+				# A scheme with something in front of it that a scheme test will
+				# not look past. All eight were live open redirects on master.
+				# The three carrying a space were still live after the first
+				# attempt to fix the other five.
+				dops_redirect_check "$DR_BRANCH" '/http://zz-evil.example/steal' \
+					root 'an absolute URL behind one slash'
+				dops_redirect_check "$DR_BRANCH" '\http://zz-evil.example/steal' \
+					root 'an absolute URL behind one backslash'
+				dops_redirect_check "$DR_BRANCH" '/\/https://zz-evil.example/steal' \
+					root 'an absolute URL behind mixed slashes'
+				dops_redirect_check "$DR_BRANCH" '/javascript:alert(1)' \
+					root 'a javascript: URL behind one slash'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_ABS" \
+					root 'an absolute URL behind a slash and a space'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_JS" \
+					root 'a javascript: URL behind a slash and a space'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_TAB" \
+					root 'an absolute URL behind a slash and a tab'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_REL" \
+					root 'a protocol-relative URL behind a slash and a space'
+				# No scheme, but a leading separator pair, which a browser
+				# reads as the start of a host name. The old guard reduced
+				# these to a path that still carried the attacker's hostname;
+				# they are refused outright now.
+				dops_redirect_check "$DR_BRANCH" '//zz-evil.example/steal' \
+					root 'a protocol-relative URL'
+				dops_redirect_check "$DR_BRANCH" '\\zz-evil.example\steal' \
+					root 'a pair of backslashes'
+				dops_redirect_check "$DR_BRANCH" '/\zz-evil.example/steal' \
+					root 'a slash and a backslash'
+				dops_redirect_check "$DR_BRANCH" '///zz-evil.example/steal' \
+					root 'three leading slashes'
+				# On this site, but not a page name. A value starting at the
+				# site root is refused rather than reduced: the caller resolves
+				# what comes back against the application directory, so
+				# dropping the leading slash made "/cms/cms/case.php".
+				dops_redirect_check "$DR_BRANCH" "${DBASE}/case.php?case_id=${DCASE}" \
+					root 'a path starting at the site root'
+				dops_redirect_check "$DR_BRANCH" '../../etc/passwd' \
+					root 'a path walking up out of the application directory'
+				# The positive controls: the two shapes the application itself
+				# puts in this field have to survive the guard byte for byte.
+				# activity.php defaults it to cal_day.php and modules/case-act.php
+				# builds the case.php form. Without these every check above
+				# would pass on a handler that refused everything it was sent.
+				dops_redirect_check "$DR_BRANCH" 'cal_day.php' \
+					exact 'cal_day.php'
+				dops_redirect_check "$DR_BRANCH" "case.php?case_id=${DCASE}&screen=act" \
+					exact 'the case activity screen'
+			done
+
+			# The close_act branch writes one activity per request, so 21
+			# requests should leave 21 rows carrying the marker. This is a
+			# total and not a result per request: it catches a branch that was
+			# refused before it ever reached the redirect, but it cannot say
+			# which request is missing, and one request writing twice would
+			# cover for one writing not at all. cleanup_dops clears the marker
+			# rows before this block runs, so the count belongs to this run.
+			DR_WROTE="$(adb "SELECT COUNT(*) FROM activities WHERE summary = '${DR_SUM} close_act'")"
+			if [ "$DR_WROTE" = 21 ]; then
+				ok "the close_act requests left 21 marker activities, one per request"
+			else
+				bad "the close_act branch wrote ${DR_WROTE} marker activities, not 21 - at least one request never reached the redirect"
+			fi
 
 			# --- add_pb without the pba flag ---
 			DTOKEN="$(dops_token)"
@@ -4442,10 +4651,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		# header happens to point, which is the part the fix controls and the
 		# only part that is the same on both deployments: after base_url
 		# there must be exactly one slash. Two would be the request's own
-		# slashes surviving. Note the correct answer still carries the
-		# attacker hostname -- the fix keeps the path and drops the leading
-		# slashes, so "/cms/zz-evil.example/steal" is right -- which is why
-		# the dataops check above greps for the name and this one cannot.
+		# slashes surviving.
+		#
+		# pl_safe_redirect_path() refuses a value it cannot read as a page in
+		# this application, and an off-site act_url is one of those, so what
+		# it returns is '' and the whole header is base_url and the slash
+		# this file adds. An earlier version of the guard reduced the value
+		# to a path that still carried the attacker's hostname, and this
+		# check accepted that; it does not any more.
 		ULOC="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D - -X POST \
 			--data-urlencode "_csrf=$(lk_token "$COOKIES")" \
 			-d "act_type=C" -d "close_act=1" -d "user_id=${LKUID}" \
@@ -4468,8 +4681,8 @@ if [ "$HAVE_DB" = 1 ]; then
 				bad "ops/update_activity.php still redirects off-site, protocol-relative (${ULOC})" ;;
 			"${UBASE}//"*)
 				bad "ops/update_activity.php still appends act_url's leading slashes, which is an off-site redirect wherever base_url is empty (${ULOC})" ;;
-			"${UBASE}/zz-evil.example/steal")
-				ok "ops/update_activity.php reduces an off-site act_url to a path on this site" ;;
+			"${UBASE}/")
+				ok "ops/update_activity.php refuses an off-site act_url and sends the browser to the site root" ;;
 			*)
 				bad "ops/update_activity.php redirected somewhere unexpected (${ULOC})" ;;
 		esac
@@ -4485,12 +4698,18 @@ if [ "$HAVE_DB" = 1 ]; then
 			--data-urlencode "act_url=cal_day.php" \
 			"$OCM_URL/ops/update_activity.php" \
 			| grep -i '^location:' | tr -d '\r' | head -1)"
-		case "$ULOC" in
-			*/cal_day.php\?cal_date=*)
-				ok "a real act_url still redirects to the page it names" ;;
-			*)
-				bad "a real act_url no longer reaches its page (${ULOC})" ;;
-		esac
+		# The whole target, not a substring. A match on "/cal_day.php?cal_date="
+		# would also accept https://evil.example/cal_day.php?cal_date= with no
+		# date on the end of it. cal_(day|week|adv) is the branch at
+		# ops/update_activity.php:344-348, and it appends the posted act_date.
+		UWANT="${UBASE}/cal_day.php?cal_date=${LK_OLD}"
+		UTARGET="$(printf '%s' "$ULOC" \
+			| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+		if [ "$UTARGET" = "$UWANT" ]; then
+			ok "a real act_url still redirects to the page it names"
+		else
+			bad "a real act_url no longer reaches its page (wanted ${UWANT}, got ${UTARGET})"
+		fi
 	fi
 
 	cleanup_lk
@@ -17115,6 +17334,66 @@ else
 
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 fi
+
+# 99. system-ops.php wrote a request value straight into the query string of
+# the URL it redirects to: "system-tables.php?screen=edit&table={$_POST['table']}".
+# An "&" in the table name added a parameter to that next request and a "#"
+# truncated the rest of it, so the request chose what the page it landed on was
+# asked to do. The page itself is a fixed local file, so this is about the query
+# string and not about where the redirect goes.
+#
+# The add_field case is the one posted here: a field_type outside the four the
+# handler accepts fails its in_array() check, so nothing is written to the
+# settings and the redirect is still emitted. The assertion is that the table
+# name comes back as one encoded parameter value rather than as two parameters.
+echo
+echo "99. system-ops.php encodes a table name before putting it in a redirect"
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the system-ops redirect check (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 99 cannot reach the database, so it cannot tell whether the POST wrote anything"
+else
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php" >/dev/null
+	SO_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+		| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+	SO_LOC="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D - \
+		--data-urlencode "action=add_field" \
+		--data-urlencode "_csrf=${SO_TOKEN}" \
+		--data-urlencode "field_type=zz_not_a_type" \
+		--data-urlencode "field=zz_so_field" \
+		--data-urlencode "table=zz_so&screen=delete&x=y" \
+		"$OCM_URL/system-ops.php" \
+		| grep -i '^location:' | tr -d '\r' | head -1 \
+		| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+
+	if [ "${#SO_TOKEN}" -ne 64 ]; then
+		bad "no CSRF token for the system-ops POST - section 99 is untested"
+	elif [ -z "$SO_LOC" ]; then
+		bad "system-ops.php sent no Location header, so section 99 tested nothing"
+	elif [ "${SO_LOC#system-tables.php}" = "$SO_LOC" ]; then
+		bad "the system-ops redirect no longer names system-tables.php (${SO_LOC})"
+	elif printf '%s' "$SO_LOC" | grep -q 'screen=delete'; then
+		bad "a table name carrying an & STILL adds a parameter to the system-ops redirect (${SO_LOC})"
+	elif ! printf '%s' "$SO_LOC" | grep -q 'table=zz_so%26screen%3Ddelete%26x%3Dy'; then
+		bad "the system-ops redirect does not carry the table name it was given (${SO_LOC})"
+	elif [ "$SO_LOC" != "system-tables.php?screen=edit&table=zz_so%26screen%3Ddelete%26x%3Dy" ]; then
+		# The three checks above each answer one way of getting this wrong.
+		# This one names the whole value, so a fourth way is a failure too.
+		bad "the system-ops redirect is not the target it should be (${SO_LOC})"
+	else
+		ok "system-ops.php encodes the table name into one parameter (${SO_LOC})"
+	fi
+
+	# Nothing may have been written: the field type was not one the handler
+	# accepts, and the settings are shared by the whole install.
+	if [ "$(adb "SELECT COUNT(*) FROM settings WHERE value LIKE '%zz_so_field%'")" != 0 ]; then
+		bad "the refused add_field POST wrote zz_so_field into the settings"
+	else
+		ok "the refused add_field POST wrote nothing to the settings"
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
