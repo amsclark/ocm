@@ -611,30 +611,50 @@ else
 	bad "date_selector-server.php did not refuse a malformed field_name with HTTP 400 and 'Invalid field_name.' (status $code)"
 fi
 
-code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+cal_head="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+	-w '%{http_code} %{content_type}' \
 	"$CAL?field_name=open_date&container=date_selector-00001&month=1&year=2020")"
 cal_curl=$?
+# The content type is read as well as the status. The same bytes served as
+# text/plain are shown to the user as source: the client hands the reply to
+# DOMParser as text/html regardless, but the browser that fetched it renders a
+# <pre>. This endpoint sets a Content-Type header on its 400 paths only and
+# leaves the success path to PHP's default_mimetype, so a configuration that
+# changes that default is a regression this check could not see before. An
+# absent header prints as an empty field and leaves cal_type empty.
+code=""
+cal_type=""
+read -r code cal_type <<<"$cal_head"
+cal_mime="$(printf '%s' "${cal_type%%;*}" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
 # A transfer that failed part way can leave this file stale or absent. The
 # stderr redirect goes BEFORE the input redirect: bash applies redirections left
 # to right, so the other order still prints the missing file. The exit status
 # above is what decides whether any of these values mean anything.
 size="$(wc -c 2>/dev/null < "$BODY")"
-# The reply is read as HTML here, not searched as text. Every earlier version of
-# this check matched strings: it took the class, the field, the container and the
-# anchors as substrings of the body. Three complete replies passed it that a
-# browser reads differently -- a table whose real data-field-name was close_date,
-# with the asked-for names sitting inside a quoted data-note value; a January
-# calendar written inside an HTML comment; and one written inside a script
-# string. Python's html.parser reports elements and their real attributes, and it
-# does not read tags out of comments or script text, so those three now fail.
-# The elements whose content a browser reads as text rather than as markup are
-# skipped as well, because html.parser does that for script and style only.
+# The reply is read as HTML here, not searched as text. Every version of this
+# check before the last one matched strings, and a string has no element and no
+# attribute, so complete replies passed that a browser reads as something else.
 #
-# The parser prints seven numbers: the tables whose class list holds the calendar
-# token, whether the first of them closed, whether its own data-field-name and
-# data-container-name are the two values that were asked for, how many select
-# anchors it holds, how many distinct days of January 2020 those anchors carry,
-# and how many of them select something that is not a day of January 2020.
+# Reading it with python3's html.parser closed those, but html.parser is a
+# tokenizer, not an HTML5 tree builder: it reports tags in the order they are
+# written and builds no tree. Six more complete replies were then measured
+# passing this check while Chrome 24 put no usable calendar on the page -- the
+# calendar inside a <template>, inside a <frameset>, inside a <select>, after a
+# <plaintext>, and two where the table is real but its day anchors are not
+# reachable: anchors written as direct children of a row, which the browser
+# foster-parents out of the table, and a bare <table> opened where a cell should
+# be, which implies the end of the calendar and puts the days in a sibling.
+# Those last two are the shape a real markup regression takes. The rules below
+# are the parts of the tree builder this check needs, written out: elements
+# whose content is text, elements whose content is never drawn in the page the
+# client builds, and the cell a day anchor has to be inside.
+#
+# The parser prints seven numbers: the elements whose class list holds the
+# calendar token, whether the first of them closed, whether its own
+# data-field-name and data-container-name are the two values that were asked
+# for, how many select anchors it holds in cells, how many distinct days of
+# January 2020 those anchors carry, and how many of them select something that
+# is not a day of January 2020.
 cal_stat="the parser did not run"
 cal_n=""
 cal_z=""
@@ -647,59 +667,120 @@ if ! command -v python3 >/dev/null 2>&1; then
 	cal_stat="python3 is absent"
 elif [ "$cal_curl" = 0 ]; then
 	cal_out="$(python3 - "$BODY" <<'PY'
+import re
 import sys
 from html.parser import HTMLParser
 
+# HTML splits a class attribute on ASCII whitespace. Python's str.split() also
+# splits on U+00A0 and U+2003, and a browser keeps those inside a token, so
+# class="js-date-selector<U+00A0>x" is ONE token to a browser -- not the
+# calendar -- and was read here as two.
+CLASS_SPLIT = re.compile('[ \t\n\r\f]+')
+
 # A browser reads the content of these as text, so a calendar written inside one
-# is not a calendar. html.parser already does this for script and style.
+# is not a calendar. html.parser already does this for script and style. desc is
+# SVG's, where a table is described, not drawn.
 TEXT_ONLY = ('title', 'textarea', 'iframe', 'noembed', 'noframes', 'noscript',
-	'xmp')
+	'desc', 'xmp')
+
+# The content of these IS markup, and still never reaches the page as a drawn
+# calendar: a template's content is held in a separate inert fragment, a
+# frameset drops the body, and a table inside a select box is not drawn. The
+# client also appends what it parses into a document where scripting is on, and
+# a noscript element is not drawn there either, which is why noscript is above.
+NOT_DRAWN = ('template', 'frameset', 'select')
+
+# Table content lives in cells. A browser foster-parents anything else OUT of
+# the table, so a day anchor written as a direct child of a row is not in the
+# calendar at all and cannot be clicked.
+CELLS = ('td', 'th')
 
 
 class Calendar(HTMLParser):
-	"""Counts the calendar tables and reads the first one's own contents."""
+	"""Counts the calendar elements and reads the first one's reachable days."""
 
 	def __init__(self):
 		super().__init__(convert_charrefs=True)
-		self.tables = 0
+		self.elements = 0
+		self.tag = None
 		self.depth = 0
+		self.cells = 0
 		self.closed = 0
 		self.field = None
 		self.container = None
 		self.dates = []
 		self.text_only = ''
+		self.not_drawn = 0
+		self.stop = 0
 
 	def handle_starttag(self, tag, attrs):
-		if self.text_only:
+		if self.stop or self.text_only:
+			return
+		# Everything after this tag is text to a browser, whatever it looks
+		# like. html.parser has no such mode and keeps reading tags, so the
+		# rest of the reply is dropped here instead.
+		if tag == 'plaintext':
+			self.stop = 1
 			return
 		if tag in TEXT_ONLY:
 			self.text_only = tag
+			return
+		if tag in NOT_DRAWN:
+			self.not_drawn += 1
+			return
+		if self.not_drawn:
 			return
 		# A repeated attribute is read as its first spelling, which is what a
 		# browser does with one; dict() would keep the last.
 		attr = {}
 		for name, value in attrs:
 			attr.setdefault(name, value)
-		if tag == 'table':
-			if 'js-date-selector' in (attr.get('class') or '').split():
-				self.tables += 1
-				if self.depth == 0 and not self.closed:
-					self.depth = 1
-					self.field = attr.get('data-field-name')
-					self.container = attr.get('data-container-name')
-					return
-			# A table nested in a cell of the calendar is still inside it.
-			if self.depth:
+		# The client finds the calendar with closest('.js-date-selector'), which
+		# matches any element, not only a table.
+		if 'js-date-selector' in CLASS_SPLIT.split(attr.get('class') or ''):
+			self.elements += 1
+			if self.depth == 0 and not self.closed:
+				self.tag = tag
+				self.depth = 1
+				self.cells = 0
+				self.field = attr.get('data-field-name')
+				self.container = attr.get('data-container-name')
+				return
+		if not self.depth:
+			return
+		if tag == self.tag:
+			# A table opened where a cell should be closes the one above it and
+			# takes the rows after it. Inside a cell it is a real nested table.
+			if tag == 'table' and self.cells == 0:
+				self.depth = 0
+				self.closed = 1
+			else:
 				self.depth += 1
-		elif tag == 'a' and self.depth and attr.get('data-date-action') == 'select':
+			return
+		if tag in CELLS:
+			self.cells += 1
+			return
+		if tag == 'a' and self.cells and attr.get('data-date-action') == 'select':
 			self.dates.append(attr.get('data-date'))
 
 	def handle_endtag(self, tag):
+		if self.stop:
+			return
 		if self.text_only:
 			if tag == self.text_only:
 				self.text_only = ''
 			return
-		if tag == 'table' and self.depth:
+		if tag in NOT_DRAWN:
+			if self.not_drawn:
+				self.not_drawn -= 1
+			return
+		if self.not_drawn or not self.depth:
+			return
+		if tag in CELLS:
+			if self.cells:
+				self.cells -= 1
+			return
+		if tag == self.tag:
 			self.depth -= 1
 			if self.depth == 0:
 				self.closed = 1
@@ -712,7 +793,7 @@ parser.close()
 
 january = set('01/%02d/2020' % day for day in range(1, 32))
 days = [date for date in parser.dates if date in january]
-print(parser.tables,
+print(parser.elements,
 	parser.closed,
 	1 if parser.field == '"open_date"' else 0,
 	1 if parser.container == '"date_selector-00001"' else 0,
@@ -722,45 +803,73 @@ print(parser.tables,
 PY
 )"
 	cal_rc=$?
-	if [ "$cal_rc" = 0 ] && [ -n "$cal_out" ]; then
+	# read -r takes the first line and clears whatever it runs out of words
+	# for, so a parser that printed a traceback, or six words, or eight, used
+	# to arrive here as an endpoint that rendered the wrong calendar. The
+	# seven numbers are the protocol between the two halves of this check, so
+	# they are checked before any of them is believed.
+	cal_lines="$(printf '%s\n' "$cal_out" | grep -c '')"
+	if [ "$cal_rc" != 0 ]; then
+		cal_stat="the parser exited $cal_rc"
+	elif [ -z "$cal_out" ]; then
+		cal_stat="the parser printed nothing"
+	elif [ "$cal_lines" != 1 ]; then
+		cal_stat="the parser printed $cal_lines lines, not one"
+	elif ! printf '%s' "$cal_out" | grep -qE '^[0-9]+( [0-9]+){6}$'; then
+		cal_stat="the parser printed something other than seven numbers"
+	else
 		cal_stat=ok
 		read -r cal_n cal_z cal_f cal_c cal_a cal_u cal_x <<<"$cal_out"
-	else
-		cal_stat="the parser exited $cal_rc"
 	fi
 fi
 # A status, a byte count and one marker do not say a calendar arrived. A body
 # cut off part way through still carries the opening tag, and curl reports HTTP
 # 200 for a reply whose transfer then failed, so its exit status is part of the
-# answer. What is asserted: the reply holds exactly one element whose class list
-# carries the calendar token, that element closes, its own two attributes name
-# the field and the container that were asked for, and it holds 31 select
-# anchors carrying 31 distinct days of January 2020 and no other day. That rules
-# out a prefix of a calendar, a calendar for another month or another field,
-# anchors that all select the same day, invented days, days of another month
-# beside the right ones, a second calendar, and a body that only mentions the
-# class. The container is checked because the client reads it to navigate and to
-# close. What none of it shows is that the calendar WORKS in a browser -- that
-# needs a client test, which this suite does not have.
+# answer. What is asserted: the reply is served as text/html, and it holds
+# exactly one element whose class list carries the calendar token, that element
+# closes, its own two attributes name the field and the container that were
+# asked for, and it holds 31 select anchors, each inside a cell of it, carrying
+# 31 distinct days of January 2020 and no other day. That rules out a prefix of
+# a calendar, a calendar for another month or another field, anchors that all
+# select the same day, invented days, days of another month beside the right
+# ones, a second calendar, a body that only mentions the class, and the six
+# replies above whose days a browser never makes clickable.
+#
+# What it does NOT show, measured rather than assumed: this check reads no CSS
+# and no hidden attribute, so a calendar that is present and correct and styled
+# out of sight passes it. It decodes the reply as UTF-8 only. It reads a comment
+# as ending at --> where HTML5 also ends one at --!>, and it treats title as
+# text everywhere, including inside SVG where a browser does not -- both of
+# those make it stricter than a browser, not looser, and the bundled plugin
+# emits neither. Short of a conforming HTML5 tree builder, which would be a new
+# dependency for this suite, a browser test is the only thing that shows the
+# calendar works.
 #
 # What is still spelled exactly: the class token, the two JSON-encoded attribute
 # values, data-date-action="select" on an anchor element, and m/d/Y dates. A site
-# that overrides template_plugins/date_selector.php and renames any of those is
-# rendering a working calendar that this check reports as a failure, and would
-# have to update it. Quoting, attribute order, entities and whitespace are the
-# parser's problem now, not this check's.
+# that overrides template_plugins/date_selector.php and renames any of those, or
+# draws its days outside table cells, is rendering a working calendar that this
+# check reports as a failure, and would have to update it. Quoting, attribute
+# order, entities and ASCII whitespace are the parser's problem now.
 if [ "$cal_curl" != 0 ]; then
 	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
+elif [ "$cal_stat" = "python3 is absent" ] && [ "$code" != 200 ]; then
+	bad "date_selector-server.php answered a LEGITIMATE field with HTTP $code, not 200 ($size bytes); python3 is absent, so this run did not read the reply either"
+elif [ "$cal_stat" = "python3 is absent" ] && [ "${size:-0}" -lt 1 ]; then
+	# An empty 200 is what this endpoint answers a stranger with, so a signed-in
+	# request getting one is a failure whether or not the reply can be parsed.
+	bad "date_selector-server.php answered a LEGITIMATE field with an empty 200, which is what it answers a stranger with; python3 is absent, so this run could not read a reply either way"
 elif [ "$cal_stat" = "python3 is absent" ]; then
-	printf '  skip the calendar render check (needs python3 to read the reply as HTML)\n'
+	printf '  skip the calendar render check (needs python3 to read the reply as HTML; the status was 200 and the reply %s bytes, neither of which this run read)\n' "$size"
 elif [ "$cal_stat" != ok ]; then
 	bad "the calendar reply could not be read as HTML by this check ($cal_stat), so this run says nothing about what date_selector-server.php rendered"
-elif [ "$code" = 200 ] && [ "$cal_n" = 1 ] && [ "$cal_z" = 1 ] \
+elif [ "$code" = 200 ] && [ "$cal_mime" = "text/html" ] \
+	&& [ "$cal_n" = 1 ] && [ "$cal_z" = 1 ] \
 	&& [ "$cal_f" = 1 ] && [ "$cal_c" = 1 ] \
 	&& [ "$cal_a" = 31 ] && [ "$cal_u" = 31 ] && [ "$cal_x" = 0 ]; then
-	ok "date_selector-server.php renders one calendar element, tagged with the field and the container that were asked for, holding the 31 days of January 2020 as select anchors and no other day ($size bytes)"
+	ok "date_selector-server.php serves text/html holding one calendar element, tagged with the field and the container that were asked for, whose cells hold the 31 days of January 2020 as select anchors and no other day ($size bytes)"
 else
-	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, $size bytes, $cal_n elements carrying the calendar class, closed $cal_z, field $cal_f, container $cal_c, $cal_a select anchors, $cal_u distinct January days, $cal_x anchors selecting another day)"
+	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, type ${cal_mime:-none}, $size bytes, $cal_n elements carrying the calendar class, closed $cal_z, field $cal_f, container $cal_c, $cal_a select anchors in cells, $cal_u distinct January days, $cal_x anchors selecting another day)"
 fi
 
 # 8e. reports/index.php filters the list by the per-report permission. The admin
@@ -17956,7 +18065,7 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 	SV_BYTES="$(wc -c 2>/dev/null < "$BODY" | tr -d ' ')"
 	if [ "$SV_CURL" != 0 ]; then
 		SV_OPEN=$((SV_OPEN + 1))
-		bad "${SV_WHAT} could not be reached without a session at all (curl exit ${SV_CURL}), so this run says nothing about it"
+		bad "${SV_WHAT} could not be read without a session (curl exit ${SV_CURL}; 18 means the reply started and stopped early, 7 means nothing answered), so this run says nothing about it"
 	elif grep -q "$SV_MARK" "$BODY"; then
 		SV_OPEN=$((SV_OPEN + 1))
 		bad "${SV_WHAT} served its reply to a request with no session (HTTP ${SV_CODE}, ${SV_BYTES} bytes)"
@@ -18008,7 +18117,7 @@ SV_MAL_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' -G \
 SV_MAL_CURL=$?
 SV_MAL_BYTES="$(wc -c 2>/dev/null < "$BODY" | tr -d ' ')"
 if [ "$SV_MAL_CURL" != 0 ]; then
-	bad "the date selector could not be reached without a session at all (curl exit ${SV_MAL_CURL}), so this run says nothing about what a stranger's malformed request gets"
+	bad "the date selector could not be read without a session (curl exit ${SV_MAL_CURL}; 18 means the reply started and stopped early, 7 means nothing answered), so this run says nothing about what a stranger's malformed request gets"
 elif [ "$SV_MAL_CODE" = 200 ] && [ "$SV_MAL_BYTES" = 0 ]; then
 	ok "the date selector says nothing to a stranger who sends a malformed field_name (empty 200)"
 else
@@ -18016,7 +18125,7 @@ else
 	if grep -q 'Invalid field_name\.' "$BODY"; then
 		SV_MAL_SEEN=', and it holds the text "Invalid field_name.", which is what this endpoint sends a caller whose field_name it rejected'
 	fi
-	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes, not the empty 200 that a request reaching authentication here gets${SV_MAL_SEEN}"
+	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes, not the empty 200 this endpoint is built to answer a stranger with${SV_MAL_SEEN}"
 fi
 
 # pl_grab_get() returns a value in whatever shape the query string gave it, so
@@ -18043,7 +18152,7 @@ sv_arr_try()
 		"$OCM_URL/services/date_selector-server.php")"
 	sv_arr_curl=$?
 	if [ "$sv_arr_curl" != 0 ]; then
-		bad "the date selector could not be reached with ${sv_arr_what} (curl exit ${sv_arr_curl}), so this run says nothing about it"
+		bad "the date selector could not be read with ${sv_arr_what} (curl exit ${sv_arr_curl}; 18 means the reply started and stopped early, 7 means nothing answered), so this run says nothing about it"
 	elif [ "$sv_arr_code" = 400 ] && grep -q "$sv_arr_mark" "$BODY"; then
 		ok "the date selector refuses ${sv_arr_what} (400, ${sv_arr_mark})"
 	else
