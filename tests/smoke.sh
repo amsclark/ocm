@@ -16108,6 +16108,208 @@ RCPY
 	rm -f "$RC_PY"
 fi
 
+# 93. No service endpoint answers a signed-in request with a server error.
+#
+# cms/services/pension_issue-server-ajax.php queried menu_pension_sub_issue,
+# which no install or upgrade script creates. Every signed-in request to it
+# therefore ended on the error page: HTTP 500, ten kilobytes of text/html, to
+# a caller that had asked for text/xml. Nothing in the suite had ever asked a
+# service endpoint for anything, so a whole layer of the application could not
+# answer at all and the suite stayed green. Sections 8e2 and 91 do this for
+# pages and for include fragments; this one does it for the service layer.
+#
+# The check is a bare GET with no parameters. A service that needs parameters
+# answers 400, 403 or an empty document, and all of those are fine - the only
+# failure is a 5xx, which means the code could not run to the point of
+# deciding what to refuse.
+#
+# services/logout.php is left out on purpose: it marks the session row, and
+# every endpoint asked after it would be answering an anonymous caller. That
+# is not hypothetical - it happened while this bug was being found, and it
+# hid the 500 for a whole sweep. So the session is checked after each
+# request, and the body is what says whether it is still alive: this
+# application renders the login form with HTTP 200, so the status code cannot
+# tell a signed-in page from a signed-out one.
+echo
+echo "93. every service endpoint answers a signed-in request without a server error"
+
+# The absence of the login form is not on its own proof of a session: an
+# empty body and an error page both lack it too. So this asks for the status
+# as well, and for the same positive marker section 3 uses after logging in.
+sv_alive() {
+	sv_live="$(curl -s --max-time 30 -b "$COOKIES" -o "${BODY}.sv" \
+		-w '%{http_code}' "$OCM_URL/system-settings.php")"
+	[ "$sv_live" = 200 ] \
+		&& ! grep -qF 'login_pass' "${BODY}.sv" \
+		&& grep -qi 'logout' "${BODY}.sv"
+}
+
+sv_list="$(cd "${REPO_DIR}/cms/services" 2>/dev/null && ls *.php 2>/dev/null \
+	| grep -v '^logout\.php$')"
+sv_count="$(printf '%s\n' "$sv_list" | grep -c .)"
+
+if [ "${sv_count:-0}" -lt 10 ]; then
+	bad "section 93 found only ${sv_count} service endpoints - the sweep is broken"
+elif ! sv_alive; then
+	bad "the admin session was already gone before section 93 started - it proves nothing"
+else
+	sv_bad=''
+	sv_dead=''
+	sv_lost=''
+	sv_served=0
+
+	for sv in $sv_list; do
+		sv_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-w '%{http_code}' "$OCM_URL/services/${sv}")"
+
+		# 000 is curl saying it never got a reply at all, which is not a
+		# status the application chose. An empty 200 is not a document
+		# either, so it must not be counted as one.
+		case "$sv_code" in
+			000) sv_dead="${sv_dead} ${sv}" ;;
+			5*) sv_bad="${sv_bad} ${sv}=${sv_code}" ;;
+			200)
+				if [ -s "$BODY" ]; then
+					sv_served=$((sv_served + 1))
+				fi ;;
+		esac
+
+		if ! sv_alive; then
+			sv_lost="${sv}"
+			break
+		fi
+	done
+
+	# Without this the sweep could have asked every endpoint as a signed-out
+	# caller, been handed the login page by all of them, and reported no
+	# server errors.
+	if [ -n "$sv_lost" ]; then
+		bad "the admin session did not survive services/${sv_lost} - section 93 stopped there and proves nothing beyond it"
+	elif [ "${sv_served:-0}" -lt 3 ]; then
+		bad "only ${sv_served} of ${sv_count} service endpoints served anything - section 93 is not signed in"
+	else
+		ok "section 93 asked all ${sv_count} service endpoints, ${sv_served} served a document"
+
+		if [ -n "$sv_dead" ]; then
+			bad "A SERVICE ENDPOINT NEVER ANSWERED AT ALL:${sv_dead}"
+		fi
+
+		if [ -n "$sv_bad" ]; then
+			bad "A SERVICE ENDPOINT ANSWERED A SIGNED-IN REQUEST WITH A SERVER ERROR:${sv_bad}"
+		else
+			ok "no service endpoint answers a signed-in request with a server error"
+		fi
+	fi
+fi
+
+rm -f "${BODY}.sv"
+
+# 94. The pension sub-issue service still sends XML when its menu is absent.
+#
+# Section 93 above would catch the 500 coming back, but not the shape of the
+# reply. The caller parses this as XML, so an empty list has to be a valid
+# document with the right content type rather than an empty body or an HTML
+# page carrying a 200. Looking for the opening tag is not enough for that: a
+# truncated document, a document with the wrong root, and a document that
+# still carries rows all contain it. So the body is parsed and its root and
+# child count are read.
+#
+# The table is then created and a row put through the service, because nothing
+# else in the suite ever exercises the two escape calls on the way out.
+#
+# The absence of the menu table is established by an exact name match against
+# information_schema, not by SHOW TABLES LIKE: every underscore in the name is
+# a LIKE wildcard, so that pattern also matches a table with any character in
+# those places and the check would skip itself.
+echo
+echo "94. the pension sub-issue service answers with XML when its menu table is absent"
+
+ps_url="$OCM_URL/services/pension_issue-server-ajax.php"
+ps_exists="SELECT COUNT(*) FROM information_schema.tables
+	WHERE table_schema = DATABASE() AND table_name = 'menu_pension_sub_issue'"
+
+if ! command -v adb >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+	printf '  skip the pension sub-issue check (needs the database and python3)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 94 cannot reach the database, so it cannot tell whether the menu table is there"
+elif [ "$(adb "$ps_exists")" != 0 ]; then
+	printf '  skip the pension sub-issue check (this install has the menu table)\n'
+else
+	ps_type="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		-w '%{http_code} %{content_type}' "$ps_url")"
+	ps_code="${ps_type%% *}"
+	ps_ctype="${ps_type#* }"
+
+	ps_media="$(printf '%s' "${ps_ctype%%;*}" | tr -d ' ')"
+
+	if [ "$ps_code" != 200 ]; then
+		bad "the pension sub-issue service answered ${ps_code} with its menu table absent"
+	else
+		if [ "$ps_media" = 'text/xml' ]; then
+			ok "the pension sub-issue service answers text/xml with its menu table absent"
+		else
+			bad "the pension sub-issue service answered ${ps_media}, not text/xml, with its menu table absent"
+		fi
+
+		# An empty body, a truncated document and a document with the wrong
+		# root all carry a 200 the caller cannot use.
+		ps_shape="$(python3 - "$BODY" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+	root = ET.parse(sys.argv[1]).getroot()
+except Exception as exc:
+	print('does not parse as XML: %s' % exc)
+else:
+	print('%s with %d children' % (root.tag, len(list(root))))
+PY
+)"
+		if [ "$ps_shape" = 'pension_issues with 0 children' ]; then
+			ok "the empty reply parses as XML and is an empty pension_issues document"
+		else
+			bad "the empty reply is not an empty pension_issues document: ${ps_shape}"
+		fi
+	fi
+
+	# Put a row through the service. An ampersand and an angle bracket in the
+	# label are the case that matters: createElement() does not escape its
+	# value argument, so an unescaped label of this shape writes a document
+	# the caller cannot parse.
+	adb "CREATE TABLE menu_pension_sub_issue (
+		value varchar(8) NOT NULL DEFAULT '',
+		label varchar(64) NOT NULL DEFAULT '',
+		menu_order int NOT NULL DEFAULT 0)" >/dev/null
+	adb "INSERT INTO menu_pension_sub_issue (value, label, menu_order)
+		VALUES ('AB1', 'Benefits & Accrual <check>', 1)" >/dev/null
+
+	ps_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		-w '%{http_code}' "$ps_url")"
+	ps_label="$(python3 - "$BODY" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+	root = ET.parse(sys.argv[1]).getroot()
+except Exception as exc:
+	print('does not parse as XML: %s' % exc)
+else:
+	labels = [el.text or '' for el in root.iter('label')]
+	print(labels[0] if labels else 'no label element')
+PY
+)"
+
+	adb "DROP TABLE menu_pension_sub_issue" >/dev/null
+
+	if [ "$ps_code" != 200 ]; then
+		bad "the pension sub-issue service answered ${ps_code} with its menu table present"
+	elif [ "$ps_label" = 'Benefits & Accrual <check>' ]; then
+		ok "a menu label holding & and < parses back out of the reply unchanged"
+	else
+		bad "a menu label holding & and < came back as: ${ps_label}"
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

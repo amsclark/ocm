@@ -3491,7 +3491,17 @@ function pl_mysql_table_exists($table)
 		return false;
 	}
 	
+	/*	Every underscore is a LIKE wildcard, so the unescaped pattern also
+		matched a table with any character in those places: with a table
+		called menuXpensionXsubXissue present, asking for
+		menu_pension_sub_issue answered yes and the caller went on to query
+		a table that was not there. Escaping for a SQL string is not
+		escaping for a LIKE pattern. The check above already restricted the
+		name to letters, digits and underscores, so the underscore is the
+		only pattern character left to escape.
+	*/
 	$clean_table = DB::escapeString($table);
+	$clean_table = str_replace('_', '\\\\_', $clean_table);
 	$result = DB::query("SHOW TABLES LIKE '{$clean_table}'");
 	
 	return ($result && DBResult::numRows($result) > 0);
