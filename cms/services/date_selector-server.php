@@ -58,6 +58,20 @@ if (!is_string($container) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $container
 	exit('Invalid container.');
 }
 
+// field_value, month and year are single values as well. None of them reaches
+// an attribute the way field_name does -- the plugin parses the date and
+// escapes the days it prints -- so an array here meant a warning in the log and
+// a calendar for the wrong day rather than an injection point. Refuse the shape
+// with the rest. A parameter the caller left out is null, not an array, which
+// is what pl_grab_get() returns when the query string does not carry it.
+if ((null !== $field_value && !is_string($field_value))
+	|| (null !== $month && !is_string($month))
+	|| (null !== $year && !is_string($year)))
+{
+	header('Content-Type: text/plain; charset=UTF-8', true, 400);
+	exit('Invalid date parameter.');
+}
+
 $buffer = pikaTempLib::plugin('date_selector',$field_name,$field_value,$container,array("month={$month}","year={$year}"));
 
 exit($buffer);

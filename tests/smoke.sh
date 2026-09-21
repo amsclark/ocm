@@ -610,15 +610,28 @@ fi
 
 code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 	"$CAL?field_name=open_date&container=date_selector-00001&month=1&year=2020")"
-size="$(wc -c < "$BODY")"
-# The marker matters as much as the status: a login page or a Pika error page
-# is also HTTP 200 and also more than 200 bytes. js-date-selector is the class
-# on the table the plugin draws, so it is present only when a calendar was
-# actually rendered.
-if [ "$code" = 200 ] && [ "$size" -gt 200 ] && grep -q 'js-date-selector' "$BODY"; then
-	ok "date_selector-server.php still renders a legitimate field ($size bytes)"
+cal_curl=$?
+# A transfer that failed part way can leave this file stale or absent, so read
+# it quietly -- the exit status above is what decides whether it means anything.
+size="$(wc -c < "$BODY" 2>/dev/null)"
+cal_days="$(grep -o 'data-date-action="select"' "$BODY" 2>/dev/null | wc -l | tr -d ' ')"
+# A status, a byte count and one marker do not say a calendar arrived. A body
+# cut off part way through still carries the opening tag, and curl reports HTTP
+# 200 for a reply whose transfer then failed, so its exit status is part of the
+# answer. January 2020 has 31 days: exactly 31 day links, a closing tag, and the
+# field name that was asked for separate a whole calendar for that field from a
+# prefix of one, from an unrelated page that mentions the class, and from a
+# calendar for some other month.
+if [ "$cal_curl" != 0 ]; then
+	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
+elif [ "$code" = 200 ] && [ "$cal_days" = 31 ] \
+	&& grep -q 'class="js-date-selector"' "$BODY" \
+	&& grep -q 'data-field-name="&quot;open_date&quot;"' "$BODY" \
+	&& grep -q 'data-date="01/31/2020"' "$BODY" \
+	&& grep -q '</table>' "$BODY"; then
+	ok "date_selector-server.php still renders the whole January 2020 calendar for a legitimate field ($size bytes, 31 days)"
 else
-	bad "date_selector-server.php did not render a calendar for a LEGITIMATE field (status $code, $size bytes)"
+	bad "date_selector-server.php did not render a complete calendar for a LEGITIMATE field (status $code, $size bytes, $cal_days day links)"
 fi
 
 # 8e. reports/index.php filters the list by the per-report permission. The admin
@@ -17799,13 +17812,19 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 	#
 	# What a stranger gets is exact, so assert it rather than only the absence
 	# of the reply: pika_init() authenticates, PL_DISABLE_DISPLAY_LOGIN makes
-	# authenticate() exit instead of rendering the login page, and nothing sets
-	# a status, so the answer is HTTP 200 with a zero-byte body. "the marker is
-	# missing" alone would also be satisfied by a 500 error page, by a login
-	# page, and by a request that never completed at all.
+	# authenticate() exit instead of rendering the login page, and that path sets
+	# no status of its own, so the answer is HTTP 200 with a zero-byte body. "the
+	# marker is missing" alone would also be satisfied by a 500 error page, by a
+	# login page, and by a request that never completed at all.
+	#
+	# The empty 200 is what a request that gets as far as authentication gets. An
+	# install with force_https set answers plain HTTP with a redirect earlier than
+	# that, inside pika_init(), so this describes the endpoint only when $OCM_URL
+	# is the scheme the install serves -- which it has to be for the login at the
+	# top of this suite to have worked.
 	SV_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$OCM_URL/$SV_PATH")"
 	SV_CURL=$?
-	SV_BYTES="$(wc -c < "$BODY" | tr -d ' ')"
+	SV_BYTES="$(wc -c < "$BODY" 2>/dev/null | tr -d ' ')"
 	if [ "$SV_CURL" != 0 ]; then
 		SV_OPEN=$((SV_OPEN + 1))
 		bad "${SV_WHAT} could not be reached without a session at all (curl exit ${SV_CURL}), so this run says nothing about it"
@@ -17822,7 +17841,8 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 	# The same request with this run's session has to work, or the check above
 	# proves nothing about authentication.
 	SV_CODE2="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' "$OCM_URL/$SV_PATH")"
-	if [ "$SV_CODE2" != 200 ] || ! grep -q "$SV_MARK" "$BODY"; then
+	SV_CURL2=$?
+	if [ "$SV_CURL2" != 0 ] || [ "$SV_CODE2" != 200 ] || ! grep -q "$SV_MARK" "$BODY"; then
 		SV_BROKEN="${SV_BROKEN} ${SV_PATH%%\?*}"
 	fi
 done <<SVEOF
@@ -17841,21 +17861,28 @@ else
 	bad "these ajax service endpoints no longer answer a signed-in request:${SV_BROKEN}"
 fi
 
-# The session check has to come before the input validation, not after it. A
-# stranger who gets "Invalid field_name." back has reached the endpoint's own
-# code; a stranger who gets nothing has not. Section 8d is the regression guard
+# The session check has to come before the input validation, not after it. The
+# order is set by the file itself: pika_init() runs before the pl_grab_get()
+# calls that read the request. What this check adds is the observable half of
+# that -- a stranger who gets "Invalid field_name." back has certainly reached
+# the endpoint's own code, and an empty reply is what a request that ended at
+# authentication looks like from outside. It cannot show on its own that nothing
+# was read first, only that nothing was said. Section 8d is the regression guard
 # on the validation itself, for a caller that does hold a session.
 SV_MAL_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' -G \
 	--data-urlencode "field_name=a b\"c" \
 	--data-urlencode "container=date_selector-1" \
 	"$OCM_URL/services/date_selector-server.php")"
-SV_MAL_BYTES="$(wc -c < "$BODY" | tr -d ' ')"
-if grep -q 'Invalid field_name' "$BODY"; then
+SV_MAL_CURL=$?
+SV_MAL_BYTES="$(wc -c < "$BODY" 2>/dev/null | tr -d ' ')"
+if [ "$SV_MAL_CURL" != 0 ]; then
+	bad "the date selector could not be reached without a session at all (curl exit ${SV_MAL_CURL}), so this run says nothing about what a stranger's malformed request gets"
+elif grep -q 'Invalid field_name' "$BODY"; then
 	bad "the date selector validated a stranger's field_name, so it reaches its own code before the session is checked"
 elif [ "$SV_MAL_CODE" != 200 ] || [ "$SV_MAL_BYTES" != 0 ]; then
 	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes; only an empty 200 shows the request ended at the session"
 else
-	ok "the date selector refuses a stranger before it reads what was sent (empty 200)"
+	ok "the date selector says nothing to a stranger who sends a malformed field_name (empty 200)"
 fi
 
 # pl_grab_get() returns a value in whatever shape the query string gave it, so
@@ -17863,17 +17890,40 @@ fi
 # "Array", which the field-name pattern accepts. Output escaping kept that
 # harmless -- the attribute read Array, it did not break out of the tag -- but
 # the endpoint answered a request it should have refused and PHP logged an
-# array-to-string warning for every use. This request carries the session on
-# purpose: what is being checked here is the validation, not the session.
-SV_ARR_CODE="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' -G \
+# array-to-string warning for every use.
+#
+# Each guard gets its own request, with every other parameter valid. Sending two
+# arrays at once proves only the first guard: field_name is checked first and
+# ends the request, so the container could go back to casting and this would
+# still pass. These requests carry the session on purpose -- what is being
+# checked here is the validation, not the session.
+sv_arr_try()
+{
+	sv_arr_what="$1"
+	sv_arr_mark="$2"
+	shift 2
+	sv_arr_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' -G "$@" \
+		"$OCM_URL/services/date_selector-server.php")"
+	sv_arr_curl=$?
+	if [ "$sv_arr_curl" != 0 ]; then
+		bad "the date selector could not be reached with ${sv_arr_what} (curl exit ${sv_arr_curl}), so this run says nothing about it"
+	elif [ "$sv_arr_code" = 400 ] && grep -q "$sv_arr_mark" "$BODY"; then
+		ok "the date selector refuses ${sv_arr_what} (400, ${sv_arr_mark})"
+	else
+		bad "the date selector accepted ${sv_arr_what} (HTTP ${sv_arr_code}), so what it does with that value is whatever a string cast of it produced"
+	fi
+}
+
+sv_arr_try "an array where the field name belongs" 'Invalid field_name' \
 	--data-urlencode "field_name[]=bad" \
-	--data-urlencode "container[]=bad" \
-	"$OCM_URL/services/date_selector-server.php")"
-if [ "$SV_ARR_CODE" = 400 ] && grep -q 'Invalid field_name' "$BODY"; then
-	ok "the date selector refuses an array where a field name belongs (400)"
-else
-	bad "the date selector accepted an array as field_name (HTTP ${SV_ARR_CODE}), so the name it renders is whatever a string cast of it produced"
-fi
+	--data-urlencode "container=date_selector-00001"
+sv_arr_try "an array where the container id belongs" 'Invalid container' \
+	--data-urlencode "field_name=open_date" \
+	--data-urlencode "container[]=bad"
+sv_arr_try "an array where a date part belongs" 'Invalid date parameter' \
+	--data-urlencode "field_name=open_date" \
+	--data-urlencode "container=date_selector-00001" \
+	--data-urlencode "month[]=bad"
 
 echo
 echo "smoke: $pass passed, $fail failed"
