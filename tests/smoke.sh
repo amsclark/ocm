@@ -16310,6 +16310,171 @@ PY
 	fi
 fi
 
+# Some of the tables this code queries are add-on schema: no install script and
+# no upgrade script creates them, and an install that was never given them has
+# to work anyway. A query against a table that is not there fails, and a failed
+# query here ends the request on the error page, so the caller gets HTTP 500
+# instead of an answer. That is what the pension sub-issue service did, and
+# three pension reports before it.
+#
+# A request cannot find the rest of them, because the code that names them is
+# only reached on an install that has the table. So the check is static: ask the
+# database which tables this install actually has, take every table named in a
+# SQL string under cms/, and for each one the install lacks, require the file
+# that names it either to guard it or to be a listed exception with a reason.
+#
+# A guard means one of three things: pl_mysql_table_exists(), an exact
+# information_schema lookup, or the table list a report hands to
+# pika_report_require_schema().
+#
+# Only a string that begins with a SQL keyword is read as SQL. The queries are
+# built up in pieces, so a fragment may begin at any clause, but no sentence of
+# English begins with SELECT or FROM, and prose is what the earlier version of
+# this sweep kept tripping over. A name written as menu_$menu is skipped too:
+# the real table is whatever the caller passed, so there is nothing to look up.
+echo
+echo "95. every table a stock install lacks is guarded where it is named"
+
+if ! command -v python3 >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the absent-table check (needs the database and python3)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 95 cannot reach the database, so it cannot tell which tables this install has"
+else
+	AT_LIST="$(mktemp)"
+	AT_PY="$(mktemp)"
+	adb "SELECT table_name FROM information_schema.tables
+		WHERE table_schema = DATABASE()" > "$AT_LIST"
+
+	cat > "$AT_PY" <<'ATPY'
+import io, os, re, sys
+
+root = os.path.join(sys.argv[1], 'cms')
+present = set(l.strip() for l in io.open(sys.argv[2]) if l.strip())
+
+OPENER = re.compile(r'''^\s*\(?\s*(SELECT|INSERT|REPLACE|UPDATE|DELETE|TRUNCATE
+	|FROM|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|STRAIGHT_JOIN
+	|WHERE|AND|OR|ORDER|GROUP|HAVING|LIMIT|SET|ON|UNION|,)\b''',
+	re.I | re.X)
+
+TABLE = [
+	re.compile(r'\bFROM\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(\$?)', re.I),
+	re.compile(r'\bJOIN\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(\$?)', re.I),
+	re.compile(r'\bINSERT\s+(?:IGNORE\s+)?INTO\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(\$?)', re.I),
+	re.compile(r'\bREPLACE\s+INTO\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(\$?)', re.I),
+	re.compile(r'\bUPDATE\s+`?([A-Za-z_][A-Za-z0-9_]*)`?(\$?)\s+SET', re.I),
+	re.compile(r'\bTRUNCATE\s+(?:TABLE\s+)?`?([A-Za-z_][A-Za-z0-9_]*)`?(\$?)', re.I),
+]
+
+BLOCK = re.compile(r'/\*.*?\*/', re.S)
+LINE = re.compile(r'(?<!:)//[^\n]*|^[ \t]*#[^\n]*', re.M)
+LITERAL = re.compile(r"'((?:\\.|[^'\\])*)'|\"((?:\\.|[^\"\\])*)\"", re.S)
+SCHEMA_CALL = re.compile(r'pika_report_require_schema\s*\((.*?)\)\s*;', re.S)
+
+NOISE = set(['select', 'dual', 'information_schema'])
+
+# Each names a table no install creates and has a reason that is not a guard.
+# Anything not listed here has to guard itself.
+ALLOWED = {
+	('documents', 'cms/app/scripts/fs2db.php'):
+		'the source table of the one-time move of documents off the file system;'
+		' it exists on the install being migrated from, never on a new one',
+	('intakes', 'cms/app/lib/pikaContact.php'):
+		'its only caller, cms/contact.php, asks information_schema for the table'
+		' by exact name first',
+	('intakes', 'cms/app/lib/pikaMisc.php'):
+		'pikaMisc::getIntakes() has no caller',
+	('megareports', 'cms/app/lib/pikaMisc.php'):
+		'pikaMisc::getMegaReports() has no caller',
+	('menu_sms_messages', 'cms/sms_cron.php'):
+		'the SMS reminder schema is not in this repo at all: activities carries'
+		' no sms_* column and the Twilio library is neither vendored nor'
+		' declared, so the script stops at its require() well before this query',
+	('survey_answers', 'cms/app/extralib/lib/pikaCms.php'):
+		'the request-driven callers were removed; see the note above the function',
+	('survey_questions', 'cms/app/extralib/lib/pikaCms.php'):
+		'the request-driven callers were removed; see the note above the function',
+	('show_me_the_penguin', 'cms/error.php'):
+		'not a query: the string is the sample message the error page prints to'
+		' show what a failed query looks like',
+}
+
+
+def php_files(top):
+	for dirpath, dirnames, filenames in os.walk(top):
+		rel = os.path.relpath(dirpath, top)
+		if rel.startswith('vendor') or rel.startswith(os.path.join('app', 'sql')):
+			continue
+		for name in sorted(filenames):
+			if name.endswith('.php'):
+				yield os.path.join(dirpath, name)
+
+
+problems = []
+checked = 0
+
+for path in php_files(root):
+	try:
+		raw = io.open(path, encoding='utf-8', errors='replace').read()
+	except Exception:
+		continue
+
+	rel = os.path.relpath(path, os.path.dirname(root))
+	code = LINE.sub(' ', BLOCK.sub(' ', raw))
+
+	named = set()
+	for m in LITERAL.finditer(code):
+		sql = m.group(1) if m.group(1) is not None else m.group(2)
+		if not sql or len(sql) < 10 or not OPENER.match(sql):
+			continue
+		for pat in TABLE:
+			for hit in pat.finditer(sql):
+				name, dollar = hit.group(1), hit.group(2)
+				if dollar or name.lower() in NOISE:
+					continue
+				named.add(name)
+
+	if not named:
+		continue
+
+	guarded = set(re.findall(r"pl_mysql_table_exists\s*\(\s*'([A-Za-z0-9_]+)'", code))
+	guarded |= set(re.findall(r"table_name\s*=\s*'([A-Za-z0-9_]+)'", code))
+	guarded |= set(re.findall(r"TABLES\s+LIKE\s+'([A-Za-z0-9_\\]+)'", code, re.I))
+	for call in SCHEMA_CALL.finditer(code):
+		guarded |= set(re.findall(r"'([A-Za-z0-9_]+)'", call.group(1)))
+	guarded = set(t.replace('\\', '') for t in guarded)
+
+	for t in sorted(named):
+		if t in present:
+			continue
+		checked += 1
+		if t in guarded or (t, rel) in ALLOWED:
+			continue
+		problems.append('%s names %s and neither guards it nor is a listed'
+			' exception' % (rel, t))
+
+print('checked %d' % checked)
+for p in problems:
+	print('BAD %s' % p)
+ATPY
+
+	at_out="$(python3 "$AT_PY" "$REPO_DIR" "$AT_LIST" 2>&1)"
+	at_checked="$(printf '%s\n' "$at_out" | grep '^checked ' | cut -d' ' -f2)"
+	at_lines="$(printf '%s\n' "$at_out" | grep '^BAD ' | sed 's/^BAD //')"
+	rm -f "$AT_PY" "$AT_LIST"
+
+	# A sweep that finds nothing to look at has failed, not passed: it would
+	# also report zero on the day it stopped reading the files at all.
+	if [ -z "$at_checked" ]; then
+		bad "SECTION 95 DID NOT RUN: ${at_out}"
+	elif [ "$at_checked" -lt 20 ]; then
+		bad "SECTION 95 EXAMINED ONLY ${at_checked} REFERENCES, SO IT IS NOT READING WHAT IT SHOULD"
+	elif [ -z "$at_lines" ]; then
+		ok "all ${at_checked} references to a table this install lacks are guarded or listed"
+	else
+		bad "A TABLE THIS INSTALL LACKS IS QUERIED UNGUARDED: $(printf '%s' "$at_lines" | tr '\n' ';')"
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

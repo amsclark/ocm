@@ -3207,20 +3207,45 @@ function pl_keywords_build($first_name, $middle_name, $last_name, $extra_name)
 	// results weighting off.
 	$keywords = implode(' ', $a);
 	
-	$x = str_replace($first_name, '-', ' ');
-	$y = explode($x, ' ');
+	/*	Add the root form of each part of the first name, so that a search for
+		Bob also finds Robert. The name_variants table that holds those pairs
+		is optional add-on schema: no install or upgrade script creates it, so
+		the query has to be asked for only where the table is there.
 
-	foreach ($y as $value)
+		The two lines below had their arguments the wrong way round, which is
+		why none of this ran. str_replace() takes search, replace, subject and
+		explode() takes separator, string, so the pair returned a single space
+		and then split that space into two empty strings. Both are shorter than
+		the two characters the test below asks for, so the body never ran once.
+
+		That matters more than a missing search term. $first_name reaches here
+		from the search form, by way of pl_grab_get(), which writes < and > as
+		entities but leaves the quote alone, and the value was interpolated
+		into the query as it stood. Measured with the arguments corrected and
+		the value still raw: a first name of x' answered HTTP 500 on a MariaDB
+		syntax error, and x'UNION(SELECT'INJECTED')# answered 200 and put the
+		injected row into the keywords, quietly. Neither payload needs a space,
+		so splitting on spaces is no defence. Escape the value.
+	*/
+	if (pl_mysql_table_exists('name_variants'))
 	{
-		if (strlen($value) > 1)  // Ignore punctuation and initials.
+		$x = str_replace('-', ' ', (string) $first_name);
+		$y = explode(' ', $x);
+
+		foreach ($y as $value)
 		{
-			$sql = "SELECT root_name FROM name_variants WHERE first_name = '{$value}'";
-			$result = DB::query($sql) or trigger_error('hi');
-			
-			while ($row = DBResult::fetchRow($result))
+			if (strlen($value) > 1)  // Ignore punctuation and initials.
 			{
-				$keywords .= ' ' . $row['root_name'];
-				$keywords .= ' ' . metaphone($row['root_name']);
+				$clean_value = DB::escapeString($value);
+				$sql = "SELECT root_name FROM name_variants WHERE first_name = '{$clean_value}'";
+				$result = DB::query($sql)
+					or trigger_error("SQL: " . $sql . " Error: " . DB::error());
+
+				while ($row = DBResult::fetchRow($result))
+				{
+					$keywords .= ' ' . $row['root_name'];
+					$keywords .= ' ' . metaphone($row['root_name']);
+				}
 			}
 		}
 	}
