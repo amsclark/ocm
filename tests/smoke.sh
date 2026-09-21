@@ -2261,24 +2261,32 @@ if [ "$HAVE_DB" = 1 ]; then
 			# the branch that runs once the activity has been written. The
 			# second one is the line SnykCode alert 975 names, and the check
 			# that was here only ever posted the first. Both go through
-			# safe_redirect_url(), so both are tested, with every payload
-			# shape the guard has to answer for.
+			# safe_redirect_url(), so both are tested.
 			#
-			# What the guard promises is narrower than "never off-site", and
-			# the assertions have to match it or they pass for the wrong
-			# reason. pl_safe_redirect_path() refuses anything carrying a
-			# scheme and strips every control character, and a refusal comes
-			# back as base_url . '/'. It does not refuse //host/path: it
-			# drops the leading slashes and gives back host/path, which this
-			# file emits with no base_url in front of it, so the browser
-			# resolves it against the directory of dataops.php and stays on
-			# this host. The right answer for //zz-evil.example/steal
-			# therefore still carries the attacker's hostname, as a path
-			# segment. What must never appear is a scheme, or a leading
-			# slash or backslash, which is what a browser reads as the start
-			# of a host name. Section 34i checks the same form field in
-			# ops/update_activity.php, where base_url is prepended and the
-			# rule is a different one.
+			# pl_safe_redirect_path() answers a request-supplied return path in
+			# one of two ways and there is no third. A value that reads as a
+			# page in this application -- a name, optionally a path below it,
+			# optionally a query string and a fragment, and no ".." anywhere --
+			# comes back unchanged. Everything else comes back as '', and this
+			# file then emits "{base_url}/": the site root. So every payload
+			# below is either refused to the root or returned exactly as it was
+			# sent, and each check says which of the two it wants.
+			#
+			# The guard used to be a list of what to reject, and shapes got out
+			# of it twice. The first was an absolute URL behind one slash: the
+			# slash hid the scheme from the test, and the strip that ran
+			# afterwards removed it. The second was the same thing behind a
+			# slash and a space, found once the strip had been moved in front of
+			# the test -- stripping the slash exposed the space, a pattern
+			# anchored at the first character does not match a string that
+			# starts with one, and a browser reading a Location header ignores
+			# leading whitespace. That is why the list of rejections was
+			# replaced rather than patched a third time. Both shapes are in the
+			# set below.
+			#
+			# Section 34i checks the same form field in
+			# ops/update_activity.php, where base_url is prepended to whatever
+			# the guard returns.
 			#
 			# The close_act branch writes an activity row per request, so
 			# every request carries a marker summary and cleanup_dops deletes
@@ -2313,9 +2321,13 @@ if [ "$HAVE_DB" = 1 ]; then
 
 			# $1 branch field, $2 act_url, $3 expected answer, $4 what to
 			# call the payload. $3 is one of:
-			#   root   the guard must refuse it outright
-			#   path   the guard must reduce it to a relative path
-			#   exact  the Location must be the value that was sent
+			#   root   the header must be exactly "{base_url}/"
+			#   exact  the header must be exactly the value that was sent
+			#
+			# Both kinds name the one value they will accept. An earlier
+			# version had a third kind that passed on anything without a
+			# scheme or a leading slash, and an empty Location header answers
+			# that description, as does a redirect to the wrong page.
 			dops_redirect_check() {
 				dops_redirect "$1" "$2"
 
@@ -2325,6 +2337,8 @@ if [ "$HAVE_DB" = 1 ]; then
 					bad "dataops.php sent ${DR_COUNT} Location headers for $4 on the $1 branch - act_url split the header"
 				elif printf '%s\n' "$DR_HDR" | grep -qi '^x-zz-injected:'; then
 					bad "$4 added a header of its own through act_url on the $1 branch"
+				elif [ -z "$DR_LOC" ]; then
+					bad "dataops.php sent an empty Location header for $4 on the $1 branch"
 				elif printf '%s' "$DR_LOC" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]*:'; then
 					bad "dataops.php redirects to a URL carrying a scheme for $4 on the $1 branch (${DR_LOC})"
 				elif [ "$3" = root ]; then
@@ -2334,35 +2348,47 @@ if [ "$HAVE_DB" = 1 ]; then
 						bad "dataops.php did not refuse $4 on the $1 branch (${DR_LOC})"
 					fi
 				elif printf '%s' "$DR_LOC" | grep -qE '^[/\\]'; then
-					bad "dataops.php redirects to ${DR_LOC} for $4 on the $1 branch - a browser reads that leading slash as the start of a host name"
+					bad "dataops.php answered ${DR_LOC} for $4 on the $1 branch - the guard returned a value starting with a separator, which it has no shape for"
 				elif [ "$3" = exact ]; then
 					if [ "$DR_LOC" = "$2" ]; then
-						ok "a real act_url still reaches the page it names, on the $1 branch"
+						ok "a real act_url ($4) still reaches the page it names, on the $1 branch"
 					else
-						bad "a real act_url no longer reaches its page on the $1 branch (${DR_LOC})"
+						bad "a real act_url ($4) no longer reaches its page on the $1 branch (${DR_LOC})"
 					fi
 				else
-					ok "dataops.php reduces $4 to a path on this site, on the $1 branch (${DR_LOC})"
+					bad "dops_redirect_check was called with the unknown kind $3"
 				fi
 			}
 
 			# Real control bytes, so the handler sees the characters
 			# themselves rather than the text %0D%0A or %09.
 			#
-			# The CR LF pair is refused rather than reduced to a path: with the
-			# controls stripped the value reads as "stealX-Zz-Injected: yes",
-			# and everything up to that colon is a valid scheme name, so the
-			# scheme test answers it. Either way the header must not split.
+			# CR LF is the header-splitting pair. The guard strips every
+			# control character before it reads the value, so the header cannot
+			# split whatever else the value carries; the check still asserts
+			# that no second header and no injected header appeared.
 			#
-			# The tab is the shape the guard's own notes name: a browser's URL
+			# The tab is the shape a scheme test cannot see: a browser's URL
 			# parser deletes tabs before it reads the scheme, so
-			# "ht<TAB>tps://host" is an absolute URL to a browser while a scheme
-			# test reading it literally sees a relative path. Nothing tested it
-			# until now.
+			# "ht<TAB>tps://host" is an absolute URL to a browser while a test
+			# reading it literally sees a relative path. Stripping the controls
+			# first means the guard reads the string the browser will read.
+			#
+			# The space shapes are the second way round the old scheme test.
+			# Stripping the leading slash off "/ http://host" exposed a space,
+			# the trim at the top of the guard had already run, and a pattern
+			# anchored at the first character does not match a string that
+			# starts with one -- while a browser ignores leading whitespace in a
+			# Location value and read the scheme behind it.
 			DR_CRLF="$(printf '/steal\r\nX-Zz-Injected: yes')"
 			DR_TAB="$(printf 'ht\tps://zz-evil.example/steal')"
+			DR_SP_ABS="$(printf '/ http://zz-evil.example/steal')"
+			DR_SP_JS="$(printf '/ javascript:alert(1)')"
+			DR_SP_REL="$(printf '/ //zz-evil.example/steal')"
+			DR_SP_TAB="$(printf '/\thttp://zz-evil.example/steal')"
 
 			for DR_BRANCH in cancel close_act; do
+				# A scheme, plainly.
 				dops_redirect_check "$DR_BRANCH" 'https://zz-evil.example/steal' \
 					root 'an absolute URL'
 				dops_redirect_check "$DR_BRANCH" 'http:/\zz-evil.example/steal' \
@@ -2373,10 +2399,10 @@ if [ "$HAVE_DB" = 1 ]; then
 					root 'a tab inside the scheme'
 				dops_redirect_check "$DR_BRANCH" "$DR_CRLF" \
 					root 'a CR LF in act_url'
-				# The four below are the ones that were getting out. The scheme
-				# test ran before the leading slashes were stripped, so one
-				# slash hid the scheme from it and was then removed, and the
-				# caller was handed the absolute URL.
+				# A scheme with something in front of it that a scheme test will
+				# not look past. All eight were live open redirects on master.
+				# The three carrying a space were still live after the first
+				# attempt to fix the other five.
 				dops_redirect_check "$DR_BRANCH" '/http://zz-evil.example/steal' \
 					root 'an absolute URL behind one slash'
 				dops_redirect_check "$DR_BRANCH" '\http://zz-evil.example/steal' \
@@ -2385,28 +2411,53 @@ if [ "$HAVE_DB" = 1 ]; then
 					root 'an absolute URL behind mixed slashes'
 				dops_redirect_check "$DR_BRANCH" '/javascript:alert(1)' \
 					root 'a javascript: URL behind one slash'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_ABS" \
+					root 'an absolute URL behind a slash and a space'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_JS" \
+					root 'a javascript: URL behind a slash and a space'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_TAB" \
+					root 'an absolute URL behind a slash and a tab'
+				dops_redirect_check "$DR_BRANCH" "$DR_SP_REL" \
+					root 'a protocol-relative URL behind a slash and a space'
+				# No scheme, but a leading separator pair, which a browser
+				# reads as the start of a host name. The old guard reduced
+				# these to a path that still carried the attacker's hostname;
+				# they are refused outright now.
 				dops_redirect_check "$DR_BRANCH" '//zz-evil.example/steal' \
-					path 'a protocol-relative URL'
+					root 'a protocol-relative URL'
 				dops_redirect_check "$DR_BRANCH" '\\zz-evil.example\steal' \
-					path 'a pair of backslashes'
+					root 'a pair of backslashes'
 				dops_redirect_check "$DR_BRANCH" '/\zz-evil.example/steal' \
-					path 'a slash and a backslash'
+					root 'a slash and a backslash'
 				dops_redirect_check "$DR_BRANCH" '///zz-evil.example/steal' \
-					path 'three leading slashes'
-				# Without this the checks above would all pass on a handler
-				# that had stopped redirecting anywhere at all.
+					root 'three leading slashes'
+				# On this site, but not a page name. A value starting at the
+				# site root is refused rather than reduced: the caller resolves
+				# what comes back against the application directory, so
+				# dropping the leading slash made "/cms/cms/case.php".
+				dops_redirect_check "$DR_BRANCH" "${DBASE}/case.php?case_id=${DCASE}" \
+					root 'a path starting at the site root'
+				dops_redirect_check "$DR_BRANCH" '../../etc/passwd' \
+					root 'a path walking up out of the application directory'
+				# The positive controls: the two shapes the application itself
+				# puts in this field have to survive the guard byte for byte.
+				# activity.php defaults it to cal_day.php and modules/case-act.php
+				# builds the case.php form. Without these every check above
+				# would pass on a handler that refused everything it was sent.
 				dops_redirect_check "$DR_BRANCH" 'cal_day.php' \
 					exact 'cal_day.php'
+				dops_redirect_check "$DR_BRANCH" "case.php?case_id=${DCASE}&screen=act" \
+					exact 'the case activity screen'
 			done
 
 			# The close_act branch wrote one activity per request. If any are
 			# missing the branch was refused somewhere before the redirect,
 			# and half the run above proved nothing.
 			DR_WROTE="$(adb "SELECT COUNT(*) FROM activities WHERE summary = '${DR_SUM} close_act'")"
-			if [ "$DR_WROTE" = 14 ]; then
+			if [ "$DR_WROTE" = 21 ]; then
 				ok "every close_act request reached the redirect with the activity written"
 			else
-				bad "the close_act branch wrote ${DR_WROTE} activities, not 14 - those requests never reached the redirect"
+				bad "the close_act branch wrote ${DR_WROTE} activities, not 21 - those requests never reached the redirect"
 			fi
 
 			# --- add_pb without the pba flag ---
@@ -4587,10 +4638,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		# header happens to point, which is the part the fix controls and the
 		# only part that is the same on both deployments: after base_url
 		# there must be exactly one slash. Two would be the request's own
-		# slashes surviving. Note the correct answer still carries the
-		# attacker hostname -- the fix keeps the path and drops the leading
-		# slashes, so "/cms/zz-evil.example/steal" is right -- which is why
-		# the dataops check above greps for the name and this one cannot.
+		# slashes surviving.
+		#
+		# pl_safe_redirect_path() refuses a value it cannot read as a page in
+		# this application, and an off-site act_url is one of those, so what
+		# it returns is '' and the whole header is base_url and the slash
+		# this file adds. An earlier version of the guard reduced the value
+		# to a path that still carried the attacker's hostname, and this
+		# check accepted that; it does not any more.
 		ULOC="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D - -X POST \
 			--data-urlencode "_csrf=$(lk_token "$COOKIES")" \
 			-d "act_type=C" -d "close_act=1" -d "user_id=${LKUID}" \
@@ -4613,8 +4668,8 @@ if [ "$HAVE_DB" = 1 ]; then
 				bad "ops/update_activity.php still redirects off-site, protocol-relative (${ULOC})" ;;
 			"${UBASE}//"*)
 				bad "ops/update_activity.php still appends act_url's leading slashes, which is an off-site redirect wherever base_url is empty (${ULOC})" ;;
-			"${UBASE}/zz-evil.example/steal")
-				ok "ops/update_activity.php reduces an off-site act_url to a path on this site" ;;
+			"${UBASE}/")
+				ok "ops/update_activity.php refuses an off-site act_url and sends the browser to the site root" ;;
 			*)
 				bad "ops/update_activity.php redirected somewhere unexpected (${ULOC})" ;;
 		esac
@@ -17303,6 +17358,10 @@ else
 		bad "a table name carrying an & STILL adds a parameter to the system-ops redirect (${SO_LOC})"
 	elif ! printf '%s' "$SO_LOC" | grep -q 'table=zz_so%26screen%3Ddelete%26x%3Dy'; then
 		bad "the system-ops redirect does not carry the table name it was given (${SO_LOC})"
+	elif [ "$SO_LOC" != "system-tables.php?screen=edit&table=zz_so%26screen%3Ddelete%26x%3Dy" ]; then
+		# The three checks above each answer one way of getting this wrong.
+		# This one names the whole value, so a fourth way is a failure too.
+		bad "the system-ops redirect is not the target it should be (${SO_LOC})"
 	else
 		ok "system-ops.php encodes the table name into one parameter (${SO_LOC})"
 	fi
