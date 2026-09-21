@@ -698,7 +698,34 @@ class pikaCase extends plBaseWithUdf
 	
 	public function removeContact($conflict_id)
 	{
-		$sql = "DELETE FROM conflict WHERE conflict_id='{$conflict_id}' AND case_id='{$this->case_id}' LIMIT 1";
+		/*	The id arrives from the request. ops/delete_conflict.php reads it
+			with pl_grab_post() and hands it here untouched, and that filter
+			rewrites angle brackets and nothing else -- a single quote passes
+			through it. The id then sat inside a quoted literal beside the
+			case_id clause that is the whole ownership check on this delete, so
+			a value carrying a quote could close the literal and write its own
+			condition in place of that clause. A user who may edit one case
+			could delete conflict rows belonging to a case they may not see.
+			
+			A conflict_id is an integer key, so a cast is the whole fix. Zero
+			cannot name a row, so refuse it rather than run a delete that
+			matches nothing and then reports an error about it. The case id is
+			cast for the same reason, although it reaches here from the
+			constructor rather than from the request.
+			
+			Neither caller reads the return value: ops/delete_conflict.php
+			discards it, and pikaContact::delete() passes an id it read back
+			out of the conflict table, which a cast cannot change.
+		*/
+		$conflict_id = (int) $conflict_id;
+		$case_id = (int) $this->case_id;
+		
+		if ($conflict_id < 1 || $case_id < 1)
+		{
+			return false;
+		}
+		
+		$sql = "DELETE FROM conflict WHERE conflict_id='{$conflict_id}' AND case_id='{$case_id}' LIMIT 1";
 		DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		
 		if (DB::affectedRows() != 1)

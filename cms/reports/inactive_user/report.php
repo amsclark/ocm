@@ -164,9 +164,21 @@ if ($inactive_date_begin)
 
 if($limit)
 {
-	$t->add_parameter('Limit Results',$limit . " Row(s)");
-	$safe_limit = DB::escapeString($limit);
-	$sql .= " LIMIT {$safe_limit};";
+	/*	DB::escapeString() was the wrong control for a LIMIT. A row count is
+		not quoted, so escaping it rewrote nothing that was there: whatever
+		was typed after the number reached the query as it was written, and a
+		value that was not a number produced a SQL error. A cast to int is the
+		whole fix, and a value that is not a number now drops the clause. Same
+		fix as reports/inactive_case/report.php -- this file was missed when
+		that one was corrected.
+	*/
+	$safe_limit = (int) $limit;
+	
+	if ($safe_limit > 0)
+	{
+		$t->add_parameter('Limit Results',$safe_limit . " Row(s)");
+		$sql .= " LIMIT {$safe_limit};";
+	}
 }
 
 $t->title = $report_title;

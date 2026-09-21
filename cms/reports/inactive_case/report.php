@@ -130,10 +130,10 @@ if ($inactive_date_begin) {
 if($limit)
 {
 	/*	DB::escapeString() was the wrong control for a LIMIT. A row count is
-		not quoted, so escaping it removed nothing: everything typed after the
-		number reached the query, INTO OUTFILE included. A cast to int is the
-		whole fix, and a value that is not a number now drops the clause
-		instead of producing a SQL error.
+		not quoted, so escaping it rewrote nothing that was there: whatever
+		was typed after the number reached the query as it was written, and a
+		value that was not a number produced a SQL error. A cast to int is the
+		whole fix, and a value that is not a number now drops the clause.
 	*/
 	$safe_limit = (int) $limit;
 	
