@@ -1667,9 +1667,14 @@ class pikaMisc
 	
 	public static function getCompens($case_id)
 	{
+		/*	The case id is interpolated, so escape it. Nothing in the tree
+			calls this method, which is why the raw interpolation survived,
+			but a query that is unsafe only because it is unreachable is
+			worth no less fixing than one that is reached.
+		*/
 		$sql = "SELECT compens.*
 						FROM compens
-						WHERE compens.case_id=$case_id";
+						WHERE compens.case_id='" . DB::escapeString($case_id) . "'";
 		$result = DB::query($sql) or trigger_error("SQL: " . $sql . " Error: " . DB::error());
 		return $result;
 	}

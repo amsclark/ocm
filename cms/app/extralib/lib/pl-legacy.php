@@ -594,6 +594,33 @@ function pl_table_autosql_update($table, $data)
 		}
 	}
 	
+	/*	Nothing in $data named a column of this table, so the SET list is
+		empty and what stands above is "UPDATE <table> SET", which MariaDB
+		answers with a syntax error. A failed query here ends the request on
+		the error page, so a caller that named only columns this install does
+		not have got an HTTP 500 instead of an update that changed nothing.
+
+		dataops.php's toledo_holding handler is the case that proved it. It
+		sets transfer_to, which is not a column of cases in this repo's
+		schema, so the builder produced
+
+			UPDATE cases SET WHERE case_id='1' LIMIT 1
+
+		and every POST to that handler ended in a 500 before it reached the
+		next statement.
+
+		Assign the key column to itself instead. The statement is then valid
+		and changes nothing, and the caller still gets a result it can test,
+		so no call site has to learn a new return value. The length test is
+		there because a table with no primary key at all leaves $primary_key
+		empty, and the WHERE clause below is already malformed in that case;
+		this must not add a second malformed clause to it.
+	*/
+	if (0 == $i && strlen($primary_key) > 0)
+	{
+		$sql .= " {$primary_key} = {$primary_key}";
+	}
+
 	/*	The primary key was the one value in this builder that never went
 		through the escaper. Every column written into the SET list above is
 		passed through DB::escapeString(), but the key column is deliberately

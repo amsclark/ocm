@@ -16581,6 +16581,138 @@ ATPY
 	fi
 	fi
 fi
+
+# 96. The holding-pen handler in dataops.php was unreachable and unsafe at the
+# same time, and each fault hid the other.
+#
+# pl_table_autosql_update() built "UPDATE cases SET WHERE case_id='1'" whenever
+# nothing the caller supplied was a column of this install's schema. The handler
+# sets transfer_to, which is not a column of cases here, so every POST to it
+# ended in a MariaDB syntax error and an HTTP 500.
+#
+# Behind that 500 sat a query that interpolated the case id instead of escaping
+# it. The id arrives from pl_grab_vars('cases'), which filters a primary key in
+# 'primary_key' mode, and that mode encodes < and > and leaves everything else
+# alone, so a quote arrives intact. Fixing the builder made the unsafe line
+# reachable, which is why both fixes belong to one change.
+#
+# These checks are behavioural, not textual. They post to the handler and then
+# ask the database what it did. One conflict row is seeded on a case id the
+# requests never name; the test is whether the handler copies that row onto the
+# case it creates. Before the fix an always-true id copied it.
+echo
+echo "96. the holding-pen handler answers a quoted case id without breaking out of its query"
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the holding-pen checks (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 96 cannot reach the database, so it cannot tell what the handler wrote"
+else
+	# The seeded row names a case id the requests below never mention, and a
+	# contact id nothing else in the fixture uses.
+	TH_CASE='9299999'
+	TH_CONTACT='9242424'
+	TH_ROW='9777777'
+	TH_HEAD="$(mktemp)"
+	# The floor, not the ids the handler reports: a request that dies after the
+	# insert sends no Location header, and the case it made would otherwise
+	# outlive the section. The handler stamps user_id 1000004 on every case it
+	# creates, so the pair is specific enough to leave everything else alone.
+	TH_FLOOR="$(adb "SELECT COALESCE(MAX(case_id), 0) FROM cases")"
+
+	# The suite's own trap only knows the two files it made at the top.
+	cleanup_th() {
+		rm -f "$TH_HEAD"
+		adb "DELETE FROM conflict WHERE conflict_id = ${TH_ROW}" >/dev/null 2>&1
+		# The handler writes on every call, so without this the tables grow by
+		# three cases a run and a later section counting rows would read a
+		# number this one put there.
+		if [ -n "${TH_FLOOR:-}" ]; then
+			adb "DELETE FROM conflict WHERE case_id IN
+				(SELECT case_id FROM cases
+				 WHERE case_id > ${TH_FLOOR} AND user_id = 1000004)" >/dev/null 2>&1
+			adb "DELETE FROM activities WHERE case_id IN
+				(SELECT case_id FROM cases
+				 WHERE case_id > ${TH_FLOOR} AND user_id = 1000004)" >/dev/null 2>&1
+			adb "DELETE FROM cases
+				WHERE case_id > ${TH_FLOOR} AND user_id = 1000004" >/dev/null 2>&1
+		fi
+	}
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_th' EXIT
+
+	# A token of its own rather than the one section 7 captured, so this section
+	# does not depend on how far away that is or on what ran in between.
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php" >/dev/null
+	TH_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+		| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+
+	th_post() {
+		: > "$TH_HEAD"
+		th_code="$(curl -s --max-time 60 -b "$COOKIES" -D "$TH_HEAD" \
+			-o "$BODY" -w '%{http_code}' \
+			--data-urlencode "action=toledo_holding" \
+			--data-urlencode "case_id=$1" \
+			--data-urlencode "trans_office=1" \
+			--data-urlencode "_csrf=${TH_TOKEN}" \
+			"$OCM_URL/dataops.php")"
+		th_curl=$?
+		th_new="$(grep -i '^location:' "$TH_HEAD" \
+			| grep -oE 'new_case_id=[0-9]+' | head -1 | cut -d= -f2)"
+		[ "$th_curl" = 0 ]
+	}
+
+	adb "DELETE FROM conflict WHERE conflict_id = ${TH_ROW}" >/dev/null 2>&1
+	adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
+		VALUES (${TH_ROW}, ${TH_CONTACT}, ${TH_CASE}, 'A')" >/dev/null 2>&1
+	TH_SEEDED="$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id = ${TH_ROW}")"
+
+	if [ "${#TH_TOKEN}" -ne 64 ]; then
+		bad "no CSRF token for the holding-pen POST - section 96 is untested"
+	elif [ "$TH_SEEDED" != 1 ]; then
+		bad "section 96 could not seed the conflict row it needs (count '${TH_SEEDED}'), so it proves nothing"
+	elif ! th_post "1"; then
+		bad "the holding-pen request failed outright (curl exit ${th_curl}) - section 96 is untested"
+	elif [ "$th_code" = 500 ]; then
+		# The builder fix on its own. A valid id was a 500 before it.
+		bad "THE HOLDING-PEN HANDLER 500s ON AN ORDINARY CASE ID: its UPDATE is not a valid statement"
+	elif [ -z "$th_new" ]; then
+		bad "the holding-pen handler answered ${th_code} and named no new case - section 96 is untested"
+	else
+		ok "the holding-pen handler answers an ordinary case id with ${th_code} and a new case"
+
+		# A bare quote. Unescaped it ended the string mid-query and the request
+		# died on the error page.
+		if ! th_post "x'"; then
+			bad "the quoted holding-pen request failed outright (curl exit ${th_curl})"
+		elif [ "$th_code" = 500 ]; then
+			bad "A QUOTE IN THE CASE ID 500s THE HOLDING-PEN HANDLER: the id reaches its query unescaped"
+		else
+			ok "a quote in the case id does not break the handler's query (status ${th_code})"
+		fi
+
+		# The payload that mattered. The handler copies the conflict rows of the
+		# case it was given onto the case it creates, so an always-true clause
+		# made that every row in the table.
+		if ! th_post "1' OR '1'='1"; then
+			bad "the always-true holding-pen request failed outright (curl exit ${th_curl})"
+		elif [ -z "$th_new" ]; then
+			ok "an always-true case id creates no case at all (status ${th_code})"
+		else
+			TH_LEAKED="$(adb "SELECT COUNT(*) FROM conflict
+				WHERE case_id = ${th_new} AND contact_id = ${TH_CONTACT}")"
+			if [ -z "$TH_LEAKED" ]; then
+				bad "section 96 could not count the copied conflict rows, so its result is not proof"
+			elif [ "$TH_LEAKED" != 0 ]; then
+				bad "SQL INJECTION IN THE HOLDING-PEN HANDLER: an always-true case id copied case ${TH_CASE}'s conflict row onto new case ${th_new}"
+			else
+				ok "an always-true case id copies no other case's conflict rows (status ${th_code})"
+			fi
+		fi
+	fi
+
+	cleanup_th
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

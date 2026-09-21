@@ -1289,7 +1289,20 @@ switch($action)
 	$y['transfer_to'] = '';
 	$new_case_id = $pk->newCase($y);
 	
-	$res = DB::query("SELECT * FROM conflict WHERE case_id='{$x['case_id']}'");
+	/*	$x comes from pl_grab_vars('cases'), which reads the request. The
+		case_id column is the primary key, so pl_clean_form_input() filters it
+		in 'primary_key' mode, and that mode turns < and > into entities and
+		leaves everything else alone. Both quote characters arrive intact, and
+		this was the one query in the handler that interpolated the value
+		instead of escaping it.
+
+		It went unnoticed because the handler never reached this line: the
+		updateCase() call above it produced a malformed statement on this
+		schema and ended the request first. See pl_table_autosql_update() in
+		app/extralib/lib/pl-legacy.php.
+	*/
+	$res = DB::query("SELECT * FROM conflict WHERE case_id='"
+		. DB::escapeString($x['case_id']) . "'");
 	while ($row = DBResult::fetchRow($res))
 	{
 		$pk->addCaseContact($new_case_id, $row['contact_id'], $row['relation_code']);
