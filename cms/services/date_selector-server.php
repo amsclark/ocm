@@ -60,10 +60,12 @@ if (!is_string($container) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $container
 
 // field_value, month and year are single values as well. None of them reaches
 // an attribute the way field_name does -- the plugin parses the date and
-// escapes the days it prints -- so an array here meant a warning in the log and
-// a calendar for the wrong day rather than an injection point. Refuse the shape
-// with the rest. A parameter the caller left out is null, not an array, which
-// is what pl_grab_get() returns when the query string does not carry it.
+// escapes the days it prints -- so an array here reached the date conversions
+// and their fallbacks rather than an injection point. How many array-to-string
+// warnings the log got, and which month was drawn, depended on which of the
+// three was an array and what the other two carried. Refuse the shape with the
+// rest. A parameter the caller left out is null, not an array, which is what
+// pl_grab_get() returns when the query string does not carry it.
 if ((null !== $field_value && !is_string($field_value))
 	|| (null !== $month && !is_string($month))
 	|| (null !== $year && !is_string($year)))

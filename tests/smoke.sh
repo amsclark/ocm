@@ -602,36 +602,48 @@ CAL="$OCM_URL/services/date_selector-server.php"
 code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 	--get --data-urlencode 'field_name="><script>x</script>' \
 	--data-urlencode 'container=date_selector-00001' "$CAL")"
-if [ "$code" = 400 ] && grep -q 'Invalid field_name' "$BODY"; then
+cal_bad_curl=$?
+if [ "$cal_bad_curl" != 0 ]; then
+	bad "date_selector-server.php could not be read with a malformed field_name (curl exit $cal_bad_curl), so this run says nothing about what it does with one"
+elif [ "$code" = 400 ] && grep -q 'Invalid field_name' "$BODY"; then
 	ok "date_selector-server.php refuses a malformed field_name (400)"
 else
-	bad "date_selector-server.php ACCEPTED a malformed field_name (status $code)"
+	bad "date_selector-server.php answered a malformed field_name with HTTP $code and no 'Invalid field_name.' refusal"
 fi
 
 code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 	"$CAL?field_name=open_date&container=date_selector-00001&month=1&year=2020")"
 cal_curl=$?
-# A transfer that failed part way can leave this file stale or absent, so read
-# it quietly -- the exit status above is what decides whether it means anything.
-size="$(wc -c < "$BODY" 2>/dev/null)"
+# A transfer that failed part way can leave this file stale or absent. The
+# stderr redirect goes BEFORE the input redirect: bash applies redirections left
+# to right, so the other order still prints the missing file. The exit status
+# above is what decides whether any of these values mean anything.
+size="$(wc -c 2>/dev/null < "$BODY")"
 cal_days="$(grep -o 'data-date-action="select"' "$BODY" 2>/dev/null | wc -l | tr -d ' ')"
+cal_dates="$(grep -o 'data-date="01/[0-9][0-9]/2020"' "$BODY" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
 # A status, a byte count and one marker do not say a calendar arrived. A body
 # cut off part way through still carries the opening tag, and curl reports HTTP
 # 200 for a reply whose transfer then failed, so its exit status is part of the
-# answer. January 2020 has 31 days: exactly 31 day links, a closing tag, and the
-# field name that was asked for separate a whole calendar for that field from a
-# prefix of one, from an unrelated page that mentions the class, and from a
-# calendar for some other month.
+# answer. January 2020 has 31 days, and each one selects a different date: 31 day
+# links carrying 31 DIFFERENT dates, the field name and the container that were
+# asked for, and a closing tag separate a January calendar for this request from
+# a prefix of one, from an unrelated page that mentions the class, from a
+# calendar for some other month, and from 31 links that all select the same day.
+# The container matters because the client reads it to navigate and to close the
+# calendar. The class is matched as a token, not as the whole attribute, because
+# a site may override this plugin with one that adds classes of its own and the
+# client looks for the token too.
 if [ "$cal_curl" != 0 ]; then
 	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
-elif [ "$code" = 200 ] && [ "$cal_days" = 31 ] \
-	&& grep -q 'class="js-date-selector"' "$BODY" \
+elif [ "$code" = 200 ] && [ "$cal_days" = 31 ] && [ "$cal_dates" = 31 ] \
+	&& grep -qE 'class="[^"]*js-date-selector' "$BODY" \
 	&& grep -q 'data-field-name="&quot;open_date&quot;"' "$BODY" \
+	&& grep -q 'data-container-name="&quot;date_selector-00001&quot;"' "$BODY" \
 	&& grep -q 'data-date="01/31/2020"' "$BODY" \
 	&& grep -q '</table>' "$BODY"; then
-	ok "date_selector-server.php still renders the whole January 2020 calendar for a legitimate field ($size bytes, 31 days)"
+	ok "date_selector-server.php still renders January 2020 for the field and container that were asked for ($size bytes, 31 day links, 31 distinct dates)"
 else
-	bad "date_selector-server.php did not render a complete calendar for a LEGITIMATE field (status $code, $size bytes, $cal_days day links)"
+	bad "date_selector-server.php did not render a complete January 2020 calendar for a LEGITIMATE field (status $code, $size bytes, $cal_days day links, $cal_dates distinct dates)"
 fi
 
 # 8e. reports/index.php filters the list by the per-report permission. The admin
@@ -17824,7 +17836,7 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 	# top of this suite to have worked.
 	SV_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$OCM_URL/$SV_PATH")"
 	SV_CURL=$?
-	SV_BYTES="$(wc -c < "$BODY" 2>/dev/null | tr -d ' ')"
+	SV_BYTES="$(wc -c 2>/dev/null < "$BODY" | tr -d ' ')"
 	if [ "$SV_CURL" != 0 ]; then
 		SV_OPEN=$((SV_OPEN + 1))
 		bad "${SV_WHAT} could not be reached without a session at all (curl exit ${SV_CURL}), so this run says nothing about it"
@@ -17833,7 +17845,7 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 		bad "${SV_WHAT} served its reply to a request with no session (HTTP ${SV_CODE}, ${SV_BYTES} bytes)"
 	elif [ "$SV_CODE" != 200 ] || [ "$SV_BYTES" != 0 ]; then
 		SV_OPEN=$((SV_OPEN + 1))
-		bad "${SV_WHAT} answered a request with no session with HTTP ${SV_CODE} and ${SV_BYTES} bytes, not the empty 200 that says authenticate() ended the request"
+		bad "${SV_WHAT} answered a request with no session with HTTP ${SV_CODE} and ${SV_BYTES} bytes, not the empty 200 that this endpoint gives a request which reaches authentication"
 	else
 		SV_CLOSED=$((SV_CLOSED + 1))
 	fi
@@ -17874,13 +17886,13 @@ SV_MAL_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' -G \
 	--data-urlencode "container=date_selector-1" \
 	"$OCM_URL/services/date_selector-server.php")"
 SV_MAL_CURL=$?
-SV_MAL_BYTES="$(wc -c < "$BODY" 2>/dev/null | tr -d ' ')"
+SV_MAL_BYTES="$(wc -c 2>/dev/null < "$BODY" | tr -d ' ')"
 if [ "$SV_MAL_CURL" != 0 ]; then
 	bad "the date selector could not be reached without a session at all (curl exit ${SV_MAL_CURL}), so this run says nothing about what a stranger's malformed request gets"
 elif grep -q 'Invalid field_name' "$BODY"; then
 	bad "the date selector validated a stranger's field_name, so it reaches its own code before the session is checked"
 elif [ "$SV_MAL_CODE" != 200 ] || [ "$SV_MAL_BYTES" != 0 ]; then
-	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes; only an empty 200 shows the request ended at the session"
+	bad "the date selector answered a stranger's malformed request with HTTP ${SV_MAL_CODE} and ${SV_MAL_BYTES} bytes, and an empty 200 is what a request that reaches authentication here gets"
 else
 	ok "the date selector says nothing to a stranger who sends a malformed field_name (empty 200)"
 fi
@@ -17892,11 +17904,14 @@ fi
 # the endpoint answered a request it should have refused and PHP logged an
 # array-to-string warning for every use.
 #
-# Each guard gets its own request, with every other parameter valid. Sending two
-# arrays at once proves only the first guard: field_name is checked first and
+# Each PARAMETER gets its own request, with every other parameter valid. Sending
+# two arrays at once proves only the first check: field_name is checked first and
 # ends the request, so the container could go back to casting and this would
-# still pass. These requests carry the session on purpose -- what is being
-# checked here is the validation, not the session.
+# still pass. The same holds inside the date guard, which covers field_value,
+# month and year in one condition -- a single request with month[] still gets 400
+# with either of the other two terms deleted, so all three are sent separately.
+# These requests carry the session on purpose -- what is being checked here is
+# the validation, not the session.
 sv_arr_try()
 {
 	sv_arr_what="$1"
@@ -17910,7 +17925,7 @@ sv_arr_try()
 	elif [ "$sv_arr_code" = 400 ] && grep -q "$sv_arr_mark" "$BODY"; then
 		ok "the date selector refuses ${sv_arr_what} (400, ${sv_arr_mark})"
 	else
-		bad "the date selector accepted ${sv_arr_what} (HTTP ${sv_arr_code}), so what it does with that value is whatever a string cast of it produced"
+		bad "the date selector answered ${sv_arr_what} with HTTP ${sv_arr_code} and no ${sv_arr_mark} refusal"
 	fi
 }
 
@@ -17920,10 +17935,21 @@ sv_arr_try "an array where the field name belongs" 'Invalid field_name' \
 sv_arr_try "an array where the container id belongs" 'Invalid container' \
 	--data-urlencode "field_name=open_date" \
 	--data-urlencode "container[]=bad"
-sv_arr_try "an array where a date part belongs" 'Invalid date parameter' \
+sv_arr_try "an array where the month belongs" 'Invalid date parameter' \
 	--data-urlencode "field_name=open_date" \
 	--data-urlencode "container=date_selector-00001" \
 	--data-urlencode "month[]=bad"
+sv_arr_try "an array where the field value belongs" 'Invalid date parameter' \
+	--data-urlencode "field_name=open_date" \
+	--data-urlencode "container=date_selector-00001" \
+	--data-urlencode "field_value[]=bad" \
+	--data-urlencode "month=1" \
+	--data-urlencode "year=2020"
+sv_arr_try "an array where the year belongs" 'Invalid date parameter' \
+	--data-urlencode "field_name=open_date" \
+	--data-urlencode "container=date_selector-00001" \
+	--data-urlencode "month=1" \
+	--data-urlencode "year[]=bad"
 
 echo
 echo "smoke: $pass passed, $fail failed"
