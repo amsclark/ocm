@@ -10725,6 +10725,18 @@ else
 		bad "the outcomes report answered $code before the break; the rest of this section proves nothing"
 	fi
 
+	# How long the container log is before anything breaks. The check at the
+	# end of this section reads only the lines added after this point, because
+	# the six requests that follow the broken one write log lines of their own
+	# and a fixed tail window can push the record it is looking for out of
+	# sight. A run where that happens is a green suite reporting a red check.
+	if [ "$HAVE_COMPOSE" = 1 ]; then
+		EXC_LOG0="$(docker compose "${COMPOSE_ARGS[@]}" logs --no-color app \
+			2>/dev/null | wc -l)"
+	else
+		EXC_LOG0=0
+	fi
+	
 	adb "RENAME TABLE outcomes TO outcomes_zzhidden" >/dev/null
 	exc_code="$(curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 		"$OCM_URL/$EXC_REPORT")"
@@ -10770,11 +10782,16 @@ else
 	fi
 
 	if [ "$HAVE_COMPOSE" = 1 ]; then
-		if docker compose "${COMPOSE_ARGS[@]}" logs --tail=200 app 2>&1 \
-			| grep -q 'uncaught_exception'; then
+		# Only what the log gained since EXC_LOG0, so this cannot pass on a
+		# record an earlier section left behind, and cannot fail because a
+		# later request pushed the record out of a fixed window.
+		EXC_LOG="$(docker compose "${COMPOSE_ARGS[@]}" logs --no-color app 2>&1 \
+			| tail -n "+$((EXC_LOG0 + 1))")"
+		EXC_LOG_LINES="$(printf '%s\n' "$EXC_LOG" | wc -l)"
+		if printf '%s\n' "$EXC_LOG" | grep -q 'uncaught_exception'; then
 			ok "the operator still gets the whole detail in the server log"
 		else
-			bad "the failed query left no uncaught_exception record in the server log"
+			bad "the failed query left no uncaught_exception record in the ${EXC_LOG_LINES} log lines this section added"
 		fi
 	fi
 fi
@@ -17392,6 +17409,244 @@ else
 	else
 		ok "the refused add_field POST wrote nothing to the settings"
 	fi
+fi
+
+# 100. pikaCase::removeContact() put the conflict id from the request inside a
+# quoted literal, right beside the case_id clause that is the whole ownership
+# check on that DELETE. ops/delete_conflict.php reads the id with
+# pl_grab_post(), which rewrites angle brackets and nothing else, so a single
+# quote reached the query: a value carrying one could close the literal and
+# write its own condition in place of the ownership clause. A user who may edit
+# one case could then delete conflict rows belonging to a case they may not see.
+# The handler does check the CSRF token and does check that the caller may edit
+# the case it names, so this needed a signed-in user, not a stranger.
+#
+# Two cases are seeded with one conflict row each. The request names case A and
+# carries a value aimed at case B's row. Case B's row has to survive.
+echo
+echo "100. a conflict id carrying a quote cannot delete another case's conflict row"
+
+cleanup_dc() {
+	if command -v adb >/dev/null 2>&1; then
+		adb "DELETE FROM conflict WHERE contact_id IN (SELECT contact_id FROM contacts WHERE last_name='ZZDCONF')" >/dev/null 2>&1
+		adb "DELETE FROM cases WHERE number LIKE 'ZZ-DC-%'" >/dev/null 2>&1
+		adb "DELETE FROM contacts WHERE last_name='ZZDCONF'" >/dev/null 2>&1
+	fi
+}
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the conflict-delete check (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 100 cannot reach the database, so it cannot tell what the DELETE removed"
+else
+	cleanup_dc
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dc' EXIT
+
+	DC_CONTACT="$(adb "SELECT COALESCE(MAX(contact_id),0)+1 FROM contacts")"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name) VALUES (${DC_CONTACT},'Zz','ZZDCONF')" >/dev/null
+	DC_CASE_A="$(adb "SELECT COALESCE(MAX(case_id),0)+1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id) VALUES (${DC_CASE_A},'ZZ-DC-A',1,'ZZOFF','1',${DC_CONTACT})" >/dev/null
+	DC_CASE_B="$(adb "SELECT COALESCE(MAX(case_id),0)+1 FROM cases")"
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id) VALUES (${DC_CASE_B},'ZZ-DC-B',1,'ZZOFF','1',${DC_CONTACT})" >/dev/null
+
+	# conflict_id is a plain integer key with a default of 0, not an
+	# auto-increment column, so each row has to be given its own id.
+	DC_ROW_A="$(adb "SELECT COALESCE(MAX(conflict_id),0)+1 FROM conflict")"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code) VALUES (${DC_ROW_A},${DC_CASE_A},${DC_CONTACT},1)" >/dev/null
+	DC_ROW_B="$(adb "SELECT COALESCE(MAX(conflict_id),0)+1 FROM conflict")"
+	adb "INSERT INTO conflict (conflict_id, case_id, contact_id, relation_code) VALUES (${DC_ROW_B},${DC_CASE_B},${DC_CONTACT},1)" >/dev/null
+
+	# The path base_url gives this deployment, taken from OCM_URL so the check
+	# does not have to know it: "http://host:port/cms" -> "/cms". Section 34i
+	# works this out too, but it may have been skipped.
+	DC_BASE="$(printf '%s' "$OCM_URL" \
+		| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]*##' -e 's#/*$##')"
+
+	DC_SEEDED="$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id IN (${DC_ROW_A},${DC_ROW_B}) AND contact_id=${DC_CONTACT}")"
+
+	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/prefs.php" >/dev/null
+	DC_TOKEN="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
+		| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+
+	if [ "$DC_SEEDED" != 2 ]; then
+		bad "section 100 seeded ${DC_SEEDED} of its 2 conflict rows, so nothing below it was tested"
+	elif [ "${#DC_TOKEN}" -ne 64 ]; then
+		bad "no CSRF token for the delete_conflict POST - section 100 is untested"
+	else
+		# The value does not begin with the id it names. conflict_id is an
+		# integer column, so a value beginning with that id would be read back
+		# as that id and delete the same row whether the rest of it reached the
+		# query or not. It begins with 0, which names no row.
+		DC_TRY="0' OR conflict_id='${DC_ROW_B}'#"
+		DC_LOC="$(curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D - \
+			--data-urlencode "_csrf=${DC_TOKEN}" \
+			--data-urlencode "case_id=${DC_CASE_A}" \
+			--data-urlencode "conflict_id=${DC_TRY}" \
+			"$OCM_URL/ops/delete_conflict.php" \
+			| grep -i '^location:' | tr -d '\r' | head -1 \
+			| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+
+		if [ -z "$DC_LOC" ]; then
+			bad "ops/delete_conflict.php sent no Location header, so section 100 never reached the DELETE"
+		elif [ "$DC_LOC" != "${DC_BASE}/case.php?case_id=${DC_CASE_A}&screen=info" ]; then
+			bad "ops/delete_conflict.php did not redirect back to the case it was given (${DC_LOC})"
+		elif [ "$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id=${DC_ROW_B}")" != 1 ]; then
+			bad "a quote in conflict_id deleted case ${DC_CASE_B}'s conflict row through a request that named case ${DC_CASE_A}"
+		elif [ "$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id=${DC_ROW_A}")" != 1 ]; then
+			bad "the conflict_id that named no row still deleted the named case's own conflict row"
+		else
+			ok "a conflict_id carrying a quote deletes nothing (case ${DC_CASE_B}'s row survived a request naming case ${DC_CASE_A})"
+		fi
+
+		# The positive control. Without it every check above would pass on a
+		# handler that had stopped deleting anything at all.
+		curl -s --max-time 30 -b "$COOKIES" -o /dev/null \
+			--data-urlencode "_csrf=${DC_TOKEN}" \
+			--data-urlencode "case_id=${DC_CASE_A}" \
+			--data-urlencode "conflict_id=${DC_ROW_A}" \
+			"$OCM_URL/ops/delete_conflict.php" >/dev/null
+
+		if [ "$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id=${DC_ROW_A}")" != 0 ]; then
+			bad "ops/delete_conflict.php did not delete the conflict row its own case owns, so section 100's checks establish nothing"
+		elif [ "$(adb "SELECT COUNT(*) FROM conflict WHERE conflict_id=${DC_ROW_B}")" != 1 ]; then
+			bad "deleting case ${DC_CASE_A}'s conflict row also removed case ${DC_CASE_B}'s"
+		else
+			ok "ops/delete_conflict.php still deletes the conflict row the named case owns"
+		fi
+	fi
+
+	cleanup_dc
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
+# 101. reports/inactive_user/report.php put its row-count field into the LIMIT
+# clause after passing it through DB::escapeString(). A row count is not quoted,
+# so escaping it rewrote nothing that was there: whatever was typed after the
+# number reached the query as written, and a value that was not a number ended
+# the request with a 500. reports/inactive_case/report.php casts the same field
+# to int; this file was missed when that one was corrected.
+#
+# The report needs a date or it stops before building the query at all, so every
+# request here carries one. It reports one row per staff member, and a stock
+# install has only one, so a case owned by a staff id nobody is using is seeded
+# to give it a second: with one row no limit can be told from any other.
+echo
+echo "101. the inactive staff report casts its row-count field instead of escaping it"
+
+cleanup_iu() {
+	if command -v adb >/dev/null 2>&1; then
+		adb "DELETE FROM cases WHERE number LIKE 'ZZ-IU-%'" >/dev/null 2>&1
+		adb "DELETE FROM contacts WHERE last_name='ZZIUSER'" >/dev/null 2>&1
+	fi
+}
+
+iu_post() {
+	curl -s --max-time 60 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
+		--data-urlencode "report_format=html" \
+		--data-urlencode "inactive_date_begin=2030-01-01" \
+		--data-urlencode "limit=$1" \
+		"$OCM_URL/reports/inactive_user/report.php"
+}
+
+# "<strong>Limit Results:</strong> 3 Row(s)<br/>" -> "3 Row(s)", empty when the
+# report did not report a limit at all.
+iu_param() {
+	grep -oE 'Limit Results:</strong>[^<]*' "$BODY" | head -1 \
+		| sed -e 's#^Limit Results:</strong> *##'
+}
+
+# "<p>Number of rows: <em>2</em>" -> "2".
+iu_rows() {
+	grep -oE 'Number of rows: <em>[0-9]+</em>' "$BODY" | head -1 \
+		| sed -E 's/.*<em>([0-9]+)<.*/\1/'
+}
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the inactive staff report row-count check (needs the database)\n'
+elif ! adb "SELECT 1" >/dev/null 2>&1; then
+	bad "section 101 cannot reach the database, so it cannot seed a second report row"
+else
+	cleanup_iu
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_iu' EXIT
+
+	IU_CONTACT="$(adb "SELECT COALESCE(MAX(contact_id),0)+1 FROM contacts")"
+	adb "INSERT INTO contacts (contact_id, first_name, last_name) VALUES (${IU_CONTACT},'Zz','ZZIUSER')" >/dev/null
+	# A staff id no user row has. The report groups by that id, so this becomes a
+	# second row; the name column renders empty for it, which is all it is for.
+	IU_STAFF="$(adb "SELECT COALESCE(MAX(user_id),0)+1 FROM users")"
+	IU_CASE="$(adb "SELECT COALESCE(MAX(case_id),0)+1 FROM cases")"
+	# last_changed has to be set here. The column takes no default, so an INSERT
+	# that leaves it out stores 0000-00-00, and the report's own
+	# "HAVING MAX(cases.last_changed)" reads that as false and drops the row --
+	# the seeded case would never appear and this section would test nothing. A
+	# date in the past also satisfies the report's "activity prior to" filter.
+	adb "INSERT INTO cases (case_id, number, user_id, office, status, client_id, last_changed) VALUES (${IU_CASE},'ZZ-IU-A',${IU_STAFF},'ZZOFF','1',${IU_CONTACT},'2020-01-01 00:00:00')" >/dev/null
+
+	# What the report holds with no limit in the way, read from the report itself
+	# rather than assumed, so the checks below do not depend on the install.
+	IU_CODE="$(iu_post 999)"
+	IU_TOTAL="$(iu_rows)"
+
+	if [ "$IU_CODE" != 200 ]; then
+		bad "the inactive staff report answered HTTP ${IU_CODE} for a row count of 999, so section 101 is untested"
+	elif ! grep -q 'Staff Name' "$BODY"; then
+		bad "the inactive staff report did not draw its table, so section 101 is untested"
+	elif [ -z "$IU_TOTAL" ] || [ "$IU_TOTAL" -lt 2 ]; then
+		bad "section 101 could not get two rows into the inactive staff report (it holds [${IU_TOTAL}]), so no row count can be told from another"
+	else
+		ok "the inactive staff report holds ${IU_TOTAL} rows to limit"
+
+		# The row count has to reach the query, or a report that ignored the field
+		# would satisfy every check below it.
+		IU_CODE="$(iu_post 1)"
+		IU_PARAM="$(iu_param)"
+		IU_ROWS="$(iu_rows)"
+
+		if [ "$IU_CODE" != 200 ]; then
+			bad "the inactive staff report answered HTTP ${IU_CODE} for a row count of 1"
+		elif [ "$IU_PARAM" != "1 Row(s)" ]; then
+			bad "the inactive staff report reports its row count as [${IU_PARAM}] rather than [1 Row(s)]"
+		elif [ "$IU_ROWS" != 1 ]; then
+			bad "a row count of 1 returned ${IU_ROWS} rows, so the inactive staff report's LIMIT reaches nothing and section 101 establishes nothing"
+		else
+			ok "the row count the inactive staff report is given reaches its query"
+		fi
+
+		# A value that is not a number drops the clause instead of ending the
+		# request. Before the cast this answered 500.
+		IU_CODE="$(iu_post 'zznotanumber')"
+		IU_PARAM="$(iu_param)"
+		IU_ROWS="$(iu_rows)"
+
+		if [ "$IU_CODE" != 200 ]; then
+			bad "a row count that is not a number ends the inactive staff report with HTTP ${IU_CODE}"
+		elif [ -n "$IU_PARAM" ]; then
+			bad "a row count that is not a number is still reported as a limit of [${IU_PARAM}]"
+		elif [ "$IU_ROWS" != "$IU_TOTAL" ]; then
+			bad "a row count that is not a number returned ${IU_ROWS} of the report's ${IU_TOTAL} rows, so something of it still reached the query"
+		else
+			ok "a row count that is not a number drops the limit rather than reaching the query"
+		fi
+
+		# Anything written after the number is gone rather than escaped. Before the
+		# cast this reached the query: "LIMIT 2 OFFSET 1" returned one row fewer.
+		IU_CODE="$(iu_post '2 OFFSET 1')"
+		IU_PARAM="$(iu_param)"
+		IU_ROWS="$(iu_rows)"
+
+		if [ "$IU_CODE" != 200 ]; then
+			bad "a row count with text after it ends the inactive staff report with HTTP ${IU_CODE}"
+		elif [ "$IU_PARAM" != "2 Row(s)" ]; then
+			bad "text after the row count survived into the inactive staff report's limit ([${IU_PARAM}])"
+		elif [ "$IU_ROWS" != 2 ]; then
+			bad "a row count of \"2 OFFSET 1\" returned ${IU_ROWS} rows rather than 2, so the text after the number reached the query"
+		else
+			ok "only the number is read out of the inactive staff report's row count"
+		fi
+	fi
+
+	cleanup_iu
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 fi
 
 echo
