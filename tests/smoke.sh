@@ -16108,6 +16108,124 @@ RCPY
 	rm -f "$RC_PY"
 fi
 
+# 93. No service endpoint answers a signed-in request with a server error.
+#
+# cms/services/pension_issue-server-ajax.php queried menu_pension_sub_issue,
+# which no install or upgrade script creates. Every signed-in request to it
+# therefore ended on the error page: HTTP 500, ten kilobytes of text/html, to
+# a caller that had asked for text/xml. Nothing in the suite had ever asked a
+# service endpoint for anything, so a whole layer of the application could not
+# answer at all and the suite stayed green. Sections 8e2 and 91 do this for
+# pages and for include fragments; this one does it for the service layer.
+#
+# The check is a bare GET with no parameters. A service that needs parameters
+# answers 400, 403 or an empty document, and all of those are fine - the only
+# failure is a 5xx, which means the code could not run to the point of
+# deciding what to refuse.
+#
+# services/logout.php is left out on purpose: it marks the session row, and
+# every endpoint asked after it would be answering an anonymous caller. That
+# is not hypothetical - it happened while this bug was being found, and it
+# hid the 500 for a whole sweep. So the session is checked after each
+# request, and the body is what says whether it is still alive: this
+# application renders the login form with HTTP 200, so the status code cannot
+# tell a signed-in page from a signed-out one.
+echo
+echo "93. every service endpoint answers a signed-in request without a server error"
+
+sv_alive() {
+	curl -s --max-time 30 -b "$COOKIES" -o "${BODY}.sv" "$OCM_URL/system-settings.php"
+	! grep -qF 'login_pass' "${BODY}.sv"
+}
+
+sv_list="$(cd "${REPO_DIR}/cms/services" 2>/dev/null && ls *.php 2>/dev/null \
+	| grep -v '^logout\.php$')"
+sv_count="$(printf '%s\n' "$sv_list" | grep -c .)"
+
+if [ "${sv_count:-0}" -lt 10 ]; then
+	bad "section 93 found only ${sv_count} service endpoints - the sweep is broken"
+elif ! sv_alive; then
+	bad "the admin session was already gone before section 93 started - it proves nothing"
+else
+	sv_bad=''
+	sv_lost=''
+	sv_served=0
+
+	for sv in $sv_list; do
+		sv_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+			-w '%{http_code}' "$OCM_URL/services/${sv}")"
+
+		case "$sv_code" in
+			5*) sv_bad="${sv_bad} ${sv}=${sv_code}" ;;
+			200) sv_served=$((sv_served + 1)) ;;
+		esac
+
+		if ! sv_alive; then
+			sv_lost="${sv}"
+			break
+		fi
+	done
+
+	# Without this the sweep could have asked every endpoint as a signed-out
+	# caller, been handed the login page by all of them, and reported no
+	# server errors.
+	if [ -n "$sv_lost" ]; then
+		bad "the admin session did not survive services/${sv_lost} - section 93 stopped there and proves nothing beyond it"
+	elif [ "${sv_served:-0}" -lt 3 ]; then
+		bad "only ${sv_served} of ${sv_count} service endpoints served anything - section 93 is not signed in"
+	else
+		ok "section 93 asked all ${sv_count} service endpoints, ${sv_served} served a document"
+
+		if [ -n "$sv_bad" ]; then
+			bad "A SERVICE ENDPOINT ANSWERED A SIGNED-IN REQUEST WITH A SERVER ERROR:${sv_bad}"
+		else
+			ok "no service endpoint answers a signed-in request with a server error"
+		fi
+	fi
+fi
+
+rm -f "${BODY}.sv"
+
+# 94. The pension sub-issue service still sends XML when its menu is absent.
+#
+# Section 93 above would catch the 500 coming back, but not the shape of the
+# reply. The caller parses this as XML, so an empty list has to be a valid
+# document with the right content type rather than an empty body or an HTML
+# page carrying a 200.
+echo
+echo "94. the pension sub-issue service answers with XML when its menu table is absent"
+
+ps_url="$OCM_URL/services/pension_issue-server-ajax.php"
+
+if ! command -v adb >/dev/null 2>&1; then
+	printf '  skip the pension sub-issue check (no database handle)\n'
+elif [ "$(adb "SHOW TABLES LIKE 'menu_pension_sub_issue'" | grep -c .)" != 0 ]; then
+	printf '  skip the pension sub-issue check (this install has the menu table)\n'
+else
+	ps_type="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		-w '%{http_code} %{content_type}' "$ps_url")"
+	ps_code="${ps_type%% *}"
+	ps_ctype="${ps_type#* }"
+
+	if [ "$ps_code" != 200 ]; then
+		bad "the pension sub-issue service answered ${ps_code} with its menu table absent"
+	else
+		case "$ps_ctype" in
+			text/xml*)
+				ok "the pension sub-issue service answers text/xml with its menu table absent" ;;
+			*)
+				bad "the pension sub-issue service answered ${ps_ctype}, not XML, with its menu table absent" ;;
+		esac
+
+		# An empty body is a 200 the caller cannot parse either.
+		if grep -qE '<pension_issues[ /]*>|<pension_issues/>' "$BODY"; then
+			ok "the empty reply is still a pension_issues document"
+		else
+			bad "the pension sub-issue service sent no pension_issues element: $(head -c 120 "$BODY")"
+		fi
+	fi
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
