@@ -647,40 +647,46 @@ if [ "$cal_size_rc" != 0 ] || ! printf '%s' "$size" | grep -qE '^[0-9]+$'; then
 	cal_size_read=0
 	size="an unread number of"
 fi
-# The reply is read as HTML here, not searched as text. Every version of this
-# check before the last one matched strings, and a string has no element and no
-# attribute, so complete replies passed that a browser reads as something else.
+# The reply is read as HTML here, not searched as text, and it is read by the
+# HTML5 tree construction algorithm rather than by rules written out by hand.
+# Every version of this check before this one matched strings or tokens. A
+# string has no element and no attribute, and a tokenizer reports tags in the
+# order they are written and builds no tree, so complete replies passed it that
+# a browser reads as something else.
 #
-# Reading it with html.parser closed those, but html.parser is a tokenizer, not
-# an HTML5 tree builder: it reports tags in the order they are written and
-# builds no tree. NINE complete replies were then measured passing this check
-# while Chrome 24 put no usable calendar on the page, against 31 clickable days
-# from the bundled plugin. Six of them: the calendar inside a <template>,
-# inside a <frameset>, inside a <select>, after a <plaintext>, and two where the
-# table is real but its day anchors are not reachable -- anchors written as
-# direct children of a row, which the browser foster-parents out of the table,
-# and a bare <table> opened where a cell should be, which implies the end of the
-# calendar and puts the days in a sibling. The last three are the same mistake
-# in the rules written for those: <textarea/>, whose self-closing spelling the
-# tokenizer reports as an immediate end tag where HTML ignores the slash;
-# <tr><td></tr><tr>, where the row's end tag closes the cell and only the cell's
-# own end tag was read as closing it; and <template></select>, where one shared
-# counter let a mismatched end tag clear the guard.
+# Eleven rounds of hand-written rules were an approximation of that algorithm,
+# and they were measured against it: 89 counterexample replies collected over
+# those rounds, each read by headless Chrome driving this repository's own
+# date_selector-events.js, and each read by the rules. The two disagreed on 35
+# of the 89, and ELEVEN of those were replies the rules PASSED while the browser
+# put no usable calendar on the page.
 #
-# The rules below are the parts of the tree builder this check needs, written
-# out: elements whose content is text, elements whose content is never drawn in
-# the page the client builds, the elements a trailing slash really closes, and
-# the cell a day anchor has to be inside.
+# The three the last review found cannot be fixed from outside html.parser. In
+# <script/><!--</script>--> the tokenizer consumes the whole comment including
+# the real </script>, so no rule written here ever sees the end tag that would
+# clear the guard; the other two need the implied <tbody> and the foster
+# parenting that only a tree builder has.
+#
+# html5lib implements the same algorithm the browser does. Measured the same
+# way, on the same 89 replies, it disagrees with Chrome on ONE, and that one is
+# in the direction of a loud failure: no reply that a browser draws nothing from
+# passes this check any more. The only part of the algorithm html5lib 1.x is
+# missing is <template>, and a reply holding one is refused rather than guessed
+# at -- see the limits below.
 #
 # The parser prints seven numbers: the elements whose class list holds the
-# calendar token, whether the first of them closed, whether its own
-# data-field-name and data-container-name are the two values that were asked
-# for, how many select anchors it holds in cells, how many distinct days of
-# January 2020 those anchors carry, and how many of them select something that
-# is not a day of January 2020.
+# calendar token, the select anchors with no calendar element above them, which
+# the client cannot reach, whether the first calendar's own data-field-name and
+# data-container-name are the two values that were asked for, how many select
+# anchors the client can reach from a calendar, how many distinct days of
+# January 2020 those carry, and how many of them select something that is not a
+# day of January 2020.
 cal_stat="the parser did not run"
+# Which tool is missing, where one is, so the skip says what to install. Empty
+# means the parser ran.
+cal_absent=""
 cal_n=""
-cal_z=""
+cal_o=""
 cal_f=""
 cal_c=""
 cal_a=""
@@ -688,291 +694,128 @@ cal_u=""
 cal_x=""
 if ! command -v python3 >/dev/null 2>&1; then
 	cal_stat="python3 is absent"
+	cal_absent=python3
 elif [ "$cal_curl" = 0 ]; then
 	cal_out="$(python3 - "$BODY" <<'PY'
 import re
 import sys
-from html.parser import HTMLParser
+
+# html5lib implements the HTML5 tree construction algorithm, which is what a
+# browser does and what eleven rounds of hand-written rules here were an
+# approximation of. It is absent rather than broken on a machine that has not
+# installed it, and the marker below says so, because a check that quietly
+# stopped measuring would be worse than one that says it did not run.
+try:
+	import html5lib
+except ImportError:
+	sys.stdout.write('no-html5lib\n')
+	sys.exit(3)
 
 # HTML splits a class attribute on ASCII whitespace. Python's str.split() also
 # splits on U+00A0 and U+2003, and a browser keeps those inside a token, so
 # class="js-date-selector<U+00A0>x" is ONE token to a browser -- not the
-# calendar -- and was read here as two.
+# calendar -- and splitting it in two read it as the calendar.
 CLASS_SPLIT = re.compile('[ \t\n\r\f]+')
-
-# A browser reads the content of these as text, so a calendar written inside one
-# is not a calendar. html.parser has its own raw-text mode for script and style,
-# but it does not enter that mode for the <script/> spelling, so those two are
-# named here as well and the guard below covers both spellings. desc is SVG's,
-# where a table is described, not drawn.
-TEXT_ONLY = ('title', 'textarea', 'iframe', 'noembed', 'noframes', 'noscript',
-	'desc', 'xmp', 'script', 'style')
-
-# The content of these IS markup, and still never reaches the page as a drawn
-# calendar: a template's content is held in a separate inert fragment, a
-# frameset drops the body, and a table inside a select box is not drawn. The
-# client also appends what it parses into a document where scripting is on, and
-# a noscript element is not drawn there either, which is why noscript is above.
-NOT_DRAWN = ('template', 'frameset', 'select')
-
-# Table content lives in cells. A browser foster-parents anything else OUT of
-# the table, so a day anchor written as a direct child of a row is not in the
-# calendar at all and cannot be clicked.
-CELLS = ('td', 'th')
-
-# A start tag for one of these, and a matching end tag, close an open cell, and
-# what is written after it is tokenised in a table mode, so a browser foster
-# parents it to just before the table -- out of the calendar element with it.
-SECTIONS = ('tbody', 'thead', 'tfoot')
-
-COLUMNS = ('col', 'colgroup')
-
-# A caption closes an open cell as a section does, but a caption is still inside
-# the table, so a day written in one is drawn and the client reaches the
-# calendar from it. It is the one table structure that is neither a cell nor
-# outside the calendar, so it is tracked separately from both.
-CAPTION = 'caption'
-
-# What a row, a cell, a section or a caption closes when it opens: everything
-# down to the section or the table that holds it.
-ROW_CONTENT = CELLS + ('tr', CAPTION)
-
-# A trailing slash closes these and only these. On anything else HTML ignores
-# it, so <textarea/> opens a textarea whose content is still text and
-# <table class="js-date-selector"/> opens a table that never closes.
-VOID = ('area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
-	'meta', 'param', 'source', 'track', 'wbr')
+TOKEN = 'js-date-selector'
 
 
-class Calendar(HTMLParser):
-	"""Counts the calendar elements and reads the first one's reachable days."""
-
-	def __init__(self):
-		super().__init__(convert_charrefs=True)
-		self.elements = 0
-		self.tag = None
-		self.depth = 0
-		# The table structure open inside the calendar element, innermost last,
-		# as 'table', 'tr' and 'caption' markers, the section's own tag name and
-		# the cell's own tag name. A count of open cells is not enough: </tr>
-		# closes the cell it holds without the cell's own end tag ever being
-		# written, and a count cannot say whether what is open now is a cell or
-		# the row above it. Each structure keeps its own name because an end tag
-		# for one that is not open is a parse error a browser ignores: </th>
-		# does not close a <td>, and </thead> does not close a <tbody>.
-		self.tstack = []
-		self.closed = 0
-		self.field = None
-		self.container = None
-		self.dates = []
-		self.text_only = ''
-		# The inert elements open now, innermost last. A count let any one of
-		# template, frameset or select close any other.
-		self.not_drawn = []
-		self.stop = 0
-
-	def in_cell(self):
-		"""True where the innermost open table structure is a cell."""
-		return bool(self.tstack) and self.tstack[-1] in CELLS
-
-	def reachable(self):
-		"""True where a day anchor written next is inside the calendar.
-
-		A cell holds one. So does a caption, which is not a cell but is still
-		inside the table, so a browser draws a day written there and the
-		client's closest('.js-date-selector') finds the calendar from it.
-		"""
-		return bool(self.tstack) and self.tstack[-1] in CELLS + (CAPTION, )
-
-	def in_table_scope(self, name):
-		"""True where name is open in the innermost table.
-
-		A browser looks no further out than the table it is in, so a </tbody>
-		written inside a nested table cannot close the outer table's section.
-		"""
-		for open_tag in reversed(self.tstack):
-			if open_tag == name:
-				return True
-			if open_tag == 'table':
-				return False
-		return False
-
-	def close_to(self, name):
-		"""Close everything the innermost open name holds, and it."""
-		while self.tstack:
-			if self.tstack.pop() == name:
-				return
-
-	def close_row_content(self):
-		"""Close an open cell, row or caption, and the section holding them."""
-		while self.tstack and self.tstack[-1] in ROW_CONTENT + SECTIONS:
-			self.tstack.pop()
-
-	def handle_startendtag(self, tag, attrs):
-		# html.parser calls the start handler and then the end handler for
-		# every <x/>. That is right for a void element and wrong for anything
-		# else: HTML ignores the slash there, so the element stays open.
-		self.handle_starttag(tag, attrs)
-		if tag in VOID:
-			self.handle_endtag(tag)
-
-	def handle_starttag(self, tag, attrs):
-		if self.stop or self.text_only:
-			return
-		# Everything after this tag is text to a browser, whatever it looks
-		# like. html.parser has no such mode and keeps reading tags, so the
-		# rest of the reply is dropped here instead.
-		if tag == 'plaintext':
-			self.stop = 1
-			return
-		if tag in TEXT_ONLY:
-			self.text_only = tag
-			return
-		if tag in NOT_DRAWN:
-			self.not_drawn.append(tag)
-			return
-		if self.not_drawn:
-			return
-		# A repeated attribute is read as its first spelling, which is what a
-		# browser does with one; dict() would keep the last.
-		attr = {}
-		for name, value in attrs:
-			attr.setdefault(name, value)
-		# The client finds the calendar with closest('.js-date-selector'), which
-		# matches any element, not only a table.
-		if 'js-date-selector' in CLASS_SPLIT.split(attr.get('class') or ''):
-			self.elements += 1
-			if self.depth == 0 and not self.closed:
-				self.tag = tag
-				self.depth = 1
-				# The calendar element is itself the outermost table when it is
-				# one, and the rows below it belong to it.
-				self.tstack = ['table'] if tag == 'table' else []
-				self.field = attr.get('data-field-name')
-				self.container = attr.get('data-container-name')
-				return
-		if not self.depth:
-			return
-		if tag == self.tag:
-			# A table opened where a cell should be closes the one above it and
-			# takes the rows after it. Inside a cell it is a real nested table.
-			# A caption counts as closing here: a table written in one closes
-			# the caption first and is then read in a table, where it closes
-			# the table too.
-			if tag == 'table' and not self.in_cell():
-				self.depth = 0
-				self.closed = 1
-			else:
-				self.depth += 1
-				if tag == 'table':
-					self.tstack.append('table')
-			return
-		if tag == 'table':
-			self.tstack.append('table')
-			return
-		if tag == 'tr':
-			# A row closes the row before it, any cell still open in it, and a
-			# caption. It does not close the section that holds it.
-			while self.tstack and self.tstack[-1] in ROW_CONTENT:
-				self.tstack.pop()
-			self.tstack.append('tr')
-			return
-		if tag in CELLS:
-			# A cell closes the cell before it in the same row, and a caption,
-			# and nothing above that row.
-			while self.tstack and self.tstack[-1] in CELLS + (CAPTION, ):
-				self.tstack.pop()
-			self.tstack.append(tag)
-			return
-		if tag in SECTIONS:
-			# The cell closes here, and a browser moves what comes next out of
-			# the table altogether. The section is kept on the stack so that an
-			# end tag naming a different one can be seen not to match it.
-			self.close_row_content()
-			self.tstack.append(tag)
-			return
-		if tag in COLUMNS:
-			# A column group holds no days and closes the cell the same way.
-			# Neither tag is kept: col is void, and a colgroup closes on the
-			# next thing written whatever it is.
-			self.close_row_content()
-			return
-		if tag == CAPTION:
-			# The cell closes, and the caption is still inside the table, so
-			# the days written in it are reachable.
-			self.close_row_content()
-			self.tstack.append(CAPTION)
-			return
-		if tag == 'a' and self.reachable() and attr.get('data-date-action') == 'select':
-			self.dates.append(attr.get('data-date'))
-
-	def handle_endtag(self, tag):
-		if self.stop:
-			return
-		if self.text_only:
-			if tag == self.text_only:
-				self.text_only = ''
-			return
-		if self.not_drawn:
-			# Only the element that opened the inert content closes it. A
-			# </select> written after a <template> closes nothing.
-			if tag == self.not_drawn[-1]:
-				self.not_drawn.pop()
-			return
-		# An end tag for inert content that was never opened is ignored.
-		if tag in NOT_DRAWN or not self.depth:
-			return
-		if tag in CELLS:
-			# Only the cell that is open closes. A </th> written while a <td> is
-			# open is a parse error a browser ignores, and the cell stays open.
-			if self.tstack and tag == self.tstack[-1]:
-				self.tstack.pop()
-			return
-		if tag in SECTIONS or tag == CAPTION:
-			# Closing a section closes the cell inside it, and what follows is
-			# foster parented out of the table. Closing a caption does the same
-			# to what follows it, because the caption is where the table's
-			# content was being written. An end tag naming a section or a
-			# caption that is not open in this table is a parse error a browser
-			# ignores, and it must not close the one that is.
-			if self.in_table_scope(tag):
-				self.close_to(tag)
-			return
-		if tag == 'tr':
-			# The row's end tag closes the cell inside it. This is the one the
-			# cell counter missed: a day anchor after it is in a row, not a
-			# cell, and the browser foster-parents it out of the table.
-			while self.in_cell():
-				self.tstack.pop()
-			if self.tstack and 'tr' == self.tstack[-1]:
-				self.tstack.pop()
-			return
-		if tag == 'table':
-			self.close_row_content()
-			if self.tstack and 'table' == self.tstack[-1]:
-				self.tstack.pop()
-			# A table is also the calendar element itself, so this falls
-			# through to the depth below rather than returning.
-		if tag == self.tag:
-			self.depth -= 1
-			if self.depth == 0:
-				self.closed = 1
+def local(tag):
+	"""The element's local name, without the namespace the tree builder adds."""
+	return tag.split('}')[-1] if tag.startswith('{') else tag
 
 
-parser = Calendar()
+def elements(node):
+	"""Every element in the tree, comments and processing instructions aside."""
+	return (e for e in node.iter() if isinstance(e.tag, str))
+
+
+def find_body(node):
+	"""The body element, or None where the reply left the document without one.
+
+	drawCalendar() reads doc.body.childNodes. A reply whose frameset is honoured
+	has no body element at all, so that read throws and the client appends
+	nothing.
+	"""
+	for child in node:
+		if not isinstance(child.tag, str):
+			continue
+		if local(child.tag) == 'body':
+			return child
+		found = find_body(child)
+		if found is not None:
+			return found
+	return None
+
+
+def walk(node, ancestors):
+	"""Every element the client appended, with the ancestors it has in the page."""
+	for child in node:
+		if not isinstance(child.tag, str):
+			continue  # a comment or a processing instruction
+		yield child, ancestors
+		yield from walk(child, ancestors + [child])
+
+
+def is_calendar(element):
+	"""True where this element's class list carries the calendar token."""
+	return TOKEN in CLASS_SPLIT.split(element.get('class') or '')
+
+
+# The client hands DOMParser a string that XMLHttpRequest has already decoded
+# with the charset the reply was served with, so the bytes are decoded here
+# rather than left to the tree builder: given bytes and no meta charset it
+# guesses windows-1252, where this endpoint serves UTF-8.
 with open(sys.argv[1], 'rb') as reply:
-	parser.feed(reply.read().decode('utf-8', 'replace'))
-parser.close()
+	text = reply.read().decode('utf-8', 'replace')
+
+document = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
+	scripting=False)
+
+# html5lib 1.x is the HTML5 tree construction algorithm with one part missing:
+# it does not implement <template>. A browser holds a template's content in a
+# separate inert fragment, so it is never drawn and a selector run over the
+# container never matches it; html5lib treats the tag as an ordinary unknown
+# element, and in a table it foster-parents the tag out and leaves the content
+# where it was. That is wrong in BOTH directions -- measured, one reply where a
+# browser draws no days and html5lib leaves 31 clickable, and one the other way
+# round -- so a reply holding one is not read here at all. It is reported as a
+# reply this check cannot measure, which fails, rather than guessed at. The
+# element only exists here where the tokenizer saw a real start tag, so the word
+# appearing in a comment or in script text does not trigger it, and
+# template_plugins/date_selector.php cannot emit one.
+if any(local(e.tag) == 'template' for e in elements(document)):
+	sys.stdout.write('template\n')
+	sys.exit(4)
+
+body = find_body(document)
+
+calendars = []
+dates = []
+orphans = 0
+if body is not None:
+	for element, ancestors in walk(body, []):
+		if is_calendar(element):
+			calendars.append(element)
+		if local(element.tag) != 'a' or element.get('data-date-action') != 'select':
+			continue
+		# closest() starts at the element itself and walks up. Nothing above
+		# body's own children was appended, so the chain stops there.
+		chain = [element] + list(reversed(ancestors))
+		if any(is_calendar(up) for up in chain):
+			dates.append(element.get('data-date'))
+		else:
+			orphans += 1
 
 january = set('01/%02d/2020' % day for day in range(1, 32))
-days = [date for date in parser.dates if date in january]
-print(parser.elements,
-	parser.closed,
-	1 if parser.field == '"open_date"' else 0,
-	1 if parser.container == '"date_selector-00001"' else 0,
-	len(parser.dates),
+days = [date for date in dates if date in january]
+first = calendars[0] if calendars else None
+print(len(calendars),
+	orphans,
+	1 if first is not None and first.get('data-field-name') == '"open_date"' else 0,
+	1 if first is not None and first.get('data-container-name') == '"date_selector-00001"' else 0,
+	len(dates),
 	len(set(days)),
-	len(parser.dates) - len(days))
+	len(dates) - len(days))
 PY
 )"
 	cal_rc=$?
@@ -981,9 +824,9 @@ PY
 	# to arrive here as an endpoint that rendered the wrong calendar. The
 	# seven numbers are the protocol between the two halves of this check, so
 	# they are checked before any of them is believed, and so is the exit status
-# of each grep that checks them: a grep that fails outright exits 2, and
-# reading that as "no match" reported the tool's own failure as bad parser
-# output, which is a measurement this run did not make. Trailing blank lines are
+	# of each grep that checks them: a grep that fails outright exits 2, and
+	# reading that as "no match" reported the tool's own failure as bad parser
+	# output, which is a measurement this run did not make. Trailing blank lines are
 	# deliberately not counted as extra lines: command substitution strips
 	# them, so seven numbers followed by blank lines and seven numbers followed
 	# by nothing are the same string by the time they arrive here.
@@ -991,7 +834,16 @@ PY
 	cal_lines_rc=$?
 	printf '%s' "$cal_out" | grep -qE '^[0-9]+( [0-9]+){6}$'
 	cal_shape_rc=$?
-	if [ "$cal_rc" != 0 ]; then
+	# The parser's two "I will not answer" exits are read before its numbers, and
+	# each needs BOTH its own exit status and its own word: an exit 3 or 4 from
+	# anywhere else is not one of these, and neither is a reply whose own bytes
+	# happen to spell the word.
+	if [ "$cal_rc" = 3 ] && [ "$cal_out" = no-html5lib ]; then
+		cal_stat="html5lib is absent"
+		cal_absent=html5lib
+	elif [ "$cal_rc" = 4 ] && [ "$cal_out" = template ]; then
+		cal_stat="the reply holds a <template>, the one part of the tree construction algorithm html5lib 1.x does not implement, so this check will not guess at where a browser would put the days"
+	elif [ "$cal_rc" != 0 ]; then
 		cal_stat="the parser exited $cal_rc"
 	elif [ -z "$cal_out" ]; then
 		cal_stat="the parser printed nothing"
@@ -1005,90 +857,69 @@ PY
 		cal_stat="the parser printed something other than seven numbers"
 	else
 		cal_stat=ok
-		read -r cal_n cal_z cal_f cal_c cal_a cal_u cal_x <<<"$cal_out"
+		read -r cal_n cal_o cal_f cal_c cal_a cal_u cal_x <<<"$cal_out"
 	fi
 fi
 # A status, a byte count and one marker do not say a calendar arrived. A body
 # cut off part way through still carries the opening tag, and curl reports HTTP
 # 200 for a reply whose transfer then failed, so its exit status is part of the
 # answer. What is asserted: the reply is served as text/html, and it holds
-# exactly one element whose class list carries the calendar token, that element
-# closes, its own two attributes name the field and the container that were
-# asked for, and it holds 31 select anchors, each inside a cell of it, carrying
-# 31 distinct days of January 2020 and no other day. That rules out a prefix of
-# a calendar, a calendar for another month or another field, anchors that all
-# select the same day, invented days, days of another month beside the right
-# ones, a second calendar, a body that only mentions the class, and the
-# counterexample replies above whose days a browser never makes clickable.
+# exactly one element whose class list carries the calendar token, that
+# element's own two attributes name the field and the container that were asked
+# for, the client can reach 31 select anchors from it carrying 31 distinct days
+# of January 2020 and no other day, and NO select anchor anywhere in the reply
+# is unreachable. "Reachable" is the client's own test and nothing more:
+# closest('.js-date-selector') from the anchor, which the events file runs on
+# every click. That rules out a prefix of a calendar, a calendar for another
+# month or another field, anchors that all select the same day, invented days,
+# days of another month beside the right ones, a second calendar, a body that
+# only mentions the class, and the 89 counterexample replies above -- including
+# the eleven that PASSED the rules this replaces while a browser drew nothing.
 #
-# What it does NOT show, measured rather than assumed: an audit ran 56 replies
-# through this parser, through headless Chrome driving this repository's own
-# date_selector-events.js, and through html5lib with scripting disabled, which
-# is the mode a DOMParser document has. Chrome and html5lib agreed on all 56.
-# A later review measured five more replies the same way and showed three
-# defects, all fixed here. An end tag for a table section popped the open cell
-# whether or not that section was open, so <td></thead> failed a reply a
-# browser draws all 31 days from; a section end tag now has to match a section
-# open in the same table, which is why the sections are on the stack by name.
-# <script/> and <style/> passed a reply a browser draws nothing from, because
-# html.parser enters its own raw-text mode for <script> but not for that
-# spelling; both tags are named in TEXT_ONLY now so the guard here covers
-# either spelling. And </caption> was ignored, so the days written after one
-# were counted as being in the cell the caption had already closed; a caption
-# is its own state on the stack now, which also fixes the days written INSIDE
-# one, reachable to the client and formerly reported as a failure.
-# Five of the constructs they showed are not modelled here, and each one makes
-# a reply that a browser draws nothing from pass this check. A <select> in a
-# cell swallows a real </td> or <tr>, because in select in table those act as
-# </select> first and are then reprocessed. <noscript> holding a real </td> is
-# markup and not text, because a DOMParser document has no browsing context and
-# so has scripting disabled. A browser ends the bogus comment <![CDATA[ at the
-# first >, where Python ends it at ]]>. The class on <html>, <head> or <body>
-# never reaches the page at all, because the client appends only body's own
-# children. A honoured <frameset> removes the body element outright. None of
-# the five can be written by the bundled plugin.
+# The unreachable count is the one number that is new, and it is the class the
+# last five rounds kept missing: markup that leaves the table early foster
+# parents the day anchors out of it, so they are still in the page, still 31,
+# still January, and no longer inside any calendar. Asserting it is zero costs
+# nothing, measured: of the 89 replies, not one that a browser draws 31 days
+# from also carries an unreachable anchor.
 #
-# It is stricter than a browser in nine further ways, which fail loudly rather
-# than quietly and which the bundled plugin also never emits: it requires the
-# element to close, and each day to be inside a cell, where the client asks
-# only for closest('.js-date-selector'); it reads a comment as ending at -->
-# where HTML5 also ends one at --!> and ends an empty one at <!-->; it treats
-# title and desc as text everywhere, including inside SVG where a browser does
-# not, and outside it where desc is an ordinary inline element; it ignores a
-# trailing slash outside the void list, including SVG's <desc/>; it closes a
-# cell on </ td>, where the space makes a browser produce a bogus comment that
-# closes nothing; it counts an element a browser refuses to create, such as a
-# stray <td> or <col> in body; and it does not know that <input> or a nested
-# <select> closes a select, or that <frameset> is ignored once any real content
-# has been written. Three of those -- <![CDATA[, </ td> and <!--> -- are
-# tokeniser differences that html.parser cannot be made to get right from
-# outside the class, so no number of further rules written here reaches browser
-# equivalence. html5lib, which agreed with Chrome on all 56 replies, or a real
-# browser test, is the only thing that does.
+# What it does NOT read, measured rather than assumed: a reply holding a
+# <template>. That is the one part of the algorithm html5lib 1.x is missing, and
+# it is wrong in both directions -- of the 89 replies, one puts a cell's end tag
+# inside a template and keeps all 31 days clickable in a browser where html5lib
+# foster-parents them out, and one puts the day cells inside a template so a
+# browser draws NOTHING where html5lib leaves 31 clickable. Guessing either way
+# would mean a check that passes a reply a browser draws nothing from, which is
+# the fault this round exists to remove, so the parser refuses the reply and
+# says why, and a refusal fails. The element only counts where the tokenizer saw
+# a real start tag, so the word inside a comment or in script text does not
+# trigger it, and template_plugins/date_selector.php cannot emit one at all.
 #
 # It also reads no CSS and no hidden attribute, so a calendar that is present
-# and correct and styled out of sight passes it, and it decodes the reply as
-# UTF-8 only.
+# and correct and styled out of sight passes it. It decodes the reply as UTF-8,
+# which is what this endpoint serves and what the client's own XMLHttpRequest
+# decodes before handing the string to DOMParser.
 #
 # What is still spelled exactly: the class token, the two JSON-encoded attribute
 # values, data-date-action="select" on an anchor element, and m/d/Y dates. A site
-# that overrides template_plugins/date_selector.php and renames any of those, or
-# draws its days outside table cells, is rendering a working calendar that this
-# check reports as a failure, and would have to update it. Quoting, attribute
-# order, entities and ASCII whitespace are the parser's problem now.
+# that overrides template_plugins/date_selector.php and renames any of those is
+# rendering a working calendar that this check reports as a failure, and would
+# have to update it. Quoting, attribute order, entities, ASCII whitespace, the
+# implied elements and where a browser really puts each one are the tree
+# builder's problem now.
 if [ "$cal_curl" != 0 ]; then
 	bad "date_selector-server.php could not be read for a LEGITIMATE field (curl exit $cal_curl), so this run says nothing about it"
-elif [ "$cal_stat" = "python3 is absent" ] && [ "$code" != 200 ]; then
-	bad "date_selector-server.php answered a LEGITIMATE field with HTTP $code, not 200 ($size bytes); python3 is absent, so this run did not read the reply either"
-elif [ "$cal_stat" = "python3 is absent" ] && [ "$cal_size_read" = 1 ] \
+elif [ -n "$cal_absent" ] && [ "$code" != 200 ]; then
+	bad "date_selector-server.php answered a LEGITIMATE field with HTTP $code, not 200 ($size bytes); $cal_absent is absent, so this run did not read the reply either"
+elif [ -n "$cal_absent" ] && [ "$cal_size_read" = 1 ] \
 	&& [ "$size" -lt 1 ]; then
 	# An empty 200 is what this endpoint answers a stranger with, so a signed-in
 	# request getting one is a failure whether or not the reply can be parsed.
-	bad "date_selector-server.php answered a LEGITIMATE field with an empty 200, which is what it answers a stranger with; python3 is absent, so this run could not read a reply either way"
-elif [ "$cal_stat" = "python3 is absent" ] && [ "$cal_size_read" = 0 ]; then
-	printf '  skip the calendar render check (needs python3 to read the reply as HTML; the status was 200, and wc exited %s so this run has no byte count either)\n' "$cal_size_rc"
-elif [ "$cal_stat" = "python3 is absent" ]; then
-	printf '  skip the calendar render check (needs python3 to read the reply as HTML; the status was 200 and the reply %s bytes, which is as far as this run got)\n' "$size"
+	bad "date_selector-server.php answered a LEGITIMATE field with an empty 200, which is what it answers a stranger with; $cal_absent is absent, so this run could not read a reply either way"
+elif [ -n "$cal_absent" ] && [ "$cal_size_read" = 0 ]; then
+	printf '  skip the calendar render check (needs %s to read the reply as HTML; the status was 200, and wc exited %s so this run has no byte count either)\n' "$cal_absent" "$cal_size_rc"
+elif [ -n "$cal_absent" ]; then
+	printf '  skip the calendar render check (needs %s to read the reply as HTML; the status was 200 and the reply %s bytes, which is as far as this run got)\n' "$cal_absent" "$size"
 elif [ "$cal_stat" != ok ]; then
 	bad "the calendar reply could not be read as HTML by this check ($cal_stat), so this run says nothing about what date_selector-server.php rendered"
 elif [ "$cal_mime_rc" != 0 ]; then
@@ -1096,12 +927,12 @@ elif [ "$cal_mime_rc" != 0 ]; then
 	# with no Content-Type at all. Only one of those is the endpoint's fault.
 	bad "the calendar reply's content type could not be folded to lower case by this check (exit $cal_mime_rc), so this run says nothing about what date_selector-server.php served"
 elif [ "$code" = 200 ] && [ "$cal_mime" = "text/html" ] \
-	&& [ "$cal_n" = 1 ] && [ "$cal_z" = 1 ] \
+	&& [ "$cal_n" = 1 ] && [ "$cal_o" = 0 ] \
 	&& [ "$cal_f" = 1 ] && [ "$cal_c" = 1 ] \
 	&& [ "$cal_a" = 31 ] && [ "$cal_u" = 31 ] && [ "$cal_x" = 0 ]; then
-	ok "date_selector-server.php serves text/html holding one calendar element, tagged with the field and the container that were asked for, whose cells hold the 31 days of January 2020 as select anchors and no other day ($size bytes)"
+	ok "date_selector-server.php serves text/html holding one calendar element, tagged with the field and the container that were asked for, from which the client can reach the 31 days of January 2020 as select anchors and no other day ($size bytes)"
 else
-	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, type ${cal_mime:-none}, $size bytes, $cal_n elements carrying the calendar class, closed $cal_z, field $cal_f, container $cal_c, $cal_a select anchors in cells, $cal_u distinct January days, $cal_x anchors selecting another day)"
+	bad "date_selector-server.php did not render January 2020 for a LEGITIMATE field (status $code, type ${cal_mime:-none}, $size bytes, $cal_n elements carrying the calendar class, field $cal_f, container $cal_c, $cal_a select anchors the client can reach, $cal_u distinct January days, $cal_x anchors selecting another day, $cal_o anchors it cannot reach)"
 fi
 
 # 8e. reports/index.php filters the list by the per-report permission. The admin
