@@ -2543,9 +2543,24 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 		future caller away. new_install.sql creates neither table they query.
 	*/
 	
+	/*	The two survey tables are add-on schema. Neither new_install.sql nor
+		any upgrade script in APPLY_IN_ORDER creates them, so on a stock
+		install these queries fail, and a failed query here ends the request
+		on the error page. Ask for the table first and answer with nothing.
+		
+		There is no survey page in this repo to reach these from, but
+		dataops.php still carries an add_survey_response handler, so the
+		write below is reachable by a request even though nothing links to it.
+	*/
 	function fetchSurveyQuestions()
 	{
 		$a = array();
+		
+		if (!pl_mysql_table_exists('survey_questions'))
+		{
+			return $a;
+		}
+		
 		$sql = "SELECT * FROM survey_questions LIMIT 50";
 		
 		$result = DB::query($sql);
@@ -2561,6 +2576,13 @@ select events.event_id AS table_id, 'events' AS label, user_id, CURRENT_DATE AS 
 	function addSurveyResponse($q_id, $case_id, $answer)
 	{
 		if (!is_numeric($q_id) || !is_numeric($case_id))
+		{
+			return false;
+		}
+		
+		/*	pl_new_id() reads the table too, so the check has to come first.
+		*/
+		if (!pl_mysql_table_exists('survey_answers'))
 		{
 			return false;
 		}
