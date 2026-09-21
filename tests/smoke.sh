@@ -718,6 +718,15 @@ NOT_DRAWN = ('template', 'frameset', 'select')
 # calendar at all and cannot be clicked.
 CELLS = ('td', 'th')
 
+# A start tag for a table section or a column group closes an open cell, and
+# what is written after it is tokenised in a table mode, so a browser foster
+# parents it to just before the table -- out of the calendar element with it.
+# caption is deliberately absent: it closes the cell too, but a caption is
+# still inside the table, so a day inside one is still reachable.
+SECTIONS = ('tbody', 'thead', 'tfoot')
+
+COLUMNS = ('col', 'colgroup')
+
 # A trailing slash closes these and only these. On anything else HTML ignores
 # it, so <textarea/> opens a textarea whose content is still text and
 # <table class="js-date-selector"/> opens a table that never closes.
@@ -734,10 +743,11 @@ class Calendar(HTMLParser):
 		self.tag = None
 		self.depth = 0
 		# The table structure open inside the calendar element, innermost last,
-		# as 'table', 'tr' and 'cell' markers. A count of open cells is not
-		# enough: </tr> closes the cell it holds without the cell's own end tag
-		# ever being written, and a count cannot say whether what is open now is
-		# a cell or the row above it.
+		# as 'table' and 'tr' markers and the cell's own tag name. A count of
+		# open cells is not enough: </tr> closes the cell it holds without the
+		# cell's own end tag ever being written, and a count cannot say whether
+		# what is open now is a cell or the row above it. The cell keeps its own
+		# name because </th> does not close a <td>.
 		self.tstack = []
 		self.closed = 0
 		self.field = None
@@ -751,7 +761,7 @@ class Calendar(HTMLParser):
 
 	def in_cell(self):
 		"""True where a day anchor written next would be inside a cell."""
-		return bool(self.tstack) and 'cell' == self.tstack[-1]
+		return bool(self.tstack) and self.tstack[-1] in CELLS
 
 	def handle_startendtag(self, tag, attrs):
 		# html.parser calls the start handler and then the end handler for
@@ -823,7 +833,13 @@ class Calendar(HTMLParser):
 			# above that row.
 			while self.in_cell():
 				self.tstack.pop()
-			self.tstack.append('cell')
+			self.tstack.append(tag)
+			return
+		if tag in SECTIONS or tag in COLUMNS:
+			# The cell closes here, and a browser moves what comes next out of
+			# the table altogether.
+			while self.in_cell():
+				self.tstack.pop()
 			return
 		if tag == 'a' and self.in_cell() and attr.get('data-date-action') == 'select':
 			self.dates.append(attr.get('data-date'))
@@ -845,7 +861,15 @@ class Calendar(HTMLParser):
 		if tag in NOT_DRAWN or not self.depth:
 			return
 		if tag in CELLS:
-			if self.in_cell():
+			# Only the cell that is open closes. A </th> written while a <td> is
+			# open is a parse error a browser ignores, and the cell stays open.
+			if self.tstack and tag == self.tstack[-1]:
+				self.tstack.pop()
+			return
+		if tag in SECTIONS:
+			# The section's end tag closes the cell inside it, and what follows
+			# is foster parented out of the table.
+			while self.in_cell():
 				self.tstack.pop()
 			return
 		if tag == 'tr':
@@ -858,7 +882,7 @@ class Calendar(HTMLParser):
 				self.tstack.pop()
 			return
 		if tag == 'table':
-			while self.tstack and self.tstack[-1] in ('cell', 'tr'):
+			while self.tstack and self.tstack[-1] in ('td', 'th', 'tr'):
 				self.tstack.pop()
 			if self.tstack and 'table' == self.tstack[-1]:
 				self.tstack.pop()
@@ -919,19 +943,45 @@ fi
 # 31 distinct days of January 2020 and no other day. That rules out a prefix of
 # a calendar, a calendar for another month or another field, anchors that all
 # select the same day, invented days, days of another month beside the right
-# ones, a second calendar, a body that only mentions the class, and the nine
-# replies above whose days a browser never makes clickable.
+# ones, a second calendar, a body that only mentions the class, and the
+# counterexample replies above whose days a browser never makes clickable.
 #
-# What it does NOT show, measured rather than assumed: this check reads no CSS
-# and no hidden attribute, so a calendar that is present and correct and styled
-# out of sight passes it. It decodes the reply as UTF-8 only. It reads a comment
-# as ending at --> where HTML5 also ends one at --!>, it treats title as text
-# everywhere, including inside SVG where a browser does not, and it ignores a
-# trailing slash on every element outside the void list, including inside SVG
-# where <desc/> really does close -- all three of those make it stricter than a
-# browser, not looser, and the bundled plugin emits none of them. Short of a conforming HTML5 tree builder, which would be a new
-# dependency for this suite, a browser test is the only thing that shows the
-# calendar works.
+# What it does NOT show, measured rather than assumed: an audit ran 56 replies
+# through this parser, through headless Chrome driving this repository's own
+# date_selector-events.js, and through html5lib with scripting disabled, which
+# is the mode a DOMParser document has. Chrome and html5lib agreed on all 56.
+# Five of the constructs they showed are not modelled here, and each one makes
+# a reply that a browser draws nothing from pass this check. A <select> in a
+# cell swallows a real </td> or <tr>, because in select in table those act as
+# </select> first and are then reprocessed. <noscript> holding a real </td> is
+# markup and not text, because a DOMParser document has no browsing context and
+# so has scripting disabled. A browser ends the bogus comment <![CDATA[ at the
+# first >, where Python ends it at ]]>. The class on <html>, <head> or <body>
+# never reaches the page at all, because the client appends only body's own
+# children. A honoured <frameset> removes the body element outright. None of
+# the five can be written by the bundled plugin.
+#
+# It is stricter than a browser in nine further ways, which fail loudly rather
+# than quietly and which the bundled plugin also never emits: it requires the
+# element to close, and each day to be inside a cell, where the client asks
+# only for closest('.js-date-selector'); it reads a comment as ending at -->
+# where HTML5 also ends one at --!> and ends an empty one at <!-->; it treats
+# title and desc as text everywhere, including inside SVG where a browser does
+# not, and outside it where desc is an ordinary inline element; it ignores a
+# trailing slash outside the void list, including SVG's <desc/>; it closes a
+# cell on </ td>, where the space makes a browser produce a bogus comment that
+# closes nothing; it counts an element a browser refuses to create, such as a
+# stray <td> or <col> in body; and it does not know that <input> or a nested
+# <select> closes a select, or that <frameset> is ignored once any real content
+# has been written. Three of those -- <![CDATA[, </ td> and <!--> -- are
+# tokeniser differences that html.parser cannot be made to get right from
+# outside the class, so no number of further rules written here reaches browser
+# equivalence. html5lib, which agreed with Chrome on all 56 replies, or a real
+# browser test, is the only thing that does.
+#
+# It also reads no CSS and no hidden attribute, so a calendar that is present
+# and correct and styled out of sight passes it, and it decodes the reply as
+# UTF-8 only.
 #
 # What is still spelled exactly: the class token, the two JSON-encoded attribute
 # values, data-date-action="select" on an anchor element, and m/d/Y dates. A site
