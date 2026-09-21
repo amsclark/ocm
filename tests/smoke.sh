@@ -631,6 +631,18 @@ cal_type=""
 read -r code cal_type <<<"$cal_head"
 cal_mime="$(printf '%s' "${cal_type%%;*}" | tr 'A-Z' 'a-z' | tr -d '[:space:]')"
 cal_mime_rc=$?
+# The charset is read as well, and asserted, because the half of this check
+# that reads the reply decodes it as UTF-8. That is what the client gets:
+# XMLHttpRequest decodes responseText with the reply's own charset before
+# DOMParser ever sees a string. Measured in Chrome, both directions are real --
+# a UTF-8 body that says charset=UTF-16LE draws no days while this check read
+# it as a perfect calendar, and a real UTF-16 body draws all 31 while this
+# check read mojibake. Following the declared charset here would mean
+# implementing the Encoding Standard in a shell script; asserting a narrower
+# contract -- this endpoint says UTF-8 -- makes the decoding correct by
+# agreement instead, and says so out loud when the header changes.
+cal_charset="$(printf '%s' "$cal_type" | tr 'A-Z' 'a-z' \
+	| sed -n 's/.*charset=\([^;]*\).*/\1/p' | tr -d '[:space:]"')"
 # A transfer that failed part way can leave this file stale or absent. The
 # stderr redirect goes BEFORE the input redirect: bash applies redirections left
 # to right, so the other order still prints the missing file. The exit status
@@ -697,19 +709,21 @@ if ! command -v python3 >/dev/null 2>&1; then
 	cal_absent=python3
 elif [ "$cal_curl" = 0 ]; then
 	cal_out="$(python3 - "$BODY" <<'PY'
+import importlib.util
+import json
 import re
 import sys
 
 # html5lib implements the HTML5 tree construction algorithm, which is what a
 # browser does and what eleven rounds of hand-written rules here were an
-# approximation of. It is absent rather than broken on a machine that has not
-# installed it, and the marker below says so, because a check that quietly
-# stopped measuring would be worse than one that says it did not run.
-try:
-	import html5lib
-except ImportError:
+# approximation of. Absence is asked about rather than caught: "import it and
+# treat any ImportError as absence" also swallows an ImportError raised INSIDE
+# html5lib, so a machine with html5lib installed and one of its dependencies
+# missing reported this check as skipped when it should have failed loudly.
+if importlib.util.find_spec('html5lib') is None:
 	sys.stdout.write('no-html5lib\n')
 	sys.exit(3)
+import html5lib
 
 # HTML splits a class attribute on ASCII whitespace. Python's str.split() also
 # splits on U+00A0 and U+2003, and a browser keeps those inside a token, so
@@ -717,75 +731,173 @@ except ImportError:
 # calendar -- and splitting it in two read it as the calendar.
 CLASS_SPLIT = re.compile('[ \t\n\r\f]+')
 TOKEN = 'js-date-selector'
+# The tree builder puts every HTML element in this namespace, and everything
+# inside <svg> or <math> in another one. The names are compared with the
+# namespace attached, so an SVG <a> is not an HTML <a>.
+XHTML = '{http://www.w3.org/1999/xhtml}'
+# The one part of the algorithm html5lib 1.x does not implement. See the refusal
+# below for why this is a text search and not a look at the tree.
+TEMPLATE = re.compile('</?template', re.IGNORECASE)
+# HTML elements whose descendants are in the document and are never drawn: what
+# an <object> or an <embed> shows instead of its fallback content, and what a
+# control shows instead of the markup inside an <option> or a <select>.
+UNDRAWN = frozenset((XHTML + name for name in
+	('object', 'embed', 'iframe', 'option', 'select', 'datalist')))
+# The three places HTML markup can sit inside <svg> or <math> and never be drawn.
+# (An <embed> is not in the set above by mistake: it is a void element, so the
+# calendar can never be inside one -- measured, the markup after it becomes its
+# sibling and a browser draws it. An <iframe>'s content is parsed as text by
+# browser and library alike, so it holds no calendar to count either. Whether an
+# <object> draws its fallback depends on whether its resource loads, which no
+# static reading of the reply can know, so being inside one is not counted.)
+# An SVG <desc> or <title> is description, not graphics, and a MathML
+# <annotation-xml> is an alternative encoding of a formula that is drawn from its
+# other branch. The other integration points ARE drawn -- measured in Chrome:
+# <svg><foreignObject>, <math><mtext> and <math><mi> each put a clickable
+# calendar on the screen, so a rule against foreign ancestors as such was wrong.
+UNDRAWN_FOREIGN = frozenset((
+	'{http://www.w3.org/2000/svg}desc',
+	'{http://www.w3.org/2000/svg}title',
+	'{http://www.w3.org/1998/Math/MathML}annotation-xml'))
+# A browser's parser stops building the tree at 512 elements deep and drops what
+# is deeper, so a calendar below that line is in no document at all. Measured in
+# Chrome with this repository's own client: a calendar wrapped in 509 divs draws
+# its 31 days, one wrapped in 510 does not, and 509 + <html><body> + the table is
+# exactly 512. The number is a browser's, not the specification's, so it is used
+# only to REFUSE to count something -- the direction that cannot invent a pass.
+DEPTH = 512
 
 
-def local(tag):
-	"""The element's local name, without the namespace the tree builder adds."""
-	return tag.split('}')[-1] if tag.startswith('{') else tag
+def descendants(root):
+	"""Every element under root. Iterative: ElementTree's own iter() recurses,
+	and a reply nesting a thousand divs then raised RecursionError on a calendar
+	a browser draws perfectly well."""
+	stack = [root]
+	while stack:
+		node = stack.pop()
+		for child in reversed(list(node)):
+			if not isinstance(child.tag, str):
+				continue  # a comment or a processing instruction
+			yield child
+			stack.append(child)
 
 
-def elements(node):
-	"""Every element in the tree, comments and processing instructions aside."""
-	return (e for e in node.iter() if isinstance(e.tag, str))
-
-
-def find_body(node):
+def find_body(root):
 	"""The body element, or None where the reply left the document without one.
 
 	drawCalendar() reads doc.body.childNodes. A reply whose frameset is honoured
 	has no body element at all, so that read throws and the client appends
 	nothing.
 	"""
-	for child in node:
-		if not isinstance(child.tag, str):
-			continue
-		if local(child.tag) == 'body':
-			return child
-		found = find_body(child)
-		if found is not None:
-			return found
+	for element in descendants(root):
+		if element.tag == XHTML + 'body':
+			return element
 	return None
 
 
-def walk(node, ancestors):
-	"""Every element the client appended, with the ancestors it has in the page."""
-	for child in node:
-		if not isinstance(child.tag, str):
-			continue  # a comment or a processing instruction
-		yield child, ancestors
-		yield from walk(child, ancestors + [child])
+def walk(root):
+	"""Every element the client appended, with the ancestors it has in the page.
+
+	Iterative, for the same reason as descendants().
+	"""
+	stack = [(child, ()) for child in reversed(list(root))]
+	while stack:
+		element, ancestors = stack.pop()
+		if not isinstance(element.tag, str):
+			continue
+		yield element, ancestors
+		chain = ancestors + (element,)
+		for child in reversed(list(element)):
+			stack.append((child, chain))
 
 
 def is_calendar(element):
-	"""True where this element's class list carries the calendar token."""
+	"""True where this element's class list carries the calendar token.
+
+	The namespace is not checked: the client calls closest('.js-date-selector'),
+	and a class selector matches an element in any namespace, so a MathML element
+	carrying the class is a calendar to the client. Measured -- a calendar table
+	holding <math><mi> with 31 HTML anchors inside draws all 31 days in Chrome.
+	"""
 	return TOKEN in CLASS_SPLIT.split(element.get('class') or '')
+
+
+def drawn(element, ancestors):
+	"""False where the markup itself says a browser never draws this element.
+
+	A tree says what is in the document, not what is on the screen, and the
+	difference is not only a matter of CSS. Measured in Chrome driving this
+	repository's own client code, these replies each put a complete, correctly
+	tagged calendar in the page where every day anchor is reachable by the
+	client's own closest() call and yet has a zero-size box, so nobody can click
+	a day: the calendar as an element's fallback content or as an <option>'s; the
+	calendar reached through one of the three foreign elements whose content is
+	described rather than drawn; and the hidden attribute on the calendar or on
+	anything above it.
+	"""
+	if element.get('hidden') is not None:
+		return False
+	for up in ancestors:
+		if up.tag in UNDRAWN or up.tag in UNDRAWN_FOREIGN:
+			return False
+		if up.get('hidden') is not None:
+			return False
+	return True
+
+
+def json_string(value):
+	"""The string the client's JSON.parse() gets out of this attribute.
+
+	The client parses these two attributes rather than comparing their source
+	text, so this does too: a value spelled with a JSON escape, or with space
+	around the string, names the same field to the client and used to fail here.
+	"""
+	if value is None:
+		return None
+	try:
+		parsed = json.loads(value)
+	except ValueError:
+		return None
+	return parsed if isinstance(parsed, str) else None
 
 
 # The client hands DOMParser a string that XMLHttpRequest has already decoded
 # with the charset the reply was served with, so the bytes are decoded here
 # rather than left to the tree builder: given bytes and no meta charset it
-# guesses windows-1252, where this endpoint serves UTF-8.
+# guesses windows-1252, where this endpoint serves UTF-8. UTF-8 is not assumed --
+# the shell half asserts the reply says charset=utf-8 before this decoding means
+# anything, because a reply served as UTF-16 is decoded by the client as UTF-16
+# and by this line as mojibake.
 with open(sys.argv[1], 'rb') as reply:
 	text = reply.read().decode('utf-8', 'replace')
-
-document = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
-	scripting=False)
 
 # html5lib 1.x is the HTML5 tree construction algorithm with one part missing:
 # it does not implement <template>. A browser holds a template's content in a
 # separate inert fragment, so it is never drawn and a selector run over the
 # container never matches it; html5lib treats the tag as an ordinary unknown
-# element, and in a table it foster-parents the tag out and leaves the content
-# where it was. That is wrong in BOTH directions -- measured, one reply where a
-# browser draws no days and html5lib leaves 31 clickable, and one the other way
-# round -- so a reply holding one is not read here at all. It is reported as a
-# reply this check cannot measure, which fails, rather than guessed at. The
-# element only exists here where the tokenizer saw a real start tag, so the word
-# appearing in a comment or in script text does not trigger it, and
-# template_plugins/date_selector.php cannot emit one.
-if any(local(e.tag) == 'template' for e in elements(document)):
+# element, or in some insertion modes drops it. That is wrong in every direction
+# -- measured, one reply where a browser draws no days and html5lib leaves 31
+# clickable, one the other way round, and one where html5lib's tree holds no
+# template element AT ALL while a browser puts the whole calendar inside one --
+# so a reply holding one is not read here.
+#
+# It is refused on the text, before parsing, and not on the tree, because the
+# third case above (<select><template></select>...</template>) leaves nothing in
+# the tree to find. A browser cannot create a template element that this search
+# misses: DOMParser runs no script, so every template in the client's document
+# comes from these bytes spelling the tag. The search is deliberately cruder
+# than the tokenizer, so the word inside a comment, inside script text or inside
+# an attribute value is refused too. That is the safe direction: a refusal is a
+# loud failure that says what happened, where a guess would be a check that
+# passes a reply the browser draws nothing from. template_plugins/
+# date_selector.php cannot emit the tag at all, so the live endpoint never
+# reaches this.
+if TEMPLATE.search(text):
 	sys.stdout.write('template\n')
 	sys.exit(4)
+
+document = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
+	scripting=False)
 
 body = find_body(document)
 
@@ -793,15 +905,25 @@ calendars = []
 dates = []
 orphans = 0
 if body is not None:
-	for element, ancestors in walk(body, []):
-		if is_calendar(element):
+	for element, ancestors in walk(body):
+		# The depth limit is asked about here and not for each anchor: a browser
+		# drops what is deeper than 512 elements, so a calendar below that line is
+		# in no document at all, while structure INSIDE a calendar near the
+		# surface is drawn however deep it goes. Measured both ways -- a calendar
+		# wrapped in 510 divs is gone, and one holding a day nested 600 deep
+		# inside it still draws all 31 days.
+		if (is_calendar(element) and drawn(element, ancestors)
+				and len(ancestors) + 3 <= DEPTH):  # + html, body, the element
 			calendars.append(element)
-		if local(element.tag) != 'a' or element.get('data-date-action') != 'select':
+		if element.tag != XHTML + 'a' or element.get('data-date-action') != 'select':
 			continue
 		# closest() starts at the element itself and walks up. Nothing above
 		# body's own children was appended, so the chain stops there.
-		chain = [element] + list(reversed(ancestors))
-		if any(is_calendar(up) for up in chain):
+		# closest() matches on the class alone, in any namespace, so the calendar
+		# an anchor is found under is not required to be an HTML element here
+		# either: a MathML element carrying the class is the client's calendar.
+		reachable = is_calendar(element) or any(is_calendar(up) for up in ancestors)
+		if reachable and drawn(element, ancestors):
 			dates.append(element.get('data-date'))
 		else:
 			orphans += 1
@@ -811,8 +933,8 @@ days = [date for date in dates if date in january]
 first = calendars[0] if calendars else None
 print(len(calendars),
 	orphans,
-	1 if first is not None and first.get('data-field-name') == '"open_date"' else 0,
-	1 if first is not None and first.get('data-container-name') == '"date_selector-00001"' else 0,
+	1 if first is not None and json_string(first.get('data-field-name')) == 'open_date' else 0,
+	1 if first is not None and json_string(first.get('data-container-name')) == 'date_selector-00001' else 0,
 	len(dates),
 	len(set(days)),
 	len(dates) - len(days))
@@ -863,47 +985,92 @@ fi
 # A status, a byte count and one marker do not say a calendar arrived. A body
 # cut off part way through still carries the opening tag, and curl reports HTTP
 # 200 for a reply whose transfer then failed, so its exit status is part of the
-# answer. What is asserted: the reply is served as text/html, and it holds
-# exactly one element whose class list carries the calendar token, that
-# element's own two attributes name the field and the container that were asked
-# for, the client can reach 31 select anchors from it carrying 31 distinct days
-# of January 2020 and no other day, and NO select anchor anywhere in the reply
-# is unreachable. "Reachable" is the client's own test and nothing more:
+# answer. What is asserted: the reply is served as text/html and says it is
+# UTF-8, and it holds exactly one element whose class list carries the calendar
+# token, that element's own two attributes name the field and the container that
+# were asked for once the client's own JSON.parse has read them, and the client
+# can reach 31 select anchors from it carrying 31 distinct days of January 2020
+# and no other day. "Reachable" is the client's own test and nothing more:
 # closest('.js-date-selector') from the anchor, which the events file runs on
 # every click. That rules out a prefix of a calendar, a calendar for another
 # month or another field, anchors that all select the same day, invented days,
-# days of another month beside the right ones, a second calendar, a body that
-# only mentions the class, and the 89 counterexample replies above -- including
-# the eleven that PASSED the rules this replaces while a browser drew nothing.
+# days of another month beside the right ones, a second calendar and a body that
+# only mentions the class.
 #
-# The unreachable count is the one number that is new, and it is the class the
-# last five rounds kept missing: markup that leaves the table early foster
-# parents the day anchors out of it, so they are still in the page, still 31,
-# still January, and no longer inside any calendar. Asserting it is zero costs
-# nothing, measured: of the 89 replies, not one that a browser draws 31 days
-# from also carries an unreachable anchor.
+# An anchor is only counted where the markup ALSO says a browser draws it, which
+# is not the same question as whether it is in the document. The difference was
+# measured, not argued: 123 counterexample replies were put through this
+# repository's own drawCalendar() and click handler in Chrome and asked two
+# questions each -- can the client reach 31 days, and does every one of those 31
+# anchors have a box a person could click. The two answers differ on 12 of the
+# 123. Reading the tree alone, as the round before this one did, disagreed with
+# the browser on 22 of the 123 and passed 15 replies a browser draws nothing
+# clickable from. Reading it with the four rules below leaves 3 disagreements,
+# all of them this check failing a reply a browser draws, and none of them a
+# pass it should not have given.
+#
+# The four rules, each with the measurement behind it:
+#   - The calendar, or anything above it, carrying the hidden attribute. That is
+#     markup, not a stylesheet, so this check can see it; the days are reachable
+#     and have no box at all.
+#   - The calendar inside an <object> or an <option>, where a browser draws what
+#     the element loaded, or the control, instead of the markup. <embed> is not
+#     in that list on purpose: it is a void element, so the calendar becomes its
+#     sibling and IS drawn. Whether an <object> draws its fallback depends on
+#     whether its resource loads, which no static reading of a reply can know, so
+#     a calendar inside one is not counted either way.
+#   - The calendar inside one of the three foreign elements whose content is
+#     described rather than drawn: an SVG <desc> or <title>, or a MathML
+#     <annotation-xml>. The other integration points ARE drawn -- a calendar
+#     inside <svg><foreignObject>, <math><mtext> or <math><mi> puts 31 clickable
+#     days on the screen, so a rule against foreign ancestors as such was wrong.
+#     Day anchors that are themselves SVG or MathML elements are not HTML anchors
+#     and are not counted; a browser gives them no box.
+#   - The calendar deeper than 512 elements, where a browser's parser stops
+#     building the tree. Measured to the element: 509 nested divs draw all 31
+#     days, 510 draw none, and 509 plus <html><body> plus the table is 512. The
+#     limit is a browser's rather than the specification's, so it is only ever
+#     used to refuse to count something. It is asked of the calendar and not of
+#     each anchor, because structure inside a calendar near the surface is drawn
+#     however deep it goes -- a day nested 600 deep inside the table is clickable.
 #
 # What it does NOT read, measured rather than assumed: a reply holding a
 # <template>. That is the one part of the algorithm html5lib 1.x is missing, and
-# it is wrong in both directions -- of the 89 replies, one puts a cell's end tag
-# inside a template and keeps all 31 days clickable in a browser where html5lib
-# foster-parents them out, and one puts the day cells inside a template so a
-# browser draws NOTHING where html5lib leaves 31 clickable. Guessing either way
-# would mean a check that passes a reply a browser draws nothing from, which is
-# the fault this round exists to remove, so the parser refuses the reply and
-# says why, and a refusal fails. The element only counts where the tokenizer saw
-# a real start tag, so the word inside a comment or in script text does not
-# trigger it, and template_plugins/date_selector.php cannot emit one at all.
+# it is wrong in three directions -- one reply puts a cell's end tag inside a
+# template and keeps all 31 days clickable where html5lib foster-parents them
+# out, one puts the day cells inside a template so a browser draws NOTHING where
+# html5lib leaves 31 clickable, and one writes <select><template></select> so
+# that html5lib's tree holds no template element AT ALL while a browser puts the
+# whole calendar inside its inert content. Guessing any of them would mean a
+# check that passes a reply a browser draws nothing from, which is the fault
+# these rounds exist to remove, so the parser refuses the reply and says why, and
+# a refusal fails. The refusal is on the reply's text and deliberately cruder
+# than the tokenizer: the word inside a comment, in script text or in an
+# attribute value is refused too, and so is a correct calendar that merely
+# carries an unused template -- 3 of the 123 replies, which is where all three of
+# this check's remaining disagreements with the browser are. It is refused rather
+# than parsed because DOMParser runs no script, so a template a browser creates
+# must come from the reply spelling the tag, and a tree that has dropped the
+# element cannot be asked about it. template_plugins/date_selector.php cannot
+# emit the tag at all.
 #
-# It also reads no CSS and no hidden attribute, so a calendar that is present
-# and correct and styled out of sight passes it. It decodes the reply as UTF-8,
-# which is what this endpoint serves and what the client's own XMLHttpRequest
-# decodes before handing the string to DOMParser.
+# It also reads no CSS. A calendar with style="display:none" on it, or with
+# another element positioned over it, is drawn nowhere and passes this check;
+# measured, both. A reply cannot hide itself with a <style> element -- a
+# stylesheet adopted out of a DOMParser document is not applied, measured -- so
+# that leaves the inline style attribute, which would mean parsing CSS here.
 #
-# What is still spelled exactly: the class token, the two JSON-encoded attribute
-# values, data-date-action="select" on an anchor element, and m/d/Y dates. A site
-# that overrides template_plugins/date_selector.php and renames any of those is
-# rendering a working calendar that this check reports as a failure, and would
+# The unreachable-anchor count is printed, and is NOT part of the verdict. The
+# round before this one required it to be zero; measured over the 123 replies
+# that was a stricter markup contract than the client has, not a signal: two
+# replies a browser draws perfectly carry an ignored stray anchor, and six that
+# a browser draws nothing clickable from carry none. The client's listener
+# returns on exactly the test this count is made of, so a stray anchor is inert.
+#
+# What is still spelled exactly: the class token, the two attribute values once
+# JSON-decoded, data-date-action="select" on an HTML anchor, and m/d/Y dates. A
+# site that overrides template_plugins/date_selector.php and renames any of those
+# is rendering a working calendar that this check reports as a failure, and would
 # have to update it. Quoting, attribute order, entities, ASCII whitespace, the
 # implied elements and where a browser really puts each one are the tree
 # builder's problem now.
@@ -920,6 +1087,12 @@ elif [ -n "$cal_absent" ] && [ "$cal_size_read" = 0 ]; then
 	printf '  skip the calendar render check (needs %s to read the reply as HTML; the status was 200, and wc exited %s so this run has no byte count either)\n' "$cal_absent" "$cal_size_rc"
 elif [ -n "$cal_absent" ]; then
 	printf '  skip the calendar render check (needs %s to read the reply as HTML; the status was 200 and the reply %s bytes, which is as far as this run got)\n' "$cal_absent" "$size"
+elif [ "$cal_charset" != "utf-8" ]; then
+	# The reply is read as UTF-8 by the other half of this check. A reply in
+	# another encoding is a different string to it than to the client, so this
+	# is not a parse failure to report as one -- it is this check saying that
+	# the agreement it relies on has gone.
+	bad "the calendar reply does not say it is UTF-8 (content type ${cal_type:-none}), and this check reads it as UTF-8 because that is the string the client's XMLHttpRequest hands to DOMParser, so this run says nothing about what date_selector-server.php rendered"
 elif [ "$cal_stat" != ok ]; then
 	bad "the calendar reply could not be read as HTML by this check ($cal_stat), so this run says nothing about what date_selector-server.php rendered"
 elif [ "$cal_mime_rc" != 0 ]; then
@@ -927,7 +1100,7 @@ elif [ "$cal_mime_rc" != 0 ]; then
 	# with no Content-Type at all. Only one of those is the endpoint's fault.
 	bad "the calendar reply's content type could not be folded to lower case by this check (exit $cal_mime_rc), so this run says nothing about what date_selector-server.php served"
 elif [ "$code" = 200 ] && [ "$cal_mime" = "text/html" ] \
-	&& [ "$cal_n" = 1 ] && [ "$cal_o" = 0 ] \
+	&& [ "$cal_n" = 1 ] \
 	&& [ "$cal_f" = 1 ] && [ "$cal_c" = 1 ] \
 	&& [ "$cal_a" = 31 ] && [ "$cal_u" = 31 ] && [ "$cal_x" = 0 ]; then
 	ok "date_selector-server.php serves text/html holding one calendar element, tagged with the field and the container that were asked for, from which the client can reach the 31 days of January 2020 as select anchors and no other day ($size bytes)"

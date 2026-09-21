@@ -5,16 +5,21 @@
 # browser does. Section 8d reads the date selector's reply with it, because a
 # reply that is correct as a string, or as a stream of tags, can still be
 # something else entirely once a browser has built the tree -- and eleven rounds
-# of rules written out by hand here disagreed with Chrome on 35 of 89 replies --
+# of rules written out by hand here disagreed with Chrome on 35 of 89 replies,
 # eleven of them replies the rules passed while a browser drew nothing.
+#
+# The continuation lines below are indented with SPACES. pip keeps a leading tab
+# when it joins a continued line and then reads the tab and the option as part of
+# the version specifier, so a tab here fails the install with "Invalid
+# requirement" and stops CI before the smoke test runs.
 #
 # Every artefact is pinned by version and by hash, and pip is run with
 # --require-hashes, so a release that is replaced on the index fails the build
 # instead of running. six and webencodings are html5lib's own two dependencies;
 # --require-hashes needs every one of them named here.
 html5lib==1.1 \
-	--hash=sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d
+    --hash=sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d
 six==1.17.0 \
-	--hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
 webencodings==0.5.1 \
-	--hash=sha256:a0af1213f3c2226497a97e2b3aa01a7e4bee4f403f95be16fc9acd2947514a78
+    --hash=sha256:a0af1213f3c2226497a97e2b3aa01a7e4bee4f403f95be16fc9acd2947514a78
