@@ -39,7 +39,12 @@ $year = pl_grab_get('year');
 // field (column_name / cf_<field_key>), all of which validate upstream to
 // [A-Za-z0-9_-] and 64 chars or fewer; brackets are allowed so array-style
 // names like foo[1] keep working.
-if (!preg_match('/^[A-Za-z0-9_\[\]-]{1,64}\z/', (string)$field_name))
+// pl_grab_get() hands the value back in whatever shape the query string had,
+// so field_name[]=x arrives as an array and casting that to a string gives the
+// literal "Array" -- which the pattern accepts, renders Array into the
+// attribute, and makes PHP log an array-to-string warning. A form field name is
+// one value, so anything that is not a string is a malformed request.
+if (!is_string($field_name) || !preg_match('/^[A-Za-z0-9_\[\]-]{1,64}\z/', $field_name))
 {
 	header('Content-Type: text/plain; charset=UTF-8', true, 400);
 	exit('Invalid field_name.');
@@ -47,7 +52,7 @@ if (!preg_match('/^[A-Za-z0-9_\[\]-]{1,64}\z/', (string)$field_name))
 
 // The container is a DOM id we generate ourselves as "date_selector-NNNNN";
 // hold it to the same shape for the same reason.
-if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', (string)$container))
+if (!is_string($container) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $container))
 {
 	header('Content-Type: text/plain; charset=UTF-8', true, 400);
 	exit('Invalid container.');
