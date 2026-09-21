@@ -593,12 +593,13 @@ for act in update delete; do
 	fi
 done
 
-# 8d. services/date_selector-server.php runs with PL_DISABLE_SECURITY, so it is
-# reachable with no session at all. Both checks matter: a malformed field name
-# is refused, and a real one still renders the calendar. Deliberately no cookie
-# jar -- that is how the endpoint is actually reached.
+# 8d. services/date_selector-server.php echoes field_name back into HTML
+# attributes, so it pins that value to the shape a form field name can have.
+# Both checks matter: a malformed field name is refused, and a real one still
+# renders the calendar. Both carry this run's session, because the endpoint now
+# requires one -- section 102 is what checks that it does.
 CAL="$OCM_URL/services/date_selector-server.php"
-code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 	--get --data-urlencode 'field_name="><script>x</script>' \
 	--data-urlencode 'container=date_selector-00001' "$CAL")"
 if [ "$code" = 400 ] && grep -q 'Invalid field_name' "$BODY"; then
@@ -607,7 +608,7 @@ else
 	bad "date_selector-server.php ACCEPTED a malformed field_name (status $code)"
 fi
 
-code="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' \
+code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
 	"$CAL?field_name=open_date&container=date_selector-00001&month=1&year=2020")"
 size="$(wc -c < "$BODY")"
 if [ "$code" = 200 ] && [ "$size" -gt 200 ]; then
@@ -17759,6 +17760,81 @@ else
 
 	cleanup_iu
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
+# 102. cms/services/zip-server-ajax.php, problem-server-ajax.php and
+# date_selector-server.php each defined PL_DISABLE_SECURITY, which tells
+# pika_init() to skip authenticate() entirely. Anyone who could reach the server
+# could reach them: no account and no cookie. Two of the three answer from the
+# database -- problem-server-ajax.php returns the deployment's own configured
+# problem-code menu, labels and all -- and the third renders a template.
+#
+# They now define PL_DISABLE_DISPLAY_LOGIN instead, so pika_init()
+# authenticates as it does everywhere else and a request with no session ends
+# with an empty body rather than a login page rendered where XML was asked for.
+#
+# Each endpoint is asked twice: once with no cookie at all, where its own marker
+# must not appear, and once with this run's session, where it must. Without the
+# second request a broken endpoint would read as a secure one.
+echo
+echo "102. the ajax service endpoints require a session"
+
+# path|marker in the reply|what it serves
+SV_CASES="services/zip-server-ajax.php?zip=55401|<zipcode|the zip code lookup
+services/problem-server-ajax.php?problem=01|<problem_codes|the problem code menu
+services/date_selector-server.php?field_name=act_date&container=date_selector-1&month=1&year=2026|js-date-selector|the date selector"
+
+SV_OPEN=0
+SV_CLOSED=0
+SV_BROKEN=""
+
+while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
+	[ -n "$SV_PATH" ] || continue
+
+	# No -b and no -c: this request carries no session of any kind.
+	SV_CODE="$(curl -s --max-time 30 -o "$BODY" -w '%{http_code}' "$OCM_URL/$SV_PATH")"
+	SV_BYTES="$(wc -c < "$BODY" | tr -d ' ')"
+	if grep -q "$SV_MARK" "$BODY"; then
+		SV_OPEN=$((SV_OPEN + 1))
+		bad "${SV_WHAT} served its reply to a request with no session (HTTP ${SV_CODE}, ${SV_BYTES} bytes)"
+	else
+		SV_CLOSED=$((SV_CLOSED + 1))
+	fi
+
+	# The same request with this run's session has to work, or the check above
+	# proves nothing about authentication.
+	SV_CODE2="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' "$OCM_URL/$SV_PATH")"
+	if [ "$SV_CODE2" != 200 ] || ! grep -q "$SV_MARK" "$BODY"; then
+		SV_BROKEN="${SV_BROKEN} ${SV_PATH%%\?*}"
+	fi
+done <<SVEOF
+$SV_CASES
+SVEOF
+
+if [ "$SV_OPEN" = 0 ] && [ "$SV_CLOSED" = 3 ]; then
+	ok "none of the 3 ajax service endpoints answers a request with no session"
+else
+	bad "${SV_OPEN} of the 3 ajax service endpoints answered without a session, ${SV_CLOSED} refused"
+fi
+
+if [ -z "$SV_BROKEN" ]; then
+	ok "all 3 still answer a signed-in request, so the check above is about the session"
+else
+	bad "these ajax service endpoints no longer answer a signed-in request:${SV_BROKEN}"
+fi
+
+# The session check has to come before the input validation, not after it. A
+# stranger who gets "Invalid field_name." back has reached the endpoint's own
+# code; a stranger who gets nothing has not. Section 8d is the regression guard
+# on the validation itself, for a caller that does hold a session.
+curl -s --max-time 30 -o "$BODY" -G \
+	--data-urlencode "field_name=a b\"c" \
+	--data-urlencode "container=date_selector-1" \
+	"$OCM_URL/services/date_selector-server.php" >/dev/null
+if grep -q 'Invalid field_name' "$BODY"; then
+	bad "the date selector validated a stranger's field_name, so it reaches its own code before the session is checked"
+else
+	ok "the date selector refuses a stranger before it reads what was sent"
 fi
 
 echo

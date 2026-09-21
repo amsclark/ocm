@@ -5,7 +5,18 @@
 /* http://pikasoftware.com        */
 /**********************************/
 
-define('PL_DISABLE_SECURITY',true);
+/*	A session is required here. This endpoint ran with
+	PL_DISABLE_SECURITY, which tells pika_init() to skip authenticate()
+	altogether, so anyone who could reach the server could reach it --
+	no account, no cookie. Nothing it serves is meant to be public.
+	
+	PL_DISABLE_DISPLAY_LOGIN is what makes that safe to fix without
+	breaking the caller: pika_init() authenticates as it does on every
+	other page, and a request with no session ends with an empty body
+	rather than a login page rendered where a reply was expected. The
+	same pair is used by cms/documents.php.
+*/
+define('PL_DISABLE_DISPLAY_LOGIN',true);
 
 chdir('..');
 require_once('pika-danio.php');
