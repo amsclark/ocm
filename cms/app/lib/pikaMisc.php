@@ -710,8 +710,30 @@ class pikaMisc
 	public static function getContactsAlphabetically(&$dataset_size, $letter, $offset, $limit = 5)
 	{
 		$clean_letter = DB::escapeString($letter);
-		$clean_offset = DB::escapeString($offset);
-		$clean_limit = DB::escapeString($limit);
+
+		/*	LIMIT takes integers, and escaping is the wrong tool for one. The
+			offset arrives from the request through addressbook.php, which
+			tests it with is_numeric(), and that test passes 1.5, 1e2 and -1.
+			Each of those reached LIMIT as written, made the statement a
+			syntax error, and answered the page with a 500.
+
+			Cast instead, and hold the result at the smallest value LIMIT
+			accepts, so a request can no longer choose a value that does not
+			parse.
+		*/
+		$clean_offset = (int) $offset;
+
+		if ($clean_offset < 0)
+		{
+			$clean_offset = 0;
+		}
+
+		$clean_limit = (int) $limit;
+
+		if ($clean_limit < 1)
+		{
+			$clean_limit = 1;
+		}
 
 		// get the total number of contacts ## modified 072219 following db server version upgrade: replaced "Rows" alias (reserved word as of version 10.2.4) ##
 		$result = DB::query("SELECT COUNT(*) AS RowCount FROM aliases WHERE last_name LIKE '{$clean_letter}%'")
@@ -1667,10 +1689,11 @@ class pikaMisc
 	
 	public static function getCompens($case_id)
 	{
-		/*	The case id is interpolated, so escape it. Nothing in the tree
-			calls this method, which is why the raw interpolation survived,
-			but a query that is unsafe only because it is unreachable is
-			worth no less fixing than one that is reached.
+		/*	The case id is interpolated, so escape it. A search of the
+			repository finds no caller for this method, which is why the raw
+			interpolation survived, but a query that is unsafe only because
+			it is unreachable is worth no less fixing than one that is
+			reached.
 		*/
 		$sql = "SELECT compens.*
 						FROM compens

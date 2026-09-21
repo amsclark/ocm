@@ -1290,16 +1290,17 @@ switch($action)
 	$new_case_id = $pk->newCase($y);
 	
 	/*	$x comes from pl_grab_vars('cases'), which reads the request. The
-		case_id column is the primary key, so pl_clean_form_input() filters it
-		in 'primary_key' mode, and that mode turns < and > into entities and
-		leaves everything else alone. Both quote characters arrive intact, and
-		this was the one query in the handler that interpolated the value
-		instead of escaping it.
+		case_id column is the primary key, so pl_clean_form_input() filters
+		it in 'primary_key' mode, and that mode trims the value and turns <
+		and > into entities. Both quote characters survive it, and this query
+		interpolated the value instead of escaping it.
 
-		It went unnoticed because the handler never reached this line: the
-		updateCase() call above it produced a malformed statement on this
-		schema and ended the request first. See pl_table_autosql_update() in
-		app/extralib/lib/pl-legacy.php.
+		Measured with the empty-SET-list fix in
+		app/extralib/lib/pl-legacy.php in place, so that this line is
+		reached, and with only the escaping below removed: a case_id of the
+		form <id>' OR '1'='1 copied a conflict row belonging to a case the
+		request never named onto the case created just above. Smoke section
+		96 is that measurement.
 	*/
 	$res = DB::query("SELECT * FROM conflict WHERE case_id='"
 		. DB::escapeString($x['case_id']) . "'");
