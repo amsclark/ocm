@@ -2974,7 +2974,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			curl -sL --max-time 30 -b "$RJAR" -o "$BODY" "$OCM_URL/reports/" >/dev/null
 			if grep -q 'not authorized to run any reports' "$BODY"; then
 				bad "A GROUP GRANTED ${RREPORT} BY NAME WAS DENIED EVERY REPORT (reportList() lost its keys)"
-			elif grep -q "${RREPORT}" "$BODY"; then
+			elif grep -q -e "${RREPORT}" "$BODY"; then
 				ok "a group granted ${RREPORT} by name gets it"
 			else
 				bad "reports/index.php gave neither ${RREPORT} nor the refusal ($(wc -c < "$BODY") bytes)"
@@ -2995,7 +2995,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 				"$OCM_URL/system-groups.php?action=add" >/dev/null
 			ropts="$(grep -oE '<option[^>]*value="[A-Za-z0-9_-]+"' "$BODY" \
 				| sed -e 's/.*value="//' -e 's/"$//' | sort -u)"
-			if printf '%s\n' "$ropts" | grep -qx "$RREPORT"; then
+			if printf '%s\n' "$ropts" | grep -qx -e "$RREPORT"; then
 				ok "the group editor offers report names as its option values"
 			else
 				bad "THE GROUP EDITOR DOES NOT OFFER ${RREPORT} AS AN OPTION VALUE (keys lost)"
@@ -3179,10 +3179,10 @@ if [ "$HAVE_DB" = 1 ]; then
 					"$OCM_URL/search.php?m=${mode}&s=${STOKEN}" >/dev/null
 				if grep -q 'ZZ-SMOKE-2' "$BODY"; then
 					bad "SEARCH LEAKS ANOTHER OFFICE'S CASE TO A USER WITH NO PERMISSIONS (mode ${mode})"
-				elif grep -q "$STOKEN" "$BODY"; then
+				elif grep -q -e "$STOKEN" "$BODY"; then
 					# The search box echoes the term back, which is fine; the
 					# case number and the document name are what must be gone.
-					if grep -qE "${STOKEN}\.txt|${STOKEN} summary|${STOKEN} description" "$BODY"; then
+					if grep -qE -e "${STOKEN}\.txt|${STOKEN} summary|${STOKEN} description" "$BODY"; then
 						bad "SEARCH LEAKS THE MATCHED ROW ITSELF TO A USER WITH NO PERMISSIONS (mode ${mode})"
 					else
 						ok "search shows no unreadable case (mode ${mode}, term echoed only)"
@@ -3221,7 +3221,7 @@ for probe in \
 	size="$(wc -c < "$BODY")"
 	if [ "$size" -lt 500 ]; then
 		bad "$page with a bad user_id: only $size bytes"
-	elif grep -qF "$marker" "$BODY"; then
+	elif grep -qF -e "$marker" "$BODY"; then
 		bad "$page REFLECTS an unvalidated user_id back into the page ($marker)"
 	else
 		ok "$page does not reflect a bad user_id ($size bytes)"
@@ -3470,7 +3470,7 @@ SECRET="${DB_PASSWORD:-}"
 curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 	"$OCM_URL/search.php?s=%25%25%5Bdb_password%5D%25%25" >/dev/null
 if [ -s "$BODY" ] && ! grep -q '%%\[db_password\]%%' "$BODY" \
-	&& { [ -z "$SECRET" ] || ! grep -qF "$SECRET" "$BODY"; }
+	&& { [ -z "$SECRET" ] || ! grep -qF -e "$SECRET" "$BODY"; }
 then
 	ok "a db_password tag in the search box resolves to nothing"
 else
@@ -3623,7 +3623,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		for pair in "${AORPHAN}:ZZACT-ORPHAN-SECRET" "${APB}:ZZACT-PROBONO-OK"; do
 			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 				"$OCM_URL/activity.php?act_id=${pair%%:*}" >/dev/null
-			if grep -q "${pair#*:}" "$BODY"; then
+			if grep -q -e "${pair#*:}" "$BODY"; then
 				ok "the admin sees the ${pair#*:} fixture"
 			else
 				bad "the admin does NOT see the ${pair#*:} fixture - section 16 proves nothing"
@@ -4637,7 +4637,7 @@ if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 		rl_try zz_lockout_user "wrong-${i}"
 		i=$((i+1))
 	done
-	if grep -q "$RL_MSG" "$BODY"; then
+	if grep -q -e "$RL_MSG" "$BODY"; then
 		bad "the lockout fired after 9 failures — the threshold is too low"
 	else
 		ok "nine failed logins do not lock the account out"
@@ -4645,7 +4645,7 @@ if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 
 	rl_try zz_lockout_user wrong-10
 	rl_try zz_lockout_user wrong-11
-	if grep -q "$RL_MSG" "$BODY"; then
+	if grep -q -e "$RL_MSG" "$BODY"; then
 		ok "the tenth failed login locks further attempts out"
 	else
 		bad "no lockout after 11 failed logins — the login form is still an unlimited password oracle"
@@ -4656,7 +4656,7 @@ if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 	# lockout stands. This is also the check that would catch a per-account
 	# key being counted but never read.
 	rl_try "$OCM_USER" "$OCM_PASSWORD"
-	if grep -q "$RL_MSG" "$BODY"; then
+	if grep -q -e "$RL_MSG" "$BODY"; then
 		ok "the lockout also refuses a valid password from the same address"
 	else
 		bad "a valid password is still accepted from a locked-out address — the per-IP key is not enforced"
@@ -5045,7 +5045,7 @@ MFAPY
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/search.php?s=%25%25%5Btotp_encryption_key%5D%25%25" >/dev/null
 		if grep -q 'name="s" size="48" value=""' "$BODY" \
-			&& { [ -z "$MFA_KEY" ] || ! grep -qF "$MFA_KEY" "$BODY"; }
+			&& { [ -z "$MFA_KEY" ] || ! grep -qF -e "$MFA_KEY" "$BODY"; }
 		then
 			ok "a totp_encryption_key tag in the search box resolves to nothing"
 		else
@@ -5435,14 +5435,14 @@ SSOCFG2
 		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
 			-d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" "$OCM_URL/" >/dev/null
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
-		if grep -qF "$SSO_SECRET" "$BODY"; then
+		if grep -qF -e "$SSO_SECRET" "$BODY"; then
 			bad "system-settings.php renders the SSO client secret"
 		else
 			ok "system-settings.php does not render the SSO client secret"
 		fi
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/search.php?s=%25%25%5Bsso_client_secret%5D%25%25" >/dev/null
-		if grep -q 'name="s" size="48" value=""' "$BODY" && ! grep -qF "$SSO_SECRET" "$BODY"; then
+		if grep -q 'name="s" size="48" value=""' "$BODY" && ! grep -qF -e "$SSO_SECRET" "$BODY"; then
 			ok "an sso_client_secret tag in the search box resolves to nothing"
 		else
 			bad "search.php resolved the sso_client_secret setting"
@@ -5680,7 +5680,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
 			-d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" "$OCM_URL/" >/dev/null
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-settings.php" >/dev/null
-		if grep -qF "$PT_SECRET" "$BODY"; then
+		if grep -qF -e "$PT_SECRET" "$BODY"; then
 			bad "system-settings.php renders the peer transfer shared secret"
 		else
 			ok "system-settings.php does not render the peer transfer shared secret"
@@ -5707,7 +5707,7 @@ if [ "$HAVE_DB" = 1 ]; then
 
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/search.php?s=%25%25%5Bpeer_transfer_shared_secret%5D%25%25" >/dev/null
-		if grep -qF "$PT_SECRET" "$BODY"; then
+		if grep -qF -e "$PT_SECRET" "$BODY"; then
 			bad "search.php resolved the peer transfer shared secret into the page"
 		else
 			ok "a peer_transfer_shared_secret tag in the search box resolves to nothing"
@@ -7690,7 +7690,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	# --- 45a. cms/case_list.php ---------------------------------------------
 	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
 	if grep -qF "case_id=${XSSCASE}" "$BODY"; then
-		if grep -qF "$XSSPAY" "$BODY"; then
+		if grep -qF -e "$XSSPAY" "$BODY"; then
 			bad "case_list.php renders a case number as live markup"
 		else
 			ok "case_list.php escapes a case number that holds markup"
@@ -7712,7 +7712,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	else
 		bad "pb_attorneys.php does not show the escaped fixture case - 45b proves nothing"
 	fi
-	if grep -qF "$XSSPAY" "$BODY"; then
+	if grep -qF -e "$XSSPAY" "$BODY"; then
 		bad "pb_attorneys.php renders a case number as live markup"
 	else
 		ok "pb_attorneys.php has no live markup from the case number"
@@ -7751,7 +7751,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 		"$OCM_URL/merge_contacts.php?contact_id=${XSSC2}" >/dev/null
 	if grep -qF 'ZZXSSDUPE' "$BODY" && grep -qF 'merge_these[]' "$BODY"; then
-		if grep -qF "$XSSPAY" "$BODY" || grep -qF '<b>Zc</b>' "$BODY"; then
+		if grep -qF -e "$XSSPAY" "$BODY" || grep -qF '<b>Zc</b>' "$BODY"; then
 			bad "merge_contacts.php renders a contact address as live markup"
 		else
 			ok "merge_contacts.php escapes a contact address that holds markup"
@@ -7777,7 +7777,7 @@ if [ "$HAVE_DB" = 1 ]; then
 
 	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/system-red_flags.php" >/dev/null
 	if grep -qF 'zzxssflag' "$BODY"; then
-		if grep -qF "$XSSPAY" "$BODY"; then
+		if grep -qF -e "$XSSPAY" "$BODY"; then
 			bad "system-red_flags.php renders a flag description as live markup"
 		else
 			ok "system-red_flags.php escapes a flag description that holds markup"
@@ -7794,7 +7794,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		"intake2.php?last_name=${XSSREFQ}" \
 		"case_contact.php?case_id=${XSSCASE}&last_name=${XSSREFQ}"; do
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$OCM_URL/$xss_page" >/dev/null
-		if grep -qF "$XSSREF" "$BODY"; then
+		if grep -qF -e "$XSSREF" "$BODY"; then
 			bad "${xss_page%%\?*} lets a search value close its value= attribute"
 		else
 			ok "${xss_page%%\?*} escapes a quote in a search value"
@@ -9325,7 +9325,7 @@ PMSEED
 			for pm_path in "reports/zzcasex/zzcase.php" "zzcasex/zzcase.php"; do
 				if ! pm_as "$PMRJAR" "pm.php/${pm_path}?case_id=${PMCASE}"; then
 					bad "the reader's request for pm.php/${pm_path} failed (curl exit $pm_curl)"
-				elif grep -qF "$PMNUM" "$BODY"; then
+				elif grep -qF -e "$PMNUM" "$BODY"; then
 					bad "pm.php/${pm_path} PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT"
 				elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 					ok "pm.php/${pm_path} refuses a case the caller cannot read"
@@ -9348,7 +9348,7 @@ PMSEED
 			for pm_path in "reports/zzcasex/zzcaseget.php" "zzcasex/zzcaseget.php"; do
 				if ! pm_post "$PMRJAR" "pm.php/${pm_path}?case_id=${PMCASE}" 'case_id='; then
 					bad "the reader's POST to pm.php/${pm_path} failed (curl exit $pm_curl)"
-				elif grep -qF "$PMNUM" "$BODY"; then
+				elif grep -qF -e "$PMNUM" "$BODY"; then
 					bad "pm.php/${pm_path} PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN A POST BODY BLANKED THE case_id IN THE QUERY STRING"
 				elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 					ok "pm.php/${pm_path} refuses when a POST body blanks the case_id in the query string"
@@ -9364,7 +9364,7 @@ PMSEED
 			# is the shape that exposed the gate reading only $_REQUEST.
 			if ! pm_post "$PMRJAR" "pm.php/zzcasex/zzcase.php?case_id=${PMCASE}" 'case_id=0'; then
 				bad "the reader's POST with a second case_id failed (curl exit $pm_curl)"
-			elif grep -qF "$PMNUM" "$BODY"; then
+			elif grep -qF -e "$PMNUM" "$BODY"; then
 				bad "pm.php PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN THE QUERY STRING AND THE POST BODY NAMED DIFFERENT CASES"
 			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 				ok "pm.php refuses a request whose query string and POST body name different cases"
@@ -9413,7 +9413,7 @@ PMSEED
 			# extension reads the one in the cookie.
 			if ! pm_cookie "$PMRJAR" "pm.php/zzcasex/zzcase.php" "case_id=${PMCASE}"; then
 				bad "the reader's cookie request to pm.php failed (curl exit $pm_curl)"
-			elif grep -qF "$PMNUM" "$BODY"; then
+			elif grep -qF -e "$PMNUM" "$BODY"; then
 				bad "pm.php PRINTED CASE ${PMNUM} TO A USER WHO CANNOT READ IT WHEN THE case_id ARRIVED ONLY IN A COOKIE"
 			elif [ "$pm_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 				ok "pm.php refuses a case_id that arrives only in a cookie"
@@ -11207,7 +11207,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 					"$OCM_URL/${page}?user_id=1&cal_date=${CAL_RDATE}" >/dev/null
 				if grep -qF 'ZZ-CAL-REDACT' "$BODY"; then
 					bad "${page} PRINTS THE SUMMARY OF AN ACTIVITY THE CALLER MAY NOT READ"
-				elif grep -qF "$CAL_RLABEL" "$BODY"; then
+				elif grep -qF -e "$CAL_RLABEL" "$BODY"; then
 					ok "${page} shows the time of an unreadable activity and no case text"
 				else
 					bad "${page} drew neither the time nor the summary of the redacted row"
@@ -11537,7 +11537,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		if grep -q 'name="_reauth_scope" value="user_admin"' "$BODY" \
 			&& grep -q 'name="_reauth_edit_again" value="1"' "$BODY" \
 			&& ! grep -q 'name="password"' "$BODY" \
-			&& ! grep -qF "$RATARGETNEW" "$BODY" \
+			&& ! grep -qF -e "$RATARGETNEW" "$BODY" \
 			&& [ "$(adb "SELECT * FROM users WHERE username = '${RATARGET}'")" = "$RABEFOREROW" ]; then
 			ok "${RAMODE}: the challenge omits the password and leaves the user unchanged"
 		else
@@ -11874,7 +11874,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	HIBP_PREFIX="$(hibp_dex php -r 'echo strtoupper(substr(sha1($argv[1]), 0, 5));' "$HIBP_BAD" </dev/null 2>/dev/null)"
 	HIBP_SUFFIX="$(hibp_dex php -r 'echo strtoupper(substr(sha1($argv[1]), 5));' "$HIBP_BAD" </dev/null 2>/dev/null)"
 	curl -s --max-time 30 -o "$BODY" "${OCM_URL}/zz_test_hibp.php/${HIBP_PREFIX}" >/dev/null
-	if grep -q "$HIBP_SUFFIX" "$BODY"; then
+	if grep -q -e "$HIBP_SUFFIX" "$BODY"; then
 		ok "the stand-in breach service answers for the test password's prefix"
 	else
 		bad "the stand-in breach service did not answer - the rest of this section cannot be trusted"
@@ -15126,7 +15126,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 
 	sm77_drop
 
-	sm77_says() { printf '%s' "$SM77_OUT" | grep -qF "$1"; }
+	sm77_says() { printf '%s' "$SM77_OUT" | grep -qF -e "$1"; }
 
 	# 77a. Positive control: the lookup this function exists for still works.
 	if sm77_says "ACT_PLAIN:${SM77_ACT}"; then
@@ -15784,7 +15784,7 @@ then
 				bad "cms/transfer.php answered the no-flag user with HTTP $sm79_xfer_code, expected 403"
 			fi
 
-			if ! grep -qF "$SM79_NUMBER" "$SM79_B"
+			if ! grep -qF -e "$SM79_NUMBER" "$SM79_B"
 			then
 				ok "the refusal does not leak the case number"
 			else
@@ -15837,7 +15837,7 @@ then
 	# refused everybody would pass every check above.
 	sm79_adm_xfer="$(curl -s --max-time 30 -b "$COOKIES" -o "$SM79_A" \
 		-w '%{http_code}' "$OCM_URL/transfer.php?case_id=${SM79_CASE}")"
-	if [ "$sm79_adm_xfer" = 200 ] && grep -qF "$SM79_NUMBER" "$SM79_A"
+	if [ "$sm79_adm_xfer" = 200 ] && grep -qF -e "$SM79_NUMBER" "$SM79_A"
 	then
 		ok "the administrator still reaches cms/transfer.php for that case"
 	else
@@ -17235,7 +17235,7 @@ mark_dead=0
 while read -r mark_class
 do
 	[ -z "$mark_class" ] && continue
-	if ! grep -qxF "$mark_class" "$BODY.csp89emit"
+	if ! grep -qxF -e "$mark_class" "$BODY.csp89emit"
 	then
 		bad "cms/js binds $mark_class but no template or plugin emits it, so the listener never fires"
 		mark_dead=$((mark_dead + 1))
@@ -17245,7 +17245,7 @@ done < "$BODY.csp89bound"
 while read -r mark_class
 do
 	[ -z "$mark_class" ] && continue
-	if ! grep -qxF "$mark_class" "$BODY.csp89bound"
+	if ! grep -qxF -e "$mark_class" "$BODY.csp89bound"
 	then
 		bad "a page emits $mark_class but nothing in cms/js binds it, so the control is dead"
 		mark_dead=$((mark_dead + 1))
@@ -17608,7 +17608,7 @@ if [ "$HAVE_DB" = 1 ]; then
 				bad "the admin's request for ${rpt_url##*/} failed (curl exit $rpt_curl) - section 84 proves nothing"
 			elif [ "$rpt_code" != 200 ]; then
 				bad "the admin got $rpt_code from ${rpt_url##*/} - section 84 proves nothing"
-			elif grep -qF "$RSECRET" "$BODY"; then
+			elif grep -qF -e "$RSECRET" "$BODY"; then
 				ok "the admin sees the client name in ${rpt_url##*/} (status 200)"
 			else
 				bad "the admin does NOT see the client name in ${rpt_url##*/} - section 84 proves nothing"
@@ -17640,7 +17640,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			for rpt_url in "$rpt_print" "$rpt_bill"; do
 				if ! rpt_fetch "$RJAR" "$rpt_url"; then
 					bad "the reader's request for ${rpt_url##*/} failed (curl exit $rpt_curl), so the refusal is unproven"
-				elif grep -qF "$RSECRET" "$BODY"; then
+				elif grep -qF -e "$RSECRET" "$BODY"; then
 					bad "A USER WHO CANNOT READ THE CASE CAN PRINT IT THROUGH ${rpt_url##*/}"
 				elif [ "$rpt_code" != 403 ]; then
 					bad "${rpt_url##*/} hid the case from the reader but answered $rpt_code, not 403"
@@ -17662,7 +17662,7 @@ if [ "$HAVE_DB" = 1 ]; then
 					bad "the reader's request for legacy_report.php?report=${rpt_name} failed (curl exit $rpt_curl)"
 				elif [ "$rpt_code" = 403 ] && grep -q 'This case is not viewable' "$BODY"; then
 					ok "legacy_report.php refuses the case before it dispatches report=${rpt_name}"
-				elif grep -qF "$RSECRET" "$BODY"; then
+				elif grep -qF -e "$RSECRET" "$BODY"; then
 					bad "legacy_report.php?report=${rpt_name} PRINTED THE CLIENT NAME TO A USER WHO CANNOT READ THE CASE"
 				else
 					bad "legacy_report.php?report=${rpt_name} answered the reader $rpt_code instead of refusing the case before dispatch"
@@ -17706,7 +17706,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			for rpt_url in "$rpt_print" "$rpt_bill"; do
 				if ! rpt_fetch "$ROJAR" "$rpt_url"; then
 					bad "the handler's request for ${rpt_url##*/} failed (curl exit $rpt_curl), so the print is unproven"
-				elif [ "$rpt_code" = 200 ] && grep -qF "$RSECRET" "$BODY"; then
+				elif [ "$rpt_code" = 200 ] && grep -qF -e "$RSECRET" "$BODY"; then
 					ok "${rpt_url##*/} still prints for the case's own handler"
 				else
 					bad "${rpt_url##*/} no longer prints for the case's own handler (status $rpt_code)"
@@ -17727,7 +17727,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			rpt_url="$OCM_URL/legacy_report.php?report=compen_bill&case_id=${RCASE}"
 			if ! rpt_fetch "$ROJAR" "$rpt_url"; then
 				bad "the handler's request for legacy_report.php?report=compen_bill failed (curl exit $rpt_curl)"
-			elif [ "$rpt_code" = 200 ] && grep -qF "$RSECRET" "$BODY"; then
+			elif [ "$rpt_code" = 200 ] && grep -qF -e "$RSECRET" "$BODY"; then
 				ok "legacy_report.php prints the billing form for the case's own handler"
 			else
 				bad "legacy_report.php?report=compen_bill ANSWERED THE CASE'S OWN HANDLER $rpt_code, NOT THE BILLING FORM"
@@ -17740,7 +17740,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			# dispatcher's gate in place on the route the chdir fix touched.
 			if ! rpt_fetch "$RJAR" "$rpt_url"; then
 				bad "the reader's request for legacy_report.php?report=compen_bill failed (curl exit $rpt_curl)"
-			elif grep -qF "$RSECRET" "$BODY"; then
+			elif grep -qF -e "$RSECRET" "$BODY"; then
 				bad "legacy_report.php?report=compen_bill GAVE THE READER THE CLIENT NAME ON A CASE THEY MAY NOT READ"
 			elif [ "$rpt_code" = 403 ]; then
 				ok "legacy_report.php?report=compen_bill refuses the reader 403"
@@ -17762,7 +17762,7 @@ if [ "$HAVE_DB" = 1 ]; then
 				rpt_url="$OCM_URL/reports/case_print/case_print-form.php?case_id=${RCASE}"
 				if ! rpt_fetch "${rpt_who#*:}" "$rpt_url"; then
 					bad "the ${rpt_who%%:*}'s direct request for case_print-form.php failed (curl exit $rpt_curl)"
-				elif grep -qF "$RSECRET" "$BODY"; then
+				elif grep -qF -e "$RSECRET" "$BODY"; then
 					bad "A DIRECT REQUEST FOR case_print-form.php PRINTED THE CLIENT NAME TO THE ${rpt_who%%:*}"
 				elif [ "$rpt_code" = 404 ]; then
 					ok "a direct request for case_print-form.php answers the ${rpt_who%%:*} 404"
@@ -17937,7 +17937,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		# would pass on a page that never had anything to leak.
 		if ! tmr_fetch "$COOKIES" "$tmr_case"; then
 			bad "the admin's request for timer.php failed (curl exit $tmr_curl) - section 85 proves nothing"
-		elif [ "$tmr_code" = 200 ] && grep -qF "$TMSECRET" "$BODY" && grep -qF "$TMNUM" "$BODY"; then
+		elif [ "$tmr_code" = 200 ] && grep -qF -e "$TMSECRET" "$BODY" && grep -qF -e "$TMNUM" "$BODY"; then
 			ok "the admin sees the case number and the client name in timer.php (status 200)"
 		else
 			bad "the admin got $tmr_code from timer.php without the case fixture in it - section 85 proves nothing"
@@ -17967,7 +17967,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 
 			if ! tmr_fetch "$TMJAR" "$tmr_case"; then
 				bad "the reader's request for timer.php failed (curl exit $tmr_curl), so the refusal is unproven"
-			elif grep -qF "$TMSECRET" "$BODY" || grep -qF "$TMNUM" "$BODY"; then
+			elif grep -qF -e "$TMSECRET" "$BODY" || grep -qF -e "$TMNUM" "$BODY"; then
 				bad "timer.php PRINTED CASE ${TMNUM} AND ITS CLIENT TO A USER WHO CANNOT READ THE CASE"
 			elif [ "$tmr_code" != 403 ]; then
 				bad "timer.php hid the case from the reader but answered $tmr_code, not 403"
@@ -18006,7 +18006,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			# they may not edit, and that is what has to be refused.
 			if ! tmr_fetch "$TMVJAR" "$tmr_case"; then
 				bad "the read-only user's request for timer.php failed (curl exit $tmr_curl)"
-			elif [ "$tmr_code" = 200 ] && grep -qF "$TMNUM" "$BODY"; then
+			elif [ "$tmr_code" = 200 ] && grep -qF -e "$TMNUM" "$BODY"; then
 				ok "timer.php still opens for a user who may read the case but not edit it"
 			else
 				bad "timer.php answered a user who may read the case $tmr_code, so the gate refused a reader it should allow"
@@ -19948,7 +19948,7 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 	if [ "$SV_CURL" != 0 ]; then
 		SV_OPEN=$((SV_OPEN + 1))
 		bad "${SV_WHAT} could not be read without a session (curl exit ${SV_CURL}; 18 means the reply started and stopped early, 7 means nothing answered), so this run says nothing about it"
-	elif grep -q "$SV_MARK" "$BODY"; then
+	elif grep -q -e "$SV_MARK" "$BODY"; then
 		SV_OPEN=$((SV_OPEN + 1))
 		bad "${SV_WHAT} served its reply to a request with no session (HTTP ${SV_CODE}, ${SV_BYTES} bytes)"
 	elif [ "$SV_CODE" != 200 ] || [ "$SV_BYTES" != 0 ]; then
@@ -19962,7 +19962,7 @@ while IFS='|' read -r SV_PATH SV_MARK SV_WHAT; do
 	# proves nothing about authentication.
 	SV_CODE2="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' "$OCM_URL/$SV_PATH")"
 	SV_CURL2=$?
-	if [ "$SV_CURL2" != 0 ] || [ "$SV_CODE2" != 200 ] || ! grep -q "$SV_MARK" "$BODY"; then
+	if [ "$SV_CURL2" != 0 ] || [ "$SV_CODE2" != 200 ] || ! grep -q -e "$SV_MARK" "$BODY"; then
 		SV_BROKEN="${SV_BROKEN} ${SV_PATH%%\?*}"
 	fi
 done <<SVEOF
@@ -20035,7 +20035,7 @@ sv_arr_try()
 	sv_arr_curl=$?
 	if [ "$sv_arr_curl" != 0 ]; then
 		bad "the date selector could not be read with ${sv_arr_what} (curl exit ${sv_arr_curl}; 18 means the reply started and stopped early, 7 means nothing answered), so this run says nothing about it"
-	elif [ "$sv_arr_code" = 400 ] && grep -q "$sv_arr_mark" "$BODY"; then
+	elif [ "$sv_arr_code" = 400 ] && grep -q -e "$sv_arr_mark" "$BODY"; then
 		ok "the date selector refuses ${sv_arr_what} (400, ${sv_arr_mark})"
 	else
 		bad "the date selector did not refuse ${sv_arr_what} with HTTP 400 and ${sv_arr_mark} (status ${sv_arr_code})"
@@ -20111,6 +20111,69 @@ else
 		ok "all 51 reply-shape scan cases agree with the scan"
 	else
 		bad "the reply-shape scan did not report its 51 cases passing: $(printf '%s' "$st_out" | tr '\n' ' ')"
+	fi
+fi
+
+# 104. A grep whose pattern comes from a variable has to be handed it with -e.
+#
+# Section 15 looks for the stack's real database password in a response body.
+# DB_PASSWORD=-i is a valid password, and with the pattern given as a bare
+# operand grep read the -i as an option: the intended pattern became the file
+# operand, no file operand was left, so grep read stdin and found nothing. The
+# section then reported the body clean while the body carried the password.
+# Measured on the version before this change: PASS, with the password in the
+# body. The same shape held for MFA_KEY, which is read from a file in the
+# container, and for 45 other calls whose patterns are markers this suite makes
+# itself. All 47 now pass the pattern with -e.
+#
+# Fixing 47 calls does not stop a 48th being written, and three earlier rounds
+# in this area learnt that naming the places one at a time does not close a
+# class. So this check is the part that closes it: it reads this file and
+# refuses any grep whose first operand is an expansion unless the call hands it
+# over with -e or --regexp.
+#
+# The check errs towards silence rather than noise. It recognises option words
+# as a dash cluster, a --long-option with or without =value, and a short option
+# with a separate numeric argument. A call written in some other shape is not
+# reported rather than falsely reported, so this closes the shapes the file
+# actually uses; it is not a proof about every shape grep accepts.
+echo
+echo "104. every grep pattern that comes from a variable is passed with -e"
+
+if ! command -v python3 >/dev/null 2>&1; then
+	printf '  skip the grep pattern check (needs python3)\n'
+else
+	GP_PY="$(smoke_temp)"
+	GP_RC=$?
+	if [ "$GP_RC" -ne 0 ] || [ -z "$GP_PY" ]; then
+		bad "no temporary file to write the grep pattern check into"
+	else
+		cat > "$GP_PY" <<'GPPY'
+import re
+import sys
+
+OPTWORD = r'-[A-Za-z0-9]+\s+[0-9]+|-[A-Za-z0-9]+|--[a-z-]+(?:=[^\s]+)?'
+CALL = re.compile(r'(?<![A-Za-z0-9_./-])e?grep\s+((?:(?:%s)\s+)*)"?\$' % OPTWORD)
+SAFE = re.compile(r'(?:^|\s)(?:-[A-Za-z0-9]*e[A-Za-z0-9]*|--regexp)(?:\s|=|$)')
+
+hits = []
+with open(sys.argv[1], encoding='utf-8') as fh:
+	for n, line in enumerate(fh, 1):
+		for m in CALL.finditer(line):
+			if not SAFE.search(' ' + m.group(1)):
+				hits.append(n)
+sys.stdout.write('pattern: %d unguarded%s\n' % (len(hits),
+	'' if not hits else ' at line ' + ','.join(str(n) for n in hits)))
+GPPY
+		gp_out="$(python3 "$GP_PY" "${SMOKE_DIR}/smoke.sh" 2>&1)"
+		gp_rc=$?
+		if [ "$gp_rc" != 0 ]; then
+			bad "the grep pattern check did not run (exit ${gp_rc}): $(printf '%s' "$gp_out" | tr '\n' ' ')"
+		elif [ "$gp_out" = 'pattern: 0 unguarded' ]; then
+			ok "no grep call takes a variable as its pattern without -e"
+		else
+			bad "$(printf '%s' "$gp_out" | tr '\n' ' ')"
+		fi
 	fi
 fi
 
