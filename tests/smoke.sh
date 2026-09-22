@@ -847,11 +847,20 @@ TAGS = 2048
 # Raised from 512 two rounds ago because 512 refused this endpoint's own output,
 # and raised again here because 8192 did not clear that output by enough to be
 # worth calling a bound. A year of 600 zeros is a real HTTP 200 whose navigation
-# anchor is 660 bytes. Asked over HTTP for the largest it can be made to send, the
-# answer is 8157 bytes: field_name and container are echoed into the same anchor
-# and are truncated to 64 characters each, so making them one character each buys
-# room for more of year, and 8097 zeros is the last value accepted before Apache
-# answers 414 on the request line. 8192 sat 35 bytes above that.
+# anchor is 660 bytes, because year is echoed into a data-year attribute on the
+# month-stepping anchors. Asked over HTTP for the largest it can be made to send,
+# the answer measured is 8157 bytes, an <a> carrying 8101 bytes of data-year, and
+# 8097 zeros is the last year accepted before Apache answers 414 on the request
+# line. Making field_name and container one character each is what leaves the most
+# of that request line for year; both of those are echoed onto the TABLE element,
+# not the anchor, and the endpoint REJECTS either one over 64 characters rather
+# than truncating it.
+#
+# 8157 describes the request that was measured, not a ceiling nothing can pass.
+# month is optional, and dropping &month=1 hands back eight request-line bytes; a
+# different query shape hands back others. What the number is for is narrower than
+# a maximum: it shows that 8192 was the same size as this endpoint's own output,
+# and a bound the size of the thing it bounds is not a bound.
 #
 # 35 bytes is not headroom, and what holds that ceiling is LimitRequestLine, a
 # deployment setting this repository does not control: a deployment that raises it
@@ -889,13 +898,27 @@ TAGATTRS = 64
 # names at RAWTEXT_INBODY: a reply this product reads as 214856 and lets through
 # spends 0.903 CPU seconds, 37 times inside a fast-fail it walks past and well
 # inside the bound that stops it.
+#
+# One cost is quadratic in the text alone, which a product of two factors cannot
+# bound however the threshold is set. html5lib appends each character token to the
+# element it is filling with self._element.text += data, and because the target is
+# an attribute rather than a local name CPython cannot do that in place, so every
+# append copies the whole accumulated string. A reply of bare & characters emits one
+# token per byte, and one astral character in front of them widens the buffer to
+# four bytes per character: measured, 65526 bytes that way costs 0.897 CPU seconds
+# with an accepted calendar verdict and a product of 6097248, well under this
+# threshold. What bounds it is BYTES, transitively -- the cost is quadratic in a
+# quantity that cannot exceed 65536 -- and the measured worst case at that ceiling
+# is about 1.1 CPU seconds against a BUDGET of 5.0. It is left bounded that way on
+# purpose: a sixth per-factor threshold is the move five rounds have shown does not
+# converge, and the bound that actually holds is the budget.
 PRODUCT = 8000000
 # CPU seconds, not wall-clock seconds, so a loaded machine cannot fail the check:
 # ITIMER_VIRTUAL counts only time this process spends on a processor. Everything
 # legitimate is far inside this -- the live reply costs 0.006s and the worst
 # legitimate reply measured 0.05s, which this clears by 100 times -- so it is a
-# bound on the failure mode rather than a deadline anything real has to meet. Measured to interrupt
-# html5lib cleanly: a budget of 0.05 fires at 0.056 CPU seconds inside a parse that
+# bound on the failure mode rather than a deadline anything real has to meet.
+# Measured to interrupt html5lib cleanly: a budget of 0.05 fires at 0.056 CPU seconds inside a parse that
 # would have taken 0.860.
 BUDGET = 5.0
 # The backstop for the one way the budget can fail: a handler is a Python call, so
@@ -916,16 +939,28 @@ HARD_BUDGET = 60
 # The two element names whose content html5lib tokenises as text while leaving the
 # tree builder in its in-body insertion mode, so that their bytes arrive at
 # InBodyPhase.processCharacters -- which is the one place the cost BUDGET bounds is
-# spent. This is the complete set, read off the library rather than guessed: in
-# html5lib 1.2's html5parser.py, exactly three methods assign a tokeniser state,
-# and only the two inside InBodyPhase (lines 919 to 1644) matter -- plaintextState
-# at 1066 and rcdataState at 1204, reached by <plaintext> and <textarea>. The third
-# is in InHeadPhase. Every other raw-text name -- title, style, script, xmp,
-# iframe, noembed, noframes, noscript -- goes through parseRCDataRawtext, which
-# pushes TextPhase, and TextPhase.processCharacters does not reconstruct anything.
-# Measured, in in-body character tokens for the same 7000 hidden bytes: textarea
-# 7099 and plaintext 7099, against 95 for each of title in the head, title in the
-# body, style, xmp, iframe and noembed.
+# spent. This is the complete set, read off the library rather than guessed, and
+# the reading is more particular than the previous round's note claimed.
+#
+# In html5lib 1.2's html5parser.py, nine lines assign tokenizer.state and one of
+# them is commented out, so there are eight live ones across five methods. Three
+# are in _parse and are reached only when parsing a fragment, which this helper
+# never does. Two are in parseRCDataRawtext, which then sets the phase to
+# TextPhase. One is in InHeadPhase.startTagScript, which selects scriptDataState
+# and switches to TextPhase directly rather than through parseRCDataRawtext. That
+# leaves exactly two that set a text tokeniser state and leave the phase as
+# InBodyPhase: startTagPlaintext and startTagTextarea, reached by <plaintext> and
+# <textarea>. InBodyPhase.startTagNoscript calls parseRCDataRawtext only when
+# self.parser.scripting is on, and it is off here.
+#
+# TextPhase.processCharacters inserts text without reconstructing anything, which
+# is why every other raw-text name -- title, style, script, xmp, iframe, noembed,
+# noframes -- is cheap. Measured, in in-body character tokens for the same 7000
+# hidden bytes: textarea 7099 and plaintext 7099, against 95 for each of title in
+# the head, title in the body, style, xmp, iframe and noembed. Reconstruction is
+# not confined to processCharacters -- reconstructActiveFormattingElements() has 17
+# call sites -- but the in-body character path is the one a reply can lengthen at
+# will, which is what makes it the one to bound.
 #
 # Why they are refused here rather than measured. tag_shape() has no tokeniser
 # state, so it reads '<a ' + 50000 & characters + '>' inside a <textarea> as a tag
@@ -933,12 +968,23 @@ HARD_BUDGET = 60
 # under-counts the PRODUCT fast-fail, which is the direction that lets an expensive
 # reply through: measured, such a reply reads as product 214856, walks past a
 # threshold of 8000000, and costs 0.903 CPU seconds -- the same cost class as the
-# shape that made the previous round add a budget at all. Both names are already
-# refused by ALLOWED below, so refusing them from the scan changes no verdict; it
-# moves the refusal to before the cost instead of after it. The cheaper of the two
-# is worth writing down as well, because it shows what the cost actually counts:
+# shape that made the previous round add a budget at all. The cheaper of the two is
+# worth writing down as well, because it shows what the cost actually counts:
 # plaintext hides the same 52199 bytes but the tokeniser emits them as 45 character
 # tokens rather than 52122, and it costs 0.17s. The multiplier is tokens, not bytes.
+#
+# What this refusal costs, stated plainly because the previous round's note got it
+# wrong. It claimed both names are refused by ALLOWED below anyway, so refusing
+# them here changes no verdict and only moves an existing refusal earlier. That is
+# false. This scan has no RCDATA state either, so it reads the <textarea> in
+# <title><textarea></title> as a start tag where the tokeniser reads it as title
+# text and builds no element at all. Such a reply used to pass and now prints
+# refuse element:textarea: a loud over-refusal, which is the tolerable direction
+# for a cost check, but a changed verdict and not a moved one. It cannot fire on
+# this endpoint's output -- of 92 replies captured from it, none contains the word
+# textarea anywhere -- while 58 of those 92 do contain <script>, whose content this
+# scan therefore mis-reads today without that mattering, for the reason given in
+# tag_shape()'s docstring.
 RAWTEXT_INBODY = frozenset(('plaintext', 'textarea'))
 # What this endpoint sends: a table of rows and cells holding anchors, and the
 # one script element that loads the click handler. The rest of the list is plain
@@ -1223,8 +1269,16 @@ def start_budget():
 		# Both halves, and the hard limit lowered too: at the soft limit the kernel
 		# sends SIGXCPU, which a disposition inherited from whatever launched this
 		# can ignore, and at the hard limit it sends SIGKILL, which nothing can. A
-		# limit is only ever lowered here, never raised, so this cannot fail on
-		# privileges. SIGXCPU goes back to its default for the same reason.
+		# SIGXCPU goes back to its default for the same reason.
+		#
+		# Neither half needs privilege, but not because nothing rises: the earlier
+		# note here claimed a limit is only ever lowered, and that is wrong for the
+		# soft half. room is the smaller of HARD_BUDGET and any hard limit already in
+		# force, so the HARD limit never rises -- that is the direction that would
+		# need privilege. The soft limit can rise: measured, a process arriving with
+		# soft 2 and no hard limit leaves here with (60, 60). Raising a soft limit as
+		# far as the hard limit is allowed to anyone, and it is the right direction
+		# for a backstop whose whole job is to sit further out than BUDGET.
 		resource.setrlimit(resource.RLIMIT_CPU, (room, room))
 		signal.signal(signal.SIGXCPU, signal.SIG_DFL)
 	except (OSError, ValueError):
@@ -1404,6 +1458,41 @@ def _run(text, start, stop):
 	return total
 
 
+def _comment_end(text, at):
+	"""The offset just past the comment that starts with '<!--' at at.
+
+	html5lib closes a comment at four places, and the two EARLY ones are the reason
+	this function exists rather than a search for '-->'. Before any content, '<!-->'
+	closes at the '>' and '<!--->' closes at the '->'. After content, '-->' closes
+	it and so does the less known '--!>'. The earliest of the four wins, and none of
+	them found runs to the end of the text, which is what the tokeniser does when
+	the input ends inside a comment.
+
+	Checked against html5lib's own tokeniser on 20 shapes by comparing what each
+	leaves AFTER the comment, which is the only thing the scan needs: the two early
+	ends, an extra dash in front of each, '-->' and '--!>' in both orders, '<!--!>'
+	which does NOT close a comment, and end of input after '<!--', '<!---',
+	'<!--a--' and '<!--a---'. No shape disagrees. Comparing comment CONTENT instead
+	reports one false difference, because at end of input the tokeniser drops
+	trailing dashes from the data it keeps while the span is the same.
+	"""
+	rest = at + 4
+	if text[rest:rest + 1] == '>':
+		return rest + 1
+	if text[rest:rest + 2] == '->':
+		return rest + 2
+	ends = []
+	two = text.find('-->', rest)
+	if two >= 0:
+		ends.append(two + 3)
+	bang = text.find('--!>', rest)
+	if bang >= 0:
+		ends.append(bang + 4)
+	if not ends:
+		return len(text)
+	return min(ends)
+
+
 def tag_shape(text):
 	"""The longest start or end tag in UTF-8 BYTES, the most attribute names on any
 	one tag, and the UTF-8 BYTES that fall outside a tag.
@@ -1426,15 +1515,25 @@ def tag_shape(text):
 	draw, which is loud; under-measuring passes one it would not, and for the text
 	bytes the safe direction is therefore to over-count.
 
-	Two places used to under-count instead, and both are now handled rather than
-	admitted. A comment is skipped whole to its first --> and charged to text, because
-	until this round its markup was measured as tags: that let a fake tag swallow the
-	comment's own terminator and charge 48095 bytes of character data to one attribute
-	value, an under-count of 367 times that passed every bound. And inside a
-	RAWTEXT_INBODY element the tokeniser emits as text what this scan reads as tags,
-	an under-count of 107 bytes against 52122 character tokens; rather than give this
-	scan the parser state it would need to count that honestly, a reply carrying
-	either name is refused before the parse. See RAWTEXT_INBODY.
+	Two places used to under-count instead. A comment is skipped whole and charged to
+	text, because before the previous round its markup was measured as tags: that let
+	a fake tag swallow the comment's own terminator and charge 48095 bytes of
+	character data to one attribute value, an under-count of 367 times that passed
+	every bound. The span is ended by _comment_end() rather than by a search for
+	'-->', because the previous round searched and a comment that ends early then hid
+	real markup from this scan entirely. And inside a RAWTEXT_INBODY element the
+	tokeniser emits as text what this scan reads as tags, an under-count of 107 bytes
+	against 52122 character tokens; rather than give this scan the parser state it
+	would need to count that honestly, a reply carrying either name is refused before
+	the parse. See RAWTEXT_INBODY.
+
+	What is NOT handled, deliberately: this scan has no RCDATA state, so the content
+	of title, style, script, xmp, iframe, noembed and noframes is read as markup.
+	That under-counts text and over-counts the other two numbers, and it is left
+	alone because all seven land in html5lib's TextPhase, which reconstructs nothing
+	-- 7000 hidden bytes arrive as 95 in-body character tokens -- so an under-count
+	there cannot feed the quadratic these numbers exist to bound. Its visible cost is
+	an over-refusal, described at RAWTEXT_INBODY.
 
 	An unterminated tag or an unclosed quote runs to the end of the text, which is
 	what the tokeniser would do and the safe direction.
@@ -1459,17 +1558,41 @@ def tag_shape(text):
 		# 261869 against 8000000, and cost 0.847 CPU seconds for a reply that then
 		# reported a perfectly good calendar.
 		#
-		# Skipping to the first --> and charging the span to text is what the tokeniser
-		# does, and every way this can be wrong over-counts rather than under-counts: a
-		# comment's content is one comment token and no character tokens at all, so a
-		# span taken for a comment is charged text that is never emitted. The ends this
-		# misses -- --!> also closes a comment, and <!--> closes at the > -- leave the
-		# span running to the end of the text, which over-counts as well. Against the
-		# endpoint's own output none of this can fire: 0 of 91 real replies contain a
-		# comment at all.
+		# The fix for that was to skip to the first --> and charge the span to text,
+		# with the argument that every way it could be wrong over-counted. That
+		# argument was false, and this is the correction. A comment can end EARLIER
+		# than its first -->: html5lib closes <!--> at the > and <!---> at the ->. So
+		# after <!--> the tokeniser is reading ordinary markup while the skip is still
+		# looking for a -->, and it runs past whatever it finds. The skip does not
+		# merely mis-count that span, it stops measuring tags for the rest of the
+		# text, so both the longest tag and the attribute count come back as 0 no
+		# matter what follows -- which is the unsafe direction for two bounds at once.
+		#
+		# Measured, both halves of that. <!--><textarea>--> in front of the previous
+		# round's payload left the tokeniser building a real <textarea> element while
+		# the scan reported neither the tag nor the raw-text name: 125 text bytes
+		# against 52202 the parser tokenised, a 417-fold under-count, product 251125
+		# against 8000000, and 0.894 CPU seconds -- the whole of the previous round's
+		# raw-text refusal bypassed, and arriving only after the cost was spent. And
+		# <!--> in front of one <a> tag carrying 16380 distinct attribute names passed
+		# every bound with a longest tag of 0 and 0 attributes, then cost 4.719 CPU
+		# seconds inside html5lib's attributeNameState, which compares each new name
+		# against a fresh copy of all the previous ones. That is what TAGATTRS exists
+		# to refuse, and it sat just under BUDGET, so nothing stopped it. Without the
+		# <!--> the same tag is refused in 0.053 seconds.
+		#
+		# So the end is computed from the tokeniser's own four ends instead of being
+		# searched for, and the direction-of-error argument is dropped with it: with
+		# exact ends there is no error in either direction to argue about. See
+		# _comment_end(). What cannot be evaded this way is the tag COUNT, which is
+		# taken as text.count('<') over the whole reply before this scan runs, so a <
+		# inside a comment is still counted.
+		#
+		# Against the endpoint's own output none of this can fire. Of 92 replies
+		# captured from it, exactly one contains a comment at all, and that one is
+		# the sign-in page rather than a date-selector reply.
 		if text[at:at + 4] == '<!--':
-			shut = text.find('-->', at + 4)
-			stop = size if shut < 0 else shut + 3
+			stop = _comment_end(text, at)
 			textbytes += _run(text, cursor, stop)
 			cursor = stop
 			at = stop
