@@ -3341,10 +3341,10 @@ MFAPY
 			mfa_pair_lost=0
 			mfa_pair_sent=0
 			mfa_pair_back=0
-			# The window a code has to clear is the highest of the bounds
-			# this loop has read and the windows it has sent. A read that
-			# failed cannot raise it, so a bound the server took after the
-			# last read that answered is not in it.
+			# The window a code must exceed is the highest of the bounds
+			# this loop has read and the windows it has sent. A read whose
+			# output is not a number leaves the value alone. The read's exit
+			# status is never looked at, so a number is enough to raise it.
 			# Remembering only the previous one is not enough: a clock that
 			# moves back two windows produces a code the server still
 			# refuses, and the login half would then report that a correct
