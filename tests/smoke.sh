@@ -3342,9 +3342,10 @@ MFAPY
 			mfa_pair_sent=0
 			mfa_pair_back=0
 			# The window a code must exceed is the highest of the bounds
-			# this loop has read and the windows it has sent. A read whose
-			# output is not a number leaves the value alone. The read's exit
-			# status is never looked at, so a number is enough to raise it.
+			# this loop has read and the windows it picked to send. A read
+			# replaces the value only with a number above it, or with any
+			# number while it is still empty. The exit status is not looked
+			# at, so a failed read that prints a higher number still counts.
 			# Remembering only the previous one is not enough: a clock that
 			# moves back two windows produces a code the server still
 			# refuses, and the login half would then report that a correct
@@ -3373,7 +3374,7 @@ MFAPY
 			# mfa_window() prints. What keeps a spent window out of a
 			# request is the break below, which compares the generated
 			# window against that same highest of the bounds read and the
-			# windows sent.
+			# windows picked.
 			mfa_pair_clock() {
 				mfa_pair_now="$(mfa_window)"
 				case "$mfa_pair_now" in
