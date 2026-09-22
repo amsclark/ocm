@@ -600,10 +600,12 @@ if (!function_exists('pl_totp_mark_used'))
 	 * Record the window index the user just authenticated with, closing it
 	 * and every earlier one to replay.
 	 *
-	 * This function only ever raises the bound. It is the highest window
-	 * accepted for the secret the account currently holds, so a lower one
-	 * must not overwrite a higher one: that would re-open every code between
-	 * them to replay. Two overlapping sign-ins on one account are enough to
+	 * This function only ever raises the bound. The bound is the highest
+	 * window accepted for the secret the account held when the bound was
+	 * recorded, so a lower one must not overwrite a higher one: that would
+	 * re-open every code between them to replay. Usually that is the secret
+	 * the account still holds. The reset paths below are where the two can
+	 * come apart. Two overlapping sign-ins on one account are enough to
 	 * try it, with no attacker involved: each reads the row before the other
 	 * records, so both verify, and the verifier accepts three windows - the
 	 * previous one, the current one and the next - so the two can match
@@ -617,27 +619,40 @@ if (!function_exists('pl_totp_mark_used'))
 	 * Other code writes this column too, and not all of it raises the bound.
 	 * An administrator's reset empties the secret and clears the column in
 	 * one statement. Dropping the bound costs nothing while the secret that
-	 * earned it cannot be presented again, and a secret enrolled later cannot
-	 * present it: a code is an HMAC over the secret, so codes made from the
-	 * old one match nothing. What does reach the dropped bound is the old
-	 * secret itself coming back, which the stale save below does, and a login
-	 * that read the secret before the reset ran. Such a login is handed the
-	 * secret it already read and re-reads only the bound, so it checks an old
-	 * code against a cleared bound, and can then record a bound for a secret
-	 * the row no longer holds.
+	 * earned it cannot be presented again. A secret enrolled later does not
+	 * inherit the old code sequence: a code is an HMAC over the secret cut
+	 * down to six digits, so an old code is accepted under a new secret only
+	 * where one of the three windows on offer reduces to the same six
+	 * digits. That is a coincidence rather than a replay, and the dropped
+	 * bound barely bears on it, because window indexes only rise with time:
+	 * of those three the bound could have refused at most the one equal to
+	 * it.
+	 *
+	 * What does reach the dropped bound is the old secret itself coming back,
+	 * which the stale save below can do, and a login that read the secret
+	 * before the reset ran. Such a login is handed the secret it already read
+	 * and re-reads only the bound, so it checks an old code against a cleared
+	 * bound, and can then record a bound for a secret the row no longer
+	 * holds. Both need the reset to land inside a narrow interval, and the
+	 * verifier still offers only three windows, so the code has to be one the
+	 * account could use around the same moment.
 	 *
 	 * Two paths below write the column themselves rather than through this
 	 * function, so the guard reaches neither.
 	 *
-	 * The user model builds its UPDATE from every column it loaded, as the
-	 * object holds them, so a save meant for one field writes the untouched
-	 * fields back as well, still carrying the values the load read. If
-	 * another write raised the bound in between, that save lowers it again.
-	 * The same statement carries the secret and the enabled flag from the
-	 * same stale read, so it can also restore a secret a reset had already
-	 * emptied. Only an object something changed is saved at all, and the
-	 * deliberate edit is kept: it is the fields nobody touched that go back
-	 * stale.
+	 * The user model builds its UPDATE from every column it loaded except the
+	 * primary key, which it matches on instead, so a save meant for one field
+	 * writes the untouched fields back as well. What it writes for them is
+	 * what the load read, put through the conversion any value gets on its
+	 * way into SQL: an empty value, and a non-numeric one in a number column,
+	 * both become NULL. If another write raised the bound in between, that
+	 * save lowers it again. The same statement carries the secret and the
+	 * enabled flag from the same stale read, so it can also restore a secret
+	 * a reset had already emptied. A save happens only where something was
+	 * assigned to the object, whether or not the assignment changed the
+	 * value, and the assigned field is written as assigned. The fields nobody
+	 * assigned to are the ones that go back stale, though an assigned one is
+	 * stale too if another writer changed it after the load.
 	 *
 	 * Enrolment writes the column directly and matches on the user alone. If
 	 * two enrolments both pass the check before either writes, and both

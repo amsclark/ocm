@@ -18672,8 +18672,12 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	# Every statement below that reads or changes the fixture row matches on
 	# the name as well as the id. Three do not, and cannot: the id comes from
 	# a MAX over the whole table, the INSERT that creates the row has nothing
-	# to match on yet, and the function under test takes a user id, so its
-	# own UPDATE matches the id alone and the three calls cannot narrow it.
+	# to match on yet, and the function under test takes a user id, so the id
+	# is all its own UPDATE has to pick a row with, and the three calls
+	# cannot narrow it. That UPDATE does carry one further predicate, on the
+	# bound it is about to write, but that is the guard under test rather
+	# than a check on whose row this is. "Cannot" describes how this fixture
+	# is built, not a limit of SQL.
 	sm105_user="zzfloor_${$}_${RANDOM}"
 	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	case "$sm105_uid" in
