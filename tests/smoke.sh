@@ -104,6 +104,10 @@ sm_reauth_post() {
 	sm_ra_scope="$1"
 	sm_ra_url="$2"
 	shift 2
+	# Truncate first. A transfer that does not complete leaves the
+	# previous page in $BODY, and if that page happened to be a reauth
+	# prompt this would post a stale token nobody asked it to post.
+	: > "$BODY"
 	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$@" "$sm_ra_url" >/dev/null
 	if grep -q 'name="_reauth_scope"' "$BODY"; then
 		sm_ra_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
@@ -2781,8 +2785,16 @@ MFAPY
 	# administrator can reach these columns, so drive it rather than the table.
 	mfa_admin_set() {
 		mfa_admin_edit
+		mfa_admin_set_got=$?
 		mfa_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+		# Without a token the update below is refused for that reason,
+		# and the checks that read the row afterwards would blame the
+		# form for not saving a value it was never asked to save.
+		if [ "$mfa_admin_set_got" != 0 ] || [ -z "$mfa_tok" ]; then
+			bad "the account form could not be fetched with a CSRF token (curl exit ${mfa_admin_set_got}) - the MFA value was not posted"
+			return 1
+		fi
 		sm_reauth_post user_admin "$OCM_URL/system-users.php" \
 			-d "action=update&user_id=${MFA_UID}&_csrf=${mfa_tok}" \
 			-d "username=${MFA_USER}&enabled=1&group_id=${MFA_GROUP}" \
@@ -2798,32 +2810,49 @@ MFAPY
 			-d "login_user=${MFA_USER}&login_pass=${MFA_PASS}&auth_id=1&totp=${1:-}" \
 			"$OCM_URL/" >/dev/null
 	}
+	# Fetch one page as the fixture's own session. Returns curl's
+	# status, so a page that refused is not confused with a fetch that
+	# failed, and truncates the body first, because curl does not touch
+	# its -o file when a transfer does not complete.
+	mfa_jar_get() {
+		: > "$BODY"
+		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$1" >/dev/null
+	}
 
 	if [ -z "$MFA_HASH" ] || [ -z "${MFA_UID:-}" ]; then
 		bad "could not seed the MFA fixtures (hash/user)"
 	else
 		# 25a. The control renders, and the account's own secret does not.
 		mfa_admin_edit
-		if grep -q 'Multi-Factor Authentication' "$BODY" \
-			&& grep -q 'name="totp_enabled"' "$BODY"; then
-			ok "the account form carries the MFA control"
+		mfa_admin_got=$?
+		# Two of the four checks below pass on an absent string, so an
+		# empty body answers them both. A fetch that did not complete
+		# would report that the form carries no secret input and offers
+		# no reset without either page having been seen.
+		if [ "$mfa_admin_got" != 0 ]; then
+			bad "fetching the account form did not complete (curl exit ${mfa_admin_got}) - the four MFA control checks were not run"
 		else
-			bad "the account form has no MFA control - pl_mfa_admin_control() rendered nothing"
-		fi
-		if grep -q 'Off. This account signs in with a password only.' "$BODY"; then
-			ok "a new account reports MFA off"
-		else
-			bad "a new account does not report MFA off"
-		fi
-		if grep -q 'name="totp_secret"' "$BODY"; then
-			bad "the account form carries a totp_secret input - an admin page must never handle the secret"
-		else
-			ok "the account form carries no totp_secret input"
-		fi
-		if grep -q '>Reset<' "$BODY"; then
-			bad "the account form offers a reset for an account with no enrolled device"
-		else
-			ok "the account form offers no reset before a device is enrolled"
+			if grep -q 'Multi-Factor Authentication' "$BODY" \
+				&& grep -q 'name="totp_enabled"' "$BODY"; then
+				ok "the account form carries the MFA control"
+			else
+				bad "the account form has no MFA control - pl_mfa_admin_control() rendered nothing"
+			fi
+			if grep -q 'Off. This account signs in with a password only.' "$BODY"; then
+				ok "a new account reports MFA off"
+			else
+				bad "a new account does not report MFA off"
+			fi
+			if grep -q 'name="totp_secret"' "$BODY"; then
+				bad "the account form carries a totp_secret input - an admin page must never handle the secret"
+			else
+				ok "the account form carries no totp_secret input"
+			fi
+			if grep -q '>Reset<' "$BODY"; then
+				bad "the account form offers a reset for an account with no enrolled device"
+			else
+				ok "the account form offers no reset before a device is enrolled"
+			fi
 		fi
 
 		# 25b. Turning it on writes the flag and nothing else.
@@ -2847,13 +2876,24 @@ MFAPY
 		# 25c. The gate holds the account on the enrollment page.
 		mfa_rl_clear
 		mfa_login
-		if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+		mfa_gate_got=$?
+		if [ "$mfa_gate_got" != 0 ]; then
+			bad "the pre-enrollment login did not complete (curl exit ${mfa_gate_got}) - the gate was not checked"
+		elif grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 			ok "a user with MFA on and no device lands on the enrollment page"
 		else
 			bad "the enrollment gate did not fire - a user with MFA on reached the application"
 		fi
-		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
-		if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+		# The login above leaves the enrollment page behind, and that
+		# page carries the very string this check greps for. A fetch
+		# that did not complete used to leave it there and pass, so the
+		# gate could be absent for every request but the login itself
+		# and nothing here would say so.
+		mfa_jar_get "$OCM_URL/case_list.php"
+		mfa_gate_page=$?
+		if [ "$mfa_gate_page" != 0 ]; then
+			bad "fetching case_list.php did not complete (curl exit ${mfa_gate_page}) - the gate was not checked on an ordinary page"
+		elif grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 			ok "the gate also holds an ordinary page request"
 		else
 			bad "case_list.php was served to an un-enrolled account"
@@ -2861,13 +2901,21 @@ MFAPY
 
 		# 25d. Enrolment: the page hands out a key, a wrong code is refused
 		# and stores nothing, the right code stores the secret encrypted.
-		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/enroll_mfa.php" >/dev/null
+		# The pending secret rides in the encrypted enroll_token, so an
+		# earlier render of this page carries a matched key, token and
+		# CSRF triple. A fetch that did not complete used to leave one
+		# behind, and the whole of 25d would then run on a page this
+		# run never received.
+		mfa_jar_get "$OCM_URL/enroll_mfa.php"
+		mfa_enrol_page=$?
 		MFA_SECRET="$(sed -n 's/.*class="enroll-key">\([A-Z2-7]*\)<.*/\1/p' "$BODY" | head -1)"
 		MFA_TOKEN="$(grep -oE 'name="enroll_token" value="[^"]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
 		MFA_CSRF="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
-		if [ "${#MFA_SECRET}" -ge 16 ] && [ -n "$MFA_TOKEN" ] && [ "${#MFA_CSRF}" -eq 64 ]; then
+		if [ "$mfa_enrol_page" != 0 ]; then
+			bad "fetching the enrollment page did not complete (curl exit ${mfa_enrol_page}) - it was not checked"
+		elif [ "${#MFA_SECRET}" -ge 16 ] && [ -n "$MFA_TOKEN" ] && [ "${#MFA_CSRF}" -eq 64 ]; then
 			ok "the enrollment page renders a key, a pending token and a CSRF token"
 		else
 			bad "the enrollment page is incomplete (key ${#MFA_SECRET} chars, token ${#MFA_TOKEN} chars, csrf ${#MFA_CSRF} chars)"
@@ -2911,9 +2959,7 @@ MFAPY
 		# curl's status, which says whether the transfer completed, so a
 		# page that refused is not confused with a fetch that failed.
 		mfa_app_get() {
-			: > "$BODY"
-			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
-				"$OCM_URL/" >/dev/null
+			mfa_jar_get "$OCM_URL/"
 		}
 		# 'enc:' for an encrypted secret, 'none' for no secret, another
 		# prefix for a value this check does not expect, and empty only
@@ -2957,11 +3003,13 @@ MFAPY
 			mfa_enrol_opened=0
 			mfa_enrol_got=0
 			mfa_enrol_early=0
+			mfa_enrol_early_lost=0
 			mfa_enrol_unread=0
 			mfa_enrol_unsent=0
 			MFA_ENROL_WINDOW=''
 			while [ "$mfa_enrol_try" -lt 3 ] && [ "$mfa_enrol_done" = 0 ] \
 				&& [ "$mfa_enrol_early" = 0 ] && [ "$mfa_enrol_unread" = 0 ] \
+				&& [ "$mfa_enrol_early_lost" = 0 ] \
 				&& [ "$mfa_enrol_unsent" = 0 ]; do
 				mfa_enrol_try=$((mfa_enrol_try+1))
 				mfa_enrol_row="$(mfa_enrol_state)"
@@ -2993,7 +3041,13 @@ MFAPY
 					elif [ "$mfa_enrol_seed" = 0 ]; then
 						mfa_enrol_early=1
 					else
-						mfa_enrol_unsent=1
+						# Already enrolled, and the wrong-code
+						# POST did not complete. Its code cannot
+						# enroll anyone, but it carried a pending
+						# secret, so a stalled copy of it is not
+						# ruled out. Report both facts rather
+						# than blaming a code never built.
+						mfa_enrol_early_lost=1
 					fi
 					break
 				fi
@@ -3063,8 +3117,10 @@ MFAPY
 				bad "the account enrolled but the application page did not come back signed in"
 			elif [ "$mfa_enrol_early" = 1 ]; then
 				bad "the account was already enrolled before any real enrollment code was sent"
+			elif [ "$mfa_enrol_early_lost" = 1 ]; then
+				bad "the account was already enrolled before any real enrollment code was sent, and the wrong-code POST did not complete"
 			elif [ "$mfa_enrol_unread" = 1 ]; then
-				bad "the enrollment state could not be read - every check below it is unreliable"
+				bad "the enrollment state came back as '${mfa_enrol_row}', which is neither an encrypted secret nor empty - it was not read, or it holds something this check does not recognise, and every check below it is unreliable"
 			elif [ "$mfa_enrol_unsent" = 1 ]; then
 				bad "no enrollment code was built, or its POST did not complete - what reached the server is unknown and every check below it is unreliable"
 			else
@@ -3079,12 +3135,16 @@ MFAPY
 			# run as the code it sent. Anything else is reported as
 			# unchecked rather than compared -- two empty strings match, so
 			# an unenrolled account and an unreadable bound would otherwise
-			# agree. A NULL bound reads back as 'null' and an unreadable
-			# one as the empty string, and neither is compared: an
-			# unreadable bound is not a wrong window, and reporting it as
-			# one would accuse the server on no evidence. The 25e login
-			# below sees the same defect, but only while the run is still
-			# in the window the bad write burned.
+			# agree. An unreadable bound reads back as the empty string
+			# and is not compared at all: it is not a wrong window, and
+			# reporting it as one would accuse the server on no
+			# evidence. A wrong window is reported by direction, because
+			# the two directions are opposite defects. Above the
+			# accepted code's window, the account's next code is
+			# refused, which the 25e login below also sees while the run
+			# is still inside the window the bad write burned. At or
+			# below it -- a missing bound included -- the code just
+			# accepted can be sent again.
 			mfa_enrol_bound="$(adb "SELECT IF(totp_last_used IS NULL, 'null', totp_last_used) FROM users WHERE user_id = ${MFA_UID}")"
 			if [ "$mfa_enrol_done" = 0 ] || [ -z "$MFA_ENROL_WINDOW" ]; then
 				bad "the stored enrollment window was not checked - no code sent by this run enrolled the account"
@@ -3092,8 +3152,21 @@ MFAPY
 				bad "the stored enrollment window could not be read - it was not checked"
 			elif [ "$mfa_enrol_bound" = "$MFA_ENROL_WINDOW" ]; then
 				ok "enrollment records the window the accepted code belonged to"
+			elif [ "$mfa_enrol_bound" = 'null' ]; then
+				bad "enrollment stored no replay bound - the code it just accepted can be sent again"
 			else
-				bad "enrollment recorded a different window than the code it accepted - the account's next code will be refused"
+				case "$mfa_enrol_bound" in
+					*[!0-9]*)
+						bad "enrollment stored a replay bound that is not a window number (${mfa_enrol_bound})"
+						;;
+					*)
+						if [ "$mfa_enrol_bound" -lt "$MFA_ENROL_WINDOW" ]; then
+							bad "enrollment recorded a window below the code it accepted - that code can be sent again"
+						else
+							bad "enrollment recorded a window above the code it accepted - the account's next code will be refused"
+						fi
+						;;
+				esac
 			fi
 			if [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
 				ok "the stored secret is encrypted at rest"
@@ -3105,8 +3178,14 @@ MFAPY
 			else
 				bad "audit_log has no user.totp_self_enrolled row"
 			fi
-			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/enroll_mfa.php" >/dev/null
-			if grep -q 'class="enroll-key"' "$BODY"; then
+			# This one looks for a string that must be absent, so an
+			# empty body answers it. Truncating alone would turn a lost
+			# fetch into a pass; the status is what decides it.
+			mfa_jar_get "$OCM_URL/enroll_mfa.php"
+			mfa_reissue_got=$?
+			if [ "$mfa_reissue_got" != 0 ]; then
+				bad "re-fetching the enrollment page did not complete (curl exit ${mfa_reissue_got}) - it was not checked"
+			elif grep -q 'class="enroll-key"' "$BODY"; then
 				bad "enroll_mfa.php hands out a second key to an already-enrolled account"
 			else
 				ok "enroll_mfa.php refuses to re-issue a key to an enrolled account"
@@ -3115,15 +3194,20 @@ MFAPY
 			# 25e. The login form now needs the code.
 			mfa_rl_clear
 			mfa_login
-			if grep -q 'login_pass' "$BODY"; then
-				ok "the password alone no longer signs the account in"
+			mfa_pw_got=$?
+			if [ "$mfa_pw_got" != 0 ]; then
+				bad "the password-only login did not complete (curl exit ${mfa_pw_got}) - neither check below it was run"
 			else
-				bad "the password alone still signs an MFA account in"
-			fi
-			if grep -q 'The credentials you supplied are invalid' "$BODY"; then
-				ok "the refusal does not say which factor was wrong"
-			else
-				bad "the refusal message names the failing factor"
+				if grep -q 'login_pass' "$BODY"; then
+					ok "the password alone no longer signs the account in"
+				else
+					bad "the password alone still signs an MFA account in"
+				fi
+				if grep -q 'The credentials you supplied are invalid' "$BODY"; then
+					ok "the refusal does not say which factor was wrong"
+				else
+					bad "the refusal message names the failing factor"
+				fi
 			fi
 
 			# A current code signs in, and then the same code is refused.
@@ -3140,6 +3224,8 @@ MFAPY
 			mfa_pair_in=0
 			mfa_pair_out=0
 			mfa_pair_lost=0
+			mfa_pair_sent=0
+			mfa_pair_back=0
 			# The window a code has to clear is the highest of the bound
 			# the server holds and every window this loop has sent.
 			# Remembering only the previous one is not enough: a clock that
@@ -3159,6 +3245,12 @@ MFAPY
 				# Raising the spent window to whatever the server now
 				# holds asks the next question above both of them.
 				mfa_pair_live="$(adb "SELECT IF(totp_last_used REGEXP '^[0-9]+\$', totp_last_used, '') FROM users WHERE user_id = ${MFA_UID}")"
+				# The digit test is the database's, and a value that
+				# reached the shell with anything else in it would make
+				# the comparison below exit 2 instead of answering.
+				case "$mfa_pair_live" in
+					*[!0-9]*) mfa_pair_live='' ;;
+				esac
 				if [ -n "$mfa_pair_live" ] \
 					&& { [ -z "$mfa_pair_spent" ] \
 						|| [ "$mfa_pair_live" -gt "$mfa_pair_spent" ]; }; then
@@ -3236,8 +3328,19 @@ MFAPY
 					mfa_pair_stable=1
 				fi
 			done
-			if [ "$mfa_pair_lost" = 1 ]; then
-				bad "a login request did not complete, so neither the sign-in nor the replay was checked"
+			# Which half a lost transfer costs depends on which one it
+			# was. A sign-in that completed and succeeded is a sign-in,
+			# whatever happened to the replay request after it, so that
+			# answer is kept. A sign-in that completed and was refused
+			# is not an answer here, because the window was never
+			# confirmed to have held still and the code may simply have
+			# aged out.
+			if [ "$mfa_pair_lost" = 1 ] && [ "$mfa_pair_sent" != 0 ]; then
+				bad "the sign-in request did not complete, so neither the sign-in nor the replay was checked"
+			elif [ "$mfa_pair_lost" = 1 ] && [ "$mfa_pair_in" = 1 ]; then
+				ok "the password and a current code sign the account in"
+			elif [ "$mfa_pair_lost" = 1 ]; then
+				bad "the replay request did not complete and the sign-in before it was refused - whether the window held still is unknown, so neither was checked"
 			elif [ "$mfa_pair_stable" = 0 ]; then
 				bad "a login and a replay never landed in one unspent 30-second window - both checks below are untested"
 			elif [ "$mfa_pair_in" = 1 ]; then
@@ -3259,15 +3362,20 @@ MFAPY
 			# 25f. The admin sees the enrolled state, and Reset sends the
 			# account back to enrollment without turning the requirement off.
 			mfa_admin_edit
-			if grep -q 'An authenticator is enrolled' "$BODY"; then
-				ok "the account form reports the enrolled device"
+			mfa_admin_got2=$?
+			if [ "$mfa_admin_got2" != 0 ]; then
+				bad "fetching the account form did not complete (curl exit ${mfa_admin_got2}) - neither enrolled-state check was run"
 			else
-				bad "the account form does not report the enrolled device"
-			fi
-			if grep -q '>Reset<' "$BODY"; then
-				ok "the account form offers the reset option once a device is enrolled"
-			else
-				bad "the account form offers no reset option for an enrolled device"
+				if grep -q 'An authenticator is enrolled' "$BODY"; then
+					ok "the account form reports the enrolled device"
+				else
+					bad "the account form does not report the enrolled device"
+				fi
+				if grep -q '>Reset<' "$BODY"; then
+					ok "the account form offers the reset option once a device is enrolled"
+				else
+					bad "the account form offers no reset option for an enrolled device"
+				fi
 			fi
 
 			mfa_admin_set 2
@@ -3284,7 +3392,10 @@ MFAPY
 			fi
 			mfa_rl_clear
 			mfa_login
-			if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+			mfa_reset_got=$?
+			if [ "$mfa_reset_got" != 0 ]; then
+				bad "the login after a reset did not complete (curl exit ${mfa_reset_got}) - it was not checked"
+			elif grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 				ok "a reset account is sent back to the enrollment page"
 			else
 				bad "a reset account reached the application without enrolling"
@@ -3304,7 +3415,10 @@ MFAPY
 			fi
 			mfa_rl_clear
 			mfa_login
-			if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			mfa_off_got=$?
+			if [ "$mfa_off_got" != 0 ]; then
+				bad "the login after MFA was turned off did not complete (curl exit ${mfa_off_got}) - it was not checked"
+			elif ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
 				ok "the account signs in with a password again"
 			else
 				bad "the account cannot sign in after MFA was turned off"
@@ -3324,9 +3438,13 @@ MFAPY
 		MFA_KEY="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			cat /var/www/html/cms-custom/config/totp_encryption_key 2>/dev/null \
 			| tr -d '\r\n')"
+		: > "$BODY"
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/search.php?s=%25%25%5Btotp_encryption_key%5D%25%25" >/dev/null
-		if grep -q 'name="s" size="48" value=""' "$BODY" \
+		mfa_key_got=$?
+		if [ "$mfa_key_got" != 0 ]; then
+			bad "fetching the search page did not complete (curl exit ${mfa_key_got}) - the key tag was not checked"
+		elif grep -q 'name="s" size="48" value=""' "$BODY" \
 			&& { [ -z "$MFA_KEY" ] || ! grep -qF "$MFA_KEY" "$BODY"; }
 		then
 			ok "a totp_encryption_key tag in the search box resolves to nothing"
