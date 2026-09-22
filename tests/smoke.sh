@@ -18661,12 +18661,19 @@ sv_arr_try "an array where the year belongs" 'Invalid date parameter' \
 # stored window, one above it, and one against a row holding NULL, which is
 # what an account that has never verified a code holds.
 if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
-	# The name carries the process id, as the fixture case numbered ZZPRPREFS
-	# does, so a row left behind by an interrupted run carries a different
-	# name and cannot be taken for this one. Every statement below matches on
-	# the name as well as the id, the way that fixture's cleanup matches on
-	# its case id and its number together.
-	sm105_user="zzfloor_$$"
+	# The fixture case numbered ZZPRPREFS carries the process id, and its
+	# cleanup matches on its case id and its number together. That pairing is
+	# the pattern followed here. The name carries a random number as well,
+	# because a process id repeats - after a reboot, and across two hosts
+	# sharing one database - and two runs that pick the same name can each
+	# read, change and delete the other's row while believing it is their
+	# own.
+	#
+	# Every statement written below matches on the name as well as the id.
+	# The function under test is the exception: it takes a user id, so its
+	# own UPDATE matches the id alone, and the three calls below cannot
+	# narrow it.
+	sm105_user="zzfloor_${$}_${RANDOM}"
 	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	case "$sm105_uid" in
 		''|*[!0-9]*) sm105_uid='' ;;
@@ -18679,12 +18686,16 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 		# the function directly, so the password and the secret stay empty.
 		#
 		# The count matches on the name as well as the id, because the id came
-		# from MAX(user_id) + 1 and another insert can take it first. Matching
-		# on both is what proves this row is the one this run created, and it
-		# is the only check that the INSERT worked, since its status is
-		# discarded. Every statement below carries the name for the same
-		# reason: a row this run did not create must not be read, changed or
-		# deleted here.
+		# from MAX(user_id) + 1 and another insert can take it first. It is
+		# the only check that the INSERT worked, since the INSERT's own status
+		# is discarded.
+		#
+		# What it establishes is that a row carrying this run's name holds
+		# this id. That is evidence of ownership rather than proof of it, and
+		# it is only as strong as the name is unrepeated. A run that loses the
+		# id to another insert counts zero, because the row that won carries a
+		# different name, and it reports the fixture as missing instead of
+		# working on a row it did not create.
 		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
 			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP')" \
 			>/dev/null 2>&1

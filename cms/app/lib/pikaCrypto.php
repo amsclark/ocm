@@ -607,8 +607,8 @@ if (!function_exists('pl_totp_mark_used'))
 	 * try it, with no attacker involved: each reads the row before the other
 	 * records, so both verify, and the verifier accepts three windows - the
 	 * previous one, the current one and the next - so the two can match
-	 * different windows. The write the database sees last is then the one
-	 * that stands.
+	 * different windows. Before the guard below, the write the database saw
+	 * last was the one that stood, whichever window it carried.
 	 *
 	 * A window at or below the stored bound therefore writes nothing: at the
 	 * bound there is nothing to change, and below it the stored bound already
@@ -617,14 +617,21 @@ if (!function_exists('pl_totp_mark_used'))
 	 * Other code writes this column too, and not all of it raises the bound.
 	 * An administrator's reset empties the secret and clears the column in
 	 * one statement, so the bound it drops no longer belongs to a secret
-	 * anyone can present. Two further paths are less tidy, and the guard
-	 * below does not reach either of them. The user model saves every column
-	 * it loaded, so a save meant for an unrelated field writes back the
-	 * bound the row held when it was read, with the same secret still in
-	 * place. Enrolment's write matches on the user alone, so two overlapping
-	 * enrolments that settle on the same secret can store the lower of their
-	 * two windows second. Both paths are open, and closing them means
-	 * changing what the model writes rather than what this function writes.
+	 * anyone can present - as long as the secret stays cleared. Two further
+	 * paths are less tidy, and the guard below reaches neither, because each
+	 * writes the column itself rather than through this function.
+	 *
+	 * The user model saves every column it loaded, so a save meant for an
+	 * unrelated field writes the row back as it was read. If another write
+	 * raised the bound in between, that save lowers it again. The same
+	 * statement carries the secret and the enabled flag from the same stale
+	 * read, so it can also restore a secret a reset had already emptied.
+	 *
+	 * Enrolment writes the column directly and matches on the user alone. If
+	 * two enrolments both pass the check before either writes, and both
+	 * settle on the same secret, the lower of their two windows can land
+	 * second. The two paths need different fixes: the first is in what the
+	 * model writes, the second in narrowing enrolment's own WHERE clause.
 	 *
 	 * Best effort. A failure here must not fail a login that has otherwise
 	 * succeeded; it only means the same code stays usable for the rest of
