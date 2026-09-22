@@ -3341,8 +3341,10 @@ MFAPY
 			mfa_pair_lost=0
 			mfa_pair_sent=0
 			mfa_pair_back=0
-			# The window a code has to clear is the highest of the bound
-			# the server holds and every window this loop has sent.
+			# The window a code has to clear is the highest of the bounds
+			# this loop has read and the windows it has sent. A read that
+			# failed cannot raise it, so a bound the server took after the
+			# last read that answered is not in it.
 			# Remembering only the previous one is not enough: a clock that
 			# moves back two windows produces a code the server still
 			# refuses, and the login half would then report that a correct
@@ -3370,8 +3372,8 @@ MFAPY
 			# to judge a window, and an unsigned decimal is all
 			# mfa_window() prints. What keeps a spent window out of a
 			# request is the break below, which compares the generated
-			# window against the highest of the bound the server holds
-			# and every window this loop has sent.
+			# window against that same highest of the bounds read and the
+			# windows sent.
 			mfa_pair_clock() {
 				mfa_pair_now="$(mfa_window)"
 				case "$mfa_pair_now" in
@@ -3607,7 +3609,7 @@ MFAPY
 			# page after a Reset that did nothing, so this passed without
 			# testing the reset. That is not true of whatever Reset did:
 			# one that also turned the requirement off would have let the
-			# account in, and this check would have caught that.
+			# account in, and this check would have detected that.
 			if [ "$mfa_enrol_done" = 0 ]; then
 				bad "this run did not confirm an enrolled account, so whether a reset account is sent back to the enrollment page was not checked"
 			elif [ "$mfa_reset_got" != 0 ]; then
