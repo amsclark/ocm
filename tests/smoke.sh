@@ -77,9 +77,32 @@ BODY="$(mktemp)"
 # parser at /tmp/tmp.XXXXXX, a /tmp/html5lib.py written by any local user would be
 # imported in place of the real one, on a box where this suite runs. mktemp -d makes
 # a directory its owner alone can read or write.
-CAL_DIR="$(mktemp -d)"
+#
+# Not only html5lib. The parser imports json before it reads argv, so a decoy json.py
+# in the same directory shadows the STANDARD LIBRARY as well, which no check of the
+# argv gate would cover. Piping the code in does not remove that either, it moves it:
+# sys.path[0] is then the working directory. The private directory is the part that
+# covers every module.
+#
+# mktemp failing is worth stopping for. Without set -e an empty CAL_DIR makes CAL_PY
+# '/cal_shape.py', and the heredoc below would write there if it could.
+CAL_DIR="$(mktemp -d)" || CAL_DIR=''
+if [ -z "$CAL_DIR" ] || [ ! -d "$CAL_DIR" ]; then
+	printf 'smoke: mktemp -d made no private directory for the reply parser\n'
+	exit 1
+fi
 CAL_PY="$CAL_DIR/cal_shape.py"
-trap 'rm -f "$COOKIES" "$BODY"; rm -rf "$CAL_DIR"' EXIT
+
+# A function rather than a string, because about sixty sections below install an EXIT
+# trap of their own and then restore this one by writing it out again. A review found
+# that every one of those copies had been written before CAL_DIR existed, so a
+# completed run left the parser directory behind. Named once, a restored trap cannot
+# drop half of it.
+base_cleanup() {
+	rm -f "$COOKIES" "$BODY"
+	rm -rf "$CAL_DIR"
+}
+trap base_cleanup EXIT
 
 pass=0
 fail=0
@@ -1521,11 +1544,14 @@ def _comment_end(text, at):
 	That comparison is weaker than it sounds, and a review showed why with a case
 	rather than an argument. In '<!--></' followed by 33000 letters the comment ends
 	at 5, and a version returning 33007 would pass this oracle anyway: html5lib
-	discards the unfinished end tag, so both token lists come back EMPTY and equal,
-	while the scan misses a 33000 byte tag. Joining adjacent character runs removes
+	discards the unfinished end tag, so both token lists come back EMPTY and equal
+	once parse errors are dropped -- which this oracle does, while the raw stream
+	carries the eof-in-tag-name error that would have told it -- and the scan misses
+	a 33002 byte tag, the '</' counted. Joining adjacent character runs removes
 	evidence about token counts the same way. So the review re-ran the sweep
 	comparing the tokeniser's own stream POSITION at the comment token -- which is
-	the thing this function returns -- over the same 292968 cases, 20000 wider ones
+	the thing this function returns, once the line and column the tokeniser reports
+	are converted back to an offset -- over the same 292968 cases, 20000 wider ones
 	carrying CR, CRLF and non-ASCII text, and 20 comments long enough to cross the
 	tokeniser's chunk boundary, and found no mismatch. That is the comparison that
 	settles it; the one above is what found the NUL.
@@ -1843,11 +1869,14 @@ SELFTEST = (
 	('<!--><a b c d e>', 11, 4, 5, '', 'an early end no longer hides an attribute run'),
 	('<!--><textarea>-->', 10, 0, 8, 'textarea',
 		'an early end no longer hides a raw-text element'),
-	# A NUL, which is why the four end shapes became six states. In the two START
-	# states the tokeniser appends a replacement character but does not move the
-	# state, so a '>' after one still closes the comment early; in the four states
-	# after those it goes back to the body, so a '--' with a NUL after it does not
-	# close at all.
+	# A NUL. The first three are why the four end shapes became six states: in the
+	# two START states the tokeniser appends a replacement character but does not
+	# move the state, so a '>' after one still closes the comment early, and a
+	# search for those four shapes ran straight past it. In the four states after
+	# those a NUL goes back to the body, so a '--' with a NUL after it does not
+	# close at all -- which the four shapes also concluded, so those four cases pin
+	# behaviour they already had rather than covering anything they got wrong. A
+	# verification pass measured which of the seven are which.
 	('<!--\x00>x<td a b c>', 10, 3, 7, '', 'a NUL does not stop the > closing it'),
 	('<!--\x00\x00\x00>x<td a b>', 8, 2, 9, '', 'a RUN of NULs does not either'),
 	('<!---\x00>x<td a>', 6, 1, 8, '', 'the same in commentStartDashState'),
@@ -2542,7 +2571,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SMOKE_GROUP}'" >/dev/null
 		rm -f "$SMOKE_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_intake' EXIT
+	trap 'base_cleanup; cleanup_intake' EXIT
 
 	# Start from a clean slate in case an earlier interrupted run left rows.
 	cleanup_intake
@@ -2624,7 +2653,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_intake
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip intake permission checks (needs a running docker compose stack)\n'
 fi
@@ -2656,7 +2685,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${RGROUP}'" >/dev/null
 		rm -f "$RJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rpt' EXIT
+	trap 'base_cleanup; cleanup_rpt' EXIT
 	cleanup_rpt
 
 	# read_all/edit_all so nothing else refuses the page first. The only
@@ -2714,7 +2743,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_rpt
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip report permission checks (needs a running docker compose stack)\n'
 fi
@@ -2831,7 +2860,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SGROUP}'" >/dev/null
 		rm -f "$SJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_search' EXIT
+	trap 'base_cleanup; cleanup_search' EXIT
 	cleanup_search
 
 	# No read_all, no offices, no intake: this group may read nothing at all.
@@ -2905,7 +2934,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_search
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip search scoping checks (needs a running docker compose stack)\n'
 fi
@@ -3061,7 +3090,7 @@ if [ "$HAVE_DB" = 1 ] && [ "${#MASS_TOKEN}" -eq 64 ]; then
 		adb "DELETE FROM conflict WHERE contact_id = $MASS_ID OR conflict_id = 88888888" >/dev/null
 	}
 	cleanup_mass
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mass' EXIT
+	trap 'base_cleanup; cleanup_mass' EXIT
 
 	# The eligibility-intake handler creates a case from the query string.
 	curl -sL --max-time 60 -b "$COOKIES" -o "$BODY" \
@@ -3146,7 +3175,7 @@ if [ "$HAVE_DB" = 1 ] && [ "${#MASS_TOKEN}" -eq 64 ]; then
 	fi
 
 	cleanup_mass
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 elif [ "$HAVE_DB" = 1 ]; then
 	# The database is reachable, so the missing piece is the token itself.
 	bad "section 14 could not run: the admin session rendered no CSRF token"
@@ -3293,7 +3322,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${AGROUP}'" >/dev/null
 		rm -f "$AJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_act' EXIT
+	trap 'base_cleanup; cleanup_act' EXIT
 	cleanup_act
 
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
@@ -3380,7 +3409,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_act
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip activity authorization checks (needs a running docker compose stack)\n'
 fi
@@ -3445,7 +3474,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${DGROUP}'" >/dev/null
 		rm -f "$DJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dg' EXIT
+	trap 'base_cleanup; cleanup_dg' EXIT
 	cleanup_dg
 
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
@@ -3555,7 +3584,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_dg
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip document generation checks (needs a running docker compose stack)\n'
 fi
@@ -3580,7 +3609,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${PGROUP}'" >/dev/null
 		rm -f "$PJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pba' EXIT
+	trap 'base_cleanup; cleanup_pba' EXIT
 	cleanup_pba
 
 	# pba = 0 as well, so the bare pro bono directory is out of reach too.
@@ -3670,7 +3699,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_pba
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip pro bono assignment checks (needs a running docker compose stack)\n'
 fi
@@ -3714,7 +3743,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM activities WHERE summary = 'ZZTA activity'" >/dev/null
 		adb "DELETE FROM cases WHERE number = 'ZZ-TA-CASE'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ta' EXIT
+	trap 'base_cleanup; cleanup_ta' EXIT
 	cleanup_ta
 
 	TCASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
@@ -3746,7 +3775,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_ta
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the stored textarea check (needs a running docker compose stack)\n'
 fi
@@ -3775,7 +3804,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM contacts WHERE last_name = 'ZZTWCONTACT'" >/dev/null
 		adb "DELETE FROM settings WHERE label = 'twilio_auth_token'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tw' EXIT
+	trap 'base_cleanup; cleanup_tw' EXIT
 	cleanup_tw
 
 	WCONTACT="$(adb "SELECT COALESCE(MAX(contact_id), 0) + 1 FROM contacts")"
@@ -3847,7 +3876,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_tw
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the Twilio webhook checks (needs a running docker compose stack)\n'
 fi
@@ -3870,7 +3899,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "UPDATE settings SET value='0' WHERE label='force_https'" >/dev/null
 		rm -f "$FH_HDR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; restore_https' EXIT
+	trap 'base_cleanup; restore_https' EXIT
 
 	# The session cookie must NOT be marked Secure on a plain-HTTP request.
 	# php.ini deliberately leaves session.cookie_secure unset, because a
@@ -3930,7 +3959,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		bad "the login page no longer renders with force_https off (${FH_OFF})"
 	fi
 
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 	rm -f "$FH_HDR"
 else
 	printf '  skip the force_https checks (needs a running docker compose stack)\n'
@@ -3963,7 +3992,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${DGROUP}'" >/dev/null
 		rm -f "$DJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dops' EXIT
+	trap 'base_cleanup; cleanup_dops' EXIT
 	cleanup_dops
 
 	# No edit_all, no pba: this user may not touch the pro bono directory.
@@ -4306,7 +4335,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_dops
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the dataops handler checks (needs a running docker compose stack)\n'
 fi
@@ -4320,7 +4349,7 @@ echo
 echo "24. repeated failed logins are locked out"
 if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 	RLJAR="$(mktemp)"
-	trap 'rm -f "$COOKIES" "$BODY" "$RLJAR"' EXIT
+	trap 'base_cleanup; rm -f "$RLJAR"' EXIT
 
 	# Wipe the counters. Also done at the start: a previous run of this suite
 	# leaves this IP locked out, and then every assertion below would pass
@@ -4405,7 +4434,7 @@ if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 	# developer running it against their own stack is not locked out of it.
 	rl_clear
 	rm -f "$RLJAR"
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the login lockout checks (needs a running docker compose stack)\n'
 fi
@@ -4453,7 +4482,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 		mfa_rl_clear
 		rm -f "$MFA_JAR" "$MFA_PY"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mfa' EXIT
+	trap 'base_cleanup; cleanup_mfa' EXIT
 
 	cleanup_mfa
 
@@ -4764,7 +4793,7 @@ MFAPY
 	fi
 
 	cleanup_mfa
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the MFA checks (needs a running stack, the database and python3)\n'
 fi
@@ -4841,7 +4870,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		dex rm -rf "$SSO_IDP" "$SSO_DIR" >/dev/null 2>&1 || true
 		rm -f "$SSO_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sso' EXIT
+	trap 'base_cleanup; cleanup_sso' EXIT
 
 	cleanup_sso
 	# Created by docker exec, which is root; written by the provider, which runs
@@ -5172,7 +5201,7 @@ SSOCFG2
 	fi
 
 	cleanup_sso
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the SSO checks (needs a running stack and the database)\n'
 fi
@@ -5526,7 +5555,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${AZGROUP}'" >/dev/null
 		rm -f "$AZJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_az' EXIT
+	trap 'base_cleanup; cleanup_az' EXIT
 	cleanup_az
 
 	# Every flag off. This user may edit the cases it owns and nothing else,
@@ -5812,7 +5841,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_az
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the ops authorization checks (needs the database)\n'
 fi
@@ -5848,7 +5877,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 		rm -f "$PW_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pol' EXIT
+	trap 'base_cleanup; cleanup_pol' EXIT
 
 	adb "DELETE FROM cases WHERE number = 'ZZ-ELIG-1'" >/dev/null
 	adb "DELETE FROM users WHERE username = '${PW_USER}'" >/dev/null
@@ -5953,7 +5982,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_pol
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the guideline and password policy checks (needs the database)\n'
 fi
@@ -5982,7 +6011,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			adb "DELETE FROM transfers WHERE transfer_id = ${TX_ID}" >/dev/null 2>&1
 		fi
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tx' EXIT
+	trap 'base_cleanup; cleanup_tx' EXIT
 
 	# A pending transfer is accepted = 2. The payload carries the tag in a
 	# field the list page prints and in a field only the detail page prints.
@@ -6092,7 +6121,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_tx
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the hand-built POST form checks (needs the database)\n'
 fi
@@ -6114,7 +6143,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_mn() {
 		adb "DROP TABLE IF EXISTS \`${MN_TABLE}\`" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mn' EXIT
+	trap 'base_cleanup; cleanup_mn' EXIT
 	cleanup_mn
 
 	adb "CREATE TABLE \`${MN_TABLE}\` (
@@ -6238,7 +6267,7 @@ ZZA | Alpha Again'
 	fi
 
 	cleanup_mn
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the menu editor checks (needs the database)\n'
 fi
@@ -6290,7 +6319,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		rm -f "$LKJAR"
 	}
 	LK_OLD_LOCK="$(adb "SELECT value FROM settings WHERE label = 'activity_lock_max_days'")"
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_lk' EXIT
+	trap 'base_cleanup; cleanup_lk' EXIT
 
 	adb "DELETE FROM activities WHERE summary LIKE 'ZZLK%'" >/dev/null
 	adb "DELETE FROM users WHERE username = '${LKUSER}'" >/dev/null
@@ -6522,7 +6551,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_lk
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the calendar hours and activity lock checks (needs the database)\n'
 fi
@@ -6543,7 +6572,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DROP TABLE IF EXISTS \`${XSMENU}\`" >/dev/null
 		adb "DELETE FROM outcome_goals WHERE goal LIKE 'ZZXS%'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_xs' EXIT
+	trap 'base_cleanup; cleanup_xs' EXIT
 	cleanup_xs
 
 	adb "CREATE TABLE \`${XSMENU}\` (
@@ -6625,7 +6654,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_xs
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the cross-site GET checks (needs the database)\n'
 fi
@@ -6653,7 +6682,7 @@ cleanup_cal_adv()
 }
 
 if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cal_adv' EXIT
+	trap 'base_cleanup; cleanup_cal_adv' EXIT
 	cleanup_cal_adv
 
 	CALUSER="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
@@ -6715,7 +6744,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_cal_adv
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the advanced calendar checks (needs the database)\n'
 fi
@@ -6741,7 +6770,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = 'zz_pw_grp'" >/dev/null
 		rm -f "$PWJARA" "$PWJARB"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pw' EXIT
+	trap 'base_cleanup; cleanup_pw' EXIT
 	cleanup_pw
 
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
@@ -6856,7 +6885,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_pw
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the password change session checks (needs the database)\n'
 fi
@@ -6884,7 +6913,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "UPDATE settings SET value = '${PINMODE:-network}' WHERE label = 'session_ip_pin'" >/dev/null
 		rm -f "$PINJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pin' EXIT
+	trap 'base_cleanup; cleanup_pin' EXIT
 
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
 		VALUES ('${PINGROUP}', NULL, 1, NULL, 0, 0, 0, 0, 0, NULL)" >/dev/null
@@ -7001,7 +7030,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_pin
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the session address pin checks (needs the database)\n'
 fi
@@ -7028,7 +7057,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${MCPGROUP}'" >/dev/null
 		rm -f "$MCPJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_mcp' EXIT
+	trap 'base_cleanup; cleanup_mcp' EXIT
 
 	# read_all so the fixture has somewhere to be redirected away from.
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
@@ -7176,7 +7205,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_mcp
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the forced password change (needs the database and compose)\n'
 fi
@@ -7207,7 +7236,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${CLGROUP}'" >/dev/null
 		rm -f "$CLJAR" "${BODY}.cl"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cl' EXIT
+	trap 'base_cleanup; cleanup_cl' EXIT
 	cleanup_cl
 
 	# Every flag off: this user may reach its own cases and nothing else.
@@ -7324,7 +7353,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_cl
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the case lookup checks (needs the database)\n'
 fi
@@ -7360,7 +7389,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZXSSATTY'" >/dev/null
 		adb "DELETE FROM flags WHERE name = 'zzxssflag'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_xss' EXIT
+	trap 'base_cleanup; cleanup_xss' EXIT
 	cleanup_xss
 
 	# plBase::getNextID allocates from the counters table, not from MAX() of
@@ -7535,7 +7564,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_xss
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the XSS checks (needs the database)\n'
 fi
@@ -7567,7 +7596,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			"${SMOKE_DIR}/zzmd.pdf" "${SMOKE_DIR}/zzmd1.txt" "${SMOKE_DIR}/zzmd2.txt" \
 			"${BODY}.dl"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_md' EXIT
+	trap 'base_cleanup; cleanup_md' EXIT
 	
 	# Ids come from the `counters` row as well as from MAX(), for the reason
 	# spelled out in section 28: plBase::getNextID allocates from counters.
@@ -7739,7 +7768,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 	
 	cleanup_md
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the document download checks (needs the database and compose)\n'
 fi
@@ -7774,7 +7803,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM menu_gender WHERE value = 'Z'" >/dev/null
 		rm -f "$OE_BODY"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_oe' EXIT
+	trap 'base_cleanup; cleanup_oe' EXIT
 	cleanup_oe
 	
 	oe_next_id() {
@@ -7987,7 +8016,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 	
 	cleanup_oe
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the output encoding checks (needs the database)\n'
 fi
@@ -8015,7 +8044,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM menu_funding WHERE value = 'Z7'" >/dev/null
 		rm -f "$IC_BODY"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ic' EXIT
+	trap 'base_cleanup; cleanup_ic' EXIT
 	cleanup_ic
 
 	ic_next_id() {
@@ -8175,7 +8204,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_ic
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the iCalendar escaping checks (needs the database)\n'
 fi
@@ -8206,7 +8235,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${CSGROUP}'" >/dev/null
 		rm -f "$CSJAR" "$CSB1" "$CSB2"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cs' EXIT
+	trap 'base_cleanup; cleanup_cs' EXIT
 	cleanup_cs
 
 	# read_all off, no read_office, intake off: this user may read the cases
@@ -8398,7 +8427,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_cs
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the case screen checks (needs the database)\n'
 fi
@@ -8426,7 +8455,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${ALGROUP}'" >/dev/null
 		rm -f "$ALJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_al' EXIT
+	trap 'base_cleanup; cleanup_al' EXIT
 	cleanup_al
 
 	# edit_all off and no offices: this user may edit the cases it owns, and
@@ -8575,7 +8604,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_al
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the alias authorization checks (needs the database)\n'
 fi
@@ -8605,7 +8634,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_cl() {
 		adb "DELETE FROM cases WHERE number IN ('ZZ-CL-A', 'ZZ-CL-B')" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cl' EXIT
+	trap 'base_cleanup; cleanup_cl' EXIT
 	cleanup_cl
 
 	# Ids come from the `counters` row as well as from MAX(). plBase::getNextID
@@ -8707,7 +8736,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_cl
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the case list filter checks (needs the database)\n'
 fi
@@ -8815,7 +8844,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			bad "the extension case fixture could not be removed (users, case, group, sessions, csrf rows still present: ${pm_left})"
 		fi
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
+	trap 'base_cleanup; cleanup_pm' EXIT
 	cleanup_pm
 
 	# Two entries, so a directory named across the ':' that separates them can
@@ -9198,7 +9227,7 @@ PMSEED
 	fi
 
 	cleanup_pm
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the extension loader checks (needs the database and the container)\n'
 fi
@@ -9235,7 +9264,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-TR<b>zz'" >/dev/null
 		adb "DELETE FROM transfer_options WHERE label = 'ZZTR<b>opt'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tr' EXIT
+	trap 'base_cleanup; cleanup_tr' EXIT
 	cleanup_tr
 
 	# Ids come from the `counters` row as well as from MAX(), because
@@ -9348,7 +9377,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_tr
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the case transfer checks (needs the database)\n'
 fi
@@ -9394,7 +9423,7 @@ if [ "$HAVE_DB" = 1 ]; then
 				rm -f /tmp/zzpr_pwned.txt >/dev/null 2>&1
 		fi
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pr' EXIT
+	trap 'base_cleanup; cleanup_pr' EXIT
 
 	# The admin's own preferences, and the defaults file, are what these
 	# checks overwrite. Keep both so the stack is handed back as it was.
@@ -9621,7 +9650,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_pr
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the stored preference checks (needs the database)\n'
 fi
@@ -9775,7 +9804,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${CPGROUP}'" >/dev/null
 		rm -f "$CPJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cp' EXIT
+	trap 'base_cleanup; cleanup_cp' EXIT
 	cleanup_cp
 
 	# Same id rule as section 28: take the higher of MAX() and the counters
@@ -9963,7 +9992,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_cp
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the case page hardening checks (needs the database and compose)\n'
 fi
@@ -10002,7 +10031,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${KCGROUP}'" >/dev/null
 		rm -f "$KCJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_kc' EXIT
+	trap 'base_cleanup; cleanup_kc' EXIT
 	cleanup_kc
 
 	kc_next_id() {
@@ -10145,7 +10174,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_kc
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the case_contact authorization checks (needs the database and compose)\n'
 fi
@@ -10195,7 +10224,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			adb "INSERT INTO settings (label, value) VALUES ('extensions', '${PMSAVED}')" >/dev/null
 		fi
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_pm' EXIT
+	trap 'base_cleanup; cleanup_pm' EXIT
 
 	PMSAVED="$(adb "SELECT value FROM settings WHERE label = 'extensions'")"
 	cleanup_pm
@@ -10275,7 +10304,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_pm
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the pm.php allowlist checks (needs the database and compose)\n'
 fi
@@ -10571,7 +10600,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM contacts WHERE contact_id BETWEEN 9991001 AND 9991099" >/dev/null
 		adb "DELETE FROM cases WHERE case_id BETWEEN 9991001 AND 9991099" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cf' EXIT
+	trap 'base_cleanup; cleanup_cf' EXIT
 	cleanup_cf
 
 	adb "INSERT INTO cases (case_id,number,user_id,office,status,problem) VALUES
@@ -10716,7 +10745,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_cf
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the conflict check checks (needs the database)\n'
 fi
@@ -10761,7 +10790,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		fi
 		rm -f "$CAL_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cal' EXIT
+	trap 'base_cleanup; cleanup_cal' EXIT
 
 	adb "DELETE FROM activities WHERE summary IN ('ZZ-CAL-PRIVATE', 'ZZ-CAL-REDACT')" >/dev/null
 	adb "DELETE FROM cases WHERE number = 'ZZ-CAL-CASE'" >/dev/null
@@ -10930,7 +10959,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_cal
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the calendar scope checks (needs the database and docker compose)\n'
 fi
@@ -11036,7 +11065,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${RAGROUP}'" >/dev/null
 		rm -f "$RAJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ra' EXIT
+	trap 'base_cleanup; cleanup_ra' EXIT
 	cleanup_ra
 
 	# The users flag is the one that matters: it is what lets this account
@@ -11273,7 +11302,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	done
 
 	cleanup_ra
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the re-authentication checks (needs the database and compose)\n'
 fi
@@ -11342,7 +11371,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		slo_dex rm -rf "$SLO_IDP" "$SLO_DIR" >/dev/null 2>&1 || true
 		rm -f "$SLO_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_slo' EXIT
+	trap 'base_cleanup; cleanup_slo' EXIT
 
 	cleanup_slo
 	slo_dex mkdir -p "$SLO_DIR" >/dev/null 2>&1
@@ -11462,7 +11491,7 @@ SLOCFG
 	fi
 
 	cleanup_slo
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the single sign-out checks (needs the database and compose)\n'
 fi
@@ -11528,7 +11557,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		hibp_dex rm -rf "$HIBP_STUB" "$HIBP_DIR" >/dev/null 2>&1 || true
 		rm -f "$HIBP_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_hibp' EXIT
+	trap 'base_cleanup; cleanup_hibp' EXIT
 
 	cleanup_hibp
 	hibp_dex mkdir -p "$HIBP_DIR" >/dev/null 2>&1
@@ -11624,7 +11653,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_hibp
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the breach-check checks (needs the database and compose)\n'
 fi
@@ -11665,7 +11694,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE judge_name = 'ZZCSV'" >/dev/null
 		adb "DELETE FROM contacts WHERE first_name = 'ZZCSV'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_csv' EXIT
+	trap 'base_cleanup; cleanup_csv' EXIT
 	cleanup_csv
 
 	csv_next_id() {
@@ -11764,7 +11793,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_csv
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the CSV export checks (needs the database)\n'
 fi
@@ -11797,7 +11826,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "UPDATE users SET cal_token = NULL WHERE user_id = 1" >/dev/null
 		rm -f "${BODY}.ic"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ic' EXIT
+	trap 'base_cleanup; cleanup_ic' EXIT
 	cleanup_ic
 
 	ic_next_id() {
@@ -11992,7 +12021,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_ic
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the iCal subscription token checks (needs the database)\n'
 fi
@@ -12029,7 +12058,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 		rm -f "$SPJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sp' EXIT
+	trap 'base_cleanup; cleanup_sp' EXIT
 	adb "DELETE FROM user_sessions WHERE user_agent = '${SPUA}'" >/dev/null
 
 	# Replay the session cookie with a given user agent and say whether the
@@ -12148,7 +12177,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_sp
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the session pin checks (needs the database)\n'
 fi
@@ -12182,7 +12211,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "UPDATE settings SET value = '${DLFORCE:-0}' WHERE label = 'doc_force_download'" >/dev/null
 		rm -f "$DLJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dl' EXIT
+	trap 'base_cleanup; cleanup_dl' EXIT
 
 	# Remember the operator's own setting before the checks move it about.
 	DLFORCE="$(adb "SELECT value FROM settings WHERE label = 'doc_force_download'")"
@@ -12364,7 +12393,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_dl
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the stored-document download checks (needs the database)\n'
 fi
@@ -12519,7 +12548,7 @@ echo "66. a failed query answers an error page, not a blank one"
 cleanup_exc() {
 	adb "RENAME TABLE outcomes_zzhidden TO outcomes" >/dev/null 2>&1
 }
-trap 'rm -f "$COOKIES" "$BODY"; cleanup_exc' EXIT
+trap 'base_cleanup; cleanup_exc' EXIT
 
 EXC_REPORT="reports/outcomes/report.php"
 
@@ -12632,7 +12661,7 @@ cleanup_csp() {
 	adb "INSERT IGNORE INTO settings (label, value) VALUES ('csp_mode', 'enforce')" \
 		>/dev/null 2>&1
 }
-trap 'rm -f "$COOKIES" "$BODY"; cleanup_csp' EXIT
+trap 'base_cleanup; cleanup_csp' EXIT
 
 CSP_HEADERS="$(mktemp)"
 csp_header() {
@@ -13074,7 +13103,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			adb "DELETE FROM activities WHERE act_id = ${VC_ID}" >/dev/null 2>&1
 		fi
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_vc' EXIT
+	trap 'base_cleanup; cleanup_vc' EXIT
 
 	VC_ID="$(adb "SELECT COALESCE(MAX(act_id),0)+1 FROM activities")"
 
@@ -13187,7 +13216,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 
 	cleanup_vc
 	VC_ID=""
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the vCalendar export checks (needs the database)\n'
 fi
@@ -13233,7 +13262,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		fi
 		adb "DROP TABLE IF EXISTS menu_zzsmoke" >/dev/null 2>&1
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sms' EXIT
+	trap 'base_cleanup; cleanup_sms' EXIT
 
 	SMS_TWILIO_SAVED="$(adb "SELECT value FROM settings WHERE label = 'twilio_auth_token'")"
 	SMS_SPARK_SAVED="$(adb "SELECT value FROM settings WHERE label = 'sparkpost_api_key'")"
@@ -13372,7 +13401,7 @@ b|Beta' "$OCM_URL/system-ops.php"
 
 	cleanup_sms
 	SMS_TWILIO_SAVED=""; SMS_SPARK_SAVED=""; SMS_SID_SAVED=""
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the SMS credential and menu name checks (needs the database)\n'
 fi
@@ -13409,7 +13438,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			adb "DELETE FROM settings WHERE label = 'sso_client_secret'" >/dev/null 2>&1
 		fi
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_docgen' EXIT
+	trap 'base_cleanup; cleanup_docgen' EXIT
 
 	DG_TOTP_HAD="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'totp_encryption_key'")"
 	DG_SSO_HAD="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'sso_client_secret'")"
@@ -13565,7 +13594,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 
 	cleanup_docgen
 	DG_CASE=""; DG_DOC=""; DG_TOTP_SAVED=""; DG_SSO_SAVED=""
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the document assembly checks (needs the database)\n'
 fi
@@ -13592,7 +13621,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM audit_log WHERE action = 'user.group_change_refused'" >/dev/null 2>&1
 		rm -f "$UG_JAR" "$UG_SYSJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ug' EXIT
+	trap 'base_cleanup; cleanup_ug' EXIT
 	cleanup_ug
 
 	# Two ordinary groups. The users flag is what lets an account reach
@@ -13743,7 +13772,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_ug
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the user security level checks (needs the database)\n'
 fi
@@ -13765,7 +13794,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SR_GROUP}'" >/dev/null 2>&1
 		rm -f "$SR_JAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sr' EXIT
+	trap 'base_cleanup; cleanup_sr' EXIT
 	cleanup_sr
 
 	sr_token() {
@@ -13863,7 +13892,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_sr
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the saved report definition checks (needs the database)\n'
 fi
@@ -13879,7 +13908,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		[ -n "${TP_DOC:-}" ] && adb "DELETE FROM doc_storage WHERE doc_id = ${TP_DOC}" >/dev/null 2>&1
 		[ -n "${TP_CASE:-}" ] && adb "DELETE FROM cases WHERE case_id = ${TP_CASE}" >/dev/null 2>&1
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tp' EXIT
+	trap 'base_cleanup; cleanup_tp' EXIT
 
 	TP_CASE="$(adb "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases")"
 	adb "INSERT INTO cases (case_id, number, user_id, office, status)
@@ -13939,7 +13968,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 
 	cleanup_tp
 	TP_CASE=""; TP_DOC=""
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the template path checks (needs the database)\n'
 fi
@@ -14078,7 +14107,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM cases WHERE number LIKE 'ZZ-CF-%'" >/dev/null
 		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZCF%'" >/dev/null
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_cf' EXIT
+	trap 'base_cleanup; cleanup_cf' EXIT
 	cleanup_cf
 
 	cf_next_id() {
@@ -14197,7 +14226,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_cf
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 # 74c. The other two copies of the check carry the same gate. pikaCms is the
@@ -15129,7 +15158,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 		rm -f "$SM78G_JAR" "$SM78G_ADMIN"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_78g' EXIT
+	trap 'base_cleanup; cleanup_78g' EXIT
 	cleanup_78g
 
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
@@ -15306,7 +15335,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_78g
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the no-permission page sweep (needs a running docker compose stack)\n'
 fi
@@ -17238,7 +17267,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		[ "$rpt_curl" = 0 ] && [ "$rpt_code" = 200 ] && [ -s "$BODY" ] \
 			&& ! grep -q 'login_pass' "$BODY"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rpt' EXIT
+	trap 'base_cleanup; cleanup_rpt' EXIT
 	cleanup_rpt
 
 	# One group with every flag off, and two users in it. The difference
@@ -17447,7 +17476,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_rpt
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 # 85. The pop-up timer gates on read access to the case, and on edit access
@@ -17564,7 +17593,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	}
 
 	TMCASE=''
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_tmr' EXIT
+	trap 'base_cleanup; cleanup_tmr' EXIT
 	cleanup_tmr
 
 	# One group with every flag off, and one that may read every case and edit
@@ -17730,7 +17759,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	cleanup_tmr
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 else
 	printf '  skip the timer authorization checks (needs the database and the container)\n'
 fi
@@ -17786,7 +17815,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 		rm -f "$QJAR"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_rq' EXIT
+	trap 'base_cleanup; cleanup_rq' EXIT
 	cleanup_rq
 
 	adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
@@ -17850,7 +17879,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	cleanup_rq
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 # 87. The LSC justice gap report sends a spreadsheet when the form asks for one.
@@ -18415,10 +18444,9 @@ elif ! adb "SELECT 1" >/dev/null 2>&1; then
 else
 	AT_LIST="$(mktemp)"
 	AT_PY="$(mktemp)"
-	# The suite's own trap only knows about the two files it made at the top.
-	# Re-set it so an interrupt part way through this section does not leave
-	# these two behind.
-	trap 'rm -f "$COOKIES" "$BODY" "$AT_LIST" "$AT_PY"' EXIT
+	# base_cleanup only knows what the top of the suite made. Re-set the trap so
+	# an interrupt part way through this section does not leave these two behind.
+	trap 'base_cleanup; rm -f "$AT_LIST" "$AT_PY"' EXIT
 
 	# SELECT 1 above proves the client works, not that this query answered.
 	# Without the second test a failed table list reads as an install with no
@@ -18614,7 +18642,7 @@ ATPY
 	at_checked="$(printf '%s\n' "$at_out" | grep '^checked ' | cut -d' ' -f2)"
 	at_lines="$(printf '%s\n' "$at_out" | grep '^BAD ' | sed 's/^BAD //')"
 	rm -f "$AT_PY" "$AT_LIST"
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 
 	# A sweep that finds nothing to look at has failed, not passed. Two
 	# separate floors, because they fail differently: at_checked counts the
@@ -18690,7 +18718,7 @@ else
 	TH_CLEAN_ERR=''
 	TH_SEEN=''
 
-	# The suite's own trap only knows the two files it made at the top.
+	# base_cleanup only knows what the top of the suite made.
 	cleanup_th() {
 		rm -f "$TH_HEAD"
 
@@ -18726,7 +18754,7 @@ else
 			WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}')" \
 			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} cases"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_th' EXIT
+	trap 'base_cleanup; cleanup_th' EXIT
 
 	# A token of its own rather than the one section 7 captured, so this section
 	# does not depend on how far away that is or on what ran in between.
@@ -18904,7 +18932,7 @@ else
 		fi
 	fi
 
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 
@@ -19017,7 +19045,7 @@ else
 			WHERE contact_id IN (${AB_ID1}, ${AB_ID2}, ${AB_ID3})" \
 			>/dev/null 2>&1 || AB_CLEAN_ERR="${AB_CLEAN_ERR} contacts"
 	}
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_ab' EXIT
+	trap 'base_cleanup; cleanup_ab' EXIT
 
 	AB_TAKEN="$(adb "SELECT
 		(SELECT COUNT(*) FROM contacts
@@ -19169,7 +19197,7 @@ else
 		fi
 	fi
 
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 # 99. system-ops.php wrote a request value straight into the query string of
@@ -19274,7 +19302,7 @@ elif ! adb "SELECT 1" >/dev/null 2>&1; then
 	bad "section 100 cannot reach the database, so it cannot tell what the DELETE removed"
 else
 	cleanup_dc
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_dc' EXIT
+	trap 'base_cleanup; cleanup_dc' EXIT
 
 	DC_CONTACT="$(adb "SELECT COALESCE(MAX(contact_id),0)+1 FROM contacts")"
 	adb "INSERT INTO contacts (contact_id, first_name, last_name) VALUES (${DC_CONTACT},'Zz','ZZDCONF')" >/dev/null
@@ -19404,7 +19432,7 @@ else
 	fi
 
 	cleanup_dc
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 # 101. reports/inactive_user/report.php put its row-count field into the LIMIT
@@ -19465,7 +19493,7 @@ elif ! adb "SELECT 1" >/dev/null 2>&1; then
 	bad "section 101 cannot reach the database, so it cannot seed a second report row"
 else
 	cleanup_iu
-	trap 'rm -f "$COOKIES" "$BODY"; cleanup_iu' EXIT
+	trap 'base_cleanup; cleanup_iu' EXIT
 
 	IU_CONTACT="$(adb "SELECT COALESCE(MAX(contact_id),0)+1 FROM contacts")"
 	adb "INSERT INTO contacts (contact_id, first_name, last_name) VALUES (${IU_CONTACT},'Zz','ZZIUSER')" >/dev/null
@@ -19567,7 +19595,7 @@ else
 	fi
 
 	cleanup_iu
-	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+	trap base_cleanup EXIT
 fi
 
 # 102. cms/services/zip-server-ajax.php, problem-server-ajax.php and
