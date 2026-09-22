@@ -119,11 +119,12 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 				written. The two differ whenever the code that matched was
 				not from the write-time window, which the verifier's one
 				window of tolerance allows on its own -- no boundary has to
-				be crossed. Both differences are wrong. A bound above the
-				matched window refuses codes the authenticator has not shown
-				yet, because pl_totp_verify_window() skips every window at or
-				below the bound. A bound below it leaves the code just
-				accepted inside tolerance and usable again at the login form.
+				be crossed. Both differences are wrong.
+				pl_totp_verify_window() skips every window at or below the
+				bound, so a bound above the matched window refuses codes the
+				user can still be looking at, including the one they just
+				typed. A bound below it leaves that same code usable again at
+				the login form for as long as it stays inside tolerance.
 			*/
 			pl_auth_rate_limit_reset_all($rl_keys);
 			pl_audit('user.totp_self_enrolled', 'user', $uid, array('username' => $username), $uid, $username);
