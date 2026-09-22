@@ -608,11 +608,18 @@ if [ "$HAVE_COMPOSE" = 1 ]; then
 	#
 	# `< /dev/null` for the same reason: nothing here should ever be able to
 	# wait on stdin.
+	#
+	# The database name is bound with --database= rather than left as a trailing
+	# operand. DB_NAME comes from the environment or the .env file, and a trailing
+	# operand sits in a position mariadb still reads options from, so a name
+	# beginning with a dash would be taken as one. This is the same defect as the
+	# grep patterns section 104 is about, in a different command; a review of that
+	# change found it here.
 	adb() {
 		docker compose "${COMPOSE_ARGS[@]}" exec -T \
 			-e MYSQL_PWD="$DB_PASSWORD" db \
 			mariadb -u"$DB_USER" -N -B \
-			-e "$1" "$DB_NAME" </dev/null 2>/dev/null
+			--database="$DB_NAME" -e "$1" </dev/null 2>/dev/null
 	}
 	if [ -z "$(adb 'SELECT 1')" ]; then
 		# Fall back to root, which the compose file always sets.
@@ -620,7 +627,7 @@ if [ "$HAVE_COMPOSE" = 1 ]; then
 			docker compose "${COMPOSE_ARGS[@]}" exec -T \
 				-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
 				mariadb -uroot -N -B \
-				-e "$1" "$DB_NAME" </dev/null 2>/dev/null
+				--database="$DB_NAME" -e "$1" </dev/null 2>/dev/null
 		}
 	fi
 
