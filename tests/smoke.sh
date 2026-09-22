@@ -63,30 +63,79 @@ DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-$DB_PASSWORD}"
 
 OCM_URL="${OCM_URL:-http://127.0.0.1:8080/cms}"
 OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
-# Every file this suite makes for itself is named, and the cleanup armed, before any of
-# them is made. Two reviews found two ways the other order loses them: the check below
-# exits, and it exited before the trap; and a run started with bash -e stops on a failed
-# mktemp, which is also before the trap. Naming a variable that holds nothing costs
-# nothing, because rm -f '' and rm -rf '' both remove nothing and both return 0. They
-# are set rather than left unset because under set -u the trap would fail on an unset
-# one instead of removing nothing.
+# Every temporary file this suite makes is written down as it is made, and the cleanup
+# removes what the list holds. Three reviews found the same defect in three places
+# before this: a file made here, removed on the line after its last use, and named by no
+# EXIT trap in between, so a run that died in between left it behind. A sweep of all 73
+# places this suite calls mktemp then found nineteen that no trap named at all, and two
+# of those cannot be named by a trap, because they are local to a function.
 #
-# A function rather than a string, because about sixty sections below install an EXIT
-# trap of their own and then restore this one by writing it out again. A review found
-# that every one of those copies had been written before CAL_DIR existed, so a completed
-# run left the parser directory behind. Named once, a restored trap cannot drop half of
-# it.
-COOKIES=''
-BODY=''
-CAL_DIR=''
+# So nothing is named. The two helpers below record what they hand out, and a file is
+# covered from the moment it exists, wherever in the run it is made. A section added
+# later is covered without being told.
+#
+# The list is a file rather than a variable because every call reads
+# VAR="$(smoke_temp)", and a variable set inside that command substitution is gone
+# when the subshell closes. That is the same mistake in a smaller shape, and it is
+# why this is not an array.
+#
+# The cleanup is a function rather than a string, because about sixty sections below
+# install an EXIT trap of their own and then restore this one by writing it out again. A
+# review found that every one of those copies had been written before the parser
+# directory existed, so a completed run left it behind. Named once, a restored trap
+# cannot drop half of it. Each of those sections installs 'base_cleanup; cleanup_x', so
+# this function runs wherever the suite exits.
+#
+# It is armed before the list exists, and the list is empty until something is made.
+# rm -f '' removes nothing and returns 0; an UNSET name under set -u would fail instead,
+# so the name is declared.
+TEMP_REG=''
 base_cleanup() {
-	rm -f "$COOKIES" "$BODY"
-	rm -rf "$CAL_DIR"
+	local p
+	if [ -n "$TEMP_REG" ] && [ -f "$TEMP_REG" ]; then
+		while IFS= read -r p; do
+			[ -n "$p" ] || continue
+			rm -rf "$p"
+		done < "$TEMP_REG"
+	fi
+	rm -f "$TEMP_REG"
 }
 trap base_cleanup EXIT
 
-COOKIES="$(mktemp)"
-BODY="$(mktemp)"
+# The list itself is the one file no helper can record, so it is made plainly and named
+# in the cleanup above. A run that cannot make it cannot clean up after itself, which is
+# worth stopping for rather than discovering at the end.
+TEMP_REG="$(mktemp)"
+TEMP_RC=$?
+if [ "$TEMP_RC" -ne 0 ] || [ -z "$TEMP_REG" ] || [ ! -f "$TEMP_REG" ]; then
+	printf 'smoke: mktemp made no list for the temporary files this run makes\n'
+	exit 1
+fi
+
+# Both record the path BEFORE reporting a failure, because mktemp can make a file or a
+# directory and then fail, and the point of the record is to hold what exists rather
+# than what succeeded. A caller that gets nothing back sees an empty string, which the
+# guards below and in the sections already refuse. rm -rf in the cleanup removes a file
+# as well as a directory, so one list serves both helpers.
+smoke_temp() {
+	local p rc
+	p="$(mktemp "$@")"
+	rc=$?
+	[ -z "$p" ] || printf '%s\n' "$p" >> "$TEMP_REG"
+	[ "$rc" -eq 0 ] || return "$rc"
+	printf '%s\n' "$p"
+}
+smoke_tempdir() {
+	local p rc
+	p="$(mktemp -d "$@")"
+	rc=$?
+	[ -z "$p" ] || printf '%s\n' "$p" >> "$TEMP_REG"
+	[ "$rc" -eq 0 ] || return "$rc"
+	printf '%s\n' "$p"
+}
+
+COOKIES="$(smoke_temp)"
+BODY="$(smoke_temp)"
 # The calendar parser, written to a file rather than piped in, because it is run
 # twice: once on the live reply, and once on its own unit cases in section 103.
 # Piping it in twice would mean two copies of it in this file, and two copies of
@@ -106,14 +155,14 @@ BODY="$(mktemp)"
 # sys.path[0] is then the working directory. The private directory is the part that
 # covers every module.
 #
-# mktemp failing is worth stopping for. Without set -e an empty CAL_DIR would make
+# Failing to make it is worth stopping for. Without set -e an empty CAL_DIR would make
 # CAL_PY '/cal_shape.py', and the heredoc below would write there if it could. Each of
 # the three tests refuses a different failure: the status, captured on the next line
-# because a later command would overwrite it, refuses a command that failed; -z refuses
-# one that succeeded and printed nothing; -d refuses one that succeeded and printed
-# something that is not a directory. The path a failing mktemp printed is kept rather
-# than cleared, so that the trap above can remove whatever it had already made.
-CAL_DIR="$(mktemp -d)"
+# because a later command would overwrite it, refuses a call that failed; -z refuses one
+# that succeeded and printed nothing; -d refuses one that succeeded and printed
+# something that is not a directory. A directory made before the failure is already in
+# the list above, so stopping here does not lose it.
+CAL_DIR="$(smoke_tempdir)"
 CAL_RC=$?
 if [ "$CAL_RC" -ne 0 ] || [ -z "$CAL_DIR" ] || [ ! -d "$CAL_DIR" ]; then
 	printf 'smoke: mktemp -d made no private directory for the reply parser\n'
@@ -2580,7 +2629,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	SMOKE_GROUP='zz_smoke_grp'
 	SMOKE_USER='zz_smoke_user'
 	SMOKE_PASS='zz-smoke-Passw0rd'
-	SMOKE_JAR="$(mktemp)"
+	SMOKE_JAR="$(smoke_temp)"
 
 	cleanup_intake() {
 		adb "DELETE FROM cases WHERE number = 'ZZ-SMOKE-1'" >/dev/null
@@ -2694,7 +2743,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	RGROUP='zz_rpt_grp'
 	RUSER='zz_rpt_user'
 	RPASS='zz-rpt-Passw0rd'
-	RJAR="$(mktemp)"
+	RJAR="$(smoke_temp)"
 	RREPORT='megareport'
 
 	cleanup_rpt() {
@@ -2826,7 +2875,7 @@ if [ "$HAVE_COMPOSE" = 1 ]; then
 	# logs` then dies of SIGPIPE with 141, and `set -o pipefail` reports the
 	# whole pipeline as failed even though the pattern WAS found. It only
 	# shows up once the log is long enough for grep to win the race.
-	APPLOG="$(mktemp)"
+	APPLOG="$(smoke_temp)"
 	docker compose "${COMPOSE_ARGS[@]}" logs app >"$APPLOG" 2>/dev/null
 	
 	if grep -q 'invalid SQL identifier rejected by allowlist' "$APPLOG"; then
@@ -2867,7 +2916,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	SUSER='zz_smoke_user2'
 	SPASS='zz-smoke-Passw0rd2'
 	STOKEN='zzsmoketoken'
-	SJAR="$(mktemp)"
+	SJAR="$(smoke_temp)"
 
 	cleanup_search() {
 		adb "DELETE FROM activities WHERE summary LIKE '%${STOKEN}%'" >/dev/null
@@ -3329,7 +3378,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	AGROUP='zz_act_grp'
 	AUSER='zz_act_user'
 	APASS='zz-act-Passw0rd'
-	AJAR="$(mktemp)"
+	AJAR="$(smoke_temp)"
 
 	cleanup_act() {
 		adb "DELETE FROM activities WHERE notes LIKE 'ZZACT-%'" >/dev/null
@@ -3482,7 +3531,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	DGROUP='zz_dg_grp'
 	DUSER='zz_dg_user'
 	DPASS='zz-dg-Passw0rd'
-	DJAR="$(mktemp)"
+	DJAR="$(smoke_temp)"
 
 	cleanup_dg() {
 		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZDG%'" >/dev/null
@@ -3617,7 +3666,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	PGROUP='zz_pba_grp'
 	PUSER='zz_pba_user'
 	PPASS='zz-pba-Passw0rd'
-	PJAR="$(mktemp)"
+	PJAR="$(smoke_temp)"
 
 	cleanup_pba() {
 		adb "DELETE FROM pb_attorneys WHERE last_name = 'ZZPBAATTY'" >/dev/null
@@ -3999,7 +4048,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	DUSER='zz_dops_user'
 	DPASS='zz-dops-Passw0rd'
 	DNEW='zz-dops-Changed1'
-	DJAR="$(mktemp)"
+	DJAR="$(smoke_temp)"
 
 	cleanup_dops() {
 		adb "DELETE FROM activities WHERE summary LIKE 'ZZDOPSREDIR%'" >/dev/null
@@ -4365,7 +4414,7 @@ fi
 echo
 echo "24. repeated failed logins are locked out"
 if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
-	RLJAR="$(mktemp)"
+	RLJAR="$(smoke_temp)"
 	trap 'base_cleanup; rm -f "$RLJAR"' EXIT
 
 	# Wipe the counters. Also done at the start: a previous run of this suite
@@ -4479,8 +4528,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 	MFA_GROUP='zz_mfa_grp'
 	MFA_USER='zz_mfa_user'
 	MFA_PASS='zz-mfa-Passw0rd'
-	MFA_JAR="$(mktemp)"
-	MFA_PY="$(mktemp)"
+	MFA_JAR="$(smoke_temp)"
+	MFA_PY="$(smoke_temp)"
 
 
 	mfa_code()   { python3 "$MFA_PY" "$1" "${2:-0}"; }
@@ -4860,7 +4909,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	SSO_BIND_MAIL='zz_sso_bind@zz-sso.example'
 	SSO_CLIENT='zz-ocm-ci-client'
 	SSO_SECRET='zz-ocm-ci-secret'
-	SSO_JAR="$(mktemp)"
+	SSO_JAR="$(smoke_temp)"
 	SSO_IDP='/var/www/html/cms/zz_test_idp.php'
 	SSO_DIR='/tmp/zz_test_idp'
 	# The container reaches itself on port 80; the test reaches it on the
@@ -5085,7 +5134,7 @@ SSOCFG
 		# gets. Anything that differs -- wording, a hint, a different length --
 		# tells whoever is asking that this name is an account here and that it
 		# has been moved to single sign-on.
-		SSO_REFUSAL="$(mktemp)"
+		SSO_REFUSAL="$(smoke_temp)"
 		sed -E 's/[0-9a-f]{64}//g' "$BODY" > "$SSO_REFUSAL"
 		mfa_rl_clear 2>/dev/null || dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
 		: > "$SSO_JAR"
@@ -5560,7 +5609,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	AZGROUP='zz_az_grp'
 	AZUSER='zz_az_user'
 	AZPASS='zz-az-Passw0rd'
-	AZJAR="$(mktemp)"
+	AZJAR="$(smoke_temp)"
 
 	cleanup_az() {
 		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZAZ%' OR report_name = 'ZZAZREPORT'" >/dev/null
@@ -5874,7 +5923,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	PW_GROUP='zz_pw_grp'
 	PW_OLD='zz-pw-Passw0rd'
 	PW_NEW='zz-pw-N3wPassword'
-	PW_JAR="$(mktemp)"
+	PW_JAR="$(smoke_temp)"
 	PWLEN_WAS="$(adb "SELECT value FROM settings WHERE label = 'pass_min_length'")"
 	PWSTR_WAS="$(adb "SELECT value FROM settings WHERE label = 'pass_min_strength'")"
 
@@ -6304,7 +6353,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	LKGROUP='zz_lk_grp'
 	LKUSER='zz_lk_user'
 	LKPASS='zz-Lk-Passw0rd'
-	LKJAR="$(mktemp)"
+	LKJAR="$(smoke_temp)"
 	# These dates must be the application's, not the shell's. pika_init()
 	# calls date_default_timezone_set() with the time_zone setting and
 	# defaults it to America/New_York, so between midnight UTC and that
@@ -6778,8 +6827,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	PWUSER='zz_pw_user'
 	PWPASS='zz-pw-Passw0rd'
 	PWNEW='zz-pw-N3wPassw0rd'
-	PWJARA="$(mktemp)"
-	PWJARB="$(mktemp)"
+	PWJARA="$(smoke_temp)"
+	PWJARB="$(smoke_temp)"
 
 	cleanup_pw() {
 		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username = '${PWUSER}')" >/dev/null
@@ -6920,7 +6969,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	PINGROUP="zz_pin_grp"
 	PINUSER="zz_pin_user"
 	PINPASS="zz-pin-Passw0rd"
-	PINJAR="$(mktemp)"
+	PINJAR="$(smoke_temp)"
 	PINMODE="$(adb "SELECT value FROM settings WHERE label = 'session_ip_pin'")"
 
 	cleanup_pin() {
@@ -7066,7 +7115,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	MCPUSER="zz_mcp_user"
 	MCPPASS="zz-mcp-Passw0rd"
 	MCPNEW="zz-mcp-Newpass1"
-	MCPJAR="$(mktemp)"
+	MCPJAR="$(smoke_temp)"
 
 	cleanup_mcp() {
 		adb "DELETE FROM user_sessions WHERE user_id = ${MCPUID:-0}" >/dev/null
@@ -7244,7 +7293,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	CLGROUP='zz_cl_grp'
 	CLUSER='zz_cl_user'
 	CLPASS='zz-cl-Passw0rd'
-	CLJAR="$(mktemp)"
+	CLJAR="$(smoke_temp)"
 
 	cleanup_cl() {
 		adb "DELETE FROM audit_log WHERE action = 'case.read_denied'" >/dev/null
@@ -8241,9 +8290,9 @@ if [ "$HAVE_DB" = 1 ]; then
 	CSGROUP='zz_cs_grp'
 	CSUSER='zz_cs_user'
 	CSPASS='zz-cs-Passw0rd'
-	CSJAR="$(mktemp)"
-	CSB1="$(mktemp)"
-	CSB2="$(mktemp)"
+	CSJAR="$(smoke_temp)"
+	CSB1="$(smoke_temp)"
+	CSB2="$(smoke_temp)"
 
 	cleanup_cs() {
 		adb "DELETE FROM cases WHERE number IN ('ZZ-CS-SECRET', 'ZZ-CS-MINE')" >/dev/null
@@ -8461,7 +8510,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	ALGROUP='zz_al_grp'
 	ALUSER='zz_al_user'
 	ALPASS='zz-al-Passw0rd'
-	ALJAR="$(mktemp)"
+	ALJAR="$(smoke_temp)"
 
 	cleanup_al() {
 		adb "DELETE FROM aliases WHERE last_name LIKE 'ZZAL%'" >/dev/null
@@ -9010,8 +9059,8 @@ PMSEED
 		adb "INSERT INTO cases (case_id, number, user_id, office, open_date, status)
 			VALUES (${PMCASE2}, '${PMNUM2}', ${PMRDID}, 'ZZO', CURDATE(), 'O')" >/dev/null
 
-		PMRJAR="$(mktemp)"
-		PMOJAR="$(mktemp)"
+		PMRJAR="$(smoke_temp)"
+		PMOJAR="$(smoke_temp)"
 
 		# Every request checks curl's exit status. Without that a transfer that
 		# died after the refusal text had arrived would read as a refusal.
@@ -9809,7 +9858,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	CPGROUP='zz_cp_grp'
 	CPUSER='zz_cp_user'
 	CPPASS='zz-cp-Passw0rd'
-	CPJAR="$(mktemp)"
+	CPJAR="$(smoke_temp)"
 	CPXSS='ZZCP<img src=x onerror=zzcpx>'
 
 	cleanup_cp() {
@@ -10037,7 +10086,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	KCGROUP='zz_kc_grp'
 	KCUSER='zz_kc_user'
 	KCPASS='zz-kc-Passw0rd'
-	KCJAR="$(mktemp)"
+	KCJAR="$(smoke_temp)"
 
 	cleanup_kc() {
 		adb "DELETE FROM conflict WHERE contact_id IN
@@ -10569,7 +10618,7 @@ echo "30. the caseless pop-up timer"
 # undefined-key warnings. Nothing about the page changed, so the only way to see
 # the fix is in the log.
 if [ "$HAVE_COMPOSE" = 1 ]; then
-	TIMERLOG="$(mktemp)"
+	TIMERLOG="$(smoke_temp)"
 	docker compose "${COMPOSE_ARGS[@]}" logs app >"$TIMERLOG" 2>/dev/null
 	timer_log_before="$(wc -l < "$TIMERLOG")"
 	
@@ -10742,7 +10791,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		# which is an undefined variable on a case with no parties, and the
 		# name search read the length of a null.
 		if [ "$HAVE_COMPOSE" = 1 ]; then
-			CFLOG="$(mktemp)"
+			CFLOG="$(smoke_temp)"
 			docker compose "${COMPOSE_ARGS[@]}" logs app >"$CFLOG" 2>/dev/null
 			cf_before="$(wc -l < "$CFLOG")"
 			curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "${CFREP}?case_id=9991001" >/dev/null
@@ -10790,7 +10839,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	CAL_GROUP='zz_cal_grp'
 	CAL_USER='zz_cal_user'
 	CAL_PASS='zz-cal-Passw0rd'
-	CAL_JAR="$(mktemp)"
+	CAL_JAR="$(smoke_temp)"
 	# What this installation had before the section touched it, so the value
 	# an operator chose survives a test run.
 	CAL_SETTING_WAS="$(adb "SELECT value FROM settings WHERE label = 'enable_shared_calendars'")"
@@ -11066,8 +11115,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	RAUSER='zz_ra_user'
 	RAPASS='zz-ra-Passw0rd'
 	RANEW='zz-ra-N3wPassw0rd'
-	RAJAR="$(mktemp)"
-	RATARGETJAR="$(mktemp)"
+	RAJAR="$(smoke_temp)"
+	RATARGETJAR="$(smoke_temp)"
 	RATARGETPASS='zz-ra-Target1!'
 	RATARGETNEW='zz-ra-Target2!'
 
@@ -11348,7 +11397,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	SLO_MAIL='zz_slo_user@zz-slo.example'
 	SLO_CLIENT='zz-ocm-slo-client'
 	SLO_SECRET='zz-ocm-slo-secret'
-	SLO_JAR="$(mktemp)"
+	SLO_JAR="$(smoke_temp)"
 	SLO_IDP='/var/www/html/cms/zz_test_idp.php'
 	SLO_DIR='/tmp/zz_test_idp'
 	SLO_PATH="$(printf '%s' "$OCM_URL" | sed -E 's#^[a-z]+://[^/]*##')"
@@ -11536,7 +11585,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	HIBP_BAD='Zz-Hibp-Breach1!'
 	HIBP_BAD2='Zz-Hibp-Breach2!'
 	HIBP_GOOD='Zz-Hibp-Clean9f3a!'
-	HIBP_JAR="$(mktemp)"
+	HIBP_JAR="$(smoke_temp)"
 	HIBP_STUB='/var/www/html/cms/zz_test_hibp.php'
 	HIBP_DIR='/tmp/zz_test_hibp'
 	HIBP_PATH="$(printf '%s' "$OCM_URL" | sed -E 's#^[a-z]+://[^/]*##')"
@@ -12065,7 +12114,7 @@ echo "60. the session address and user-agent pin"
 # with the session_ip_pin setting.
 if [ "$HAVE_DB" = 1 ]; then
 	SPUA='OCM-SMOKE-SESSION-PIN-UA'
-	SPJAR="$(mktemp)"
+	SPJAR="$(smoke_temp)"
 	SPPIN="$(adb "SELECT COALESCE(value, '') FROM settings WHERE label = 'session_ip_pin'")"
 
 	cleanup_sp() {
@@ -12220,7 +12269,7 @@ echo "61. how a stored document is served back"
 # %%[doc_name]%% tag, which is substituted raw, and no input filter touches an
 # uploaded file name.
 if [ "$HAVE_DB" = 1 ]; then
-	DLJAR="$(mktemp)"
+	DLJAR="$(smoke_temp)"
 
 	cleanup_dl() {
 		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZDL%' OR description = 'ZZDL upload'" >/dev/null
@@ -12290,7 +12339,7 @@ if [ "$HAVE_DB" = 1 ]; then
 
 	# 61a. The premise: the client picks the content type and it is kept.
 	# The name carries markup too, which check 61i reads back.
-	DLUP="$(mktemp)"
+	DLUP="$(smoke_temp)"
 	printf '<script>document.title="ZZDL-XSS"</script>\n' > "$DLUP"
 	DLTOKEN="$(dl_token)"
 	curl -sL --max-time 60 -c "$COOKIES" -b "$COOKIES" -o /dev/null \
@@ -12477,7 +12526,7 @@ echo "65. the retired save_quest action is rejected"
 # save_quest read $_REQUEST, so it also answered a GET, which the POST-only
 # CSRF gate at the top of dataops.php never covered. Both shapes are checked.
 # The payload carries a quote so a surviving handler would print a SQL error.
-SQ_HEADERS="$(mktemp)"
+SQ_HEADERS="$(smoke_temp)"
 SQ_INJECT="-1 UNION SELECT 1--'"
 
 curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" \
@@ -12680,7 +12729,7 @@ cleanup_csp() {
 }
 trap 'base_cleanup; cleanup_csp' EXIT
 
-CSP_HEADERS="$(mktemp)"
+CSP_HEADERS="$(smoke_temp)"
 csp_header() {
 	curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D "$CSP_HEADERS" \
 		"$OCM_URL/index.php"
@@ -12757,7 +12806,7 @@ else
 	# request still returns 200 and the page still renders, just without
 	# whatever that script did. Fetch the header and the body in ONE request
 	# -- a second request has a different nonce and would fail every time.
-	csp_both="$(mktemp)"
+	csp_both="$(smoke_temp)"
 	csp_inline=0
 	csp_nononce=0
 	csp_noheader=0
@@ -12883,7 +12932,7 @@ echo "67b. the rest of the OWASP response header set"
 #   X-Powered-By must be gone. It names the PHP version, which is a list of
 #   published bugs to try.
 
-SEC_HEADERS="$(mktemp)"
+SEC_HEADERS="$(smoke_temp)"
 sec_headers() {
 	curl -s --max-time 30 -b "$COOKIES" -o /dev/null -D "$SEC_HEADERS" \
 		"$OCM_URL/index.php"
@@ -12999,7 +13048,7 @@ done
 # A static file is the response PHP never sees, so the conf is the only thing
 # that can protect it. Check it actually does -- setifempty only fires when the
 # header is absent, and getting that wrong is invisible on a PHP page.
-STATIC_HDR="$(mktemp)"
+STATIC_HDR="$(smoke_temp)"
 curl -s --max-time 30 -o /dev/null -D "$STATIC_HDR" \
 	"${OCM_URL%/cms}/errors/404.html"
 static="$(tr -d '\r' < "$STATIC_HDR")"
@@ -13628,8 +13677,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	UG_TARGET='zz_ug_target'
 	UG_SYSUSER='zz_ug_sys'
 	UG_PASS='zz-ug-Pass1!'
-	UG_JAR="$(mktemp)"
-	UG_SYSJAR="$(mktemp)"
+	UG_JAR="$(smoke_temp)"
+	UG_SYSJAR="$(smoke_temp)"
 
 	cleanup_ug() {
 		adb "DELETE FROM user_sessions WHERE user_id IN
@@ -13803,7 +13852,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	SR_GROUP='zz_sr_grp'
 	SR_USER='zz_sr_user'
 	SR_PASS='zz-sr-Pass1!'
-	SR_JAR="$(mktemp)"
+	SR_JAR="$(smoke_temp)"
 
 	cleanup_sr() {
 		adb "DELETE FROM doc_storage WHERE report_name LIKE 'ZZSR%'" >/dev/null 2>&1
@@ -14495,8 +14544,8 @@ if [ "$HAVE_DB" = 1 ]; then
 	# login form, so no password field is left to count.
 	sm76_login() {
 		local jar body
-		jar="$(mktemp)"
-		body="$(mktemp)"
+		jar="$(smoke_temp)"
+		body="$(smoke_temp)"
 		curl -sL --max-time 30 -c "$jar" -o /dev/null "$OCM_URL/index.php"
 		curl -sL --max-time 30 -c "$jar" -b "$jar" -o /dev/null \
 			--data-urlencode "login_user=zzsmoke_md5" \
@@ -14569,7 +14618,7 @@ fi
 # requires the per-session token on every POST. The form carried no token
 # field, so saving the extension list always landed on the token-recovery
 # page instead of saving.
-SM76_JAR="$(mktemp)"
+SM76_JAR="$(smoke_temp)"
 curl -sL --max-time 30 -c "$SM76_JAR" -o /dev/null "$OCM_URL/index.php"
 curl -sL --max-time 30 -c "$SM76_JAR" -b "$SM76_JAR" -o /dev/null \
 	--data-urlencode "login_user=${OCM_USER}" \
@@ -14593,7 +14642,7 @@ fi
 # so the extensions rows are read first and written back afterwards, row
 # existence included.
 if [ "$HAVE_DB" = 1 ]; then
-	SM76_SNAP="$(mktemp)"
+	SM76_SNAP="$(smoke_temp)"
 	adb "SELECT label, value FROM settings WHERE label LIKE 'extensions%'" > "$SM76_SNAP"
 
 	SM76_TOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
@@ -14966,7 +15015,7 @@ then
 	SM78_GROUP=zz_sm78_grp
 	SM78_USER=zz_sm78_user
 	SM78_PASS='zz-Sm78-Passw0rd'
-	SM78_JAR="$(mktemp)"
+	SM78_JAR="$(smoke_temp)"
 
 	sm78_cleanup() {
 		adb "DELETE FROM users WHERE username = '${SM78_USER}'" >/dev/null
@@ -15032,7 +15081,7 @@ fi
 # What counts as rendered: 200, a body big enough to be a page, no login
 # form in it, and none of the application's refusal or error wording.
 sm78_open=''
-SM78_ANON="$(mktemp)"
+SM78_ANON="$(smoke_temp)"
 for sm78_p in cms/*.php cms/m/*.php
 do
 	sm78_rel="${sm78_p#cms/}"
@@ -15078,7 +15127,7 @@ sm78_signed_in() {
 	! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"
 }
 
-sm78_jar="$(mktemp)"
+sm78_jar="$(smoke_temp)"
 curl -sL --max-time 30 -c "$sm78_jar" -b "$sm78_jar" -o /dev/null \
 	-X POST -d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
 	"$OCM_URL/"
@@ -15157,8 +15206,8 @@ if [ "$HAVE_DB" = 1 ]; then
 	SM78G_GROUP='zz_78g_grp'
 	SM78G_USER='zz_78g_user'
 	SM78G_PASS='zz-78g-Passw0rd'
-	SM78G_JAR="$(mktemp)"
-	SM78G_ADMIN="$(mktemp)"
+	SM78G_JAR="$(smoke_temp)"
+	SM78G_ADMIN="$(smoke_temp)"
 
 	cleanup_78g() {
 		# user_sessions holds a row per login and has no cascading foreign key on
@@ -15442,9 +15491,9 @@ then
 	SM79_USER=zz_sm79_user
 	SM79_PASS='zz-Sm79-Passw0rd'
 	SM79_NUMBER='ZZ-SM79-CASE'
-	SM79_JAR="$(mktemp)"
-	SM79_A="$(mktemp)"
-	SM79_B="$(mktemp)"
+	SM79_JAR="$(smoke_temp)"
+	SM79_A="$(smoke_temp)"
+	SM79_B="$(smoke_temp)"
 
 	sm79_cleanup() {
 		adb "DELETE FROM users WHERE username = '${SM79_USER}'" >/dev/null
@@ -17221,8 +17270,8 @@ if [ "$HAVE_DB" = 1 ]; then
 	ROWNER='zz_rpt_owner'
 	RPWD='zz-rpt-Passw0rd'
 	RSECRET='ZZRPTSECRETCLIENT'
-	RJAR="$(mktemp)"
-	ROJAR="$(mktemp)"
+	RJAR="$(smoke_temp)"
+	ROJAR="$(smoke_temp)"
 
 	cleanup_rpt() {
 		# Two tables outlive the users unless they go first. user_sessions has no
@@ -17526,9 +17575,9 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	TMPWD='zz-tmr-Passw0rd'
 	TMSECRET='ZZTMRSECRETCLIENT'
 	TMNUM='ZZ-TMR-1'
-	TMJAR="$(mktemp)"
-	TMVJAR="$(mktemp)"
-	TMOJAR="$(mktemp)"
+	TMJAR="$(smoke_temp)"
+	TMVJAR="$(smoke_temp)"
+	TMOJAR="$(smoke_temp)"
 
 	cleanup_tmr() {
 		# The activities go first: they are what the end branch writes, and a
@@ -17803,7 +17852,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	QGROUP='zz_rq_grp'
 	QREADER='zz_rq_reader'
 	QPWD='zz-rq-Passw0rd'
-	QJAR="$(mktemp)"
+	QJAR="$(smoke_temp)"
 
 	cleanup_rq() {
 		# user_sessions has no cascading key on user_id and csrf_tokens holds the
@@ -18137,7 +18186,7 @@ echo "92. report forms post nothing the report ignores"
 if ! command -v python3 >/dev/null 2>&1; then
 	printf '  skip the report control check (needs python3)\n'
 else
-	RC_PY="$(mktemp)"
+	RC_PY="$(smoke_temp)"
 	cat > "$RC_PY" <<'RCPY'
 import io, os, re, sys
 
@@ -18461,10 +18510,11 @@ if ! command -v python3 >/dev/null 2>&1 || ! command -v adb >/dev/null 2>&1; the
 elif ! adb "SELECT 1" >/dev/null 2>&1; then
 	bad "section 95 cannot reach the database, so it cannot tell which tables this install has"
 else
-	AT_LIST="$(mktemp)"
-	AT_PY="$(mktemp)"
-	# base_cleanup only knows what the top of the suite made. Re-set the trap so
-	# an interrupt part way through this section does not leave these two behind.
+	AT_LIST="$(smoke_temp)"
+	AT_PY="$(smoke_temp)"
+	# The cleanup at the top covers these two already, because smoke_temp wrote
+	# them down. The trap is re-set because it is also what removes this section's
+	# rows, and removing the files twice costs nothing.
 	trap 'base_cleanup; rm -f "$AT_LIST" "$AT_PY"' EXIT
 
 	# SELECT 1 above proves the client works, not that this query answered.
@@ -18731,13 +18781,14 @@ else
 	TH_CONTACT_OTHER='9242424'
 	TH_ROW_MINE='9777776'
 	TH_ROW_OTHER='9777777'
-	TH_HEAD="$(mktemp)"
+	TH_HEAD="$(smoke_temp)"
 	TH_OWNED=0
 	TH_OWNED_IDS='0'
 	TH_CLEAN_ERR=''
 	TH_SEEN=''
 
-	# base_cleanup only knows what the top of the suite made.
+	# The file is in the cleanup list at the top already; the rest of this is what
+	# only the section can undo.
 	cleanup_th() {
 		rm -f "$TH_HEAD"
 
@@ -19035,7 +19086,7 @@ else
 	AB_ID3='9242433'
 	AB_OWNED=0
 	AB_CLEAN_ERR=''
-	AB_JAR="$(mktemp)"
+	AB_JAR="$(smoke_temp)"
 
 	# A surname letter with no aliases on it, so every row the address book
 	# returns for that letter is one of the three seeded below. Counting
