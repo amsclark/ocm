@@ -123,7 +123,7 @@ sm_reauth_post() {
 	# Truncate first. A transfer that fails before any of the body
 	# arrives does not write to $BODY at all, leaving the previous page
 	# there, and if that page happened to be a reauth prompt this would
-	# post a stale token nobody asked it to post.
+	# post a token belonging to an earlier request.
 	: > "$BODY"
 	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$@" "$sm_ra_url" >/dev/null
 	if grep -q 'name="_reauth_scope"' "$BODY"; then
@@ -2820,8 +2820,8 @@ MFAPY
 	# Truncate the body first. A transfer that fails before any of the
 	# response body arrives does not touch curl's -o file at all, so
 	# without this a grep below reads the page the PREVIOUS request left
-	# there and answers a question nobody asked. One that breaks off part
-	# way through does overwrite it, with its own partial page.
+	# there and reports on that page instead of this one. One that breaks
+	# off part way through does overwrite it, with its own partial page.
 	mfa_login() {
 		: > "$MFA_JAR"
 		: > "$BODY"
@@ -3270,7 +3270,7 @@ MFAPY
 			# clears audit_log, so a row an earlier run left behind
 			# answers it. The enrollment failure itself is already
 			# reported above, so these lines say what was lost rather
-			# than accusing the server a second time.
+			# than reporting a second server failure for one cause.
 			if [ "$mfa_enrol_done" = 0 ]; then
 				bad "this run did not confirm an enrolled account, so whether the stored secret is encrypted at rest was not checked"
 			elif [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
@@ -3361,16 +3361,17 @@ MFAPY
 			# The clock this loop judges a window by. Anything carrying a
 			# character that is not a digit is blanked, and every use is
 			# guarded on the result being non-empty. For output like
-			# 'abc' that only quietens the shell: the bare comparison
-			# exits 2, which reads as false, and the guarded one is false
-			# as well. For '-1', '+1' or a space-padded '1' it does
+			# 'abc' the filter only suppresses the shell's diagnostic:
+			# the bare comparison exits 2, which reads as false, and the
+			# guarded one is false as well. For '-1', '+1' or a space-padded '1' it does
 			# change the answer, because the shell accepts all three as
 			# integers and would compare them. That is deliberate: a
 			# clock that did not print an unsigned decimal cannot be used
 			# to judge a window, and an unsigned decimal is all
 			# mfa_window() prints. What keeps a spent window out of a
 			# request is the break below, which compares the generated
-			# window against the highest window this loop has spent.
+			# window against the highest of the bound the server holds
+			# and every window this loop has sent.
 			mfa_pair_clock() {
 				mfa_pair_now="$(mfa_window)"
 				case "$mfa_pair_now" in
@@ -3379,11 +3380,12 @@ MFAPY
 			}
 			# mfa_pair_nobound records whether any re-read inside the
 			# loop ever answered. The seed read does not clear it and no
-			# later read sets it again, so it means at least one in-loop
-			# read answered, not that the read on the try which sent the
-			# code answered. The escape hatch below exists for a loop
-			# that cannot tell a replay refusal it caused itself from a
-			# wrong one, and only a bound this loop read can decide that.
+			# later read sets it again, so cleared means at least one
+			# in-loop read answered and set means none did -- not that
+			# the read on the try which sent the code answered. The
+			# unchecked-result branch below exists for a loop that cannot
+			# tell a replay refusal it caused itself from a wrong one,
+			# and only a bound this loop read can decide that.
 			# Letting the seed clear the flag reported an undecidable
 			# refusal as a correct server refusing a valid code: with
 			# every in-loop read failing the spent window stays at the
@@ -3602,10 +3604,10 @@ MFAPY
 			mfa_login
 			mfa_reset_got=$?
 			# An account that never enrolled is held at the enrollment
-			# page after a Reset that did nothing, so this passed for
-			# free. That is not true of whatever Reset did: one that also
-			# turned the requirement off would have let the account in,
-			# and this check would have caught that.
+			# page after a Reset that did nothing, so this passed without
+			# testing the reset. That is not true of whatever Reset did:
+			# one that also turned the requirement off would have let the
+			# account in, and this check would have caught that.
 			if [ "$mfa_enrol_done" = 0 ]; then
 				bad "this run did not confirm an enrolled account, so whether a reset account is sent back to the enrollment page was not checked"
 			elif [ "$mfa_reset_got" != 0 ]; then
