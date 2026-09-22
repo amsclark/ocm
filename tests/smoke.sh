@@ -63,6 +63,28 @@ DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-$DB_PASSWORD}"
 
 OCM_URL="${OCM_URL:-http://127.0.0.1:8080/cms}"
 OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
+# Every file this suite makes for itself is named, and the cleanup armed, before any of
+# them is made. Two reviews found two ways the other order loses them: the check below
+# exits, and it exited before the trap; and a run started with bash -e stops on a failed
+# mktemp, which is also before the trap. Naming a variable that holds nothing costs
+# nothing, because rm -f '' and rm -rf '' both remove nothing and both return 0. They
+# are set rather than left unset because under set -u the trap would fail on an unset
+# one instead of removing nothing.
+#
+# A function rather than a string, because about sixty sections below install an EXIT
+# trap of their own and then restore this one by writing it out again. A review found
+# that every one of those copies had been written before CAL_DIR existed, so a completed
+# run left the parser directory behind. Named once, a restored trap cannot drop half of
+# it.
+COOKIES=''
+BODY=''
+CAL_DIR=''
+base_cleanup() {
+	rm -f "$COOKIES" "$BODY"
+	rm -rf "$CAL_DIR"
+}
+trap base_cleanup EXIT
+
 COOKIES="$(mktemp)"
 BODY="$(mktemp)"
 # The calendar parser, written to a file rather than piped in, because it is run
@@ -84,28 +106,16 @@ BODY="$(mktemp)"
 # sys.path[0] is then the working directory. The private directory is the part that
 # covers every module.
 #
-# The cleanup is a function rather than a string, because about sixty sections below
-# install an EXIT trap of their own and then restore this one by writing it out again.
-# A review found that every one of those copies had been written before CAL_DIR
-# existed, so a completed run left the parser directory behind. Named once, a restored
-# trap cannot drop half of it.
-#
-# Declared empty and armed BEFORE mktemp -d runs, because the check below exits, and a
-# second review found that exit came before the first trap and so left the two files
-# above behind. An empty CAL_DIR costs nothing here: rm -rf "" removes nothing.
-CAL_DIR=''
-base_cleanup() {
-	rm -f "$COOKIES" "$BODY"
-	rm -rf "$CAL_DIR"
-}
-trap base_cleanup EXIT
-
-# mktemp failing is worth stopping for. Without set -e an empty CAL_DIR makes CAL_PY
-# '/cal_shape.py', and the heredoc below would write there if it could. The || is for
-# the other failure, a command that prints something and then fails: the -d test is
-# what refuses it.
-CAL_DIR="$(mktemp -d)" || CAL_DIR=''
-if [ -z "$CAL_DIR" ] || [ ! -d "$CAL_DIR" ]; then
+# mktemp failing is worth stopping for. Without set -e an empty CAL_DIR would make
+# CAL_PY '/cal_shape.py', and the heredoc below would write there if it could. Each of
+# the three tests refuses a different failure: the status, captured on the next line
+# because a later command would overwrite it, refuses a command that failed; -z refuses
+# one that succeeded and printed nothing; -d refuses one that succeeded and printed
+# something that is not a directory. The path a failing mktemp printed is kept rather
+# than cleared, so that the trap above can remove whatever it had already made.
+CAL_DIR="$(mktemp -d)"
+CAL_RC=$?
+if [ "$CAL_RC" -ne 0 ] || [ -z "$CAL_DIR" ] || [ ! -d "$CAL_DIR" ]; then
 	printf 'smoke: mktemp -d made no private directory for the reply parser\n'
 	exit 1
 fi
