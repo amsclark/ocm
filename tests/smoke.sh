@@ -196,9 +196,12 @@ smoke_temp_closed() {
 # the shell's own pid with the disposition left at the default, SIGTERM (-15), SIGHUP
 # (-1) and SIGXFSZ (-25) ALL run the EXIT trap before the shell goes. Only SIGKILL (-9)
 # cannot. The byte-exact RLIMIT_FSIZE case was measured through this helper itself:
-# status -25, the EXIT trap ran, and the list held five bytes of an unterminated record.
-# So base_cleanup does run there, and the partial record is refused for being
-# unterminated rather than acted on.
+# status -25, the EXIT trap ran, and the list held an unterminated record. How much of
+# the record is on disk follows from the limit and the list's length before the append,
+# so no particular byte count belongs in this comment: at a limit of 5 the list held
+# `keep/`, and at 9 it held `keep/temp`, neither with the NUL that ends a record. So
+# base_cleanup does run there, and the partial record is refused for being unterminated
+# rather than acted on.
 #
 # What base_cleanup then does is an attempt, not a promise: it reads whichever list
 # it can still see, and it does not check each rm. And where this helper runs inside a
