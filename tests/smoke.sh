@@ -18643,6 +18643,157 @@ sv_arr_try "an array where the year belongs" 'Invalid date parameter' \
 	--data-urlencode "month=1" \
 	--data-urlencode "year[]=bad"
 
+# 105. pl_totp_mark_used() records the window a code was accepted in, closing
+# that window and every earlier one to a replay. What it writes is therefore a
+# floor, and a floor may only rise: writing a lower window back over a higher
+# one reopens every code between the two to a replay that the higher value had
+# already refused.
+#
+# Two ordinary requests are enough to try it, with no attacker involved. The
+# verifier skips any window at or below the stored one, so a lower window is
+# only ever accepted while the stored value is still the older one. Two
+# overlapping requests do that: each reads the row before the other records,
+# so both verify, one of them a window later than the other, and before this
+# fix the later write was the one that stuck.
+#
+# The check calls the function rather than racing two requests, because a race
+# cannot be made to happen on demand. Three calls decide it: one below the
+# stored window, one above it, and one against a row holding NULL, which is
+# what an account that has never verified a code holds.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	# The fixture case numbered ZZPRPREFS carries the process id, and its
+	# cleanup matches on its case id and its number together. That pairing is
+	# the pattern followed here. The name carries a random number as well,
+	# because a process id repeats - after a reboot, and across two hosts
+	# sharing one database - and two runs that pick the same name can each
+	# read, change and delete the other's row while believing it is their
+	# own.
+	#
+	# Every statement below that reads or changes the fixture row matches on
+	# the name as well as the id. Three do not, and cannot: the id comes from
+	# a MAX over the whole table, the INSERT that creates the row has nothing
+	# to match on yet, and the function under test takes a user id, so the id
+	# is all its own UPDATE has to pick a row with, and the three calls
+	# cannot narrow it. That UPDATE does carry one further predicate, on the
+	# bound it is about to write, but that is the guard under test rather
+	# than a check on whose row this is. "Cannot" describes how this fixture
+	# is built, not a limit of SQL.
+	sm105_user="zzfloor_${$}_${RANDOM}"
+	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	case "$sm105_uid" in
+		''|*[!0-9]*) sm105_uid='' ;;
+	esac
+	if [ -z "$sm105_uid" ]; then
+		bad "could not read a free user id, so the replay floor was not checked"
+	else
+		# group_id is NOT NULL with a default of NOGROUP, so the fixture needs
+		# no group row. The account is never signed in: every call below runs
+		# the function directly, so the password and the secret stay empty.
+		#
+		# The count matches on the name as well as the id, because the id came
+		# from MAX(user_id) + 1 and another insert can take it first. It is
+		# the only check that the INSERT worked, since the INSERT's own status
+		# is discarded.
+		#
+		# What it establishes is that a row carrying this run's name holds
+		# this id. That is evidence of ownership rather than proof of it, and
+		# it is only as strong as the name is unrepeated. A run that loses the
+		# id to another insert counts zero as long as the row that won carries
+		# a different name, and it then reports the fixture as missing instead
+		# of working on a row it did not create. A random number can repeat,
+		# so a colliding pair is a smaller chance rather than none.
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
+			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP')" \
+			>/dev/null 2>&1
+		sm105_seeded="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm105_uid} AND username = '${sm105_user}'")"
+
+		# The window this account already spent, and the value the function
+		# must refuse to go below.
+		sm105_floor() {
+			adb "SELECT IFNULL(totp_last_used, 'null') FROM users
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'"
+		}
+
+		# PL_DISABLE_SECURITY, because this runs php with no session at all;
+		# the same CLI probe idiom as section 76. The marker says the call
+		# ran, so a php failure cannot be read as a value that did not move.
+		sm105_mark() {
+			docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+pl_totp_mark_used((int) $argv[1], (int) $argv[2]);
+print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
+		}
+
+		if [ "$sm105_seeded" != 1 ]; then
+			bad "the totp floor fixture user was not created, so none of the three calls were checked"
+		else
+			# A lower window must not win. Master writes it unconditionally,
+			# so this is the assertion that separates the two.
+			adb "UPDATE users SET totp_last_used = 101
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'" >/dev/null 2>&1
+			sm105_out="$(sm105_mark 100)"
+			sm105_got="$(sm105_floor)"
+			case "$sm105_out" in
+			*MARKED*)
+				if [ "$sm105_got" = 101 ]; then
+					ok "a window below the stored one leaves the replay floor at 101"
+				else
+					bad "a window below the stored one moved the replay floor from 101 to '$sm105_got'"
+				fi
+				;;
+			*)
+				bad "the mark-used call did not run, so a lower window was not checked"
+				;;
+			esac
+
+			# A real login still has to be able to raise it, or the floor
+			# would freeze at the first code an account ever used.
+			sm105_out="$(sm105_mark 102)"
+			sm105_got="$(sm105_floor)"
+			case "$sm105_out" in
+			*MARKED*)
+				if [ "$sm105_got" = 102 ]; then
+					ok "a window above the stored one raises the replay floor to 102"
+				else
+					bad "a window above the stored one left the replay floor at '$sm105_got'"
+				fi
+				;;
+			*)
+				bad "the mark-used call did not run, so a higher window was not checked"
+				;;
+			esac
+
+			# An account that has never verified a code holds NULL, which is
+			# not a lower window and must not be treated as one.
+			adb "UPDATE users SET totp_last_used = NULL
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'" >/dev/null 2>&1
+			sm105_out="$(sm105_mark 100)"
+			sm105_got="$(sm105_floor)"
+			case "$sm105_out" in
+			*MARKED*)
+				if [ "$sm105_got" = 100 ]; then
+					ok "the first window an account uses sets the replay floor from NULL"
+				else
+					bad "the first window an account uses left the replay floor at '$sm105_got'"
+				fi
+				;;
+			*)
+				bad "the mark-used call did not run, so the NULL row was not checked"
+				;;
+			esac
+		fi
+
+		adb "DELETE FROM users WHERE user_id = ${sm105_uid}
+			AND username = '${sm105_user}'" >/dev/null 2>&1
+	fi
+fi
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
