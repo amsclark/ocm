@@ -803,21 +803,38 @@ BYTES = 65536
 # reads body's CHILDREN, which is all the client copies. So 4.60 seconds of parse
 # for a verdict of 1 0 1 1 31 31 0.
 #
-# TAGS bounds the first, TAGLEN the second, and the two together bound their
-# product: the worst input under all three at once was built rather than
-# extrapolated, and 128 tags of 507 bytes carrying 176 attributes each cost 0.111s
-# against 5.537s under the byte bound alone. The live reply sits at 180 tags and a
-# longest tag of 158 bytes, so TAGS has eleven times the headroom it needs and
-# TAGLEN has three. TAGLEN's worst legitimate case is not the live reply but the
-# table start tag with both request-derived values at their full 64 characters,
-# which is 258 bytes.
+# TAGS bounds the first by counting < characters. The second is bounded by counting
+# the attribute names on each tag directly, because that count IS the cost; the
+# first attempt bounded a tag's length as a proxy for them, and the proxy leaked.
+# Finding where a tag ended by scanning for the next > was wrong twice over. A >
+# inside a quoted attribute value ended the scan and not the tag, so <html z=">"
+# followed by 15752 short names -- 65507 bytes, 181 < characters -- reported a
+# longest tag of 158, the same number the live reply reports, and parsed in 4.409
+# seconds with all three bounds passing it. And the count was in characters though
+# it was called bytes, so 200 CJK characters in a value counted as 200 and not the
+# 600 they are. tag_shape() below counts both the way the tokeniser does.
 #
-# The cost of these two: one corpus witness Chrome draws and clicks -- 1000 <p>
-# ahead of the calendar, 2180 tags -- is refused, and so are three probes carrying
-# a 20000-byte attribute value. That is the same deliberate over-refusal the size
-# bounds already carry, and it is the price of a bound that holds.
+# The worst input under all four bounds at once was built rather than extrapolated:
+# 361 <p> tags each carrying the full TAGATTRS allowance, 65411 bytes, cost 0.063s,
+# and the deepest div stack TAGS allows, 2047 of them, cost 0.127s. The live reply
+# is 0.006s.
+#
+# The headroom. The live reply has 180 < characters, a longest tag of 158 bytes and
+# at most 5 attributes on one tag; over all 362 witnesses in the corpus the widest
+# legitimate tag is 174 bytes with 7 attributes. A normal request's worst tag is the
+# table start tag with both request-derived values at their full 64 characters,
+# which is 258 bytes. A request with a pathological year can push a navigation
+# anchor past TAGLEN and is refused -- month and year are not range checked, which
+# is reported separately -- and no user interface sends such a request.
+#
+# The cost of these bounds: twelve corpus witnesses that Chrome draws, reaches and
+# clicks 31 days out of 31 are refused, measured in a browser rather than assumed.
+# The two bounds added here refuse nothing the previous round passed. That is the
+# same deliberate over-refusal the size bounds already carry, and it is the price
+# of a bound that holds.
 TAGS = 2048
 TAGLEN = 512
+TAGATTRS = 64
 # What this endpoint sends: a table of rows and cells holding anchors, and the
 # one script element that loads the click handler. The rest of the list is plain
 # flow markup a future template could reasonably use. ANYTHING ELSE IS REFUSED,
@@ -875,14 +892,28 @@ ALLOWED_ATTRS = frozenset((
 # id was in this set and was measured out of it, for the reason the class values
 # below are bounded: an id selects rules out of the host page's stylesheet just as a
 # class does, and cms/templates/default.html:186 carries #upload_gif { display:none; }.
-# Measured in Chrome: id="upload_gif" on the reply's own table, on one DSCalWeek row,
-# or on a div wrapped around the whole calendar each draws ZERO of 31 days, and this
-# check passed all three with the same 1 0 1 1 31 31 0 it gives the live reply. It is
-# the only one of twelve host ids that hides, which is exactly why a value bound is
-# the wrong shape here and refusing the name is the right one: the next stylesheet
-# edit adds another. This costs nothing -- date_selector.php emits no id at all, and
-# cms/js/date_selector.js resolves ids only on the host page (the field and the
-# container it was told to fill), never inside the reply it adopts.
+# Whatever element carries that id draws nothing and takes no clicks. Measured in
+# Chrome: all 31 days go when the id sits on the calendar table or on a div wrapped
+# around it, 7 go when it sits on a real seven-day DSCalWeek row, and 1 goes when it
+# sits on a single day cell. This check passed the table and div shapes with the same
+# 1 0 1 1 31 31 0 it gives the live reply.
+#
+# An earlier version of this comment said a DSCalWeek row loses all 31. That was read
+# off the corpus witness, which puts ONE day in each row; a calendar this endpoint
+# produces puts seven, because date_selector.php:116 runs the cell loop seven times
+# and closes the row inside it, so 31 days always need five or six rows. On a real
+# week row 24 days still draw, reach and click, and days 5 to 11 are the ones that go.
+# That residue is the argument for refusing the name rather than counting days: a
+# reply that hides only part of a calendar is still a reply a person cannot use, and
+# no count of drawn days separates it from a legitimate one cleanly.
+#
+# It is the only one of twelve host ids that hides, which is why a value bound is the
+# wrong shape here and refusing the name is the right one: the next stylesheet edit
+# adds another. The host page carries no element with that id, so this is the host's
+# own rule matching the reply's element, not a collision between two of them. This
+# costs nothing -- neither emitter writes an id at all, and cms/js/date_selector.js
+# resolves ids only on the host page (the field and the container it was told to
+# fill), never inside the reply it adopts.
 # The four allowed attributes a browser turns into pixels, and the only values
 # they may carry: a plain decimal from 0 to 99. The live reply sends cellpadding
 # "2", cellspacing "0" and colspan "5" and "7", so the bound is 13 times the
@@ -918,11 +949,16 @@ SIZE = re.compile('\\A(0|[1-9][0-9]?)\\Z')
 # bounded only by BYTES. So it was measured instead.
 #
 # Widest byte in this cell's font -- 14px Helvetica, which no allowed class can
-# change -- is "@" at 14.2159px, found by measuring all 92 printable ASCII; "W" is
-# 13.2179. Multi-byte loses and loses with a reason, not for want of a font: a 14px
-# font cannot draw more than about 14px per glyph, so the best two-byte character
-# measured 7.0738px per byte. The cheapest lever is not text at all but an unclosed
-# <td> inheriting cellpadding 99, at 4 bytes and 49.5px per byte, and that one is
+# change -- is "@" at 14.2159px per byte, found by measuring all 92 printable ASCII;
+# "W" is 13.2179. That is the widest MEASURED, not a proven maximum over Unicode: a
+# 14px font can draw a glyph far wider than 14px, and U+2E3B measures 41.9998px on
+# this box. What holds is the figure per BYTE, which is the budget being spent --
+# that glyph is three UTF-8 bytes, so 14.0px a byte, still under "@". Multi-byte
+# characters lose for that reason and not for want of a font: the best two-byte
+# character measured 7.0738px per byte.
+#
+# The cheapest lever is not text at all but an unclosed <td> inheriting cellpadding
+# 99, at 4 bytes and 49.5px per byte, and that one is
 # bounded by ELEMENTS. cellspacing turns out to be inert on this page entirely,
 # because cms/css/bootstrap.css:2000 sets border-collapse: collapse.
 #
@@ -939,10 +975,19 @@ SIZE = re.compile('\\A(0|[1-9][0-9]?)\\Z')
 # What that leaves is not a false pass but a usability claim this check does not
 # make: 1.16 million pixels of sideways scroll is not usable by a person, and the
 # oracle does not notice because scrollIntoView does the scrolling for it. Closing
-# that needs a measured absolute position, not a byte bound -- holding the offset
-# under 10000px would need the text budget under about 700 bytes and the live reply
-# is 3219. Recorded here rather than fixed, because bounding it would refuse replies
-# a browser draws correctly.
+# that needs a measured absolute position, not a byte bound.
+#
+# An earlier version of this comment argued against a text budget of about 700 bytes
+# by comparing it with the 3219-byte reply. Those are not the same measurement: the
+# reply's VISIBLE text is 95 bytes, so such a budget would have seven times the room
+# it needs and would not refuse the live reply. The real reason not to add one is
+# that it would not close the class. The worst passing reply puts day 1 at 1159601px,
+# which is further than all 65536 bytes of text could reach by themselves -- the cap
+# on text alone is 931700px -- so text is not the only lever moving a day sideways,
+# and bounding text would leave the rest of the distance available. Which lever
+# contributed how much of that 1159601 was not measured separately. Recorded here
+# rather than fixed, because every bound that would reach it refuses replies a
+# browser draws correctly.
 #
 # This budget was also believed to close a cost rather than a lie, and it does not.
 # data-* names are allowed unconditionally, and 20000 of them on EACH of the 35 empty
@@ -1168,23 +1213,122 @@ def text_of(element):
 	return ''.join(parts)
 
 
-def longest_tag(text):
-	"""The longest run from a < to the next >, in bytes.
+WS = ' \t\n\r\f'
 
-	Counted on the text rather than the tree for the reason the two refusals above
-	it are: the cost this bounds is paid while the tree is being built. A run with
-	no > before the end of the text counts to the end, which is what the tokeniser
-	would do with it.
+
+def _width(ch):
+	"""How many bytes this character takes in UTF-8."""
+	point = ord(ch)
+	if point < 0x80:
+		return 1
+	if point < 0x800:
+		return 2
+	if point < 0x10000:
+		return 3
+	return 4
+
+
+def tag_shape(text):
+	"""The longest start or end tag in UTF-8 BYTES, and the most attribute names
+	on any one tag.
+
+	Both numbers are taken from the text rather than from the tree, because the
+	cost they bound is paid while the tree is being built: the tokeniser compares
+	each new attribute name on a tag against every name already on that tag, so
+	the work is quadratic in the count this returns as its second number.
+
+	Two things this does that a scan for the next > does not. It tracks the
+	quoting the tokeniser tracks, so a > inside a quoted value does not end the
+	tag -- without that, 15752 attributes on one tag reported the same longest
+	tag as the real reply, 158, and parsed in 4.4 seconds. And it counts bytes
+	rather than characters, so a value of 200 CJK characters counts as the 600
+	bytes it is rather than 200.
+
+	Only a < followed by an ASCII letter, or </ followed by one, is read as a
+	tag, which is the tokeniser's own rule, so a <!-- , a <!doctype and a < in
+	front of a digit are not measured. Markup written INSIDE a comment still is,
+	because this pass does not track comment boundaries. That over-measures a
+	reply carrying a long tag inside a comment, and over-measuring refuses a
+	reply a browser would draw while under-measuring passes one it would not.
+	This is the same deliberate over-refusal the <template> and formatting
+	refusals already carry, and this endpoint emits no comments.
+
+	A tag with no > before the end of the text, or an unclosed quoted value, runs
+	to the end of the text. That is what the tokeniser would do with it, and it
+	is the direction that is safe to be wrong in.
 	"""
 	longest = 0
-	start = text.find('<')
-	while start >= 0:
-		stop = text.find('>', start + 1)
-		run = (stop - start + 1) if stop >= 0 else (len(text) - start)
+	most = 0
+	size = len(text)
+	at = 0
+	while True:
+		at = text.find('<', at)
+		if at < 0:
+			return longest, most
+		after = at + 1
+		if after < size and text[after] == '/':
+			after += 1
+		if after >= size or not text[after].isascii() or not text[after].isalpha():
+			at += 1
+			continue
+		# Past the tag name to the first thing that could be an attribute.
+		i = after
+		run = 1 + (1 if text[at + 1] == '/' else 0)
+		while i < size and text[i] not in WS and text[i] not in '/>':
+			run += _width(text[i])
+			i += 1
+		state = 0                                   # 0 seek, 1 name, 2 after
+		quote = ''                                  # 3 before value, 4 quoted, 5 bare
+		attrs = 0
+		while i < size:
+			ch = text[i]
+			run += _width(ch)
+			i += 1
+			if state == 4:
+				if ch == quote:
+					state = 0
+				continue
+			if ch == '>':
+				break
+			if state == 0:
+				if ch in WS or ch == '/':
+					continue
+				state = 1
+				attrs += 1
+			elif state == 1:
+				if ch == '=':
+					state = 3
+				elif ch in WS:
+					state = 2
+				elif ch == '/':
+					state = 0
+			elif state == 2:
+				if ch == '=':
+					state = 3
+				elif ch in WS:
+					pass
+				elif ch == '/':
+					state = 0
+				else:
+					state = 1
+					attrs += 1
+			elif state == 3:
+				if ch in WS:
+					continue
+				if ch in '"\'':
+					quote = ch
+					state = 4
+				else:
+					state = 5
+			elif state == 5:
+				if ch in WS:
+					state = 0
 		if run > longest:
 			longest = run
-		start = text.find('<', start + 1)
-	return longest
+		if attrs > most:
+			most = attrs
+		at = i if i > at else at + 1
+	return longest, most
 
 
 def label(element):
@@ -1236,8 +1380,11 @@ if FORMATTING.search(text):
 # tag, which is the direction that is safe to be wrong in.
 if text.count('<') > TAGS:
 	refuse('tags')
-if longest_tag(text) > TAGLEN:
+tag_bytes, tag_attrs = tag_shape(text)
+if tag_bytes > TAGLEN:
 	refuse('taglen')
+if tag_attrs > TAGATTRS:
+	refuse('tagattrs')
 
 tree = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
 	scripting=False)
