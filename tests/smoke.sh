@@ -84,25 +84,32 @@ BODY="$(mktemp)"
 # sys.path[0] is then the working directory. The private directory is the part that
 # covers every module.
 #
+# The cleanup is a function rather than a string, because about sixty sections below
+# install an EXIT trap of their own and then restore this one by writing it out again.
+# A review found that every one of those copies had been written before CAL_DIR
+# existed, so a completed run left the parser directory behind. Named once, a restored
+# trap cannot drop half of it.
+#
+# Declared empty and armed BEFORE mktemp -d runs, because the check below exits, and a
+# second review found that exit came before the first trap and so left the two files
+# above behind. An empty CAL_DIR costs nothing here: rm -rf "" removes nothing.
+CAL_DIR=''
+base_cleanup() {
+	rm -f "$COOKIES" "$BODY"
+	rm -rf "$CAL_DIR"
+}
+trap base_cleanup EXIT
+
 # mktemp failing is worth stopping for. Without set -e an empty CAL_DIR makes CAL_PY
-# '/cal_shape.py', and the heredoc below would write there if it could.
+# '/cal_shape.py', and the heredoc below would write there if it could. The || is for
+# the other failure, a command that prints something and then fails: the -d test is
+# what refuses it.
 CAL_DIR="$(mktemp -d)" || CAL_DIR=''
 if [ -z "$CAL_DIR" ] || [ ! -d "$CAL_DIR" ]; then
 	printf 'smoke: mktemp -d made no private directory for the reply parser\n'
 	exit 1
 fi
 CAL_PY="$CAL_DIR/cal_shape.py"
-
-# A function rather than a string, because about sixty sections below install an EXIT
-# trap of their own and then restore this one by writing it out again. A review found
-# that every one of those copies had been written before CAL_DIR existed, so a
-# completed run left the parser directory behind. Named once, a restored trap cannot
-# drop half of it.
-base_cleanup() {
-	rm -f "$COOKIES" "$BODY"
-	rm -rf "$CAL_DIR"
-}
-trap base_cleanup EXIT
 
 pass=0
 fail=0
@@ -12841,8 +12848,10 @@ else
 	fi
 
 	cleanup_csp
-	rm -f "$CSP_HEADERS"
 fi
+# Outside the block, because the file is made outside it: a review found that a run
+# with no database made it and never removed it.
+rm -f "$CSP_HEADERS"
 
 echo
 # ── 67b. The rest of the OWASP header set ──────────────────────────────────
