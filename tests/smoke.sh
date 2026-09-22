@@ -2711,9 +2711,11 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 	# code was built for and the window the server is in when it reads the
 	# code differ at random, which is what made the enrollment checks below
 	# pass or fail by luck. It is slack, not a guarantee: a long enough
-	# pause still crosses the boundary, so every caller re-reads the window
-	# afterwards and retries rather than assert on an unstable pass. Capped:
-	# a stopped clock must not hang the suite.
+	# pause still crosses the boundary, and the iteration cap below can
+	# return without a fresh window at all. So no caller trusts it. The
+	# enrollment loop decides from the stored row and the login loop
+	# re-reads the window, and both retry rather than assert on an unstable
+	# pass. Capped: a stopped clock must not hang the suite.
 	mfa_wait_fresh() {
 		mfa_fresh_waited=0
 		while [ "$(python3 -c 'import time; print(int(time.time()) % 30)')" -gt 12 ] \
@@ -2914,35 +2916,55 @@ MFAPY
 			# record differ from the window it is in while recording it --
 			# the only way to see which of the two it stores. The window and
 			# the code come from one python run, so a boundary cannot land
-			# between them. If the request crosses one anyway the code is two
-			# windows old and is correctly refused, so retry: the token and
-			# the CSRF field survive a refused attempt, which the wrong-code
-			# check above has just used them for.
+			# between them. A boundary that falls before the server verifies
+			# the code makes it two windows old and refused, so the POST is
+			# retried: the enroll_token and the _csrf field survive a refusal,
+			# which the wrong-code check above has just used them for.
 			mfa_enrol_try=0
 			mfa_enrol_done=0
+			mfa_enrol_opened=0
 			while [ "$mfa_enrol_try" -lt 3 ] && [ "$mfa_enrol_done" = 0 ]; do
 				mfa_enrol_try=$((mfa_enrol_try+1))
+				# A try whose reply was lost can still have enrolled the
+				# account. enroll_mfa.php answers the next POST with the
+				# already-enrolled redirect without reading its code, so a
+				# retry would leave MFA_ENROL_WINDOW holding a window no
+				# code was ever verified against. Stop before posting.
+				if [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
+					mfa_enrol_done=1
+					break
+				fi
 				mfa_wait_fresh
 				MFA_ENROL_PAIR="$(mfa_code_pair "$MFA_SECRET" -1)"
 				MFA_ENROL_WINDOW="${MFA_ENROL_PAIR%% *}"
 				MFA_ENROL_CODE="${MFA_ENROL_PAIR#* }"
 				mfa_enroll_post "$MFA_ENROL_CODE"
-				if grep -qi 'logout' "$BODY" \
-					&& ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+				# Whether this code enrolled the account is a fact about the
+				# row, which the page cannot tell apart from an account that
+				# was already enrolled. A missing or unreadable row leaves
+				# this false, so a database failure cannot report a pass.
+				if [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
 					mfa_enrol_done=1
+					if grep -qi 'logout' "$BODY" \
+						&& ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+						mfa_enrol_opened=1
+					fi
 				fi
 			done
-			if [ "$mfa_enrol_done" = 1 ]; then
+			if [ "$mfa_enrol_done" = 1 ] && [ "$mfa_enrol_opened" = 1 ]; then
 				ok "the right enrollment code finishes enrollment and opens the application"
+			elif [ "$mfa_enrol_done" = 1 ]; then
+				bad "enrollment completed but the page it answered with was not the application"
 			else
 				bad "the right enrollment code did not finish enrollment after 3 tries"
 			fi
 			# The replay bound seeded at enrollment. This is the assertion
 			# that catches storing floor(time()/30) instead of the matched
-			# window, and it holds whenever the run reaches it: the expected
-			# value came back from the same python run as the code. The 25e
-			# login below sees the same defect, but only while the run is
-			# still in the window the bad write burned.
+			# window. MFA_ENROL_WINDOW holds the window of the try that
+			# enrolled the account, and it came out of the same python run
+			# as the code that try sent. The 25e login below sees the same
+			# defect, but only while the run is still in the window the bad
+			# write burned.
 			if [ "$(adb "SELECT totp_last_used FROM users WHERE user_id = ${MFA_UID}")" = "$MFA_ENROL_WINDOW" ]; then
 				ok "enrollment records the window the accepted code belonged to"
 			else
@@ -2980,20 +3002,37 @@ MFAPY
 			fi
 
 			# A current code signs in, and then the same code is refused.
-			# Both are decided in one pass with the window read before and
-			# after, because a refusal that arrives after the window turned
-			# over proves nothing about the replay guard -- the code would
-			# have expired on its own. An unstable pass is retried, never
-			# asserted on, so neither half can pass for the wrong reason.
+			# Both are decided in one pass, and the result is accepted only
+			# if the window did not move across the two requests. A code
+			# stays valid into the next window -- the verifier's -1 offset --
+			# and expires only after two, so a refusal from a later window
+			# could come from the bound or from age. Holding both requests
+			# inside one window removes the question. An unstable pass is
+			# retried, never asserted on, so neither half can pass for the
+			# wrong reason.
 			mfa_pair_try=0
 			mfa_pair_stable=0
 			mfa_pair_in=0
 			mfa_pair_out=0
+			mfa_pair_last=''
 			while [ "$mfa_pair_try" -lt 3 ] && [ "$mfa_pair_stable" = 0 ]; do
 				mfa_pair_try=$((mfa_pair_try+1))
 				mfa_wait_fresh
-				mfa_pair_window="$(mfa_window)"
-				mfa_pair_code="$(mfa_code "$MFA_SECRET")"
+				# A retry must not reuse the code the previous try already
+				# spent: that is refused as a replay, which is the opposite
+				# of what the login half is asking. Wait the window out.
+				mfa_pair_waited=0
+				while [ "$(mfa_window)" = "$mfa_pair_last" ] \
+					&& [ "$mfa_pair_waited" -lt 35 ]; do
+					sleep 1
+					mfa_pair_waited=$((mfa_pair_waited+1))
+				done
+				# One run for both, so the window this try is judged against
+				# is the code's own window and not a separate clock reading.
+				mfa_pair_set="$(mfa_code_pair "$MFA_SECRET")"
+				mfa_pair_window="${mfa_pair_set%% *}"
+				mfa_pair_code="${mfa_pair_set#* }"
+				mfa_pair_last="$mfa_pair_window"
 				mfa_rl_clear
 				mfa_login "$mfa_pair_code"
 				mfa_pair_in=0
