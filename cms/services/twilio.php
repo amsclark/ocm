@@ -168,10 +168,41 @@ function send_mail_notification($user_id, $case_id, $case_number, $sender_name)
 		$message = "{$sender_name} has sent a new SMS message, you can view it at:  "
 			. pl_canonical_origin() . "{$base_url}/case.php?case_id={$case_id}&screen=sms";
 		
-		$data_string = '{"options": {"sandbox": false, "open_tracking": false, "click_tracking": false}, "content": {"from": "' 
-			. pl_settings_get('sparkpost_from_address') 
-			. '", "subject": "' . $subject . '", "text":"' . $message 
-			. '"}, "recipients": [{"address": "' . $to . '"}]}';
+		// json_encode escapes the values rather than trusting them. Four
+		// values reach this body as text and all four are written by a
+		// member of staff: $case_number arrives through $subject,
+		// $sender_name through $message, and the other two are the
+		// from-address setting and the recipient's own address.
+		// Concatenated in, a crafted value could close the field it was
+		// inside and open another, so a value could add a field to the
+		// request this server makes. The field names, their nesting and
+		// their types are unchanged.
+		//
+		// Invalid UTF-8 makes json_encode return false, where concatenation
+		// sent the bytes as they were. The flag replaces each invalid byte
+		// with the replacement character so the notification is still sent;
+		// it does not convert text from another encoding, so a name in one
+		// arrives altered rather than not at all. The check below refuses
+		// rather than posting an empty body if encoding fails for some other
+		// reason. The setting is cast because a settings.php value that is
+		// not a finite number cannot be encoded, and the length check above
+		// casts for the same reason.
+		$data_string = json_encode(array(
+			'options' => array(
+				'sandbox' => false,
+				'open_tracking' => false,
+				'click_tracking' => false),
+			'content' => array(
+				'from' => (string) pl_settings_get('sparkpost_from_address'),
+				'subject' => $subject,
+				'text' => $message),
+			'recipients' => array(
+				array('address' => $to))), JSON_INVALID_UTF8_SUBSTITUTE);
+
+		if ($data_string === false)
+		{
+			return false;
+		}
 		
 		$c = curl_init();
 		curl_setopt($c, CURLOPT_URL, 'https://api.sparkpost.com/api/v1/transmissions');
