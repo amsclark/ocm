@@ -2703,6 +2703,20 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 
 	mfa_code()   { python3 "$MFA_PY" "$1" "${2:-0}"; }
 	mfa_window() { python3 -c 'import time; print(int(time.time()) // 30)'; }
+	# Block until the current 30-second window has just begun, so that a
+	# request sent next cannot land in the following one. Without this the
+	# window a code was built for and the window the server is in when it
+	# reads the code differ at random, which is what made the enrollment
+	# checks below pass or fail by luck. Capped: a stopped clock must not
+	# hang the suite.
+	mfa_wait_fresh() {
+		mfa_fresh_waited=0
+		while [ "$(python3 -c 'import time; print(int(time.time()) % 30)')" -gt 12 ] \
+			&& [ "$mfa_fresh_waited" -lt 31 ]; do
+			sleep 1
+			mfa_fresh_waited=$((mfa_fresh_waited+1))
+		done
+	}
 	# The login form is rate limited per address. This section produces several
 	# deliberate failures, so clear the counters between steps or a later
 	# assertion passes because everything is locked out.
@@ -2884,13 +2898,29 @@ MFAPY
 				bad "a wrong enrollment code was accepted, or stored a secret anyway"
 			fi
 
-			MFA_ENROL_WINDOW="$(mfa_window)"
-			MFA_ENROL_CODE="$(mfa_code "$MFA_SECRET")"
+			# Enroll with the code for the PREVIOUS window. It is inside
+			# pl_totp_verify_window()'s one-window tolerance, so enrollment
+			# still succeeds, and it makes the window the server should
+			# record differ from the window it is in while recording it --
+			# which is the only way to check which of the two it stores.
+			# mfa_wait_fresh keeps the request inside the window it was
+			# built against, so the offset is exactly minus one every run.
+			mfa_wait_fresh
+			MFA_ENROL_WINDOW="$(( $(mfa_window) - 1 ))"
+			MFA_ENROL_CODE="$(mfa_code "$MFA_SECRET" -1)"
 			mfa_enroll_post "$MFA_ENROL_CODE"
 			if grep -qi 'logout' "$BODY" && ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 				ok "the right enrollment code finishes enrollment and opens the application"
 			else
 				bad "the right enrollment code did not finish enrollment"
+			fi
+			# The replay bound seeded at enrollment. Storing floor(time()/30)
+			# here instead of the matched window burns a window the account
+			# never used, and the next assertion in 25e is then refused.
+			if [ "$(adb "SELECT totp_last_used FROM users WHERE user_id = ${MFA_UID}")" = "$MFA_ENROL_WINDOW" ]; then
+				ok "enrollment records the window the accepted code belonged to"
+			else
+				bad "enrollment recorded a different window than the code it accepted - the account's next code will be refused"
 			fi
 			if [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
 				ok "the stored secret is encrypted at rest"
@@ -2923,15 +2953,8 @@ MFAPY
 				bad "the refusal message names the failing factor"
 			fi
 
-			# Wait for the next 30-second window so that the code used during
-			# enrollment is in the past. Capped: a stopped clock must not hang
-			# the suite.
-			mfa_waited=0
-			while [ "$(mfa_window)" = "$MFA_ENROL_WINDOW" ] && [ "$mfa_waited" -lt 35 ]; do
-				sleep 1
-				mfa_waited=$((mfa_waited+1))
-			done
-
+			# No wait: the enrollment code was built for the window before
+			# the one the suite is in, so it is already in the past.
 			mfa_rl_clear
 			mfa_login "$MFA_ENROL_CODE"
 			if grep -q 'login_pass' "$BODY"; then
