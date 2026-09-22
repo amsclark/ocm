@@ -77,6 +77,29 @@ DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-$DB_PASSWORD}"
 
 OCM_URL="${OCM_URL:-http://127.0.0.1:8080/cms}"
 OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
+
+# These two reach commands as operands, and an operand is a place those commands still
+# read options from: DB_NAME goes to the mariadb client, and OCM_URL goes to curl in
+# more than four hundred calls, none of which puts it after a -- that would end option
+# parsing. A value of -i or --help is a valid string and an unlikely one, but it comes
+# from the environment or from the .env file read above, so nothing in this repository
+# decides its shape. It is refused here, once, rather than at every call that would
+# misread it: the same reasoning as the temporary-path refusal below, and as section
+# 104 for grep patterns. Each is assigned exactly once, above, so there is no later
+# value for this to miss. ok() and bad() are not defined this early, so this refuses
+# the run the way that refusal does.
+case "$DB_NAME" in
+-*)
+	printf 'smoke: DB_NAME begins with a dash, which mariadb reads as an option\n'
+	exit 1
+	;;
+esac
+case "$OCM_URL" in
+-*)
+	printf 'smoke: OCM_URL begins with a dash, which curl reads as an option\n'
+	exit 1
+	;;
+esac
 # Every temporary file this suite asks the two helpers below for is written down as it
 # is made, and the cleanup removes what the list holds. Three reviews found the same
 # defect in three places before this: a file made here, removed on the line after its
