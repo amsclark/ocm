@@ -145,10 +145,16 @@ trap base_cleanup EXIT
 # The list itself is the one file no helper can record, so it is made plainly and named
 # in the cleanup above. A run that cannot make it cannot clean up after itself, which is
 # worth stopping for rather than discovering at the end.
+#
+# A name starting with a dash is refused here for the reason given at the helpers below:
+# every command that reads the path would read the dash as options. This is the first
+# mktemp call in the run, so refusing it here is what stops a run whose TMPDIR produces
+# that shape, and it is why no later path can have it.
 TEMP_REG="$(mktemp)"
 TEMP_RC=$?
-if [ "$TEMP_RC" -ne 0 ] || [ -z "$TEMP_REG" ] || [ ! -f "$TEMP_REG" ]; then
-	printf 'smoke: mktemp made no list for the temporary files this run makes\n'
+if [ "$TEMP_RC" -ne 0 ] || [ -z "$TEMP_REG" ] || [ ! -f "$TEMP_REG" ] \
+	|| [ "${TEMP_REG#-}" != "$TEMP_REG" ]; then
+	printf 'smoke: mktemp made no usable list for the temporary files this run makes\n'
 	exit 1
 fi
 
@@ -223,9 +229,31 @@ smoke_temp_add() {
 # mktemp before the path is recorded. Measured without it, a mktemp -d that made the
 # directory and then failed left it behind, where the plain assignment this replaced did
 # not: that one at least left the path in a variable a trap named.
+#
+# A path that starts with a dash is refused outright. mktemp with no template returns
+# one when TMPDIR is a relative name starting with a dash, and every command that then
+# reads the path reads the dash as options instead. An earlier commit put -- on all 75
+# host-side rm calls for that reason, and a review answered that rm is not the only such
+# command: it counted around 120 more places -- stat, truncate, cat, head, tail, cp,
+# cmp, diff and the python3 script operands -- where the same value is first operand.
+# Naming those one at a time is the mistake three earlier rounds already made; refusing
+# the value here covers all of them at once, and covers the names derived from it as
+# well, because a suffix or a child of a path that cannot start with a dash cannot
+# either.
+#
+# The object is removed before the refusal, with a removal that carries --, so nothing
+# is left behind. This is not reachable through an ordinary run: the list itself is made
+# from mktemp a hundred lines above and its own check below refuses the same shape, so a
+# run with such a TMPDIR stops before any of this. The check is here so that it stops
+# for a stated reason rather than through whichever command happens to choke first.
 smoke_temp() {
 	local p rc=0
 	p="$(mktemp "$@")" || rc=$?
+	if [ -n "$p" ] && [ "${p#-}" != "$p" ]; then
+		rm -rf -- "$p"
+		printf 'smoke: mktemp returned a path starting with a dash: %s\n' "$p" >&2
+		return 1
+	fi
 	if [ -n "$p" ] && ! smoke_temp_add "$p"; then
 		rm -rf -- "$p"
 		printf 'smoke: could not add %s to the cleanup list\n' "$p" >&2
@@ -237,6 +265,11 @@ smoke_temp() {
 smoke_tempdir() {
 	local p rc=0
 	p="$(mktemp -d "$@")" || rc=$?
+	if [ -n "$p" ] && [ "${p#-}" != "$p" ]; then
+		rm -rf -- "$p"
+		printf 'smoke: mktemp -d returned a path starting with a dash: %s\n' "$p" >&2
+		return 1
+	fi
 	if [ -n "$p" ] && ! smoke_temp_add "$p"; then
 		rm -rf -- "$p"
 		printf 'smoke: could not add %s to the cleanup list\n' "$p" >&2
