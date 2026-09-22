@@ -616,22 +616,36 @@ if (!function_exists('pl_totp_mark_used'))
 	 *
 	 * Other code writes this column too, and not all of it raises the bound.
 	 * An administrator's reset empties the secret and clears the column in
-	 * one statement, so the bound it drops no longer belongs to a secret
-	 * anyone can present - as long as the secret stays cleared. Two further
-	 * paths are less tidy, and the guard below reaches neither, because each
-	 * writes the column itself rather than through this function.
+	 * one statement. Dropping the bound costs nothing while the secret that
+	 * earned it cannot be presented again, and a secret enrolled later cannot
+	 * present it: a code is an HMAC over the secret, so codes made from the
+	 * old one match nothing. What does reach the dropped bound is the old
+	 * secret itself coming back, which the stale save below does, and a login
+	 * that read the secret before the reset ran. Such a login is handed the
+	 * secret it already read and re-reads only the bound, so it checks an old
+	 * code against a cleared bound, and can then record a bound for a secret
+	 * the row no longer holds.
 	 *
-	 * The user model saves every column it loaded, so a save meant for an
-	 * unrelated field writes the row back as it was read. If another write
-	 * raised the bound in between, that save lowers it again. The same
-	 * statement carries the secret and the enabled flag from the same stale
-	 * read, so it can also restore a secret a reset had already emptied.
+	 * Two paths below write the column themselves rather than through this
+	 * function, so the guard reaches neither.
+	 *
+	 * The user model builds its UPDATE from every column it loaded, as the
+	 * object holds them, so a save meant for one field writes the untouched
+	 * fields back as well, still carrying the values the load read. If
+	 * another write raised the bound in between, that save lowers it again.
+	 * The same statement carries the secret and the enabled flag from the
+	 * same stale read, so it can also restore a secret a reset had already
+	 * emptied. Only an object something changed is saved at all, and the
+	 * deliberate edit is kept: it is the fields nobody touched that go back
+	 * stale.
 	 *
 	 * Enrolment writes the column directly and matches on the user alone. If
 	 * two enrolments both pass the check before either writes, and both
 	 * settle on the same secret, the lower of their two windows can land
 	 * second. The two paths need different fixes: the first is in what the
-	 * model writes, the second in narrowing enrolment's own WHERE clause.
+	 * model writes, the second in narrowing enrolment's own WHERE clause and
+	 * then checking whether that narrowed write changed a row, which the
+	 * handler does not do before it reports the secret stored.
 	 *
 	 * Best effort. A failure here must not fail a login that has otherwise
 	 * succeeded; it only means the same code stays usable for the rest of

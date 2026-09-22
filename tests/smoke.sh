@@ -18653,8 +18653,8 @@ sv_arr_try "an array where the year belongs" 'Invalid date parameter' \
 # verifier skips any window at or below the stored one, so a lower window is
 # only ever accepted while the stored value is still the older one. Two
 # overlapping requests do that: each reads the row before the other records,
-# so both verify, one of them a window later than the other, and the later
-# write is the one that sticks.
+# so both verify, one of them a window later than the other, and before this
+# fix the later write was the one that stuck.
 #
 # The check calls the function rather than racing two requests, because a race
 # cannot be made to happen on demand. Three calls decide it: one below the
@@ -18669,10 +18669,11 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	# read, change and delete the other's row while believing it is their
 	# own.
 	#
-	# Every statement written below matches on the name as well as the id.
-	# The function under test is the exception: it takes a user id, so its
-	# own UPDATE matches the id alone, and the three calls below cannot
-	# narrow it.
+	# Every statement below that reads or changes the fixture row matches on
+	# the name as well as the id. Three do not, and cannot: the id comes from
+	# a MAX over the whole table, the INSERT that creates the row has nothing
+	# to match on yet, and the function under test takes a user id, so its
+	# own UPDATE matches the id alone and the three calls cannot narrow it.
 	sm105_user="zzfloor_${$}_${RANDOM}"
 	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	case "$sm105_uid" in
@@ -18693,9 +18694,10 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 		# What it establishes is that a row carrying this run's name holds
 		# this id. That is evidence of ownership rather than proof of it, and
 		# it is only as strong as the name is unrepeated. A run that loses the
-		# id to another insert counts zero, because the row that won carries a
-		# different name, and it reports the fixture as missing instead of
-		# working on a row it did not create.
+		# id to another insert counts zero as long as the row that won carries
+		# a different name, and it then reports the fixture as missing instead
+		# of working on a row it did not create. A random number can repeat,
+		# so a colliding pair is a smaller chance rather than none.
 		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
 			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP')" \
 			>/dev/null 2>&1
