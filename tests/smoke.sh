@@ -19,6 +19,15 @@ set -uo pipefail
 # Fixtures live beside this script, which may be run from anywhere.
 SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "${SMOKE_DIR}/.." && pwd)"
+# Without set -e a cd that fails leaves the name empty instead of stopping, and every
+# fixture path built below from an empty SMOKE_DIR is a path at the root of the
+# filesystem. Five of those are written and then removed at exit, so an empty value here
+# would put a name this suite does not own into the cleanup list.
+if [ -z "$SMOKE_DIR" ] || [ ! -d "$SMOKE_DIR" ] \
+	|| [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR" ]; then
+	printf 'smoke: cannot work out which directory this script is in\n'
+	exit 1
+fi
 
 # ── .env ───────────────────────────────────────────────────────────────────
 # The database checks need the same credentials compose was started with, and
@@ -7732,9 +7741,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			adb "DELETE FROM doc_storage WHERE case_id = ${MDCASE}" >/dev/null
 			adb "DELETE FROM cases WHERE case_id = ${MDCASE}" >/dev/null
 		fi
-		rm -f "${SMOKE_DIR}/zzmd.html" "${SMOKE_DIR}/zzmd.svg" \
-			"${SMOKE_DIR}/zzmd.pdf" "${SMOKE_DIR}/zzmd1.txt" "${SMOKE_DIR}/zzmd2.txt" \
-			"${BODY}.dl"
+		rm -f -- "${BODY}.dl"
 	}
 	trap 'base_cleanup; cleanup_md' EXIT
 	
@@ -7759,11 +7766,39 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		"$OCM_URL/case.php?case_id=${MDCASE}&screen=docs" >/dev/null
 	MDTOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed -e 's/.*value="//' -e 's/"$//')"
 	
+	# These five are the only paths this suite writes on the host that are not a name
+	# mktemp made: the upload test declares a MIME type per file and the file has to
+	# carry the matching extension. The trap above used to name them, and a trap is
+	# armed before the files it names exist -- the five are written here, twenty lines
+	# and three commands later -- so a run interrupted in between removed whatever was
+	# already sitting at those names. They go in the cleanup list instead, each one
+	# only after its own write returned success, so a run that stops before this point
+	# removes nothing it did not write. A write that succeeded over a file someone else
+	# had left at one of these names does take that file over, and the name is then
+	# removed at exit; these are this suite's own fixture names, and the alternative is
+	# leaving our own fixtures behind.
+	md_fixture() {
+		# $1 the path, $2 the status its write returned, read before anything else runs.
+		if [ "$2" -ne 0 ]; then
+			bad "md fixture $1 was not written"
+			return 1
+		fi
+		if ! smoke_temp_add "$1"; then
+			bad "md fixture $1 could not be added to the cleanup list"
+			rm -f -- "$1"
+			return 1
+		fi
+	}
 	printf '<script>alert(1)</script>ZZMDMARKER\n' > "${SMOKE_DIR}/zzmd.html"
+	md_fixture "${SMOKE_DIR}/zzmd.html" $?
 	printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n' > "${SMOKE_DIR}/zzmd.svg"
+	md_fixture "${SMOKE_DIR}/zzmd.svg" $?
 	printf '%%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%%%EOF\n' > "${SMOKE_DIR}/zzmd.pdf"
+	md_fixture "${SMOKE_DIR}/zzmd.pdf" $?
 	printf 'ZZMDONE\n' > "${SMOKE_DIR}/zzmd1.txt"
+	md_fixture "${SMOKE_DIR}/zzmd1.txt" $?
 	printf 'ZZMDTWO longer body so the two sizes differ\n' > "${SMOKE_DIR}/zzmd2.txt"
+	md_fixture "${SMOKE_DIR}/zzmd2.txt" $?
 	
 	md_upload() {
 		# $1 local file, $2 declared MIME type
