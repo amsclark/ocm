@@ -20173,33 +20173,70 @@ fi
 # that has actually been found here, including the ones two reviews found in the
 # check itself. The limits are listed below rather than left to be discovered.
 #
-# A check is worth only what it can see, so this one was reviewed for ways to
-# pass while the shape is present. Three were found, two of them confirmed by
-# running the check's own program against a planted call:
+# A check is worth only what it can see, so this one has been reviewed three times
+# for ways to pass while the shape is present. Each review found more than the last,
+# and every miss went the same way: a call the check did not understand came out
+# safe. Each shape below was confirmed by running the check's own program against a
+# planted call, and each of the option shapes was confirmed against grep itself, by
+# showing that the call misses what the same call with -e finds:
 #
 # - a call split across lines with a trailing backslash. Neither line holds both
-#   grep and the pattern, so a scan of physical lines saw nothing. 134 grep calls
-#   in this file are written across lines, three of the 47 among them, so this was
-#   not a hypothetical shape. The scan now joins continuations first.
-# - an option that carries its argument attached to the letter, where that
-#   argument happens to contain an e: -dread, or -f followed by a file name with
-#   an e in it. The old rule accepted any cluster containing an e as proof that -e
-#   was passed. Measured against the grep on this box, grep -dread "$VAR" file is
-#   a real instance of the defect, and the check called it safe. -e now has to be
-#   the last letter of its cluster, which is what passing a pattern as its own
-#   word requires anyway. No cluster in this file has an e anywhere else.
+#   grep and the pattern, so a scan of physical lines saw nothing. The scan joins
+#   continuations first. Three of the 47 calls, at 3472, 5047 and 11537, sit inside
+#   a statement continued that way; their patterns are on the same physical line as
+#   their grep, so only their reported line numbers moved. An earlier version of
+#   this comment offered a count of 134 as evidence here. That is a count of lines
+#   that contain grep and end in a backslash, which is not the same thing as a call
+#   split before its pattern, and it is not evidence for this item.
+# - an option carrying its argument attached to the letter, where the argument
+#   contains an e: -dread, -qDread, -Xgrep. The first rule took any cluster
+#   containing an e as proof that -e was passed.
+# - an option whose argument is a separate word: --file pf, --label x,
+#   --binary-files text, --devices read, --directories recurse, and the same shape
+#   written with a letter. The second rule stopped at the argument and read it as
+#   the pattern, so the real pattern behind it was never looked at.
+# - an option whose argument is itself dash-leading: grep -q -f -e "$VAR". The
+#   second rule re-split the text it had already captured, found the -e that
+#   belongs to -f, and called the call guarded.
+# - the same rule reporting two calls that are correct: --reg, which grep accepts
+#   as an abbreviation of --regexp, and --label "$L" -e "$VAR", where it stopped at
+#   the label and never reached the -e.
 # - fgrep, and a call written with a path such as /bin/grep. Neither appears in
-#   this file, and both are now matched rather than trusted not to appear.
+#   this file, and both are matched rather than trusted not to appear.
 #
-# What is still not covered, stated rather than left to be found: an option that
-# takes a separate argument and is not one of ABCDdfm; a pattern built by
-# concatenation rather than a bare expansion; and a shell that has no python3, in
-# which case this section prints a skip and asserts nothing at all. The CI job
-# that runs this suite installs python dependencies, so it has python3.
+# Three rules in a row were fooled, so the fourth does not guess. grep's option
+# grammar is written out below: which letters take an argument, which long names do,
+# that a long name may be abbreviated to any unambiguous prefix, and that -- ends
+# option parsing. An option outside that table is not assumed harmless and not
+# assumed harmful. It is REPORTED, and this section fails until someone adds it to
+# the table or rewrites the call. The letters are GNU grep's, which is the grep this
+# suite runs under: the CI job is ubuntu-latest, and a non-interactive shell here
+# resolves grep to /usr/bin/grep whatever an interactive shell may have wrapped it
+# with.
 #
-# The scan reads code and not prose. It has to: the second item above quotes an
-# unguarded call as its example, and the first version of this check reported that
-# example, on this line, as a defect in the file.
+# What the check decides is whether an expansion stands in PATTERN position. An
+# expansion in FILE position has the same underlying problem, because grep reads a
+# dash-leading file operand as an option too, and this check does not look at it.
+# That is a stated limit and not a closure, but it is a narrow one: the operands
+# there are paths rather than patterns, most of them the BODY temporary this suite
+# writes responses into, and a dash-leading temporary path is refused where
+# smoke_temp hands it out. It is why grep -qeq "$VAR" f is not reported: q is the
+# pattern in that call and "$VAR" is a file name. Such a call does not search for
+# what it looks like it searches for, which is a mistake, but not this one.
+#
+# What is still not covered, stated rather than left to be found: a pattern built by
+# concatenation rather than a bare expansion, since only a word that begins with an
+# expansion is treated as one; a pattern that reaches grep through a variable
+# assigned from another; and a shell that has no python3, in which case this section
+# prints a skip and asserts nothing at all. The CI job that runs this suite installs
+# python dependencies, so it has python3.
+#
+# The check reads code and not prose, to the extent that a logical line beginning
+# with a hash is skipped. It has to skip them: the items above quote unguarded calls
+# as their examples, and the first version of this check reported those examples, on
+# these lines, as defects in the file. A hash after code on the same line is not
+# detected, so an inline comment is still read as code. That errs towards a false
+# report, which is the direction that gets looked at.
 echo
 echo "104. every grep pattern that comes from a variable is passed with -e"
 
@@ -20215,50 +20252,165 @@ else
 import re
 import sys
 
-# An option word is a dash cluster, a long option with or without =value, or one of the
-# options that takes a separate argument. Naming those by letter matters: without them
-# the scan stops at the argument and reads it as the pattern, so the real pattern after
-# it is never looked at.
-OPTWORD = (r'-[ABCDdfm]\s+(?:"[^"]*"|[^\s]+)'
-	r'|-[A-Za-z0-9]+'
-	r'|--[a-z-]+(?:=[^\s]+)?')
-# A path prefix is allowed before the name, and fgrep counts, so neither /bin/grep nor
-# fgrep slips past. The lookbehind still refuses a name that merely ends in grep.
-CALL = re.compile(r'(?<![A-Za-z0-9_.-])[ef]?grep\s+((?:(?:%s)\s+)*)"?\$' % OPTWORD)
-# Whether -e was passed cannot be decided by looking for an e somewhere in
-# the options, and it cannot be decided by where the e sits either. In a short
-# cluster the letters are flags until one that takes an argument, and everything
-# after that letter is ITS argument: -qDread is -q -D read, and -qDrecurse ends
-# in an e that belongs to the word recurse. So the cluster is walked, and the
-# walk stops at the first letter that takes an argument. Only an e reached
-# before that stop is the -e option.
-ARGOPT = 'ABCDdfem'
+# Whether a value lands in option position is decided by grep's own grammar, so the
+# grammar is written out here rather than approximated. A name in ARG takes an argument;
+# one in OPTIONAL takes an argument only when written with =; the rest are flags.
+# Anything not listed is not recognised, and an unrecognised option makes this scan
+# REPORT the call rather than guess. Guessing the other way is what the two versions
+# before this one did, and each time the guess was wrong a broken call passed.
+# The letters are GNU grep's, the grep this suite runs under: the CI job is
+# ubuntu-latest, and a non-interactive shell here resolves grep to /usr/bin/grep
+# rather than to any wrapper an interactive shell may install. A letter in neither
+# list is not guessed at in either direction; it is reported. -X is in ARG because
+# it was measured: grep -Xgrep takes grep as a matcher name and accepts it.
+SHORT_ARG = 'ABCDXdefm'
+SHORT_FLAG = 'abcEFGHhIiLlnoPqRrsTUuVvwxyZz'
+LONG_ARG = ('regexp', 'file', 'max-count', 'after-context', 'before-context',
+	'context', 'binary-files', 'devices', 'directories', 'label', 'include',
+	'exclude', 'exclude-from', 'exclude-dir', 'group-separator', 'matcher')
+LONG_OPTIONAL = ('color', 'colour')
+LONG_FLAG = ('basic-regexp', 'extended-regexp', 'fixed-strings', 'perl-regexp',
+	'ignore-case', 'no-ignore-case', 'invert-match', 'word-regexp', 'line-regexp',
+	'count', 'files-with-matches', 'files-without-match', 'only-matching', 'quiet',
+	'silent', 'no-messages', 'byte-offset', 'line-number', 'line-buffered',
+	'with-filename', 'no-filename', 'initial-tab', 'null', 'null-data', 'text',
+	'binary', 'recursive', 'dereference-recursive', 'help', 'version')
+LONG_ALL = LONG_ARG + LONG_OPTIONAL + LONG_FLAG
+
+# The command word: an optional directory prefix, and fgrep and egrep as well as grep,
+# so neither /bin/grep nor fgrep slips past. The lookbehind refuses a name that merely
+# ends in grep, such as pgrep or a variable called mygrep.
+CALL = re.compile(r'(?<![A-Za-z0-9_.-])[ef]?grep(?![A-Za-z0-9_.-])')
+# A word whose first character is an expansion, with an optional opening quote. A
+# pattern built by concatenation is not this and is not reported; see the section
+# comment for why that limit is stated rather than closed.
+EXPANSION = re.compile(r'"?\$')
+BREAK = ';|&()<>'
 
 
-def passes_pattern(opts):
-	for word in opts.split():
-		if word.startswith('--'):
-			if word == '--regexp' or word.startswith('--regexp='):
-				return True
-			continue
-		if not word.startswith('-'):
-			continue
-		for ch in word[1:]:
-			if ch == 'e':
-				return True
-			if ch in ARGOPT:
+def resolve(name):
+	"""grep accepts any unambiguous prefix of a long option, so resolve one."""
+	if name in LONG_ALL:
+		hit = name
+	else:
+		near = [n for n in LONG_ALL if n.startswith(name)]
+		if len(near) != 1:
+			return None
+		hit = near[0]
+	if hit == 'regexp':
+		return 'regexp'
+	if hit in LONG_ARG:
+		return 'arg'
+	if hit in LONG_OPTIONAL:
+		return 'optional'
+	return 'flag'
+
+
+def words_after(text, i):
+	"""The command's words from i, stopping where the command does.
+
+	Quotes and command substitutions are tracked, because a ; or a | inside either
+	does not end anything, and a word list cut short there would hide the pattern.
+	"""
+	words = []
+	cur = ''
+	n = len(text)
+	while i < n:
+		c = text[i]
+		if c in '"\'':
+			end = text.find(c, i + 1)
+			if end < 0:
+				cur += text[i:]
 				break
-	return False
+			cur += text[i:end + 1]
+			i = end + 1
+			continue
+		if c == '\\' and i + 1 < n:
+			cur += text[i:i + 2]
+			i += 2
+			continue
+		if c == '$' and text.startswith('$(', i):
+			depth = 0
+			j = i
+			while j < n:
+				if text[j] == '(':
+					depth += 1
+				elif text[j] == ')':
+					depth -= 1
+					if depth == 0:
+						break
+				j += 1
+			cur += text[i:j + 1]
+			i = j + 1
+			continue
+		if c in ' \t':
+			if cur:
+				words.append(cur)
+				cur = ''
+			i += 1
+			continue
+		if c in BREAK:
+			break
+		cur += c
+		i += 1
+	if cur:
+		words.append(cur)
+	return words
 
-# A line ending in a backslash continues onto the next one, so the scan joins them and
-# works on logical lines. Three of the calls this section is about are written that way.
-# A scan of physical lines cannot see them: the line carrying grep and its
-# options does not carry the pattern, and the pattern's line does not say grep.
+
+def verdict(words):
+	"""safe, report, or unknown, for one grep call's words."""
+	i = 0
+	while i < len(words):
+		w = words[i]
+		if w == '--':
+			# Option parsing has ended, so a dash-leading value after this is a
+			# literal pattern and not an option. That is the shape this whole
+			# section is about avoiding, so the call is safe.
+			return 'safe'
+		if w.startswith('--'):
+			name, eq, _ = w[2:].partition('=')
+			kind = resolve(name)
+			if kind is None:
+				return 'unknown'
+			if kind == 'regexp':
+				return 'safe'
+			i += 2 if (kind == 'arg' and not eq) else 1
+			continue
+		if w.startswith('-') and len(w) > 1:
+			rest = w[1:]
+			for j, ch in enumerate(rest):
+				if ch == 'e':
+					# Either the pattern is the rest of this word, or it is the
+					# next word; either way it was handed over with -e, and no
+					# expansion is left standing in pattern position.
+					return 'safe'
+				if ch in SHORT_ARG:
+					# The rest of this word is its argument; if the word ends
+					# here, the next word is.
+					if j + 1 == len(rest):
+						i += 1
+					break
+				if ch not in SHORT_FLAG:
+					return 'unknown'
+			i += 1
+			continue
+		# The first word that is not an option is the pattern.
+		return 'report' if EXPANSION.match(w) else 'safe'
+	return 'safe'
+
+
+# A physical line ending in a backslash continues onto the next, so the scan joins them
+# and works on logical lines: a call written that way puts the command on one line and
+# the pattern on another, and neither line on its own shows the defect.
 #
-# A line whose first character is a hash is prose, not a call. The comment above this
-# section quotes an unguarded call as the example of what to avoid, and a scan that
-# reads prose reports that example as the defect it is describing.
+# A logical line whose first character is a hash is prose. The comment above this
+# section quotes an unguarded call as its example of what to avoid, and the first
+# version of this check reported that example as a defect in the file. A hash after code
+# on the same line is not detected, so such a comment is still read as code; that errs
+# towards a false report, which is the safe direction.
 hits = []
+unknown = []
 start = None
 buf = ''
 with open(sys.argv[1], encoding='utf-8') as fh:
@@ -20273,11 +20425,19 @@ with open(sys.argv[1], encoding='utf-8') as fh:
 		buf = ''
 		if not text.lstrip().startswith('#'):
 			for m in CALL.finditer(text):
-				if not passes_pattern(m.group(1)):
+				got = verdict(words_after(text, m.end()))
+				if got == 'report':
 					hits.append(start)
+				elif got == 'unknown':
+					unknown.append(start)
 		start = None
-sys.stdout.write('pattern: %d unguarded%s\n' % (len(hits),
-	'' if not hits else ' at line ' + ','.join(str(n) for n in hits)))
+out = 'pattern: %d unguarded' % len(hits)
+if hits:
+	out += ' at line ' + ','.join(str(n) for n in hits)
+if unknown:
+	out += '; %d with an option this scan does not recognise, at line %s' % (
+		len(unknown), ','.join(str(n) for n in unknown))
+sys.stdout.write(out + '\n')
 GPPY
 		gp_out="$(python3 "$GP_PY" "${SMOKE_DIR}/smoke.sh" 2>&1)"
 		gp_rc=$?
