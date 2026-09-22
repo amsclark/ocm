@@ -3780,7 +3780,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			sh -c 'cat /tmp/zzsmokedoc.sql' </dev/null > "$BODY"
 		docker compose "${COMPOSE_ARGS[@]}" exec -T \
 			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
-			mariadb -uroot "$DB_NAME" < "$BODY"
+			mariadb -uroot --database="$DB_NAME" < "$BODY"
 	}
 
 	DFORM="$(adb "SELECT COALESCE(MAX(doc_id), 0) + 1 FROM doc_storage")"
@@ -5889,7 +5889,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			sh -c 'cat /tmp/zzazdoc.sql' </dev/null > "$BODY"
 		docker compose "${COMPOSE_ARGS[@]}" exec -T \
 			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
-			mariadb -uroot "$DB_NAME" < "$BODY"
+			mariadb -uroot --database="$DB_NAME" < "$BODY"
 	}
 	az_seed_doc "$AZDOC" 'ZZAZDOC-SECRET private case document body'
 
@@ -12550,7 +12550,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			sh -c 'cat /tmp/zzdldoc.sql' </dev/null > "$BODY"
 		docker compose "${COMPOSE_ARGS[@]}" exec -T \
 			-e MYSQL_PWD="$DB_ROOT_PASSWORD" db \
-			mariadb -uroot "$DB_NAME" < "$BODY"
+			mariadb -uroot --database="$DB_NAME" < "$BODY"
 	}
 
 	# dl_seed_doc <doc_name> <mime_type> <body> -> doc_id
