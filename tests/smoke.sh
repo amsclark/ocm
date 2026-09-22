@@ -761,6 +761,14 @@ XHTML = '{http://www.w3.org/1999/xhtml}'
 # The one part of the algorithm html5lib 1.x does not implement, refused on the
 # text rather than in the tree. See the note on the refusals below.
 TEMPLATE = re.compile('</?template', re.IGNORECASE)
+# The live reply is 3219 bytes. This bound is twenty times that, so no reply this
+# endpoint can send comes near it, and it is the only check here that can run before
+# the tree is built. That is what it is for: the attribute budget below refuses a
+# reply carrying 20000 data- attributes, and still takes 265 seconds to say so,
+# because the cost is inside html5lib's parse while the budget is applied to the
+# tree the parse returns. Bounding what a reply may CONTAIN cannot bound what
+# deciding about it COSTS. Bounding the bytes can.
+BYTES = 65536
 # What this endpoint sends: a table of rows and cells holding anchors, and the
 # one script element that loads the click handler. The rest of the list is plain
 # flow markup a future template could reasonably use. ANYTHING ELSE IS REFUSED,
@@ -768,35 +776,117 @@ TEMPLATE = re.compile('</?template', re.IGNORECASE)
 ALLOWED = frozenset((
 	'html', 'head', 'body', 'table', 'caption', 'colgroup', 'col', 'thead',
 	'tbody', 'tfoot', 'tr', 'th', 'td', 'a', 'div', 'span', 'p', 'b', 'i',
-	'em', 'strong', 'br', 'hr', 'img', 'script'))
-# <small> was in this set and was measured out of it. font-size: smaller
-# compounds, so 103 nested <small> elements around the calendar compute to 0px in
-# Chrome: every day anchor's box is 0 by 0 and a click at its position reaches
-# the <td>, while the text this check reads is unchanged. 102 still draws all 31.
-# The lesson is wider than the one name. A name belongs in this set only after a
-# browser has been asked what it does to this calendar, never because it reads as
-# harmless markup, and the names beyond the ones this endpoint sends have now all
-# been asked.
+	'em', 'strong', 'script'))
+# Four names were in this set and were measured out of it: small, img, br and hr.
+# This endpoint sends none of the four.
+#
+# font-size: smaller compounds, so 103 nested <small> elements around the calendar
+# compute to 0px in Chrome: every day anchor's box is 0 by 0 and a click at its
+# position reaches the <td>, while the text this check reads is unchanged. 102
+# still draws all 31.
+#
+# img, br and hr all reach the same place by a different road: they push the
+# calendar past the furthest a person can scroll. A browser's scroll extent is
+# finite -- measured in Chrome 152, the largest reachable scrollY is 16776776 and
+# the largest document height 33554432 -- and this check has no notion of where
+# anything is, so a day counted as present can still be somewhere nobody can put a
+# pointer. One <img> whose src is an SVG data URI 1 by 16800000 does it in 127
+# bytes: the image carries its height intrinsically, so no width or height
+# attribute is needed and no style attribute either. 940000 <br> elements do it
+# with no attribute at all. 16777216 is the boundary: an offset of 16777500 leaves
+# 18 of the 31 days reachable, 16778000 none, and 16776000 all 31.
+#
+# The lesson is wider than any of the four names. A name belongs in this set only
+# after a browser has been asked what it does to this calendar, never because it
+# reads as harmless markup, and the names beyond the ones this endpoint sends have
+# now all been asked. The two budgets further down bound the same class for the
+# names that have to stay.
 # The attribute names this endpoint sends, plus a few harmless neighbours. Every
-# data-* name is allowed, because the client reads three of them. The four that
-# make a drawn element vanish -- hidden, inert, popover and style -- are not in
-# the set, so a reply carrying one is refused instead of measured.
+# data-* name is allowed, because the client reads three of them. Four that put a
+# day beyond a person's reach are not in the set, so a reply carrying one is
+# refused instead of measured: hidden, popover and style can stop it being drawn,
+# and inert leaves the box exactly where it was and stops a click landing on it.
+#
+# href is not in the set either, and it was measured out of it. The click handler
+# in js/date_selector-events.js never calls preventDefault(), so an href on a day
+# anchor keeps its default action and that action runs AFTER the date is set.
+# Measured in Chrome 152 on a day anchor this check passes with all three browser
+# verdicts: href="javascript:..." sets the field and then empties it, ~400ms later
+# because the navigation is queued -- read synchronously after the click the field
+# still looks right, which is why this is refused rather than measured -- and an
+# href to a path sets the field and then navigates the page away from the form
+# holding it. The repository's own script-src policy blocks the first; it does not
+# block the second, and pl_send_csp_header() sends no policy at all when csp_mode
+# is off. This endpoint sends no href on anything, so refusing the name costs it
+# nothing.
 ALLOWED_ATTRS = frozenset((
-	'class', 'id', 'title', 'href', 'src', 'align', 'valign',
+	'class', 'id', 'src', 'title', 'align', 'valign',
 	'cellpadding', 'cellspacing', 'colspan', 'rowspan'))
+# The four allowed attributes a browser turns into pixels, and the only values
+# they may carry: a plain decimal from 0 to 99. The live reply sends cellpadding
+# "2", cellspacing "0" and colspan "5" and "7", so the bound is 13 times the
+# largest value this endpoint has ever been seen to send, and it is far below the
+# magnitudes that move the calendar at all -- the smallest cellpadding measured to
+# push a day out of reach in a stack this check would otherwise accept is 65535.
+SIZED = frozenset(('cellpadding', 'cellspacing', 'colspan', 'rowspan'))
+SIZE = re.compile('\\A(0|[1-9][0-9]?)\\Z')
+# Two budgets, which exist together because either one alone can be walked around.
+# A few enormous values and a great many small ones reach the same unreachable
+# place, so the value bound above needs a bound on how many elements may carry it,
+# and the count needs the value bound or 2048 elements would be enough on their
+# own. The live reply has 94 elements and at most 5 attributes on any one of them,
+# so these are 21 and 6 times what it actually sends.
+#
+# With both in force the largest offset a passing reply can build is about 2048
+# times twice 99 pixels, roughly 405000, against the 16776776 a person can
+# actually scroll to: a factor of 41. That is the argument these two numbers are
+# here to make, and it is why they are not tuned to the payloads that prompted
+# them.
+#
+# This budget was also believed to close a cost rather than a lie, and it does not.
+# data-* names are allowed unconditionally, and 20000 of them on one <td> made this
+# check take 258.6 seconds and 720MB of memory to answer, for a reply Chrome draws
+# normally. The cost is quadratic in the count -- 500 names take 0.3s, 8000 take 42s
+# -- but it is spent inside html5lib's parse, and this budget is applied to the tree
+# that parse returns, so with the budget in force the same reply is refused in 265.7
+# seconds. BYTES above is what removes that cost, because it is checked first. This
+# budget is here for the offset question, which is a different one.
+ELEMENTS = 2048
+ATTRS = 32
 # border was in this set and was measured out of it. Chrome's scroll extent stops
 # at 16777216px, and a legacy border contributes about twice its value to the
 # offset, so a spacer table carrying border="8400000" ahead of the calendar puts
 # every day past the furthest the page can scroll: scrollIntoView cannot bring
 # one into view and a click at its position reaches nothing, while this check
-# reads a perfect calendar. 8388610 still draws all 31. cellpadding and
-# cellspacing were measured at every magnitude up to 99999999999 and move
-# nothing, and this endpoint sends both, so they stay. It does not send border.
-# The only script this reply is allowed to carry. It is load bearing: the client
-# appends the reply's nodes into the live document, where a script element
-# parsed by DOMParser has never been started and so runs, and this is how the
-# click handler arrives. A reply carrying any other script is refused, because
-# the script could do anything to the page after this check has read the text.
+# reads a perfect calendar. 8388610 still draws all 31. This endpoint sends no
+# border.
+#
+# An earlier round of this comment went on to say that cellpadding and cellspacing
+# "were measured at every magnitude up to 99999999999 and move nothing". That is
+# wrong, and it was wrong in the one way that mattered: the single round value it
+# tested, 99999999999, is the one Chrome discards, because it does not fit in a
+# signed 32-bit integer. Every value that does fit moves the calendar. Measured in
+# Chrome 152, cellpadding="1000" adds 2022px, "32767" adds 65784, and anything from
+# "65535" up adds 131320, where it clamps; cellspacing="1000" adds 3268 and is
+# ignored at 65535. 128 tables stacked at cellpadding="65535" therefore reach the
+# same unreachable place as the border did, in 6.9KB, with no img and no data URI,
+# and 128 is the exact minimum -- 127 still leaves the days clickable.
+#
+# These four names cannot simply leave the set, because this endpoint sends
+# cellpadding, cellspacing and colspan. So their VALUES are bounded instead, by
+# SIZE below, and the element budget bounds how many of them a reply may stack.
+# The only script this reply is allowed to carry, and it is NOT load bearing.
+# This comment used to say the opposite -- that a script element DOMParser built
+# has never been started, so appending it into the live document runs it and that
+# is how the click handler arrives. Measured in Chrome 152, that is wrong in every
+# variant: inline, external and local-file scripts adopted out of a DOMParser
+# document all stay unexecuted, where the same element built with createElement
+# runs. The decisive run served the real reply to a host page that does NOT
+# pre-load the handler: the script element was adopted, the events file's own
+# guard flag stayed false, and clicking a day did nothing. The handler arrives
+# only from template_plugins/input_date_selector.php, which emits it on the host
+# page beside the field. A reply carrying any other script is still refused,
+# because a script this check cannot account for could do anything to the page.
 SCRIPT_SRC = '/cms/js/date_selector-events.js'
 # Blink stops building the tree past 512 open elements. Measured against this
 # repository's own client in Chrome: a calendar wrapped in 509 divs draws all 31
@@ -807,9 +897,28 @@ DEPTH = 512
 # What the client's own click handler reads, and the day labels this endpoint
 # writes next to them.
 SELECT = 'select'
-DAY = re.compile('^01/(0[1-9]|[12][0-9]|3[01])/2020$')
+# \Z, not $. Python's $ also matches immediately before ONE final newline, so
+# "01/01/2020" and "01/01/2020\n" both matched and the two raw strings then
+# counted as two distinct days. Measured, a reply holding January 1-15 twice --
+# once plain, once with a trailing &#10; -- plus January 16 once has 31 anchors
+# and 16 real days, and it passed. The harm is the 15 days a person cannot select
+# at all, not a corrupted value: measured, an input element strips CR and LF out
+# of a value assigned to it, so clicking the &#10; copy leaves the field reading
+# the same date as its twin. A trailing space or tab is NOT stripped and reaches
+# the field as 11 characters, past the form's own maxlength of 10; both of those
+# this pattern already rejected.
+DAY = re.compile('\\A01/(0[1-9]|[12][0-9]|3[01])/2020\\Z')
 FIELD = 'open_date'
 CONTAINER = 'date_selector-00001'
+
+
+# The shell half reads a refusal only if it matches ^refuse [A-Za-z0-9:._-]+$,
+# and the reason carries an element or attribute name the reply chose. HTML allows
+# names this check would otherwise print verbatim -- @bad is a legal attribute
+# name -- and the shell then dropped the reason and said only that the parser
+# exited 4, losing the one fact a person needs. So anything outside that alphabet
+# is written as a dot, the character's number and a dot, which stays inside it.
+REASON = re.compile('[^A-Za-z0-9:._-]')
 
 
 def refuse(reason):
@@ -820,7 +929,8 @@ def refuse(reason):
 	safe: refusing a good reply is noise a person reads, but passing a reply the
 	client cannot draw is the fault every earlier round of this check had.
 	"""
-	sys.stdout.write('refuse %s\n' % reason)
+	safe = REASON.sub(lambda hit: '.%X.' % ord(hit.group()), reason)
+	sys.stdout.write('refuse %s\n' % safe[:60])
 	sys.exit(4)
 
 
@@ -865,11 +975,12 @@ def adopted(body):
 	"""Every element the client actually copies, with its depth in the document.
 
 	The client appends doc.body's CHILD NODES, so <body> itself is never copied
-	and its attributes never arrive: a reply whose <body> carries the calendar
-	class puts nothing in the page, and reading the class off <body> here passed
-	a reply a browser draws no calendar from. Depth counts <html> as 1 and
-	<body> as 2, so a child of the body is 3, which is what the tree limit below
-	was measured against.
+	and its attributes never arrive. A reply whose <body> carries the calendar
+	class and the two attributes still puts its day cells on the page -- they are
+	drawn -- but nothing in the page carries the class, so the client's closest()
+	finds no calendar and no day does anything. Reading the class off <body> here
+	passed such a reply. Depth counts <html> as 1 and <body> as 2, so a child of
+	the body is 3, which is what the tree limit below was measured against.
 	"""
 	for kid in children(body):
 		for element, level in walk(kid, 3):
@@ -895,7 +1006,11 @@ def json_string(element, name):
 		return None
 	try:
 		parsed = json.loads(value)
-	except ValueError:
+	except (ValueError, RecursionError):
+		# RecursionError is not a ValueError. Measured, an attribute value of
+		# 20000 open brackets made this parser traceback and exit 1, which told
+		# the shell only that the parser exited 1 -- a confusing failure where an
+		# invalid field is the honest answer.
 		return None
 	return parsed if isinstance(parsed, str) else None
 
@@ -909,9 +1024,48 @@ def json_string(element, name):
 INVISIBLE = '\u200b\u00ad\u200e\u200f\u2060\u180e'
 
 
+def text_of(element):
+	"""The text a person can see inside the element, in document order.
+
+	ElementTree's own itertext() is not this: it yields the text of comment
+	nodes too, which a browser draws nothing for. Measured both ways -- a reply
+	whose 31 day anchors held only <!--1--> through <!--31--> passed this check
+	with every anchor 0x0 in Chrome and the <td> as the click target, and a reply
+	holding "1<!--note-->" in each anchor, which a browser draws and clicks
+	perfectly, was failed because the label read as "1note".
+
+	Worse than wrong: which way it was wrong depended on the interpreter. That
+	leak is CPython's C accelerator, not ElementTree as specified -- with
+	_elementtree the anchors above read "x7" and "9", and with the pure-python
+	implementation the same trees read "x" and "", because pure python returns
+	early on a tag that is not a string. This walk reads "x" and "" under BOTH,
+	measured on this box, so the verdict no longer depends on how the interpreter
+	running the suite was built. A comment's tag is a callable rather than a
+	string, which is how it is told apart here, the same way children() does it.
+	The walk is iterative because an allowed tree may be 512 levels deep and
+	recursion would not reach the bottom of it.
+	"""
+	parts = []
+	stack = [element]
+	while stack:
+		node = stack.pop()
+		if isinstance(node, str):
+			parts.append(node)
+			continue
+		items = [node.text or '']
+		for kid in node:
+			if isinstance(kid.tag, str):
+				items.append(kid)
+			# A comment's TAIL is ordinary text and stays, whether or not the
+			# comment itself was skipped.
+			items.append(kid.tail or '')
+		stack.extend(reversed(items))
+	return ''.join(parts)
+
+
 def label(element):
-	"""All the text inside the element, which is what a person sees in it."""
-	return ''.join(element.itertext()).strip().strip(INVISIBLE).strip()
+	"""What a person reads in the element, with the invisible taken off."""
+	return text_of(element).strip().strip(INVISIBLE).strip()
 
 
 reply = open(sys.argv[1], 'rb')
@@ -922,13 +1076,17 @@ reply.close()
 # declares UTF-8, so decoding as UTF-8 here reads the same string the client
 # read. A UTF-16 byte order mark is the one thing that overrides the declared
 # encoding, so a reply carrying one is refused rather than read as UTF-8.
+if len(raw) > BYTES:
+	refuse('bytes')
 if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
 	refuse('utf16-bom')
 text = raw.decode('utf-8', 'replace')
-# XMLHttpRequest strips a byte order mark while decoding, so responseText
-# never carries U+FEFF. Reading the bytes here does, and a stray U+FEFF ahead
-# of the table is character data the tree builder has to put somewhere, so it
-# is taken off to read the same string the client read.
+# XMLHttpRequest strips ONE leading byte order mark while decoding, so a reply
+# that begins with the UTF-8 BOM reaches the client without it. Reading the bytes
+# here keeps it, and a stray U+FEFF ahead of the table is character data the tree
+# builder has to put somewhere, so that one leading character is taken off to read
+# the same string the client read. Only the first, and only at the front: a second
+# BOM, or one anywhere else, is content and stays, exactly as the client sees it.
 if text.startswith('\ufeff'):
 	text = text[1:]
 # html5lib 1.x does not implement <template>, and it is wrong in three
@@ -957,18 +1115,43 @@ if body is None:
 # a <style> element the client adopts along with the calendar -- and started
 # refusing everything it has not been shown to draw. The live reply passes the
 # list; a reply that does not is reported, not measured.
+seen = 0
 for element, level in adopted(body):
+	seen += 1
+	if seen > ELEMENTS:
+		refuse('elements')
 	name = local(element.tag)
 	if not element.tag.startswith(XHTML) or name not in ALLOWED:
 		refuse('element:%s' % name)
+	if len(element.keys()) > ATTRS:
+		refuse('attributes')
 	for key in sorted(element.keys()):
 		if key not in ALLOWED_ATTRS and not key.startswith('data-'):
 			refuse('attribute:%s' % key)
+		# An allowed name carrying a value a browser turns into a large offset is
+		# how a day ends up past the furthest a person can scroll.
+		if key in SIZED and not SIZE.match(element.get(key) or ''):
+			refuse('size:%s' % key)
 	if name == 'script':
 		if sorted(element.keys()) != ['src'] or element.get('src') != SCRIPT_SRC:
 			refuse('script')
-		if label(element) or children(element):
+		# The script's own content is raw text to the HTML parser, so it is read
+		# as text and not as a visible label: a comment written inside a script
+		# element is script text, not a comment node.
+		if (element.text or '').strip() or children(element):
 			refuse('script')
+
+# A script in the reply is CHECKED and not REQUIRED, deliberately. The live reply
+# does send the handler script, but it is not what makes the calendar work: a
+# script element DOMParser built is already marked as started, so appending it
+# into the live document does not run it. The host page loads the same file
+# itself, from template_plugins/input_date_selector.php, which emits it once per
+# request beside the field and the container -- so the listener is always in place
+# before any reply arrives. Requiring the tag here was tried and reverted: 85 of
+# the 88 counterexample replies this check is scored against carry no script tag,
+# so requiring one turns the whole corpus into one refusal and the measurement can
+# no longer tell a reply a browser draws nothing from apart from a reply that
+# simply left a redundant tag out.
 
 # EVERY element carrying the class is counted, however deep, and the reply must
 # hold exactly one. Blink does not drop elements past its tree limit -- it stops
@@ -1088,8 +1271,9 @@ fi
 # The class is looked for on what the client COPIES, which is doc.body's child
 # nodes. The body element itself is never copied and its own attributes never
 # arrive, so a reply whose body carries the calendar class and the two attributes
-# puts nothing on the page at all; reading them off the body here passed such a
-# reply.
+# draws its day cells and gives the client nothing carrying the class to find --
+# the days are on the screen and none of them does anything. Reading the tagging
+# off the body here passed such a reply.
 #
 # An element is only counted where a browser has been measured to draw it, and
 # that is now done by refusing every name this endpoint has not been shown to
@@ -1126,11 +1310,53 @@ fi
 # refusing a reply a browser does draw: MathML <mi> and <mtext>, a sized
 # <foreignObject>, an open <dialog>, an <embed> whose void tag leaves the
 # calendar as its sibling rather than its fallback, a <select>, a <button>, a
-# <form>, <marquee>, <base>, <font>, <h3>, an SVG calendar, a second <script>, an
-# onclick or width or style or nowrap attribute, a border attribute, nested
-# <small>, and replies carrying a <template>. Every one of those is markup this
-# endpoint does not send, so the cost of the rule is a loud failure if someone
-# changes it to send one.
+# <form>, <marquee>, <base>, <font>, <h3>, an SVG calendar, a <script> loading a
+# file other than the click handler, an onclick or width or style or nowrap or
+# href attribute, a border attribute, nested <small>, an <img> or <br> or <hr>, a
+# cellpadding or cellspacing or colspan or rowspan value above 99, more than 2048
+# elements, more than 32 attributes on one element, a reply above 65536 bytes, and
+# replies carrying a <template>.
+#
+# The last five of those are one finding, and it is the one this round was for. A
+# browser's scroll extent is finite -- measured in Chrome 152, the largest
+# reachable scrollY is 16776776 -- and this check counts what a reply contains
+# without asking where any of it is. Nineteen replies were found that this check
+# called a perfect calendar and in which Chrome could not click a single day,
+# every one of them built only from names this check already allowed. The cheapest
+# was 127 bytes: one <img> whose src is an SVG data URI 1 by 16800000, which
+# carries its height intrinsically and so needs no width, height or style
+# attribute. The cleanest used no img and no data URI at all: 128 tables stacked
+# at cellpadding="65535", where 128 is the exact minimum. The crudest used 940000
+# <br>.
+#
+# The fix bounds the offset rather than the payloads. img, br and hr leave the
+# allowed set, because this endpoint sends none of them. cellpadding, cellspacing
+# and colspan cannot leave, because it does send them, so their values are bounded
+# to a plain decimal 0 to 99 -- it sends 2, 0 and 5 -- and the element count is
+# bounded to 2048, where it sends 94. Both bounds are needed: a few enormous
+# values and a great many small ones arrive at the same place. Together they cap
+# the offset a passing reply can build at roughly 405000 pixels against the
+# 16776776 a person can reach.
+#
+# One earlier claim in this file was wrong and is worth naming, because of how it
+# was wrong. It said cellpadding and cellspacing "were measured at every magnitude
+# up to 99999999999 and move nothing". 99999999999 is the single value Chrome
+# discards, because it does not fit in a signed 32-bit integer; every value that
+# does fit moves the calendar, cellpadding="1000" by 2022px and anything from
+# 65535 up by 131320. A measurement at one round number is not a measurement of a
+# range.
+#
+# A second claim from the same round was wrong in the same way, and this round
+# fixes it. The attribute budget was said to remove a cost as well as a lie:
+# data-* names are allowed unconditionally, and 20000 of them on one cell made this
+# check take 258.6 seconds and 720MB to answer a reply Chrome draws normally. With
+# the budget in force the same reply is refused in 265.7 seconds, because the cost
+# is inside html5lib's parse and the budget is applied to the tree that parse hands
+# back. A bound on what a reply may contain cannot bound what deciding about it
+# costs. So this round adds the one check that runs before the parser: a reply above
+# 65536 bytes is refused unread, against a live reply of 3219. The lesson is the
+# cellpadding lesson again -- a fix has to be re-measured against the thing it
+# claims to close, not against the payload that prompted it.
 #
 # An allowed NAME is not the same as a drawn calendar, and two families measured
 # this round were built out of allowed names only. 103 nested <small> elements
@@ -1194,6 +1420,67 @@ fi
 # come from the reply spelling the tag, and a tree that has dropped the element
 # cannot be asked about it. template_plugins/date_selector.php cannot emit the
 # tag at all.
+#
+# A day's LABEL is the text a person can read in it, and that is not the same as
+# the text in the tree. ElementTree's itertext() yields the text of comment nodes
+# too, which a browser draws nothing for, and reading labels that way was wrong in
+# both directions: a reply whose 31 day anchors held only <!--1--> through
+# <!--31--> passed this check with every anchor 0x0 in Chrome and the cell as the
+# click target, and a reply holding "1<!--note-->" in each anchor, which a browser
+# draws and clicks perfectly, was failed because its label read as "1note".
+# Comment nodes are therefore skipped and their tails kept, which is what a
+# browser does with them, and a comment's tag being a callable rather than a
+# string is how it is told apart. Inside the <script> element the same text is
+# read RAW instead, because script content is raw text to the HTML parser and a
+# comment written there is script text, not a comment node.
+#
+# That defect also made the verdict depend on the interpreter, which is the part
+# worth keeping in mind for any future reading of this tree. The comment leak is
+# CPython's C accelerator and not ElementTree as specified: measured on this box,
+# the same two anchors read "x7" and "9" with _elementtree and "x" and "" with the
+# pure-python implementation, which returns early on a tag that is not a string.
+# The walk this check uses reads "x" and "" under both.
+#
+# The date value is compared with \A and \Z, not ^ and $. Python's $ also matches
+# immediately before ONE final newline, so "01/01/2020" and "01/01/2020\n" both
+# matched the day pattern while being two different strings to the set that counts
+# distinct days. Measured, a reply holding January 1-15 twice -- once plain, once
+# with a trailing &#10; -- plus January 16 once has 31 anchors and 16 real days,
+# and it passed. The harm is the 15 days a person cannot select at all: measured,
+# an input element strips CR and LF out of an assigned value, so clicking the
+# &#10; copy leaves the field reading the same date as its twin rather than a
+# corrupted one. A trailing space or tab is not stripped and arrives as 11
+# characters, past the form's own maxlength of 10, and this pattern already
+# rejected both of those.
+#
+# The handler script is CHECKED and deliberately NOT REQUIRED. A script in the
+# reply must be the click handler, with that src and nothing else in it, but a
+# reply without one is not failed for that. Two measurements decided it. First,
+# the script in the reply does not run: measured in Chrome 152, inline, external
+# and local-file scripts adopted out of a DOMParser document all stay unexecuted
+# where the same element built with createElement runs, and the decisive run --
+# the real reply adopted into a host page that does not pre-load the handler --
+# left the events file's guard flag false and clicking a day did nothing. An
+# earlier round of this comment claimed the opposite, that such a script has never
+# been started and therefore runs; it is wrong. The handler arrives only from
+# template_plugins/input_date_selector.php, which emits it on the host page beside
+# the field and the container, so the listener is in place before any reply
+# arrives. Second, requiring the tag was tried here and reverted, because 85 of
+# the 88 counterexample replies this check is scored against carry no script tag:
+# requiring one collapses the whole corpus into a single refusal, and the
+# measurement can no longer tell a reply a browser draws nothing from apart from a
+# reply that left a redundant tag out.
+#
+# Two error paths were reached by replies rather than by bugs, and both turned a
+# verdict into a confusing failure. json.loads raises RecursionError on deeply
+# nested input, which is NOT a ValueError, so an attribute value of 20000 open
+# brackets made this parser traceback and exit 1 where "the field does not match"
+# is the honest answer. And the shell half reads a refusal only if it matches
+# ^refuse [A-Za-z0-9:._-]+$, while a refusal names an element or attribute the
+# reply chose: @bad is a legal attribute name, and printing it verbatim made the
+# shell drop the reason and report only that the parser exited 4, losing the one
+# fact a person needs. Anything outside that alphabet is now written as a dot, the
+# character's number and a dot, and the reason is truncated to 60 characters.
 #
 # The unreachable-anchor count is printed, and is NOT part of the verdict. An
 # earlier round required it to be zero; measured, that was a stricter markup
