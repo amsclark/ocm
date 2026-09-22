@@ -21,7 +21,8 @@ SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "${SMOKE_DIR}/.." && pwd)"
 # Without set -e a cd that fails leaves the name empty instead of stopping, and every
 # path built below from an empty SMOKE_DIR is a path at the root of the filesystem. This
-# suite writes none of those any more -- the files it makes all come from mktemp -- but
+# suite writes none of those any more -- every path it writes is a name from mktemp, or
+# a suffix or a child of one -- but
 # it reads committed fixtures under tests/fixtures and sweeps the source tree under
 # REPO_DIR, and a check that reads the wrong directory passes or fails for the wrong
 # reason.
@@ -83,7 +84,9 @@ OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 # trap installed further down, and 23 were named by no installed trap at all.
 #
 # So almost no trap below names a path of its own: two still carry an inline rm beside
-# base_cleanup, where the path is removed twice and the second removal is a no-op. The
+# base_cleanup, where the path is removed twice. That is redundant rather than harmless
+# by construction: it is a no-op only if the first removal succeeded and nothing has
+# taken the name since. The
 # helpers record what they hand out, and a file whose whole record reached the list is
 # one the cleanup ATTEMPTS to remove, on a run that leaves through a path running
 # base_cleanup. That is not a promise it goes: the list can be lost or replaced, and the
@@ -175,10 +178,15 @@ smoke_temp_closed() {
 # Either way the call fails and the caller removes the object it was recording.
 #
 # Two limits remain. If the cut back itself fails, the partial bytes stay, and the next
-# append is then refused rather than merging with them. And a run killed outright in the
-# middle of an append leaves the partial bytes with no cleanup at all, because a shell
-# killed by a signal runs no EXIT trap; measured with a byte-exact RLIMIT_FSIZE, which
-# kills the shell rather than returning a short write.
+# append is then refused rather than merging with them. And a shell that dies in the
+# middle of an append leaves the partial bytes behind. Not every signal does that: a
+# review pointed out that some do not skip it, and the measurement agrees: SIGTERM and
+# SIGHUP both run the EXIT trap before the shell goes, so base_cleanup still runs.
+# SIGKILL cannot, and neither can the SIGXFSZ a byte-exact RLIMIT_FSIZE raises --
+# measured status -25 with the partial bytes on disk and no trap run. Note too that this
+# helper usually runs inside a command substitution, so the shell that dies may be the
+# child: the parent then carries on and its own EXIT trap still removes every complete
+# record, leaving only the object this call was recording.
 smoke_temp_add() {
 	local was now
 	was="$(stat -c %s "$TEMP_REG" 2>/dev/null)" || return 1
@@ -7822,8 +7830,11 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		"$OCM_URL/case.php?case_id=${MDCASE}&screen=docs" >/dev/null
 	MDTOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed -e 's/.*value="//' -e 's/"$//')"
 	
-	# The upload test declares a MIME type per file and the file has to carry the
-	# matching extension, so these five names are fixed rather than made by mktemp.
+	# These five names are fixed rather than made by mktemp because the test asserts on
+	# them: the stored doc_name is the basename curl sent, and checks match on it and on
+	# the extension. A review noted that mktemp could supply an extension through a
+	# template suffix, so the extension alone is not the reason -- keeping the exact
+	# basenames the assertions already use is.
 	# They used to be written beside this script in tests/, and a review found two
 	# things wrong with that. A write took over whatever another run, or an earlier
 	# interrupted run, had left at one of those names -- and if that was a symlink, the
