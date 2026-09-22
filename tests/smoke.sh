@@ -18879,11 +18879,13 @@ fi
 # and every whitespace character deleted, and requires the three
 # statements to appear in it exactly once, character for character.
 # Pinning the whole block instead of counting features of it is what stops
-# a second spelling of the same write from passing: an edit anywhere
-# inside the block changes the pinned text. Whitespace written inside a
-# string literal is turned into a byte that is not whitespace before the
-# deletion, so adding a space to the strip pattern changes the pinned text
-# instead of disappearing with it.
+# a second spelling of the same write from passing. It is a comparison
+# made after two removals, so it is blind to reindentation and to a
+# comment added inside the block, and sees every other edit there.
+# Whitespace written inside a string literal is turned into a byte that is
+# not whitespace before the deletion, so a space, a tab or a carriage
+# return added to the strip pattern changes the pinned text instead of
+# disappearing with it.
 #
 # Row two closes the other half, an addition placed outside the block.
 # Over the same code with every string body emptied as well, $safe_number
@@ -18900,8 +18902,15 @@ fi
 #
 # Emptying string bodies also removes any code interpolated into them, so
 # the same three names are counted a second time over the code with string
-# bodies kept, where each must appear four times. A write placed inside a
-# {$ ... } interpolation raises one of those counts.
+# bodies kept, where each must appear four times, and substr( and
+# DB::escapeString are counted over that view as well, where each must
+# appear three times. An added occurrence of any of those five raises a
+# count. Replacing an occurrence that is already there with a write of the
+# same name keeps all three name counts, which is what the slice and
+# escaper counts are for: reintroducing the defect means slicing something
+# and escaping something, and doing either inside an interpolation raises
+# one of those two. A write that reaches the value through a helper
+# defined elsewhere raises none of the five.
 #
 # Row three is a static sweep of the whole tree and can fail on a file
 # this fix never touched.
@@ -18926,9 +18935,10 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # #[, so keeping it retains no comment.
 #
 # A second argument of 2 keeps string bodies as 1 does, but writes each
-# whitespace character inside a string body as a \001 byte, and ends a
-# line the string continues past with a \002, so a caller that deletes
-# whitespace cannot lose a space that was written inside a literal.
+# space, tab and carriage return inside a string body as a \001 byte, and ends a line the string continues past with a
+# \002, so a caller that deletes whitespace cannot lose a whitespace
+# character that was written inside a literal. A newline inside a literal
+# is the line the \002 ends.
 #
 # This is not a PHP parser. It was checked against one: for all 308 PHP
 # files under cms/, and for fixtures holding each shape named above, its
@@ -18950,6 +18960,7 @@ sm107_code_only()
 			mark = (keepstr == 2) ? 1 : 0
 			soh = sprintf("%c", 1)
 			stx = sprintf("%c", 2)
+			ws = " \t\r"
 		}
 		{
 			line = $0
@@ -19019,7 +19030,7 @@ sm107_code_only()
 						if (ks == 1)
 						{
 							out = out c
-							if (mark == 1 && (d == " " || d == "\t"))
+							if (mark == 1 && d != "" && index(ws, d) > 0)
 							{
 								out = out soh
 							}
@@ -19070,7 +19081,7 @@ sm107_code_only()
 					}
 					if (ks == 1)
 					{
-						if (mark == 1 && (c == " " || c == "\t"))
+						if (mark == 1 && c != "" && index(ws, c) > 0)
 						{
 							out = out soh
 						}
@@ -19234,6 +19245,7 @@ sm107_file=cms/services/twilio.php
 sm107_ws0="$(sm107_code_only "$sm107_file" 2 | tr -d ' \t\n\r')"
 sm107_nostr="$(sm107_code_only "$sm107_file" 0 | tr -d ' \t\n\r' | tr 'A-Z' 'a-z')"
 sm107_full="$(sm107_code_only "$sm107_file" 1 | tr -d ' \t\n\r')"
+sm107_full_lc="$(printf '%s' "$sm107_full" | tr 'A-Z' 'a-z')"
 
 # ROW ONE -- the three statements, pinned character for character.
 sm107_pin="\$safe_number=preg_replace('/[^0-9+]/','',\$number);"
@@ -19264,28 +19276,43 @@ done
 sm107_f_safe="$(sm107_count '$safe_number' "$sm107_full")"
 sm107_f_phone="$(sm107_count '$phone' "$sm107_full")"
 sm107_f_area="$(sm107_count '$area_code' "$sm107_full")"
+sm107_f_subs="$(sm107_count 'substr(' "$sm107_full_lc")"
+sm107_f_esc="$(sm107_count 'db::escapestring' "$sm107_full_lc")"
 if [ "$sm107_n_safe" -eq 4 ] && [ "$sm107_n_phone" -eq 1 ] \
 	&& [ "$sm107_n_area" -eq 1 ] && [ "$sm107_subs" -eq 3 ] \
 	&& [ "$sm107_subs_safe" -eq 3 ] && [ "$sm107_indirect" -eq 0 ] \
 	&& [ "$sm107_f_safe" -eq 4 ] && [ "$sm107_f_phone" -eq 4 ] \
-	&& [ "$sm107_f_area" -eq 4 ]; then
-	ok "no other statement in the SMS handler writes the number it looks up"
+	&& [ "$sm107_f_area" -eq 4 ] && [ "$sm107_f_subs" -eq 3 ] \
+	&& [ "$sm107_f_esc" -eq 3 ]; then
+	ok "the SMS handler's writes, slices and escapes of the number are all counted"
 else
-	bad "the SMS handler's writes moved (${sm107_n_safe} \$safe_number, ${sm107_n_phone} \$phone, ${sm107_n_area} \$area_code, ${sm107_subs} substr of which ${sm107_subs_safe} on \$safe_number, ${sm107_indirect} indirect; with strings kept ${sm107_f_safe}/${sm107_f_phone}/${sm107_f_area})"
+	bad "the SMS handler's writes moved (${sm107_n_safe} \$safe_number, ${sm107_n_phone} \$phone, ${sm107_n_area} \$area_code, ${sm107_subs} substr of which ${sm107_subs_safe} on \$safe_number, ${sm107_indirect} indirect; with strings kept ${sm107_f_safe}/${sm107_f_phone}/${sm107_f_area}, ${sm107_f_subs} substr, ${sm107_f_esc} escape)"
 fi
 
 # ROW THREE -- the class, tree-wide: a value DB::escapeString() produced
 # on an earlier line, then sliced. Both names are matched without regard
-# to case, because PHP function and method names are case-insensitive.
+# to case, because PHP function and method names are case-insensitive, and
+# whitespace written around the :: or before the opening paren is allowed
+# for, so DB :: escapeString($x) and substr ($x, 0, 3) are both read as
+# the calls they are.
 #
 # Each assignment on a line is taken in turn, and a right-hand side is read
 # from that assignment's own '=' up to the next ';', so a second statement
 # on the line is not misread as part of the first, and a comparison earlier
 # on the line does not displace it. The name test ends at a character that
 # cannot continue a name, so $value does not read as a mention of $val.
-# A saved name is dropped only by a later assignment whose right-hand side
-# neither calls the escaper nor mentions that name; an assignment that
-# passes the old value through, such as $x = trim($x), keeps the record.
+# Only an ASCII letter, digit or underscore continues a name there, so a
+# name spelled with a high byte, which PHP allows, reads as a mention of
+# the shorter name it starts with.
+#
+# Among the assignments it recognises, a record is deleted when the
+# right-hand side holds neither the text db::escapestring, whitespace
+# removed and case ignored, nor a matching occurrence of the saved name;
+# an assignment that passes the old value through, such as $x = trim($x),
+# keeps the record. That test is over matched text and not over what PHP
+# calls, so a right-hand side which merely mentions the escaper is
+# recorded as escaped, and that does not establish that the value finally
+# assigned is escaped.
 #
 # This is a line-order heuristic over one file at a time, not data flow.
 # It does not see an assignment or a substr() call split across lines, an
@@ -19293,14 +19320,12 @@ fi
 # own line, which clears the record before that slice is checked, a value
 # reached through an alias or an array element, a slice handed the escaper's
 # return value directly, a slice that runs before the escape on the next
-# pass of a loop, or one name meaning different things in two functions. An assignment made inside a
-# condition clears the record whether or not the condition held, and a '.='
-# neither records nor clears. A right-hand side that merely mentions the
-# escaper is recorded as escaped, which does not establish that the value
-# finally assigned is. So a clean run is evidence, not proof, and a report
-# can be a false one.
+# pass of a loop, or one name meaning different things in two functions.
+# A qualifying reset inside a condition clears the record whether or not
+# the condition held, and a '.=' neither records nor clears. So a clean
+# run is evidence, not proof, and a report can be a false one.
 sm107_sliced=0
-for sm107_f in $(grep -rliF 'DB::escapeString' cms/ --include='*.php' 2>/dev/null)
+for sm107_f in $(grep -rliE 'DB[[:space:]]*::[[:space:]]*escapeString' cms/ --include='*.php' 2>/dev/null)
 do
 	sm107_hits="$(sm107_code_only "$sm107_f" 0 | awk -v fn="$sm107_f" '
 		function sm107_names(s, name,    n, p, q, at, nxt)
@@ -19325,7 +19350,9 @@ do
 				rhs = substr(rest, RSTART + RLENGTH - 1)
 				sc = index(rhs, ";")
 				if (sc > 0) { rhs = substr(rhs, 1, sc - 1) }
-				if (index(tolower(rhs), "db::escapestring") > 0) {
+				rhsns = rhs
+				gsub(/[ \t]/, "", rhsns)
+				if (index(tolower(rhsns), "db::escapestring") > 0) {
 					esc[v] = NR
 				}
 				else if (sm107_names(rhs, v) == 0) {
@@ -19334,9 +19361,9 @@ do
 				rest = substr(rest, RSTART + RLENGTH)
 			}
 			rest = line
-			while (match(rest, /[sS][uU][bB][sS][tT][rR]\([ \t]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+			while (match(rest, /[sS][uU][bB][sS][tT][rR][ \t]*\([ \t]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
 				u = substr(rest, RSTART, RLENGTH)
-				sub(/^[sS][uU][bB][sS][tT][rR]\([ \t]*/, "", u)
+				sub(/^[sS][uU][bB][sS][tT][rR][ \t]*\([ \t]*/, "", u)
 				if ((u in esc) && esc[u] < NR) {
 					print fn ":" NR ": substr() slices " u \
 						" escaped on line " esc[u]
@@ -19351,7 +19378,7 @@ do
 	fi
 done
 if [ "$sm107_sliced" -eq 0 ]; then
-	ok "no PHP file slices a value that DB::escapeString() produced earlier"
+	ok "no PHP file matches the escape-then-slice pattern this scan looks for"
 else
 	bad "${sm107_sliced} site(s) slice a value that DB::escapeString() produced"
 fi
