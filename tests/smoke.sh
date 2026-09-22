@@ -226,6 +226,12 @@ smoke_temp_closed() {
 # base_cleanup does run there, and the partial record is refused for being unterminated
 # rather than acted on.
 #
+# How that was measured matters, because a review of it reached the opposite answer. The
+# limit applies to writes to REGULAR FILES, so a marker the trap writes to a file under
+# the same limit can fail as well, and its absence is then not evidence that the trap
+# did not run. A pipe is not limited. With the marker on stderr and stderr a pipe, the
+# marker arrives in every case above.
+#
 # What base_cleanup then does is an attempt, not a promise: it reads whichever list
 # it can still see, and it does not check each rm. And where this helper runs inside a
 # command substitution, the shell that dies is the child. The parent carries on, but
@@ -20156,11 +20162,10 @@ fi
 # section then reported the body clean while the body carried the password.
 # Measured on the version before this change: PASS, with the password in the
 # body. The same shape held for MFA_KEY, which is read from a file in the
-# container, and for 45 other calls whose patterns are markers this suite makes
-# itself. A review counted those 45 more carefully than the first description did: 43
-# carry values the suite makes, and two carry a CSS class name read out of the
-# repository source, which matches js-[A-Za-z0-9_-]+ and so cannot begin with a dash
-# today. All 47 now pass the pattern with -e.
+# container, and for 45 more calls: 43 carry values this suite makes itself, and
+# two carry a CSS class name read out of the repository source, which matches
+# js-[A-Za-z0-9_-]+ and so cannot begin with a dash today. All 47 now pass the
+# pattern with -e.
 #
 # Fixing 47 calls does not stop a 48th being written, and three earlier rounds
 # in this area learnt that naming the places one at a time does not close a
