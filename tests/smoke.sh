@@ -21,8 +21,10 @@ SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "${SMOKE_DIR}/.." && pwd)"
 # Without set -e a cd that fails leaves the name empty instead of stopping, and every
 # path built below from an empty SMOKE_DIR is a path at the root of the filesystem. This
-# suite writes none of those any more -- every path it writes is a name from mktemp, or
-# a suffix or a child of one -- but
+# suite writes none of those any more -- every host temporary path it writes is a name
+# from mktemp, or a suffix or a child of one. A review noted that this does not cover
+# every write in the file: a few fixtures are written INSIDE the container, under fixed
+# absolute paths of their own that an empty SMOKE_DIR cannot reach. But
 # it reads committed fixtures under tests/fixtures and sweeps the source tree under
 # REPO_DIR, and a check that reads the wrong directory passes or fails for the wrong
 # reason.
@@ -86,9 +88,9 @@ OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 # So almost no trap below names a path of its own: two still carry an inline rm beside
 # base_cleanup, where the path is removed twice. That is redundant rather than harmless
 # by construction: it is a no-op only if the first removal succeeded and nothing has
-# taken the name since. The
-# helpers record what they hand out, and a file whose whole record reached the list is
-# one the cleanup ATTEMPTS to remove, on a run that leaves through a path running
+# taken the name since. The helpers record what they hand out, and a file whose whole
+# record reached the list is one the cleanup ATTEMPTS to remove, on a run that leaves
+# through a path running
 # base_cleanup. That is not a promise it goes: the list can be lost or replaced, and the
 # cleanup does not check each rm. A section added later is covered if it asks a helper
 # for its files; a name it derives from one, as the suffixes below do, has to be written
@@ -147,7 +149,8 @@ trap base_cleanup EXIT
 # worth stopping for rather than discovering at the end.
 #
 # A name starting with a dash is refused here for the reason given at the helpers below:
-# every command that reads the path would read the dash as options. This is the first
+# a command that took the path as an option-parsing operand would read the dash as
+# options. This is the first
 # mktemp call in the run, so refusing it here is what stops a run whose TMPDIR produces
 # that shape, and it is why no later path can have it.
 TEMP_REG="$(mktemp)"
@@ -185,14 +188,23 @@ smoke_temp_closed() {
 #
 # Two limits remain. If the cut back itself fails, the partial bytes stay, and the next
 # append is then refused rather than merging with them. And a shell that dies in the
-# middle of an append leaves the partial bytes behind. Not every signal does that: a
-# review pointed out that some do not skip it, and the measurement agrees: SIGTERM and
-# SIGHUP both run the EXIT trap before the shell goes, so base_cleanup still runs.
-# SIGKILL cannot, and neither can the SIGXFSZ a byte-exact RLIMIT_FSIZE raises --
-# measured status -25 with the partial bytes on disk and no trap run. Note too that this
-# helper usually runs inside a command substitution, so the shell that dies may be the
-# child: the parent then carries on and its own EXIT trap still removes every complete
-# record, leaving only the object this call was recording.
+# middle of an append leaves those bytes on disk.
+#
+# This comment has now had the signal question wrong twice. It first said a shell killed
+# by a signal runs no EXIT trap, which is false; the correction then kept SIGXFSZ as a
+# second exception, which is also false. Measured on bash 5.2.37(1)-release, signalling
+# the shell's own pid with the disposition left at the default, SIGTERM (-15), SIGHUP
+# (-1) and SIGXFSZ (-25) ALL run the EXIT trap before the shell goes. Only SIGKILL (-9)
+# cannot. The byte-exact RLIMIT_FSIZE case was measured through this helper itself:
+# status -25, the EXIT trap ran, and the list held five bytes of an unterminated record.
+# So base_cleanup does run there, and the partial record is refused for being
+# unterminated rather than acted on.
+#
+# What base_cleanup then does is an attempt, not a promise: it reads whichever list
+# it can still see, and it does not check each rm. And where this helper runs inside a
+# command substitution, the shell that dies is the child. The parent carries on, but
+# the trap that runs later is the PARENT's EXIT trap, when the parent itself leaves --
+# a different trap in a different shell, not this one reaching cleanup through a child.
 smoke_temp_add() {
 	local was now
 	was="$(stat -c %s "$TEMP_REG" 2>/dev/null)" || return 1
@@ -231,8 +243,10 @@ smoke_temp_add() {
 # not: that one at least left the path in a variable a trap named.
 #
 # A path that starts with a dash is refused outright. mktemp with no template returns
-# one when TMPDIR is a relative name starting with a dash, and every command that then
-# reads the path reads the dash as options instead. An earlier commit put -- on all 75
+# one when TMPDIR is a relative name starting with a dash, and any command that then
+# takes the path as an option-parsing operand reads the dash as options instead. A
+# redirection does not, and nor does a command already given --. An earlier commit put
+# -- on all 75
 # host-side rm calls for that reason, and a review answered that rm is not the only such
 # command: it counted around 120 more places -- stat, truncate, cat, head, tail, cp,
 # cmp, diff and the python3 script operands -- where the same value is first operand.
@@ -241,11 +255,12 @@ smoke_temp_add() {
 # well, because a suffix or a child of a path that cannot start with a dash cannot
 # either.
 #
-# The object is removed before the refusal, with a removal that carries --, so nothing
-# is left behind. This is not reachable through an ordinary run: the list itself is made
-# from mktemp a hundred lines above and its own check below refuses the same shape, so a
-# run with such a TMPDIR stops before any of this. The check is here so that it stops
-# for a stated reason rather than through whichever command happens to choke first.
+# The object is removed before the refusal, with a removal that carries --. That is an
+# attempt, not a guarantee: the rm status is not checked here either. This is not
+# reachable through an ordinary run, because the list itself is made from mktemp a
+# hundred lines ABOVE, and the check there -- not one below -- refuses the same shape,
+# so a run with such a TMPDIR stops before any of this. The check is here so that it
+# stops for a stated reason rather than through whichever command chokes first.
 smoke_temp() {
 	local p rc=0
 	p="$(mktemp "$@")" || rc=$?
