@@ -735,6 +735,8 @@ elif [ "$cal_curl" = 0 ]; then
 import importlib.util
 import json
 import re
+import resource
+import signal
 import sys
 
 # html5lib implements the HTML5 tree construction algorithm, which is what a
@@ -780,7 +782,9 @@ FORMATTING = re.compile('</?(b|big|code|em|font|i|nobr|s|small|strike|strong|tt|
 # reply carrying 20000 data- attributes, and still takes 265 seconds to say so,
 # because the cost is inside html5lib's parse while the budget is applied to the
 # tree the parse returns. Bounding what a reply may CONTAIN cannot bound what
-# deciding about it COSTS. Bounding the bytes can.
+# deciding about it COSTS. Bounding the bytes narrows that gap and does not close
+# it, which took five rounds to establish: see BUDGET below, which bounds the cost
+# itself.
 BYTES = 65536
 # Bounding the bytes is necessary and is not sufficient either, and this is the
 # third time that sentence has had to be written this round. Two costs inside
@@ -814,27 +818,71 @@ BYTES = 65536
 # it was called bytes, so 200 CJK characters in a value counted as 200 and not the
 # 600 they are. tag_shape() below counts both the way the tokeniser does.
 #
-# The worst input under all four bounds at once was built rather than extrapolated:
-# 361 <p> tags each carrying the full TAGATTRS allowance, 65411 bytes, cost 0.063s,
-# and the deepest div stack TAGS allows, 2047 of them, cost 0.127s. The live reply
-# is 0.006s.
+# The worst input under all three of those at once was built rather than
+# extrapolated, and it still was not the worst input there is. 361 <p> tags each
+# carrying the full TAGATTRS allowance, 65411 bytes, cost 0.063s, and the deepest
+# div stack TAGS allows, 2047 of them, cost 0.127s. Then a fifth shape passed all
+# three at 0.938s: a calendar, 1866 nested <div>, an <a>, and the rest of the
+# budget as bare & characters. 65536 bytes, 2047 < characters, longest tag 158,
+# 5 attributes on a tag -- and a verdict of 1 0 1 1 31 31 0, a passing calendar,
+# for 156 times what the live reply costs.
 #
-# The headroom. The live reply has 180 < characters, a longest tag of 158 bytes and
-# at most 5 attributes on one tag; over all 362 witnesses in the corpus the widest
-# legitimate tag is 174 bytes with 7 attributes. A normal request's worst tag is the
-# table start tag with both request-derived values at their full 64 characters,
-# which is 258 bytes. A request with a pathological year can push a navigation
-# anchor past TAGLEN and is refused -- month and year are not range checked, which
-# is reported separately -- and no user interface sends such a request.
+# That shape is why this round stops adding bounds of this kind. Its cost is the
+# PRODUCT of two quantities: html5lib calls reconstructActiveFormattingElements()
+# for every in-body character token, and that function's first step scans the open
+# element stack from the bottom. A bare & is one character token per byte. So TAGS
+# caps one factor, BYTES caps the other, and nothing caps their product. Five
+# rounds running, a bound on one quantity has been necessary and not sufficient,
+# and bounding factors one at a time cannot converge while html5lib holds an
+# unknown number of quadratics. The cost is therefore bounded directly now, as CPU
+# time around the decision, and every bound above is kept as a cheap fast-fail
+# that refuses a known shape before any of that budget is spent.
 #
-# The cost of these bounds: twelve corpus witnesses that Chrome draws, reaches and
-# clicks 31 days out of 31 are refused, measured in a browser rather than assumed.
-# The two bounds added here refuse nothing the previous round passed. That is the
-# same deliberate over-refusal the size bounds already carry, and it is the price
-# of a bound that holds.
+# What this costs when it fires is worth stating plainly: this parser runs in the
+# test suite and never in the application, so the whole class is CI time, not a
+# way in. That sets the proportion -- a check that can be made to sit for a minute
+# is a bad check and is worth fixing once, properly, rather than chased shape by
+# shape.
 TAGS = 2048
-TAGLEN = 512
+# Raised from 512 this round, because 512 refused this endpoint's own output. A
+# year of 600 zeros is a real HTTP 200 whose navigation anchor is 660 bytes, and
+# the true ceiling is 8130 bytes at 8070 zeros, where Apache's LimitRequestLine
+# refuses the request line rather than the application refusing the value. The
+# reason it is safe to raise: length was only ever a proxy for the attribute count,
+# TAGATTRS counts that directly now, and length on its own is measured to cost
+# nothing -- 8130 bytes in one tag is 0.002s and 60014 bytes in one tag is 0.004s.
+# So this is a shape check with room for anything the emitters can produce, not a
+# cost bound. Range-validating year is an application change and is reported, not
+# made here.
+TAGLEN = 8192
 TAGATTRS = 64
+# The product above, over-estimated in the safe direction: text bytes are at least
+# the character token count and < characters are at least the stack depth. The
+# threshold is read off a built curve, not extrapolated. Legitimate replies sit at
+# 20972 (196 < characters, 107 bytes of text, the six-week months), and the largest
+# any accepted request can reach is 1471860, at the LimitRequestLine ceiling above.
+# This is five times that and sixteen times below the 108677277 of the shape that
+# started this round. Measured cost at or under it: 0.19s, against 0.006s live.
+#
+# The product predicts cost only loosely -- 2386802 costs 0.134s while 11298201
+# costs 0.109s, because a div stack carries a second quadratic of its own -- so
+# this is a fast-fail and not the bound that holds. BUDGET is the bound that holds.
+PRODUCT = 8000000
+# CPU seconds, not wall-clock seconds, so a loaded machine cannot fail the check:
+# ITIMER_VIRTUAL counts only time this process spends on a processor. Everything
+# legitimate is three orders of magnitude inside this -- the live reply costs 0.006s
+# and the worst legitimate reply measured 0.05s -- so it is a bound on the failure
+# mode rather than a deadline anything real has to meet. Measured to interrupt
+# html5lib cleanly: a budget of 0.05 fires at 0.056 CPU seconds inside a parse that
+# would have taken 0.860.
+BUDGET = 5.0
+# The backstop for the one way the budget can fail: a handler is a Python call, so
+# it cannot run inside a C call that never returns, and swallowing is conceivable
+# in code this check does not own. The kernel needs no cooperation. This kills the
+# process instead of refusing politely, which the shell half reports as a reply it
+# could not read -- loud, which is the right direction. It is never expected to be
+# the thing that stops a run.
+HARD_BUDGET = 60
 # What this endpoint sends: a table of rows and cells holding anchors, and the
 # one script element that loads the click handler. The rest of the list is plain
 # flow markup a future template could reasonably use. ANYTHING ELSE IS REFUSED,
@@ -1084,6 +1132,45 @@ def refuse(reason):
 	sys.exit(4)
 
 
+def out_of_budget(signum, frame):
+	"""Stop, because deciding about this reply has cost more CPU than it may.
+
+	This refuses from inside the signal handler rather than raising something for
+	the parse to catch, for two reasons. A refusal is the right answer wherever the
+	timer fires, so the same handler covers the tree walk after the parse without
+	wrapping it. And sys.exit raises SystemExit, which is a BaseException, so no
+	broad except inside html5lib can swallow it -- whereas an ordinary exception
+	could, and this check does not own that code.
+	"""
+	refuse('budget')
+
+
+def start_budget():
+	"""Start counting the CPU time spent deciding about this reply.
+
+	The interval is repeated, not one-shot, so a fired budget that somehow does not
+	stop the process is asked again a budget later instead of never.
+	"""
+	try:
+		soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+		room = HARD_BUDGET
+		if hard != resource.RLIM_INFINITY:
+			room = min(HARD_BUDGET, hard)
+		resource.setrlimit(resource.RLIMIT_CPU, (room, hard))
+	except (OSError, ValueError):
+		# A platform that will not take the hard limit still gets the timer, which
+		# is the mechanism that is measured to work. Failing the whole check over
+		# the backstop would be the wrong trade.
+		pass
+	signal.signal(signal.SIGVTALRM, out_of_budget)
+	signal.setitimer(signal.ITIMER_VIRTUAL, BUDGET, BUDGET)
+
+
+def stop_budget():
+	"""The decision is made, so there is nothing left for the budget to guard."""
+	signal.setitimer(signal.ITIMER_VIRTUAL, 0)
+
+
 def local(tag):
 	"""The element's own name, with its namespace taken off the front."""
 	return tag.rsplit('}', 1)[-1]
@@ -1228,50 +1315,57 @@ def _width(ch):
 	return 4
 
 
+def _run(text, start, stop):
+	"""The UTF-8 byte length of text[start:stop]."""
+	total = 0
+	for at in range(start, stop):
+		total += _width(text[at])
+	return total
+
+
 def tag_shape(text):
-	"""The longest start or end tag in UTF-8 BYTES, and the most attribute names
-	on any one tag.
+	"""The longest start or end tag in UTF-8 BYTES, the most attribute names on any
+	one tag, and the UTF-8 BYTES that fall outside a tag.
 
-	Both numbers are taken from the text rather than from the tree, because the
-	cost they bound is paid while the tree is being built: the tokeniser compares
-	each new attribute name on a tag against every name already on that tag, so
-	the work is quadratic in the count this returns as its second number.
+	The quadratic costs are in the second and third numbers. On the second: a > inside
+	a quoted value hid 15752 attributes behind a reported longest tag of 158 -- the
+	same number the legitimate reply reports -- and a 4.409s parse, so the scan tracks
+	quoting state. On the third: see the module docstring.
 
-	Two things this does that a scan for the next > does not. It tracks the
-	quoting the tokeniser tracks, so a > inside a quoted value does not end the
-	tag -- without that, 15752 attributes on one tag reported the same longest
-	tag as the real reply, 158, and parsed in 4.4 seconds. And it counts bytes
-	rather than characters, so a value of 200 CJK characters counts as the 600
-	bytes it is rather than 200.
+	The old count was of decoded CHARACTERS though it was called bytes, so 615 bytes
+	of CJK measured 215; every count here is bytes.
 
-	Only a < followed by an ASCII letter, or </ followed by one, is read as a
-	tag, which is the tokeniser's own rule, so a <!-- , a <!doctype and a < in
-	front of a digit are not measured. Markup written INSIDE a comment still is,
-	because this pass does not track comment boundaries. That over-measures a
-	reply carrying a long tag inside a comment, and over-measuring refuses a
-	reply a browser would draw while under-measuring passes one it would not.
-	This is the same deliberate over-refusal the <template> and formatting
-	refusals already carry, and this endpoint emits no comments.
+	Only a < followed by an ASCII letter, or </ plus a letter, is read as a tag, so
+	<!--, <!doctype and a < before a digit are not measured as tags -- and their bytes
+	therefore count as TEXT. Markup inside a comment IS measured as a tag, which
+	over-measures the first two numbers and under-measures the third. Both errors are
+	deliberate and in opposite directions for a reason: over-measuring a tag refuses a
+	reply a browser would draw, which is loud, while under-measuring passes one it
+	would not. For the text bytes the safe direction is to over-count, and treating a
+	comment's markup as tags under-counts it -- measured, a comment is not a cheap
+	route to this cost anyway, because its content is one comment token and not
+	character tokens at all.
 
-	A tag with no > before the end of the text, or an unclosed quoted value, runs
-	to the end of the text. That is what the tokeniser would do with it, and it
-	is the direction that is safe to be wrong in.
+	An unterminated tag or an unclosed quote runs to the end of the text, which is
+	what the tokeniser would do and the safe direction.
 	"""
 	longest = 0
 	most = 0
+	textbytes = 0
 	size = len(text)
 	at = 0
+	cursor = 0                                  # first byte not yet accounted for
 	while True:
 		at = text.find('<', at)
 		if at < 0:
-			return longest, most
+			return longest, most, textbytes + _run(text, cursor, size)
 		after = at + 1
 		if after < size and text[after] == '/':
 			after += 1
 		if after >= size or not text[after].isascii() or not text[after].isalpha():
 			at += 1
 			continue
-		# Past the tag name to the first thing that could be an attribute.
+		textbytes += _run(text, cursor, at)
 		i = after
 		run = 1 + (1 if text[at + 1] == '/' else 0)
 		while i < size and text[i] not in WS and text[i] not in '/>':
@@ -1327,9 +1421,9 @@ def tag_shape(text):
 			longest = run
 		if attrs > most:
 			most = attrs
+		cursor = i
 		at = i if i > at else at + 1
-	return longest, most
-
+	return longest, most, textbytes
 
 def label(element):
 	"""What a person reads in the element, with the invisible taken off."""
@@ -1378,17 +1472,34 @@ if FORMATTING.search(text):
 # The last two questions asked before the parse, for the cost reason at TAGS above.
 # Counting < is a bound on the open element stack whether or not every < opens a
 # tag, which is the direction that is safe to be wrong in.
-if text.count('<') > TAGS:
+tags = text.count('<')
+if tags > TAGS:
 	refuse('tags')
-tag_bytes, tag_attrs = tag_shape(text)
+tag_bytes, tag_attrs, text_bytes = tag_shape(text)
 if tag_bytes > TAGLEN:
 	refuse('taglen')
 if tag_attrs > TAGATTRS:
 	refuse('tagattrs')
+if tags * text_bytes > PRODUCT:
+	refuse('product')
 
-tree = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
-	scripting=False)
-body = find_body(tree)
+start_budget()
+body = None
+try:
+	tree = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
+		scripting=False)
+	body = find_body(tree)
+except Exception as bad:
+	# A parse that raises is this check failing, not a reply being judged, so it is
+	# named rather than left to arrive as a traceback. Measured: & # followed by
+	# 4301 decimal digits reaches CPython's limit on integer conversion inside
+	# html5lib's consumeNumberEntity and raises ValueError, out of 7523 bytes that
+	# pass every bound above. 4300 digits parse and 4301 raise. It failed loudly
+	# before this arm existed, as exit 1 and a traceback the shell half reports as
+	# a reply it could not read, so this is tidiness and a named reason rather than
+	# a hole being closed. Refusing is an over-refusal: a browser draws the
+	# calendar in that reply and one replacement character.
+	refuse('parse:%s' % type(bad).__name__)
 if body is None:
 	refuse('no-body')
 
@@ -1495,6 +1606,7 @@ if count == 1 and calendars[0][1] <= DEPTH:
 orphans = sum(1 for element, level in adopted(body)
 	if local(element.tag) == 'a' and element.get('data-date-action') == SELECT
 	and id(element) not in inside)
+stop_budget()
 sys.stdout.write('%d %d %d %d %d %d %d\n'
 	% (count, orphans, field, container, anchors, len(days), other))
 PY
