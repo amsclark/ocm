@@ -2702,13 +2702,18 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 
 
 	mfa_code()   { python3 "$MFA_PY" "$1" "${2:-0}"; }
+	# The window and its code from one run. Two shell commands can be split
+	# by a boundary and then disagree about which window is current.
+	mfa_code_pair() { python3 "$MFA_PY" "$1" "${2:-0}" pair; }
 	mfa_window() { python3 -c 'import time; print(int(time.time()) // 30)'; }
-	# Block until the current 30-second window has just begun, so that a
-	# request sent next cannot land in the following one. Without this the
-	# window a code was built for and the window the server is in when it
-	# reads the code differ at random, which is what made the enrollment
-	# checks below pass or fail by luck. Capped: a stopped clock must not
-	# hang the suite.
+	# Block until the current 30-second window has just begun, leaving at
+	# least 17 seconds before the next one starts. Without it the window a
+	# code was built for and the window the server is in when it reads the
+	# code differ at random, which is what made the enrollment checks below
+	# pass or fail by luck. It is slack, not a guarantee: a long enough
+	# pause still crosses the boundary, so every caller re-reads the window
+	# afterwards and retries rather than assert on an unstable pass. Capped:
+	# a stopped clock must not hang the suite.
 	mfa_wait_fresh() {
 		mfa_fresh_waited=0
 		while [ "$(python3 -c 'import time; print(int(time.time()) % 30)')" -gt 12 ] \
@@ -2747,7 +2752,12 @@ counter = int(time.time()) // 30 + offset
 digest = hmac.new(key, struct.pack('>Q', counter), hashlib.sha1).digest()
 start = digest[19] & 0x0f
 value = struct.unpack('>I', digest[start:start + 4])[0] & 0x7fffffff
-sys.stdout.write('%06d' % (value % 1000000))
+code = '%06d' % (value % 1000000)
+
+if len(sys.argv) > 3 and sys.argv[3] == 'pair':
+	sys.stdout.write('%d %s' % (counter, code))
+else:
+	sys.stdout.write(code)
 MFAPY
 
 	# read_all so that a successful sign-in lands on a page this section can
@@ -2900,23 +2910,39 @@ MFAPY
 
 			# Enroll with the code for the PREVIOUS window. It is inside
 			# pl_totp_verify_window()'s one-window tolerance, so enrollment
-			# still succeeds, and it makes the window the server should
+			# still succeeds, and it makes the window the server ought to
 			# record differ from the window it is in while recording it --
-			# which is the only way to check which of the two it stores.
-			# mfa_wait_fresh keeps the request inside the window it was
-			# built against, so the offset is exactly minus one every run.
-			mfa_wait_fresh
-			MFA_ENROL_WINDOW="$(( $(mfa_window) - 1 ))"
-			MFA_ENROL_CODE="$(mfa_code "$MFA_SECRET" -1)"
-			mfa_enroll_post "$MFA_ENROL_CODE"
-			if grep -qi 'logout' "$BODY" && ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+			# the only way to see which of the two it stores. The window and
+			# the code come from one python run, so a boundary cannot land
+			# between them. If the request crosses one anyway the code is two
+			# windows old and is correctly refused, so retry: the token and
+			# the CSRF field survive a refused attempt, which the wrong-code
+			# check above has just used them for.
+			mfa_enrol_try=0
+			mfa_enrol_done=0
+			while [ "$mfa_enrol_try" -lt 3 ] && [ "$mfa_enrol_done" = 0 ]; do
+				mfa_enrol_try=$((mfa_enrol_try+1))
+				mfa_wait_fresh
+				MFA_ENROL_PAIR="$(mfa_code_pair "$MFA_SECRET" -1)"
+				MFA_ENROL_WINDOW="${MFA_ENROL_PAIR%% *}"
+				MFA_ENROL_CODE="${MFA_ENROL_PAIR#* }"
+				mfa_enroll_post "$MFA_ENROL_CODE"
+				if grep -qi 'logout' "$BODY" \
+					&& ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+					mfa_enrol_done=1
+				fi
+			done
+			if [ "$mfa_enrol_done" = 1 ]; then
 				ok "the right enrollment code finishes enrollment and opens the application"
 			else
-				bad "the right enrollment code did not finish enrollment"
+				bad "the right enrollment code did not finish enrollment after 3 tries"
 			fi
-			# The replay bound seeded at enrollment. Storing floor(time()/30)
-			# here instead of the matched window burns a window the account
-			# never used, and the next assertion in 25e is then refused.
+			# The replay bound seeded at enrollment. This is the assertion
+			# that catches storing floor(time()/30) instead of the matched
+			# window, and it holds whenever the run reaches it: the expected
+			# value came back from the same python run as the code. The 25e
+			# login below sees the same defect, but only while the run is
+			# still in the window the bad write burned.
 			if [ "$(adb "SELECT totp_last_used FROM users WHERE user_id = ${MFA_UID}")" = "$MFA_ENROL_WINDOW" ]; then
 				ok "enrollment records the window the accepted code belonged to"
 			else
@@ -2953,22 +2979,55 @@ MFAPY
 				bad "the refusal message names the failing factor"
 			fi
 
-			# No wait: the enrollment code was built for the window before
-			# the one the suite is in, so it is already in the past.
-			mfa_rl_clear
-			mfa_login "$MFA_ENROL_CODE"
-			if grep -q 'login_pass' "$BODY"; then
-				ok "a code that was already used is refused"
-			else
-				bad "a used code was accepted a second time - the replay guard is not working"
-			fi
-
-			mfa_rl_clear
-			mfa_login "$(mfa_code "$MFA_SECRET")"
-			if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			# A current code signs in, and then the same code is refused.
+			# Both are decided in one pass with the window read before and
+			# after, because a refusal that arrives after the window turned
+			# over proves nothing about the replay guard -- the code would
+			# have expired on its own. An unstable pass is retried, never
+			# asserted on, so neither half can pass for the wrong reason.
+			mfa_pair_try=0
+			mfa_pair_stable=0
+			mfa_pair_in=0
+			mfa_pair_out=0
+			while [ "$mfa_pair_try" -lt 3 ] && [ "$mfa_pair_stable" = 0 ]; do
+				mfa_pair_try=$((mfa_pair_try+1))
+				mfa_wait_fresh
+				mfa_pair_window="$(mfa_window)"
+				mfa_pair_code="$(mfa_code "$MFA_SECRET")"
+				mfa_rl_clear
+				mfa_login "$mfa_pair_code"
+				mfa_pair_in=0
+				if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+					mfa_pair_in=1
+				fi
+				# mfa_login truncates the cookie jar, so this is a fresh
+				# sign-in attempt and not a request inside the session the
+				# line above opened.
+				mfa_rl_clear
+				mfa_login "$mfa_pair_code"
+				mfa_pair_out=0
+				if grep -q 'login_pass' "$BODY"; then
+					mfa_pair_out=1
+				fi
+				if [ "$(mfa_window)" = "$mfa_pair_window" ]; then
+					mfa_pair_stable=1
+				fi
+			done
+			if [ "$mfa_pair_stable" = 0 ]; then
+				bad "a login and a replay never landed in one 30-second window in 3 tries - both checks below are untested"
+			elif [ "$mfa_pair_in" = 1 ]; then
 				ok "the password and a current code sign the account in"
 			else
 				bad "a valid password and a valid code were refused"
+			fi
+			# Claimed only where the code was accepted first. Refusing a code
+			# that was never accepted says nothing about replay.
+			if [ "$mfa_pair_stable" = 1 ] && [ "$mfa_pair_in" = 1 ]; then
+				if [ "$mfa_pair_out" = 1 ]; then
+					ok "the same code is refused a second time inside its own window"
+				else
+					bad "a used code was accepted a second time - the replay guard is not working"
+				fi
 			fi
 
 			# 25f. The admin sees the enrolled state, and Reset sends the
