@@ -761,6 +761,19 @@ XHTML = '{http://www.w3.org/1999/xhtml}'
 # The one part of the algorithm html5lib 1.x does not implement, refused on the
 # text rather than in the tree. See the note on the refusals below.
 TEMPLATE = re.compile('</?template', re.IGNORECASE)
+# The other thing that has to be refused before the parser runs, and for the same
+# reason: by the time there is a tree to look at, the cost has already been paid.
+# HTML's list of active formatting elements is reconstructed into every later
+# paragraph, so N of these start tags left unclosed in front of M paragraphs build
+# about N*M elements out of about 3*(N+M) bytes. Measured: 500 unclosed <b> in
+# front of 500 paragraphs is 14117 bytes and builds 251095 elements, 206.6MB and
+# 0.8s; 2000 in front of 500 is 36117 bytes and died on a signal against a 512MB
+# limit. Both are far inside the byte bound, which is the point -- a byte bound
+# is necessary and is not sufficient. The one formatting element this endpoint
+# sends, <a>, is not here: the in-body insertion mode runs the adoption agency
+# algorithm and drops any open <a> before pushing a new one, so <a> cannot stack.
+FORMATTING = re.compile('</?(b|big|code|em|font|i|nobr|s|small|strike|strong|tt|u)\\b',
+	re.IGNORECASE)
 # The live reply is 3219 bytes. This bound is twenty times that, so no reply this
 # endpoint can send comes near it, and it is the only check here that can run before
 # the tree is built. That is what it is for: the attribute budget below refuses a
@@ -769,15 +782,52 @@ TEMPLATE = re.compile('</?template', re.IGNORECASE)
 # tree the parse returns. Bounding what a reply may CONTAIN cannot bound what
 # deciding about it COSTS. Bounding the bytes can.
 BYTES = 65536
+# Bounding the bytes is necessary and is not sufficient either, and this is the
+# third time that sentence has had to be written this round. Two costs inside
+# html5lib's parse are quadratic in something a byte bound does not count, and both
+# are reachable inside 65536 bytes:
+#
+#   - open element stack depth. Every <div> start tag runs "close a p element in
+#     button scope", which walks the stack down to a marker or the bottom, and a
+#     stack of divs holds no marker. Measured: 1000 nested <div> 0.051s, 2000 0.151s,
+#     4000 0.534s, 13106 in 65530 bytes 5.590s. A marker BELOW the divs does not
+#     help, because the scan walks down: 6000 divs inside one <td> still cost 1.218s.
+#     Nested <span> has no such call and 10493 of them cost 0.071s.
+#
+#   - attributes on ONE tag. The tokeniser checks each new attribute name against
+#     the ones already seen on that tag. Measured: 13000 names 2.996s, and packing
+#     shortest names first fits 15986 into 65475 bytes at 4.503s.
+#
+# The second one is the one that matters, because a reply carrying it PASSES: put
+# those attributes on <html> or <body> and the walk below never sees them, since it
+# reads body's CHILDREN, which is all the client copies. So 4.60 seconds of parse
+# for a verdict of 1 0 1 1 31 31 0.
+#
+# TAGS bounds the first, TAGLEN the second, and the two together bound their
+# product: the worst input under all three at once was built rather than
+# extrapolated, and 128 tags of 507 bytes carrying 176 attributes each cost 0.111s
+# against 5.537s under the byte bound alone. The live reply sits at 180 tags and a
+# longest tag of 158 bytes, so TAGS has eleven times the headroom it needs and
+# TAGLEN has three. TAGLEN's worst legitimate case is not the live reply but the
+# table start tag with both request-derived values at their full 64 characters,
+# which is 258 bytes.
+#
+# The cost of these two: one corpus witness Chrome draws and clicks -- 1000 <p>
+# ahead of the calendar, 2180 tags -- is refused, and so are three probes carrying
+# a 20000-byte attribute value. That is the same deliberate over-refusal the size
+# bounds already carry, and it is the price of a bound that holds.
+TAGS = 2048
+TAGLEN = 512
 # What this endpoint sends: a table of rows and cells holding anchors, and the
 # one script element that loads the click handler. The rest of the list is plain
 # flow markup a future template could reasonably use. ANYTHING ELSE IS REFUSED,
 # which is the whole design of this check -- see the note below.
 ALLOWED = frozenset((
 	'html', 'head', 'body', 'table', 'caption', 'colgroup', 'col', 'thead',
-	'tbody', 'tfoot', 'tr', 'th', 'td', 'a', 'div', 'span', 'p', 'b', 'i',
-	'em', 'strong', 'script'))
-# Four names were in this set and were measured out of it: small, img, br and hr.
+	'tbody', 'tfoot', 'tr', 'th', 'td', 'a', 'div', 'span', 'p', 'script'))
+# b, i, em and strong left this set with the refusal above: they are refused on the
+# text now, so leaving them listed here would describe markup that cannot arrive.
+# Four more names were in this set and were measured out of it: small, img, br and hr.
 # This endpoint sends none of the four.
 #
 # font-size: smaller compounds, so 103 nested <small> elements around the calendar
@@ -820,8 +870,19 @@ ALLOWED = frozenset((
 # is off. This endpoint sends no href on anything, so refusing the name costs it
 # nothing.
 ALLOWED_ATTRS = frozenset((
-	'class', 'id', 'src', 'title', 'align', 'valign',
+	'class', 'src', 'title', 'align', 'valign',
 	'cellpadding', 'cellspacing', 'colspan', 'rowspan'))
+# id was in this set and was measured out of it, for the reason the class values
+# below are bounded: an id selects rules out of the host page's stylesheet just as a
+# class does, and cms/templates/default.html:186 carries #upload_gif { display:none; }.
+# Measured in Chrome: id="upload_gif" on the reply's own table, on one DSCalWeek row,
+# or on a div wrapped around the whole calendar each draws ZERO of 31 days, and this
+# check passed all three with the same 1 0 1 1 31 31 0 it gives the live reply. It is
+# the only one of twelve host ids that hides, which is exactly why a value bound is
+# the wrong shape here and refusing the name is the right one: the next stylesheet
+# edit adds another. This costs nothing -- date_selector.php emits no id at all, and
+# cms/js/date_selector.js resolves ids only on the host page (the field and the
+# container it was told to fill), never inside the reply it adopts.
 # The four allowed attributes a browser turns into pixels, and the only values
 # they may carry: a plain decimal from 0 to 99. The live reply sends cellpadding
 # "2", cellspacing "0" and colspan "5" and "7", so the bound is 13 times the
@@ -829,6 +890,20 @@ ALLOWED_ATTRS = frozenset((
 # magnitudes that move the calendar at all -- the smallest cellpadding measured to
 # push a day out of reach in a stack this check would otherwise accept is 65535.
 SIZED = frozenset(('cellpadding', 'cellspacing', 'colspan', 'rowspan'))
+# Every class value cms/template_plugins/date_selector.php can emit, from its lines
+# 85, 110, 115, 122 and 138, plus the empty one it puts on 35 of the 46 cells. An
+# allowed attribute NAME is not a safe attribute VALUE: the class attribute selects
+# rules out of the host page's own stylesheet, so a reply that adds one class to its
+# own table can be drawn by the page it is appended to and still be unusable. The
+# measured case is Bootstrap's hide, which gives all 31 day anchors zero-size boxes,
+# and invisible, which keeps the boxes and takes them out of hit testing: both
+# passed every other rule in this check and neither left a single clickable day.
+# DSCalSelectedDate is in this list and is NOT in the live reply -- it is emitted
+# only for a month that already holds the field's date, so a list built by reading
+# one reply off the wire would have refused a legitimate one.
+CLASS_OK = frozenset((
+	'js-date-selector', 'DSCalHeader', 'DSCalDaysOfWeek', 'DSCalWeek',
+	'DSCalSelectedDate', 'DSCalFooter'))
 SIZE = re.compile('\\A(0|[1-9][0-9]?)\\Z')
 # Two budgets, which exist together because either one alone can be walked around.
 # A few enormous values and a great many small ones reach the same unreachable
@@ -837,16 +912,46 @@ SIZE = re.compile('\\A(0|[1-9][0-9]?)\\Z')
 # own. The live reply has 94 elements and at most 5 attributes on any one of them,
 # so these are 21 and 6 times what it actually sends.
 #
-# With both in force the largest offset a passing reply can build is about 2048
-# times twice 99 pixels, roughly 405000, against the 16776776 a person can
-# actually scroll to: a factor of 41. That is the argument these two numbers are
-# here to make, and it is why they are not tuned to the payloads that prompted
-# them.
+# The offset argument these two numbers make used to be stated as 2048 times twice
+# 99 pixels, roughly 405000. That multiplied the two budgets against each other and
+# left out the larger lever, which is text: characters carry no attributes and are
+# bounded only by BYTES. So it was measured instead.
+#
+# Widest byte in this cell's font -- 14px Helvetica, which no allowed class can
+# change -- is "@" at 14.2159px, found by measuring all 92 printable ASCII; "W" is
+# 13.2179. Multi-byte loses and loses with a reason, not for want of a font: a 14px
+# font cannot draw more than about 14px per glyph, so the best two-byte character
+# measured 7.0738px per byte. The cheapest lever is not text at all but an unclosed
+# <td> inheriting cellpadding 99, at 4 bytes and 49.5px per byte, and that one is
+# bounded by ELEMENTS. cellspacing turns out to be inert on this page entirely,
+# because cms/css/bootstrap.css:2000 sets border-collapse: collapse.
+#
+# The two add only side by side -- stacked in one cell an inner table is block level,
+# the text drops to the next line and the offset is the larger of the two, not the
+# sum. So the worst passing reply puts the filler in the first cell of the padded
+# row, and it was built and measured rather than extrapolated: day 1 at x =
+# 1159601.25px with all 31 days drawn, all 31 reachable by scrolling and all 31
+# clickable. That is 15617175px inside the 16776776 a person can scroll to, a factor
+# of 14.5. Vertically the worst is y = 212718px. No passing reply could be built that
+# puts a day out of reach, and the arithmetic agrees: text alone caps at 65536 bytes
+# times 14.2159px, about 931700px.
+#
+# What that leaves is not a false pass but a usability claim this check does not
+# make: 1.16 million pixels of sideways scroll is not usable by a person, and the
+# oracle does not notice because scrollIntoView does the scrolling for it. Closing
+# that needs a measured absolute position, not a byte bound -- holding the offset
+# under 10000px would need the text budget under about 700 bytes and the live reply
+# is 3219. Recorded here rather than fixed, because bounding it would refuse replies
+# a browser draws correctly.
 #
 # This budget was also believed to close a cost rather than a lie, and it does not.
-# data-* names are allowed unconditionally, and 20000 of them on one <td> made this
-# check take 258.6 seconds and 720MB of memory to answer, for a reply Chrome draws
-# normally. The cost is quadratic in the count -- 500 names take 0.3s, 8000 take 42s
+# data-* names are allowed unconditionally, and 20000 of them on EACH of the 35 empty
+# cells -- 700071 attributes, 10814369 bytes -- made this check take 258.6 seconds
+# and 720MB of memory to answer, for a reply Chrome draws normally. The cost is
+# quadratic in the count per tag: one cell carrying 20000 measures 7.196s and
+# 19.6MiB, and thirty-five of those is the figure above, which is how this comment
+# was found to be describing a single cell when its witness holds thirty-five.
+# 500 names take 0.3s and 8000 take 1.14s per cell, 42s across the thirty-five
 # -- but it is spent inside html5lib's parse, and this budget is applied to the tree
 # that parse returns, so with the budget in force the same reply is refused in 265.7
 # seconds. BYTES above is what removes that cost, because it is checked first. This
@@ -1063,13 +1168,32 @@ def text_of(element):
 	return ''.join(parts)
 
 
+def longest_tag(text):
+	"""The longest run from a < to the next >, in bytes.
+
+	Counted on the text rather than the tree for the reason the two refusals above
+	it are: the cost this bounds is paid while the tree is being built. A run with
+	no > before the end of the text counts to the end, which is what the tokeniser
+	would do with it.
+	"""
+	longest = 0
+	start = text.find('<')
+	while start >= 0:
+		stop = text.find('>', start + 1)
+		run = (stop - start + 1) if stop >= 0 else (len(text) - start)
+		if run > longest:
+			longest = run
+		start = text.find('<', start + 1)
+	return longest
+
+
 def label(element):
 	"""What a person reads in the element, with the invisible taken off."""
 	return text_of(element).strip().strip(INVISIBLE).strip()
 
 
 reply = open(sys.argv[1], 'rb')
-raw = reply.read()
+raw = reply.read(BYTES + 1)
 reply.close()
 # The client is handed a string, not bytes: XMLHttpRequest.responseText is
 # already decoded, and the shell half of this check asserts that the reply
@@ -1100,6 +1224,20 @@ if text.startswith('\ufeff'):
 # formatting elements list, so there is no clone path.
 if TEMPLATE.search(text):
 	refuse('template')
+# Asked of the text for the cost reason above, and the cost of asking it this way
+# is a false refusal: the two characters "<b" inside a comment, a data- attribute
+# value or a day label refuse a reply a browser would draw. That is the same cost
+# the <template> refusal already carries, it is loud rather than silent, and this
+# endpoint sends none of these names -- the live reply matches nothing here.
+if FORMATTING.search(text):
+	refuse('formatting')
+# The last two questions asked before the parse, for the cost reason at TAGS above.
+# Counting < is a bound on the open element stack whether or not every < opens a
+# tag, which is the direction that is safe to be wrong in.
+if text.count('<') > TAGS:
+	refuse('tags')
+if longest_tag(text) > TAGLEN:
+	refuse('taglen')
 
 tree = html5lib.parse(text, treebuilder='etree', namespaceHTMLElements=True,
 	scripting=False)
@@ -1132,6 +1270,13 @@ for element, level in adopted(body):
 		# how a day ends up past the furthest a person can scroll.
 		if key in SIZED and not SIZE.match(element.get(key) or ''):
 			refuse('size:%s' % key)
+		# Split the way the tokeniser splits it, so a token cannot hide behind
+		# whitespace, and refuse the token rather than the whole value so the
+		# reason names what arrived.
+		if key == 'class':
+			for token in CLASS_SPLIT.split(element.get(key) or ''):
+				if token and token not in CLASS_OK:
+					refuse('class:%s' % token)
 	if name == 'script':
 		if sorted(element.keys()) != ['src'] or element.get('src') != SCRIPT_SRC:
 			refuse('script')
@@ -1354,9 +1499,16 @@ fi
 # is inside html5lib's parse and the budget is applied to the tree that parse hands
 # back. A bound on what a reply may contain cannot bound what deciding about it
 # costs. So this round adds the one check that runs before the parser: a reply above
-# 65536 bytes is refused unread, against a live reply of 3219. The lesson is the
-# cellpadding lesson again -- a fix has to be re-measured against the thing it
-# claims to close, not against the payload that prompted it.
+# 65536 bytes is refused after reading 65537 of them, against a live reply of 3219.
+# The lesson is the cellpadding lesson again -- a fix has to be re-measured against
+# the thing it claims to close, not against the payload that prompted it, and that
+# lesson caught this bound in its turn. A byte bound is necessary and is not
+# sufficient: HTML reconstructs the open formatting elements into every later
+# paragraph, so 500 unclosed <b> in front of 500 paragraphs is 14117 bytes and
+# builds 251095 elements at 206.6MB, and 36117 bytes died on a signal against a
+# 512MB limit. Those names are refused on the text too, before the parse. The
+# element and attribute budgets below are bounds on the tree the client adopts,
+# which is what reaches the page; they are not bounds on what the parse costs.
 #
 # An allowed NAME is not the same as a drawn calendar, and two families measured
 # this round were built out of allowed names only. 103 nested <small> elements
@@ -1369,8 +1521,11 @@ fi
 # before this round. <small> and border were therefore removed from the two
 # allowed sets, and the standing rule is the one those two teach: a name belongs
 # in either set only after a browser has been asked what it does to THIS
-# calendar. cellpadding and cellspacing were asked the same question up to
-# 99999999999 and move nothing, so they stay.
+# calendar. cellpadding and cellspacing stay because the endpoint sends them, and
+# the claim this paragraph used to make about them -- that they were measured up to
+# 99999999999 and move nothing -- was wrong and is corrected above: every value
+# that fits in a signed 32-bit integer moves the calendar, which is why their
+# values are bounded instead of their names being allowed.
 #
 # Two limits are real and the allowed-markup rule does not close either. The page
 # the reply is appended into has its own stylesheet, and this check reads no CSS:
