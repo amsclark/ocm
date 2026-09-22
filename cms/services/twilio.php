@@ -255,10 +255,18 @@ $case_id = '';
 	or parentheses can derive different values than before, because removing
 	a character shifts every later one to the left, and some of those did
 	match before: "  2025550123" derived 202 and 555-0123 and now derives
-	255 and 501-23. Twilio sends the number in E.164, which carries no such
-	character. The escaping stays even though it now has nothing to do,
-	because all three slices feed two values that are interpolated into a
-	query below, and the call is what says so. */
+	255 and 501-23. Twilio is documented to send the number in E.164, which
+	carries none of those characters, but nothing here checks that, so it is
+	the stripping and not the sender that makes the offsets predictable.
+
+	The offsets themselves assume the number opens with "+1", a United
+	States country code. They were wrong for any other country before this
+	change and are still wrong after it: "+442079460958" derives 420 and
+	794-60958 either way. That is a separate defect and is not fixed here.
+
+	The escaping stays even though it now has nothing to do, because all
+	three slices feed two values that are interpolated into a query below,
+	and the call is what says so. */
 $safe_number = preg_replace('/[^0-9+]/', '', $number);
 $phone = DB::escapeString(substr($safe_number, 5, 3) . '-'
 	. substr($safe_number, 8));
