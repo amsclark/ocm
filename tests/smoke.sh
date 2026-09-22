@@ -18661,6 +18661,12 @@ sv_arr_try "an array where the year belongs" 'Invalid date parameter' \
 # stored window, one above it, and one against a row holding NULL, which is
 # what an account that has never verified a code holds.
 if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	# The name carries the process id, as the fixture case numbered ZZPRPREFS
+	# does, so a row left behind by an interrupted run carries a different
+	# name and cannot be taken for this one. Every statement below matches on
+	# the name as well as the id, the way that fixture's cleanup matches on
+	# its case id and its number together.
+	sm105_user="zzfloor_$$"
 	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	case "$sm105_uid" in
 		''|*[!0-9]*) sm105_uid='' ;;
@@ -18671,17 +18677,26 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 		# group_id is NOT NULL with a default of NOGROUP, so the fixture needs
 		# no group row. The account is never signed in: every call below runs
 		# the function directly, so the password and the secret stay empty.
+		#
+		# The count matches on the name as well as the id, because the id came
+		# from MAX(user_id) + 1 and another insert can take it first. Matching
+		# on both is what proves this row is the one this run created, and it
+		# is the only check that the INSERT worked, since its status is
+		# discarded. Every statement below carries the name for the same
+		# reason: a row this run did not create must not be read, changed or
+		# deleted here.
 		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
-			VALUES (${sm105_uid}, 'zzsmoke_totp_floor', '', 0, 'NOGROUP')" \
+			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP')" \
 			>/dev/null 2>&1
 		sm105_seeded="$(adb "SELECT COUNT(*) FROM users
-			WHERE user_id = ${sm105_uid}")"
+			WHERE user_id = ${sm105_uid} AND username = '${sm105_user}'")"
 
 		# The window this account already spent, and the value the function
 		# must refuse to go below.
 		sm105_floor() {
 			adb "SELECT IFNULL(totp_last_used, 'null') FROM users
-				WHERE user_id = ${sm105_uid}"
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'"
 		}
 
 		# PL_DISABLE_SECURITY, because this runs php with no session at all;
@@ -18703,7 +18718,8 @@ print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
 			# A lower window must not win. Master writes it unconditionally,
 			# so this is the assertion that separates the two.
 			adb "UPDATE users SET totp_last_used = 101
-				WHERE user_id = ${sm105_uid}" >/dev/null 2>&1
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'" >/dev/null 2>&1
 			sm105_out="$(sm105_mark 100)"
 			sm105_got="$(sm105_floor)"
 			case "$sm105_out" in
@@ -18739,7 +18755,8 @@ print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
 			# An account that has never verified a code holds NULL, which is
 			# not a lower window and must not be treated as one.
 			adb "UPDATE users SET totp_last_used = NULL
-				WHERE user_id = ${sm105_uid}" >/dev/null 2>&1
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'" >/dev/null 2>&1
 			sm105_out="$(sm105_mark 100)"
 			sm105_got="$(sm105_floor)"
 			case "$sm105_out" in
@@ -18756,7 +18773,8 @@ print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
 			esac
 		fi
 
-		adb "DELETE FROM users WHERE user_id = ${sm105_uid}" >/dev/null 2>&1
+		adb "DELETE FROM users WHERE user_id = ${sm105_uid}
+			AND username = '${sm105_user}'" >/dev/null 2>&1
 	fi
 fi
 echo
