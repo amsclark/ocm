@@ -600,6 +600,27 @@ if (!function_exists('pl_totp_mark_used'))
 	 * Record the window index the user just authenticated with, closing it
 	 * and every earlier one to replay.
 	 *
+	 * This function only ever raises the bound. It is the highest window
+	 * accepted for the secret the account currently holds, so a lower one
+	 * must not overwrite a higher one: that
+	 * would re-open every code between them to replay. Two overlapping
+	 * sign-ins on one account are enough to try it, with no attacker
+	 * involved: each reads the row before the other records, so both
+	 * verify, and the verifier accepts three windows - the previous one,
+	 * the current one and the next - so the two can match different
+	 * windows. The write the database sees last is then the one that
+	 * stands.
+	 *
+	 * A window at or below the stored bound therefore writes nothing: at the
+	 * bound there is nothing to change, and below it the stored bound already
+	 * closes that code.
+	 *
+	 * Two places outside this function also write the column, and neither
+	 * writes a lower window: enrolling stores a bound together with a new
+	 * secret, and an administrator's reset empties the secret and clears
+	 * the column to NULL. Each leaves the account without the secret the
+	 * old bound belonged to, so that bound has nothing left to protect.
+	 *
 	 * Best effort. A failure here must not fail a login that has otherwise
 	 * succeeded; it only means the same code stays usable for the rest of
 	 * its window.
@@ -621,8 +642,9 @@ if (!function_exists('pl_totp_mark_used'))
 		try
 		{
 			DB::preparedQuery(
-				'UPDATE users SET totp_last_used = ? WHERE user_id = ? LIMIT 1',
-				array($window, $user_id)
+				'UPDATE users SET totp_last_used = ? WHERE user_id = ? '
+					. 'AND (totp_last_used IS NULL OR totp_last_used < ?) LIMIT 1',
+				array($window, $user_id, $window)
 			);
 		}
 		
