@@ -18824,21 +18824,30 @@ else
 	bad "${json_literal_files} PHP file(s) still build JSON as a hand-written literal"
 fi
 
-# The encoder call that replaced it must keep the flag that leaves a name in
-# another encoding sendable. Without the flag json_encode() returns false on
-# invalid UTF-8 and the notification is dropped, where concatenation had sent
-# the bytes as they were.
-if grep -qF 'JSON_INVALID_UTF8_SUBSTITUTE' cms/services/twilio.php; then
+# The encoder call that replaced it must keep the flag that keeps a value
+# holding invalid UTF-8 sendable. Without the flag json_encode() returns false
+# on invalid UTF-8 and the notification is dropped, where concatenation had
+# sent the bytes as they were.
+#
+# The pattern is the end of the encoder call, not the name on its own, and the
+# second grep drops comment lines, so neither the name nor the whole call
+# quoted in a comment passes this row. It is a presence check either way: it
+# says the argument is written in the code, not that the call runs.
+if grep -F '), JSON_INVALID_UTF8_SUBSTITUTE);' cms/services/twilio.php \
+	| grep -qvF '//'; then
 	ok "the SparkPost body is encoded with the invalid-UTF-8 substitution flag"
 else
 	bad "the SparkPost body has lost JSON_INVALID_UTF8_SUBSTITUTE"
 fi
 
-# An encoder that returns false must not be posted as an empty body. This
-# checks the refusal is present, not that it fires: making json_encode() fail
-# for a reason other than encoding needs a value no caller of this function
-# can supply.
-if grep -qF '$data_string === false' cms/services/twilio.php; then
+# An encoder that returns false must not be posted as an empty body. The
+# pattern is the whole if, and the second grep drops comment lines, so the
+# comparison quoted in a comment beside a disabled guard does not pass this
+# row. It is still a presence check rather than proof the branch runs:
+# reaching it needs a settings value, not a value any caller of this function
+# supplies.
+if grep -F 'if ($data_string === false)' cms/services/twilio.php \
+	| grep -qvF '//'; then
 	ok "an unencodable SparkPost body is refused rather than posted empty"
 else
 	bad "an unencodable SparkPost body is not refused"
