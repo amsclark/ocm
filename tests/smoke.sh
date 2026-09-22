@@ -2773,6 +2773,7 @@ MFAPY
 		VALUES (${MFA_UID}, '${MFA_USER}', '${MFA_HASH}', 1, '${MFA_GROUP}', 0)" >/dev/null
 
 	mfa_admin_edit() {
+		: > "$BODY"
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/system-users.php?action=edit&user_id=${MFA_UID}" >/dev/null
 	}
@@ -2787,8 +2788,12 @@ MFAPY
 			-d "username=${MFA_USER}&enabled=1&group_id=${MFA_GROUP}" \
 			-d "totp_enabled=$1"
 	}
+	# Truncate the body first. curl does not touch its -o file when a
+	# transfer fails, so without this a grep below reads the page the
+	# PREVIOUS request left there and answers a question nobody asked.
 	mfa_login() {
 		: > "$MFA_JAR"
+		: > "$BODY"
 		curl -sL --max-time 30 -c "$MFA_JAR" -b "$MFA_JAR" -o "$BODY" \
 			-d "login_user=${MFA_USER}&login_pass=${MFA_PASS}&auth_id=1&totp=${1:-}" \
 			"$OCM_URL/" >/dev/null
@@ -2892,6 +2897,7 @@ MFAPY
 		fi
 
 		mfa_enroll_post() {
+			: > "$BODY"
 			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
 				--data-urlencode "enroll_token=${MFA_TOKEN}" \
 				--data-urlencode "_csrf=${MFA_CSRF}" \
@@ -2905,6 +2911,7 @@ MFAPY
 		# curl's status, which says whether the transfer completed, so a
 		# page that refused is not confused with a fetch that failed.
 		mfa_app_get() {
+			: > "$BODY"
 			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
 				"$OCM_URL/" >/dev/null
 		}
@@ -2922,7 +2929,13 @@ MFAPY
 		else
 			mfa_enroll_post 000000
 			mfa_enrol_seed=$?
-			if grep -q 'That code did not match' "$BODY" \
+			# A refusal counts only if the code got there. A transfer that
+			# did not complete leaves the enrollment page fetched above in
+			# $BODY, which carries no refusal text, and the server would be
+			# accused of accepting a code it never received.
+			if [ "$mfa_enrol_seed" != 0 ]; then
+				bad "the wrong-code enrollment POST did not complete (curl exit ${mfa_enrol_seed}) - it was not checked"
+			elif grep -q 'That code did not match' "$BODY" \
 				&& [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ]; then
 				ok "a wrong enrollment code is refused and stores nothing"
 			else
@@ -2967,7 +2980,16 @@ MFAPY
 					# a broken starting state for this check, which need
 					# not be a fault in the server, and is reported as one.
 					if [ "$mfa_enrol_try" != 1 ]; then
+						# Enrolled, but not provably by the last code this
+						# loop sent: the previous POST answered and the row
+						# still read 'none' after it, so the server
+						# committed later than its own reply, and an
+						# earlier window may be the verified one. Keep the
+						# enrolled answer and drop the window, so the
+						# comparison below reports itself unchecked instead
+						# of comparing against a guess.
 						mfa_enrol_done=1
+						MFA_ENROL_WINDOW=''
 					elif [ "$mfa_enrol_seed" = 0 ]; then
 						mfa_enrol_early=1
 					else
@@ -2990,6 +3012,12 @@ MFAPY
 				MFA_ENROL_PAIR="$(mfa_code_pair "$MFA_SECRET" -1)"
 				MFA_ENROL_WINDOW="${MFA_ENROL_PAIR%% *}"
 				MFA_ENROL_CODE="${MFA_ENROL_PAIR#* }"
+				if [ -z "$MFA_ENROL_WINDOW" ] || [ -z "$MFA_ENROL_CODE" ]; then
+					# The generator produced nothing. Posting an empty
+					# code would spend a try and answer nothing.
+					mfa_enrol_unsent=1
+					break
+				fi
 				mfa_enroll_post "$MFA_ENROL_CODE"
 				mfa_enrol_sent=$?
 				if [ "$mfa_enrol_sent" != 0 ]; then
@@ -3032,13 +3060,13 @@ MFAPY
 			elif [ "$mfa_enrol_done" = 1 ] && [ "$mfa_enrol_got" != 0 ]; then
 				bad "the account enrolled but fetching the application did not complete (curl exit ${mfa_enrol_got}) - it was not checked"
 			elif [ "$mfa_enrol_done" = 1 ]; then
-				bad "the account enrolled but is still sent to the enrollment page"
+				bad "the account enrolled but the application page did not come back signed in"
 			elif [ "$mfa_enrol_early" = 1 ]; then
 				bad "the account was already enrolled before any real enrollment code was sent"
 			elif [ "$mfa_enrol_unread" = 1 ]; then
-				bad "the enrollment state could not be read - the checks below are untested"
+				bad "the enrollment state could not be read - every check below it is unreliable"
 			elif [ "$mfa_enrol_unsent" = 1 ]; then
-				bad "an enrollment POST did not complete, so what it did is unknown - the checks below are untested"
+				bad "no enrollment code was built, or its POST did not complete - what reached the server is unknown and every check below it is unreliable"
 			else
 				bad "the right enrollment code did not finish enrollment after 3 tries"
 			fi
@@ -3051,13 +3079,17 @@ MFAPY
 			# run as the code it sent. Anything else is reported as
 			# unchecked rather than compared -- two empty strings match, so
 			# an unenrolled account and an unreadable bound would otherwise
-			# agree. The bound is read the same determinate way as the
-			# secret, so a read that failed is not mistaken for a window.
-			# The 25e login below sees the same defect, but only while the
-			# run is still in the window the bad write burned.
+			# agree. A NULL bound reads back as 'null' and an unreadable
+			# one as the empty string, and neither is compared: an
+			# unreadable bound is not a wrong window, and reporting it as
+			# one would accuse the server on no evidence. The 25e login
+			# below sees the same defect, but only while the run is still
+			# in the window the bad write burned.
 			mfa_enrol_bound="$(adb "SELECT IF(totp_last_used IS NULL, 'null', totp_last_used) FROM users WHERE user_id = ${MFA_UID}")"
 			if [ "$mfa_enrol_done" = 0 ] || [ -z "$MFA_ENROL_WINDOW" ]; then
 				bad "the stored enrollment window was not checked - no code sent by this run enrolled the account"
+			elif [ -z "$mfa_enrol_bound" ]; then
+				bad "the stored enrollment window could not be read - it was not checked"
 			elif [ "$mfa_enrol_bound" = "$MFA_ENROL_WINDOW" ]; then
 				ok "enrollment records the window the accepted code belonged to"
 			else
@@ -3107,8 +3139,9 @@ MFAPY
 			mfa_pair_stable=0
 			mfa_pair_in=0
 			mfa_pair_out=0
+			mfa_pair_lost=0
 			# The window a code has to clear is the highest of the bound
-			# the server already holds and every window this loop has sent.
+			# the server holds and every window this loop has sent.
 			# Remembering only the previous one is not enough: a clock that
 			# moves back two windows produces a code the server still
 			# refuses, and the login half would then report that a correct
@@ -3118,6 +3151,19 @@ MFAPY
 			mfa_pair_spent="$(adb "SELECT IF(totp_last_used REGEXP '^[0-9]+\$', totp_last_used, '') FROM users WHERE user_id = ${MFA_UID}")"
 			while [ "$mfa_pair_try" -lt 3 ] && [ "$mfa_pair_stable" = 0 ]; do
 				mfa_pair_try=$((mfa_pair_try+1))
+				# Re-read it, do not trust the seed. A server that stores
+				# the clock's window at login too raises its bound above
+				# every window this loop sent, so the window after the one
+				# spent here is refused for the server's reason and the
+				# login half would call that a correct code refused.
+				# Raising the spent window to whatever the server now
+				# holds asks the next question above both of them.
+				mfa_pair_live="$(adb "SELECT IF(totp_last_used REGEXP '^[0-9]+\$', totp_last_used, '') FROM users WHERE user_id = ${MFA_UID}")"
+				if [ -n "$mfa_pair_live" ] \
+					&& { [ -z "$mfa_pair_spent" ] \
+						|| [ "$mfa_pair_live" -gt "$mfa_pair_spent" ]; }; then
+					mfa_pair_spent="$mfa_pair_live"
+				fi
 				mfa_wait_fresh
 				# A retry must not send a code from a window already
 				# spent: that is refused as a replay, which is the opposite
@@ -3161,8 +3207,11 @@ MFAPY
 				mfa_pair_spent="$mfa_pair_window"
 				mfa_rl_clear
 				mfa_login "$mfa_pair_code"
+				mfa_pair_sent=$?
 				mfa_pair_in=0
-				if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+				if [ "$mfa_pair_sent" = 0 ] \
+					&& ! grep -q 'login_pass' "$BODY" \
+					&& grep -qi 'logout' "$BODY"; then
 					mfa_pair_in=1
 				fi
 				# mfa_login truncates the cookie jar, so this is a fresh
@@ -3170,15 +3219,26 @@ MFAPY
 				# line above opened.
 				mfa_rl_clear
 				mfa_login "$mfa_pair_code"
+				mfa_pair_back=$?
 				mfa_pair_out=0
-				if grep -q 'login_pass' "$BODY"; then
+				if [ "$mfa_pair_back" = 0 ] && grep -q 'login_pass' "$BODY"; then
 					mfa_pair_out=1
+				fi
+				# Either transfer failing ends the loop. A retry would send
+				# this window's code again after the first attempt may
+				# already have spent it, and the page left behind says
+				# nothing about a request that did not arrive.
+				if [ "$mfa_pair_sent" != 0 ] || [ "$mfa_pair_back" != 0 ]; then
+					mfa_pair_lost=1
+					break
 				fi
 				if [ "$(mfa_window)" = "$mfa_pair_window" ]; then
 					mfa_pair_stable=1
 				fi
 			done
-			if [ "$mfa_pair_stable" = 0 ]; then
+			if [ "$mfa_pair_lost" = 1 ]; then
+				bad "a login request did not complete, so neither the sign-in nor the replay was checked"
+			elif [ "$mfa_pair_stable" = 0 ]; then
 				bad "a login and a replay never landed in one unspent 30-second window - both checks below are untested"
 			elif [ "$mfa_pair_in" = 1 ]; then
 				ok "the password and a current code sign the account in"
@@ -3187,7 +3247,8 @@ MFAPY
 			fi
 			# Claimed only where the code was accepted first. Refusing a code
 			# that was never accepted says nothing about replay.
-			if [ "$mfa_pair_stable" = 1 ] && [ "$mfa_pair_in" = 1 ]; then
+			if [ "$mfa_pair_lost" = 0 ] && [ "$mfa_pair_stable" = 1 ] \
+				&& [ "$mfa_pair_in" = 1 ]; then
 				if [ "$mfa_pair_out" = 1 ]; then
 					ok "the same code is refused a second time inside its own window"
 				else
