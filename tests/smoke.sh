@@ -2761,7 +2761,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-SMOKE-1'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${SMOKE_USER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SMOKE_GROUP}'" >/dev/null
-		rm -f "$SMOKE_JAR"
+		rm -f -- "$SMOKE_JAR"
 	}
 	trap 'base_cleanup; cleanup_intake' EXIT
 
@@ -2875,7 +2875,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	cleanup_rpt() {
 		adb "DELETE FROM users WHERE username = '${RUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${RGROUP}'" >/dev/null
-		rm -f "$RJAR"
+		rm -f -- "$RJAR"
 	}
 	trap 'base_cleanup; cleanup_rpt' EXIT
 	cleanup_rpt
@@ -3021,7 +3021,7 @@ if [ "$HAVE_COMPOSE" = 1 ]; then
 		ok "audit inserts are not reported as failures"
 	fi
 	
-	rm -f "$APPLOG"
+	rm -f -- "$APPLOG"
 else
 	printf '  skip allowlist log check (needs a running docker compose stack)\n'
 fi
@@ -3050,7 +3050,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-SMOKE-2'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${SUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SGROUP}'" >/dev/null
-		rm -f "$SJAR"
+		rm -f -- "$SJAR"
 	}
 	trap 'base_cleanup; cleanup_search' EXIT
 	cleanup_search
@@ -3512,7 +3512,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-ACT-1'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${AUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${AGROUP}'" >/dev/null
-		rm -f "$AJAR"
+		rm -f -- "$AJAR"
 	}
 	trap 'base_cleanup; cleanup_act' EXIT
 	cleanup_act
@@ -3664,7 +3664,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number IN ('ZZ-DG-SECRET', 'ZZ-DG-MINE')" >/dev/null
 		adb "DELETE FROM users WHERE username = '${DUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${DGROUP}'" >/dev/null
-		rm -f "$DJAR"
+		rm -f -- "$DJAR"
 	}
 	trap 'base_cleanup; cleanup_dg' EXIT
 	cleanup_dg
@@ -3799,7 +3799,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-PBA-SECRET'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${PUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${PGROUP}'" >/dev/null
-		rm -f "$PJAR"
+		rm -f -- "$PJAR"
 	}
 	trap 'base_cleanup; cleanup_pba' EXIT
 	cleanup_pba
@@ -4089,7 +4089,7 @@ if [ "$HAVE_DB" = 1 ]; then
 
 	restore_https() {
 		adb "UPDATE settings SET value='0' WHERE label='force_https'" >/dev/null
-		rm -f "$FH_HDR"
+		rm -f -- "$FH_HDR"
 	}
 	trap 'base_cleanup; restore_https' EXIT
 
@@ -4152,7 +4152,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	trap base_cleanup EXIT
-	rm -f "$FH_HDR"
+	rm -f -- "$FH_HDR"
 else
 	printf '  skip the force_https checks (needs a running docker compose stack)\n'
 fi
@@ -4182,7 +4182,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-DOPS-CASE'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${DUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${DGROUP}'" >/dev/null
-		rm -f "$DJAR"
+		rm -f -- "$DJAR"
 	}
 	trap 'base_cleanup; cleanup_dops' EXIT
 	cleanup_dops
@@ -4541,7 +4541,7 @@ echo
 echo "24. repeated failed logins are locked out"
 if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 	RLJAR="$(smoke_temp)"
-	trap 'base_cleanup; rm -f "$RLJAR"' EXIT
+	trap 'base_cleanup; rm -f -- "$RLJAR"' EXIT
 
 	# Wipe the counters. Also done at the start: a previous run of this suite
 	# leaves this IP locked out, and then every assertion below would pass
@@ -4625,7 +4625,7 @@ if [ "$HAVE_COMPOSE" = 1 ] && command -v docker >/dev/null 2>&1; then
 	# Leave nothing behind: the next run of this suite starts from zero, and a
 	# developer running it against their own stack is not locked out of it.
 	rl_clear
-	rm -f "$RLJAR"
+	rm -f -- "$RLJAR"
 	trap base_cleanup EXIT
 else
 	printf '  skip the login lockout checks (needs a running docker compose stack)\n'
@@ -4672,7 +4672,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 		adb "DELETE FROM users WHERE username = '${MFA_USER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${MFA_GROUP}'" >/dev/null
 		mfa_rl_clear
-		rm -f "$MFA_JAR" "$MFA_PY"
+		rm -f -- "$MFA_JAR" "$MFA_PY"
 	}
 	trap 'base_cleanup; cleanup_mfa' EXIT
 
@@ -5060,7 +5060,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "UPDATE settings SET value = '0' WHERE label IN
 			('sso_enabled', 'sso_autobind_by_email', 'sso_allow_insecure_transport')" >/dev/null
 		dex rm -rf "$SSO_IDP" "$SSO_DIR" >/dev/null 2>&1 || true
-		rm -f "$SSO_JAR"
+		rm -f -- "$SSO_JAR"
 	}
 	trap 'base_cleanup; cleanup_sso' EXIT
 
@@ -5271,7 +5271,7 @@ SSOCFG
 		else
 			bad "the SSO account's refusal page differs from an unknown username's - that is an enumeration oracle"
 		fi
-		rm -f "$SSO_REFUSAL"
+		rm -f -- "$SSO_REFUSAL"
 		if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'login.failure'
 			AND details LIKE '%auth_method_sso%' LIMIT 1")" ]; then
 			ok "audit_log recorded the refusal with reason auth_method_sso"
@@ -5745,7 +5745,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM zip_codes WHERE city = 'ZZAZCITY'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${AZUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${AZGROUP}'" >/dev/null
-		rm -f "$AZJAR"
+		rm -f -- "$AZJAR"
 	}
 	trap 'base_cleanup; cleanup_az' EXIT
 	cleanup_az
@@ -6067,7 +6067,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ -n "${POV_WAS}" ]; then
 			adb "UPDATE menu_poverty SET label = '${POV_WAS}' WHERE value = '0'" >/dev/null
 		fi
-		rm -f "$PW_JAR"
+		rm -f -- "$PW_JAR"
 	}
 	trap 'base_cleanup; cleanup_pol' EXIT
 
@@ -6152,7 +6152,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		else
 			bad "$1: neither outcome on the page ($(wc -c < "$BODY") bytes)"
 		fi
-		rm -f "${BODY}.txt"
+		rm -f -- "${BODY}.txt"
 	}
 
 	if [ -z "$PW_HASH" ] || [ -z "${PW_UID:-}" ]; then
@@ -6508,7 +6508,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ -n "${LK_OLD_LOCK:-}" ]; then
 			adb "INSERT INTO settings (label, value) VALUES ('activity_lock_max_days', '${LK_OLD_LOCK}')" >/dev/null
 		fi
-		rm -f "$LKJAR"
+		rm -f -- "$LKJAR"
 	}
 	LK_OLD_LOCK="$(adb "SELECT value FROM settings WHERE label = 'activity_lock_max_days'")"
 	trap 'base_cleanup; cleanup_lk' EXIT
@@ -6960,7 +6960,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username = '${PWUSER}')" >/dev/null
 		adb "DELETE FROM users WHERE username = '${PWUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = 'zz_pw_grp'" >/dev/null
-		rm -f "$PWJARA" "$PWJARB"
+		rm -f -- "$PWJARA" "$PWJARB"
 	}
 	trap 'base_cleanup; cleanup_pw' EXIT
 	cleanup_pw
@@ -7103,7 +7103,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM users WHERE username = '${PINUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${PINGROUP}'" >/dev/null
 		adb "UPDATE settings SET value = '${PINMODE:-network}' WHERE label = 'session_ip_pin'" >/dev/null
-		rm -f "$PINJAR"
+		rm -f -- "$PINJAR"
 	}
 	trap 'base_cleanup; cleanup_pin' EXIT
 
@@ -7247,7 +7247,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM user_sessions WHERE user_id = ${MCPUID:-0}" >/dev/null
 		adb "DELETE FROM users WHERE username = '${MCPUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${MCPGROUP}'" >/dev/null
-		rm -f "$MCPJAR"
+		rm -f -- "$MCPJAR"
 	}
 	trap 'base_cleanup; cleanup_mcp' EXIT
 
@@ -7426,7 +7426,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM cases WHERE number IN ('ZZ-CL-SECRET', 'ZZ-CL-OTHER', 'ZZ-CL-MINE')" >/dev/null
 		adb "DELETE FROM users WHERE username = '${CLUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${CLGROUP}'" >/dev/null
-		rm -f "$CLJAR" "${BODY}.cl"
+		rm -f -- "$CLJAR" "${BODY}.cl"
 	}
 	trap 'base_cleanup; cleanup_cl' EXIT
 	cleanup_cl
@@ -7513,7 +7513,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			else
 				bad "the refusal body differs between two refused cases"
 			fi
-			rm -f "${BODY}.cl"
+			rm -f -- "${BODY}.cl"
 
 			# 44e. Both attempts are recorded, against the id that was asked for.
 			if [ "$(adb "SELECT COUNT(*) FROM audit_log
@@ -8019,7 +8019,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM menu_office WHERE value = 'Z8'" >/dev/null
 		adb "DELETE FROM menu_case_status WHERE label = 'ZZ49quotevalue'" >/dev/null
 		adb "DELETE FROM menu_gender WHERE value = 'Z'" >/dev/null
-		rm -f "$OE_BODY"
+		rm -f -- "$OE_BODY"
 	}
 	trap 'base_cleanup; cleanup_oe' EXIT
 	cleanup_oe
@@ -8260,7 +8260,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM activities WHERE summary LIKE 'ZZ50%'" >/dev/null
 		adb "DELETE FROM cases WHERE number LIKE 'ZZ50%'" >/dev/null
 		adb "DELETE FROM menu_funding WHERE value = 'Z7'" >/dev/null
-		rm -f "$IC_BODY"
+		rm -f -- "$IC_BODY"
 	}
 	trap 'base_cleanup; cleanup_ic' EXIT
 	cleanup_ic
@@ -8451,7 +8451,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM contacts WHERE last_name = 'ZZCSCLIENT'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${CSUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${CSGROUP}'" >/dev/null
-		rm -f "$CSJAR" "$CSB1" "$CSB2"
+		rm -f -- "$CSJAR" "$CSB1" "$CSB2"
 	}
 	trap 'base_cleanup; cleanup_cs' EXIT
 	cleanup_cs
@@ -8671,7 +8671,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM contacts WHERE last_name LIKE 'ZZAL%'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${ALUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${ALGROUP}'" >/dev/null
-		rm -f "$ALJAR"
+		rm -f -- "$ALJAR"
 	}
 	trap 'base_cleanup; cleanup_al' EXIT
 	cleanup_al
@@ -9441,7 +9441,7 @@ PMSEED
 			fi
 		fi
 
-		rm -f "$PMRJAR" "$PMOJAR"
+		rm -f -- "$PMRJAR" "$PMOJAR"
 	fi
 
 	cleanup_pm
@@ -10020,7 +10020,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM contacts WHERE last_name IN ('ZZCPCLIENT', '${CPXSS}')" >/dev/null
 		adb "DELETE FROM users WHERE username = '${CPUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${CPGROUP}'" >/dev/null
-		rm -f "$CPJAR"
+		rm -f -- "$CPJAR"
 	}
 	trap 'base_cleanup; cleanup_cp' EXIT
 	cleanup_cp
@@ -10247,7 +10247,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM cases WHERE number = 'ZZ-KC-1'" >/dev/null
 		adb "DELETE FROM users WHERE username = '${KCUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${KCGROUP}'" >/dev/null
-		rm -f "$KCJAR"
+		rm -f -- "$KCJAR"
 	}
 	trap 'base_cleanup; cleanup_kc' EXIT
 	cleanup_kc
@@ -10791,7 +10791,7 @@ if [ "$HAVE_COMPOSE" = 1 ]; then
 		bad "the caseless timer logged ${timer_new} undefined case_id warnings"
 	fi
 	
-	rm -f "$TIMERLOG"
+	rm -f -- "$TIMERLOG"
 else
 	printf '  skip the timer check (needs a running docker compose stack)\n'
 fi
@@ -10956,7 +10956,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			else
 				bad "the conflict report logged ${cf_new} warnings"
 			fi
-			rm -f "$CFLOG"
+			rm -f -- "$CFLOG"
 		else
 			printf '  skip the conflict report log check (needs a running docker compose stack)\n'
 		fi
@@ -11006,7 +11006,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			adb "INSERT INTO settings (label, value)
 				VALUES ('enable_shared_calendars', '${CAL_SETTING_WAS}')" >/dev/null
 		fi
-		rm -f "$CAL_JAR"
+		rm -f -- "$CAL_JAR"
 	}
 	trap 'base_cleanup; cleanup_cal' EXIT
 
@@ -11275,13 +11275,13 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	cleanup_ra() {
 		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username IN ('zz_ra_reset','zz_ra_create'))" >/dev/null
 		adb "DELETE FROM users WHERE username IN ('zz_ra_reset','zz_ra_create')" >/dev/null
-		rm -f "$RATARGETJAR"
+		rm -f -- "$RATARGETJAR"
 		adb "DELETE FROM reauth_grants WHERE action_scope IN ('user_admin','password_change','settings')" >/dev/null
 		adb "DELETE FROM audit_log WHERE action LIKE 'reauth.%'" >/dev/null
 		adb "DELETE FROM user_sessions WHERE user_id IN (SELECT user_id FROM users WHERE username = '${RAUSER}')" >/dev/null
 		adb "DELETE FROM users WHERE username = '${RAUSER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${RAGROUP}'" >/dev/null
-		rm -f "$RAJAR"
+		rm -f -- "$RAJAR"
 	}
 	trap 'base_cleanup; cleanup_ra' EXIT
 	cleanup_ra
@@ -11587,7 +11587,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			('sso_enabled', 'sso_autobind_by_email', 'sso_allow_insecure_transport',
 			 'sso_single_logout')" >/dev/null
 		slo_dex rm -rf "$SLO_IDP" "$SLO_DIR" >/dev/null 2>&1 || true
-		rm -f "$SLO_JAR"
+		rm -f -- "$SLO_JAR"
 	}
 	trap 'base_cleanup; cleanup_slo' EXIT
 
@@ -11773,7 +11773,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "UPDATE settings SET value = 'off' WHERE label = 'password_breach_policy'" >/dev/null
 		adb "UPDATE settings SET value = '' WHERE label = 'password_breach_api_url'" >/dev/null
 		hibp_dex rm -rf "$HIBP_STUB" "$HIBP_DIR" >/dev/null 2>&1 || true
-		rm -f "$HIBP_JAR"
+		rm -f -- "$HIBP_JAR"
 	}
 	trap 'base_cleanup; cleanup_hibp' EXIT
 
@@ -12042,7 +12042,7 @@ if [ "$HAVE_DB" = 1 ]; then
 	cleanup_ic() {
 		adb "DELETE FROM activities WHERE summary LIKE 'ZZIC48%'" >/dev/null
 		adb "UPDATE users SET cal_token = NULL WHERE user_id = 1" >/dev/null
-		rm -f "${BODY}.ic"
+		rm -f -- "${BODY}.ic"
 	}
 	trap 'base_cleanup; cleanup_ic' EXIT
 	cleanup_ic
@@ -12274,7 +12274,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ -n "${SPPIN:-}" ]; then
 			adb "UPDATE settings SET value = '${SPPIN}' WHERE label = 'session_ip_pin'" >/dev/null
 		fi
-		rm -f "$SPJAR"
+		rm -f -- "$SPJAR"
 	}
 	trap 'base_cleanup; cleanup_sp' EXIT
 	adb "DELETE FROM user_sessions WHERE user_agent = '${SPUA}'" >/dev/null
@@ -12427,7 +12427,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "DELETE FROM doc_storage WHERE doc_name LIKE 'ZZDL%' OR description = 'ZZDL upload'" >/dev/null
 		adb "DELETE FROM cases WHERE number = 'ZZ-DL-1'" >/dev/null
 		adb "UPDATE settings SET value = '${DLFORCE:-0}' WHERE label = 'doc_force_download'" >/dev/null
-		rm -f "$DLJAR"
+		rm -f -- "$DLJAR"
 	}
 	trap 'base_cleanup; cleanup_dl' EXIT
 
@@ -12499,7 +12499,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		-F 'doc_type=C' -F "case_id=${DLCASE}" -F 'description=ZZDL upload' \
 		-F "_csrf=${DLTOKEN}" \
 		"$OCM_URL/ops/upload_document.php" >/dev/null
-	rm -f "$DLUP"
+	rm -f -- "$DLUP"
 	DLHTML="$(adb "SELECT doc_id FROM doc_storage WHERE description = 'ZZDL upload' ORDER BY doc_id DESC LIMIT 1")"
 	DLMIME="$(adb "SELECT mime_type FROM doc_storage WHERE doc_id = '${DLHTML:-0}'")"
 	if [ "$DLMIME" = "text/html" ]; then
@@ -12746,7 +12746,7 @@ else
 	bad "save_quest bypassed the CSRF gate (status $code)"
 fi
 
-rm -f "$SQ_HEADERS"
+rm -f -- "$SQ_HEADERS"
 
 echo
 # ── 66. A failed database query ─────────────────────────────────────────────
@@ -13013,7 +13013,7 @@ else
 		ok "all $csp_inline inline script blocks carry their own response's nonce"
 	fi
 	
-	rm -f "$csp_both"
+	rm -f -- "$csp_both"
 
 	# The header above is only honest if the eval() calls really are gone,
 	# so check the tree as well. A reintroduced eval() under this policy is
@@ -13062,7 +13062,7 @@ else
 fi
 # Outside the block, because the file is made outside it: a review found that a run
 # with no database made it and never removed it.
-rm -f "$CSP_HEADERS"
+rm -f -- "$CSP_HEADERS"
 
 echo
 # ── 67b. The rest of the OWASP header set ──────────────────────────────────
@@ -13204,7 +13204,7 @@ STATIC_HDR="$(smoke_temp)"
 curl -s --max-time 30 -o /dev/null -D "$STATIC_HDR" \
 	"${OCM_URL%/cms}/errors/404.html"
 static="$(tr -d '\r' < "$STATIC_HDR")"
-rm -f "$STATIC_HDR"
+rm -f -- "$STATIC_HDR"
 
 if printf '%s' "$static" | grep -qi '^HTTP/[0-9.]* 200'; then
 	for h in X-Frame-Options X-Content-Type-Options Referrer-Policy
@@ -13269,7 +13269,7 @@ else
 	fi
 fi
 
-rm -f "$SEC_HEADERS"
+rm -f -- "$SEC_HEADERS"
 
 # ---------------------------------------------------------------------------
 # 68. cms/ops/vcal.php, and the generic error page on a page that bootstraps
@@ -13431,7 +13431,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		else
 			ok "the vCalendar export is an attachment with a charset"
 		fi
-		rm -f "$VC_HDR"
+		rm -f -- "$VC_HDR"
 	fi
 
 	cleanup_vc
@@ -13839,7 +13839,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		adb "DELETE FROM \`groups\` WHERE group_id IN ('${UG_GROUP}','${UG_GROUP2}')" >/dev/null 2>&1
 		adb "DELETE FROM reauth_grants WHERE action_scope = 'user_admin'" >/dev/null 2>&1
 		adb "DELETE FROM audit_log WHERE action = 'user.group_change_refused'" >/dev/null 2>&1
-		rm -f "$UG_JAR" "$UG_SYSJAR"
+		rm -f -- "$UG_JAR" "$UG_SYSJAR"
 	}
 	trap 'base_cleanup; cleanup_ug' EXIT
 	cleanup_ug
@@ -14012,7 +14012,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			(SELECT user_id FROM users WHERE username = '${SR_USER}')" >/dev/null 2>&1
 		adb "DELETE FROM users WHERE username = '${SR_USER}'" >/dev/null 2>&1
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SR_GROUP}'" >/dev/null 2>&1
-		rm -f "$SR_JAR"
+		rm -f -- "$SR_JAR"
 	}
 	trap 'base_cleanup; cleanup_sr' EXIT
 	cleanup_sr
@@ -14705,7 +14705,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			-d "auth_id=1" "$OCM_URL/index.php"
 		curl -sL --max-time 30 -b "$jar" -o "$body" "$OCM_URL/index.php"
 		grep -c 'login_pass' "$body"
-		rm -f "$jar" "$body"
+		rm -f -- "$jar" "$body"
 	}
 
 	sm76_reset
@@ -14823,9 +14823,9 @@ if [ "$HAVE_DB" = 1 ]; then
 		adb "INSERT INTO settings (label, value) VALUES ('${sm76_label}', '${sm76_value}')
 			ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null
 	done < "$SM76_SNAP"
-	rm -f "$SM76_SNAP"
+	rm -f -- "$SM76_SNAP"
 fi
-rm -f "$SM76_JAR"
+rm -f -- "$SM76_JAR"
 
 # 76h. Static. app/scripts/cms-csv-download.php is generated by
 # system-mac_download.php with the operator's own OCM username and password
@@ -14971,7 +14971,7 @@ else
 	else
 		bad "the generated mac download script's URL is not https ($(grep -m1 -E '^\$url' "$BODY"))"
 	fi
-	rm -f "$MD_HDR"
+	rm -f -- "$MD_HDR"
 fi
 
 echo
@@ -15172,7 +15172,7 @@ then
 	sm78_cleanup() {
 		adb "DELETE FROM users WHERE username = '${SM78_USER}'" >/dev/null
 		adb "DELETE FROM \`groups\` WHERE group_id = '${SM78_GROUP}'" >/dev/null
-		rm -f "$SM78_JAR"
+		rm -f -- "$SM78_JAR"
 	}
 	sm78_cleanup
 
@@ -15252,7 +15252,7 @@ do
 	grep -qiF 'This page is currently unavailable' "$SM78_ANON" && continue
 	sm78_open="${sm78_open} ${sm78_rel}"
 done
-rm -f "$SM78_ANON"
+rm -f -- "$SM78_ANON"
 
 if [ -z "$sm78_open" ]
 then
@@ -15317,7 +15317,7 @@ for sm78_p in cms/*.php cms/m/*.php; do
 		ok "page $sm78_rel opens signed in (status $code)"
 	fi
 done
-rm -f "$sm78_jar"
+rm -f -- "$sm78_jar"
 
 if [ "$sm78_n" -ge 60 ]; then
 	ok "the signed-in sweep covered $sm78_n page entry points"
@@ -15376,7 +15376,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ "$sm78g_left" != 00 ]; then
 			bad "the no-permission sweep could not remove its fixture (users and groups still present: ${sm78g_left})"
 		fi
-		rm -f "$SM78G_JAR" "$SM78G_ADMIN"
+		rm -f -- "$SM78G_JAR" "$SM78G_ADMIN"
 	}
 	trap 'base_cleanup; cleanup_78g' EXIT
 	cleanup_78g
@@ -15790,7 +15790,7 @@ then
 	fi
 
 	sm79_cleanup
-	rm -f "$SM79_JAR" "$SM79_A" "$SM79_B"
+	rm -f -- "$SM79_JAR" "$SM79_A" "$SM79_B"
 fi
 
 # ---------------------------------------------------------------------------
@@ -17111,9 +17111,9 @@ fi
 [ "$csp_unparsed" -eq 0 ] && ok "every include of a tag-bearing script carries parse"
 [ "$csp_missing" -eq 0 ] && ok "every template-tag include resolves to a file that exists"
 
-rm -f "$BODY.csp88b"
+rm -f -- "$BODY.csp88b"
 
-rm -f "$BODY.csp88"
+rm -f -- "$BODY.csp88"
 
 
 # ── 89. Every marker class is both emitted and bound ───────────────────────
@@ -17176,8 +17176,8 @@ done < "$BODY.csp89emit"
 
 [ "$mark_dead" -eq 0 ] && ok "every marker class is both emitted and bound"
 
-rm -f "$BODY.csp89bound"
-rm -f "$BODY.csp89emit"
+rm -f -- "$BODY.csp89bound"
+rm -f -- "$BODY.csp89emit"
 
 # And the handlers must not come back. Case matters here: onChange="..." was
 # missed by an earlier case-sensitive sweep and three live handlers survived
@@ -17294,7 +17294,7 @@ else
 	bad "activity.php rendered no activity screen for a traversing act_type"
 fi
 
-rm -f "$TL_BODY"
+rm -f -- "$TL_BODY"
 
 # ---------------------------------------------------------------------------
 # 83. Request values inside quoted HTML attributes.
@@ -17401,7 +17401,7 @@ else
 	bad "system-outcomes.php no longer aims the edit form at its outcome"
 fi
 
-rm -f "$XA_BODY"
+rm -f -- "$XA_BODY"
 
 # 84. The two per-case report forms gate on read access to the case.
 #
@@ -17463,7 +17463,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ "$rpt_left" != 00000 ]; then
 			bad "the report gate fixture could not be removed (users, case, contact, group, csrf rows still present: ${rpt_left})"
 		fi
-		rm -f "$RJAR" "$ROJAR"
+		rm -f -- "$RJAR" "$ROJAR"
 	}
 
 	# Every request below goes through one of these two. Neither the status nor
@@ -17782,7 +17782,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		if [ "$tmr_left" != 000000 ]; then
 			bad "the timer fixture could not be removed (users, case, contact, groups, sessions, csrf rows still present: ${tmr_left})"
 		fi
-		rm -f "$TMJAR" "$TMVJAR" "$TMOJAR"
+		rm -f -- "$TMJAR" "$TMVJAR" "$TMOJAR"
 	}
 
 	# curl's own exit status is checked on every request: a request that timed
@@ -18033,7 +18033,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ "$rq_left" != 000 ]; then
 			bad "the report refusal fixture could not be removed (user, group, csrf rows still present: ${rq_left})"
 		fi
-		rm -f "$QJAR"
+		rm -f -- "$QJAR"
 	}
 	trap 'base_cleanup; cleanup_rq' EXIT
 	cleanup_rq
@@ -18172,7 +18172,7 @@ else
 	fi
 fi
 
-rm -f "${BODY}.lg"
+rm -f -- "${BODY}.lg"
 # 90. A filter box the report never reads.
 #
 # The time report's Case Number box posts number, and lsac_outcome's Closing
@@ -18410,7 +18410,7 @@ RCPY
 		fi
 	fi
 
-	rm -f "$RC_PY"
+	rm -f -- "$RC_PY"
 fi
 
 # 93. No service endpoint answers a signed-in request with a server error.
@@ -18507,7 +18507,7 @@ else
 	fi
 fi
 
-rm -f "${BODY}.sv"
+rm -f -- "${BODY}.sv"
 
 # 94. The pension sub-issue service still sends XML when its menu is absent.
 #
@@ -18668,7 +18668,7 @@ else
 	# down, so the rm -f below is redundant. It is left as it was: removing a path
 	# that is already gone costs nothing, and taking the redundant per-section rm
 	# lines out is its own change.
-	trap 'base_cleanup; rm -f "$AT_LIST" "$AT_PY"' EXIT
+	trap 'base_cleanup; rm -f -- "$AT_LIST" "$AT_PY"' EXIT
 
 	# SELECT 1 above proves the client works, not that this query answered.
 	# Without the second test a failed table list reads as an install with no
@@ -18863,7 +18863,7 @@ ATPY
 	at_unread="$(printf '%s\n' "$at_out" | grep '^unread ' | cut -d' ' -f2)"
 	at_checked="$(printf '%s\n' "$at_out" | grep '^checked ' | cut -d' ' -f2)"
 	at_lines="$(printf '%s\n' "$at_out" | grep '^BAD ' | sed 's/^BAD //')"
-	rm -f "$AT_PY" "$AT_LIST"
+	rm -f -- "$AT_PY" "$AT_LIST"
 	trap base_cleanup EXIT
 
 	# A sweep that finds nothing to look at has failed, not passed. Two
@@ -18943,7 +18943,7 @@ else
 	# The file is in the cleanup list at the top already; the rest of this is what
 	# only the section can undo.
 	cleanup_th() {
-		rm -f "$TH_HEAD"
+		rm -f -- "$TH_HEAD"
 
 		# The gate. Until the vacancy query has passed and the fixture is in
 		# place, this section owns nothing, and a DELETE here would take
@@ -19257,7 +19257,7 @@ else
 	done
 
 	cleanup_ab() {
-		rm -f "$AB_JAR"
+		rm -f -- "$AB_JAR"
 		if [ "$AB_OWNED" != 1 ]; then
 			return 0
 		fi
