@@ -20124,19 +20124,49 @@ fi
 # Measured on the version before this change: PASS, with the password in the
 # body. The same shape held for MFA_KEY, which is read from a file in the
 # container, and for 45 other calls whose patterns are markers this suite makes
-# itself. All 47 now pass the pattern with -e.
+# itself. A review counted those 45 more carefully than the first description did: 43
+# carry values the suite makes, and two carry a CSS class name read out of the
+# repository source, which matches js-[A-Za-z0-9_-]+ and so cannot begin with a dash
+# today. All 47 now pass the pattern with -e.
 #
 # Fixing 47 calls does not stop a 48th being written, and three earlier rounds
 # in this area learnt that naming the places one at a time does not close a
-# class. So this check is the part that closes it: it reads this file and
-# refuses any grep whose first operand is an expansion unless the call hands it
-# over with -e or --regexp.
+# class. So this check is the part that makes a new one visible: it reads this
+# file and reports a grep whose first operand is an expansion unless the call
+# hands it over with -e or --regexp.
 #
-# The check errs towards silence rather than noise. It recognises option words
-# as a dash cluster, a --long-option with or without =value, and a short option
-# with a separate numeric argument. A call written in some other shape is not
-# reported rather than falsely reported, so this closes the shapes the file
-# actually uses; it is not a proof about every shape grep accepts.
+# It is a text scan and not a shell parser, so it is not a proof that the shape
+# cannot return. What it is is a check that fails on every shape of the defect
+# that has actually been found here, including the ones two reviews found in the
+# check itself. The limits are listed below rather than left to be discovered.
+#
+# A check is worth only what it can see, so this one was reviewed for ways to
+# pass while the shape is present. Three were found, two of them confirmed by
+# running the check's own program against a planted call:
+#
+# - a call split across lines with a trailing backslash. Neither line holds both
+#   grep and the pattern, so a scan of physical lines saw nothing. 134 grep calls
+#   in this file are written across lines, three of the 47 among them, so this was
+#   not a hypothetical shape. The scan now joins continuations first.
+# - an option that carries its argument attached to the letter, where that
+#   argument happens to contain an e: -dread, or -f followed by a file name with
+#   an e in it. The old rule accepted any cluster containing an e as proof that -e
+#   was passed. Measured against the grep on this box, grep -dread "$VAR" file is
+#   a real instance of the defect, and the check called it safe. -e now has to be
+#   the last letter of its cluster, which is what passing a pattern as its own
+#   word requires anyway. No cluster in this file has an e anywhere else.
+# - fgrep, and a call written with a path such as /bin/grep. Neither appears in
+#   this file, and both are now matched rather than trusted not to appear.
+#
+# What is still not covered, stated rather than left to be found: an option that
+# takes a separate argument and is not one of ABCDdfm; a pattern built by
+# concatenation rather than a bare expansion; and a shell that has no python3, in
+# which case this section prints a skip and asserts nothing at all. The CI job
+# that runs this suite installs python dependencies, so it has python3.
+#
+# The scan reads code and not prose. It has to: the second item above quotes an
+# unguarded call as its example, and the first version of this check reported that
+# example, on this line, as a defect in the file.
 echo
 echo "104. every grep pattern that comes from a variable is passed with -e"
 
@@ -20152,16 +20182,67 @@ else
 import re
 import sys
 
-OPTWORD = r'-[A-Za-z0-9]+\s+[0-9]+|-[A-Za-z0-9]+|--[a-z-]+(?:=[^\s]+)?'
-CALL = re.compile(r'(?<![A-Za-z0-9_./-])e?grep\s+((?:(?:%s)\s+)*)"?\$' % OPTWORD)
-SAFE = re.compile(r'(?:^|\s)(?:-[A-Za-z0-9]*e[A-Za-z0-9]*|--regexp)(?:\s|=|$)')
+# An option word is a dash cluster, a long option with or without =value, or one of the
+# options that takes a separate argument. Naming those by letter matters: without them
+# the scan stops at the argument and reads it as the pattern, so the real pattern after
+# it is never looked at.
+OPTWORD = (r'-[ABCDdfm]\s+(?:"[^"]*"|[^\s]+)'
+	r'|-[A-Za-z0-9]+'
+	r'|--[a-z-]+(?:=[^\s]+)?')
+# A path prefix is allowed before the name, and fgrep counts, so neither /bin/grep nor
+# fgrep slips past. The lookbehind still refuses a name that merely ends in grep.
+CALL = re.compile(r'(?<![A-Za-z0-9_.-])[ef]?grep\s+((?:(?:%s)\s+)*)"?\$' % OPTWORD)
+# Whether -e was passed cannot be decided by looking for an e somewhere in
+# the options, and it cannot be decided by where the e sits either. In a short
+# cluster the letters are flags until one that takes an argument, and everything
+# after that letter is ITS argument: -qDread is -q -D read, and -qDrecurse ends
+# in an e that belongs to the word recurse. So the cluster is walked, and the
+# walk stops at the first letter that takes an argument. Only an e reached
+# before that stop is the -e option.
+ARGOPT = 'ABCDdfem'
 
+
+def passes_pattern(opts):
+	for word in opts.split():
+		if word.startswith('--'):
+			if word == '--regexp' or word.startswith('--regexp='):
+				return True
+			continue
+		if not word.startswith('-'):
+			continue
+		for ch in word[1:]:
+			if ch == 'e':
+				return True
+			if ch in ARGOPT:
+				break
+	return False
+
+# A line ending in a backslash continues onto the next one, so the scan joins them and
+# works on logical lines. Three of the calls this section is about are written that way.
+# A scan of physical lines cannot see them: the line carrying grep and its
+# options does not carry the pattern, and the pattern's line does not say grep.
+#
+# A line whose first character is a hash is prose, not a call. The comment above this
+# section quotes an unguarded call as the example of what to avoid, and a scan that
+# reads prose reports that example as the defect it is describing.
 hits = []
+start = None
+buf = ''
 with open(sys.argv[1], encoding='utf-8') as fh:
 	for n, line in enumerate(fh, 1):
-		for m in CALL.finditer(line):
-			if not SAFE.search(' ' + m.group(1)):
-				hits.append(n)
+		line = line.rstrip('\n')
+		if start is None:
+			start = n
+		if line.rstrip('\t ').endswith('\\'):
+			buf += line.rstrip()[:-1]
+			continue
+		text = buf + line
+		buf = ''
+		if not text.lstrip().startswith('#'):
+			for m in CALL.finditer(text):
+				if not passes_pattern(m.group(1)):
+					hits.append(start)
+		start = None
 sys.stdout.write('pattern: %d unguarded%s\n' % (len(hits),
 	'' if not hits else ' at line ' + ','.join(str(n) for n in hits)))
 GPPY
