@@ -18880,9 +18880,10 @@ fi
 # statements to appear in it exactly once, character for character.
 # Pinning the whole block instead of counting features of it is what stops
 # a second spelling of the same write from passing: an edit anywhere
-# inside the block changes the pinned text. None of the three statements
-# holds a space inside a string literal, so deleting every space cannot
-# lose one.
+# inside the block changes the pinned text. Whitespace written inside a
+# string literal is turned into a byte that is not whitespace before the
+# deletion, so adding a space to the strip pattern changes the pinned text
+# instead of disappearing with it.
 #
 # Row two closes the other half, an addition placed outside the block.
 # Over the same code with every string body emptied as well, $safe_number
@@ -18897,6 +18898,11 @@ fi
 # $safe_number, and none of ${, $$, eval( or extract(, each of which could
 # write a name these counts cannot follow.
 #
+# Emptying string bodies also removes any code interpolated into them, so
+# the same three names are counted a second time over the code with string
+# bodies kept, where each must appear four times. A write placed inside a
+# {$ ... } interpolation raises one of those counts.
+#
 # Row three is a static sweep of the whole tree and can fail on a file
 # this fix never touched.
 echo
@@ -18908,26 +18914,42 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 #
 # The scan tracks single-quoted, double-quoted and backtick strings, so a
 # comment marker inside a string is not read as a comment and a string
-# that runs over several lines stays one string. Heredoc and nowdoc bodies
-# are dropped, so PHP-looking text inside one is not read as code. Text
-# outside <?php ?> is dropped, and a close tag stands in for a semicolon.
-# A // or # tail ends at a ?> on the same line, as PHP ends it. #[ opens a
-# PHP 8 attribute and is kept; an ordinary # comment cannot be spelled
-# exactly #[, so keeping it retains no comment.
+# that runs over several lines stays one string. Inside a double-quoted or
+# backtick string a {$ or ${ interpolation returns to reading code until
+# its braces balance again, so a quote written inside an interpolation does
+# not end the string holding it, and an interpolation can hold a string
+# that holds another interpolation. Heredoc and nowdoc bodies are dropped,
+# so PHP-looking text inside one is not read as code. Text outside
+# <?php ?> is dropped, and a close tag stands in for a semicolon. A // or
+# # tail ends at a ?> on the same line, as PHP ends it. #[ opens a PHP 8
+# attribute and is kept; an ordinary # comment cannot be spelled exactly
+# #[, so keeping it retains no comment.
+#
+# A second argument of 2 keeps string bodies as 1 does, but writes each
+# whitespace character inside a string body as a \001 byte, and ends a
+# line the string continues past with a \002, so a caller that deletes
+# whitespace cannot lose a space that was written inside a literal.
 #
 # This is not a PHP parser. It was checked against one: for all 308 PHP
 # files under cms/, and for fixtures holding each shape named above, its
 # output matches the output of a stripper built on PHP's own
-# token_get_all(), character for character once whitespace is removed. A
-# bare <? is read as an opening tag, which is right only where
-# short_open_tag is on; reading such a block as code makes the sweep below
-# report on it rather than skip it.
+# token_get_all(), character for character once whitespace is removed, in
+# both of the first two modes; with 2 the same holds after the two marker
+# bytes are dropped as well. The fixtures disagree on one shape, a bare <?,
+# which this scan always reads as an opening tag. That is what PHP does
+# where short_open_tag is on, as it is here; where it is off, it makes the
+# sweep below read such a block as code rather than skip it.
 sm107_code_only()
 {
 	awk -v keepstr="${2:-1}" '
 		BEGIN {
 			st = 6
 			hid = ""
+			nest = 0
+			ks = (keepstr == 0) ? 0 : 1
+			mark = (keepstr == 2) ? 1 : 0
+			soh = sprintf("%c", 1)
+			stx = sprintf("%c", 2)
 		}
 		{
 			line = $0
@@ -18954,6 +18976,7 @@ sm107_code_only()
 			{
 				c = substr(line, i, 1)
 				d = substr(line, i + 1, 1)
+				em = (ks == 1 || nest == 0)
 				if (st == 6)
 				{
 					if (c == "<" && d == "?")
@@ -18993,9 +19016,17 @@ sm107_code_only()
 				{
 					if (c == "\\")
 					{
-						if (keepstr == 1)
+						if (ks == 1)
 						{
-							out = out c d
+							out = out c
+							if (mark == 1 && (d == " " || d == "\t"))
+							{
+								out = out soh
+							}
+							else
+							{
+								out = out d
+							}
 						}
 						i = i + 2
 						continue
@@ -19004,21 +19035,85 @@ sm107_code_only()
 						|| (st == 5 && c == "`"))
 					{
 						st = 0
-						out = out c
+						if (em)
+						{
+							out = out c
+						}
 						i = i + 1
 						continue
 					}
-					if (keepstr == 1)
+					if (st != 1 && c == "{" && d == "$")
+					{
+						nest = nest + 1
+						iret[nest] = st
+						ibr[nest] = 1
+						st = 0
+						if (ks == 1)
+						{
+							out = out c
+						}
+						i = i + 1
+						continue
+					}
+					if (st != 1 && c == "$" && d == "{")
+					{
+						nest = nest + 1
+						iret[nest] = st
+						ibr[nest] = 1
+						st = 0
+						if (ks == 1)
+						{
+							out = out c d
+						}
+						i = i + 2
+						continue
+					}
+					if (ks == 1)
+					{
+						if (mark == 1 && (c == " " || c == "\t"))
+						{
+							out = out soh
+						}
+						else
+						{
+							out = out c
+						}
+					}
+					i = i + 1
+					continue
+				}
+				if (nest > 0 && c == "{")
+				{
+					ibr[nest] = ibr[nest] + 1
+					if (em)
 					{
 						out = out c
 					}
 					i = i + 1
 					continue
 				}
+				if (nest > 0 && c == "}")
+				{
+					ibr[nest] = ibr[nest] - 1
+					if (em)
+					{
+						out = out c
+					}
+					i = i + 1
+					if (ibr[nest] == 0)
+					{
+						st = iret[nest]
+						nest = nest - 1
+					}
+					continue
+				}
 				if (c == "?" && d == ">")
 				{
 					st = 6
-					out = out ";"
+					if (em)
+					{
+						out = out ";"
+					}
 					i = i + 2
 					continue
 				}
@@ -19034,7 +19129,10 @@ sm107_code_only()
 				}
 				if (c == "#" && d == "[")
 				{
-					out = out "#["
+					if (em)
+					{
+						out = out "#["
+					}
 					i = i + 2
 					continue
 				}
@@ -19062,7 +19160,10 @@ sm107_code_only()
 						hid = substr(rest, RSTART, RLENGTH)
 						gsub("^[ \t]+|\047|\"", "", hid)
 						st = 4
-						out = out substr(line, i)
+						if (em)
+						{
+							out = out substr(line, i)
+						}
 						i = n + 1
 						continue
 					}
@@ -19070,26 +19171,42 @@ sm107_code_only()
 				if (c == "\047")
 				{
 					st = 1
-					out = out c
+					if (em)
+					{
+						out = out c
+					}
 					i = i + 1
 					continue
 				}
 				if (c == "\"")
 				{
 					st = 2
-					out = out c
+					if (em)
+					{
+						out = out c
+					}
 					i = i + 1
 					continue
 				}
 				if (c == "`")
 				{
 					st = 5
-					out = out c
+					if (em)
+					{
+						out = out c
+					}
 					i = i + 1
 					continue
 				}
-				out = out c
+				if (em)
+				{
+					out = out c
+				}
 				i = i + 1
+			}
+			if (mark == 1 && (st == 1 || st == 2 || st == 5))
+			{
+				out = out stx
 			}
 			print out
 		}
@@ -19114,8 +19231,9 @@ sm107_count()
 }
 
 sm107_file=cms/services/twilio.php
-sm107_ws0="$(sm107_code_only "$sm107_file" 1 | tr -d ' \t\n\r')"
+sm107_ws0="$(sm107_code_only "$sm107_file" 2 | tr -d ' \t\n\r')"
 sm107_nostr="$(sm107_code_only "$sm107_file" 0 | tr -d ' \t\n\r' | tr 'A-Z' 'a-z')"
+sm107_full="$(sm107_code_only "$sm107_file" 1 | tr -d ' \t\n\r')"
 
 # ROW ONE -- the three statements, pinned character for character.
 sm107_pin="\$safe_number=preg_replace('/[^0-9+]/','',\$number);"
@@ -19141,12 +19259,19 @@ for sm107_k in '${' '$$' 'eval(' 'extract('
 do
 	sm107_indirect=$((sm107_indirect + $(sm107_count "$sm107_k" "$sm107_nostr")))
 done
+# The same names over the code with string bodies kept, where a write put
+# inside a {$ ... } interpolation still shows up.
+sm107_f_safe="$(sm107_count '$safe_number' "$sm107_full")"
+sm107_f_phone="$(sm107_count '$phone' "$sm107_full")"
+sm107_f_area="$(sm107_count '$area_code' "$sm107_full")"
 if [ "$sm107_n_safe" -eq 4 ] && [ "$sm107_n_phone" -eq 1 ] \
 	&& [ "$sm107_n_area" -eq 1 ] && [ "$sm107_subs" -eq 3 ] \
-	&& [ "$sm107_subs_safe" -eq 3 ] && [ "$sm107_indirect" -eq 0 ]; then
+	&& [ "$sm107_subs_safe" -eq 3 ] && [ "$sm107_indirect" -eq 0 ] \
+	&& [ "$sm107_f_safe" -eq 4 ] && [ "$sm107_f_phone" -eq 4 ] \
+	&& [ "$sm107_f_area" -eq 4 ]; then
 	ok "no other statement in the SMS handler writes the number it looks up"
 else
-	bad "the SMS handler's writes moved (${sm107_n_safe} \$safe_number, ${sm107_n_phone} \$phone, ${sm107_n_area} \$area_code, ${sm107_subs} substr of which ${sm107_subs_safe} on \$safe_number, ${sm107_indirect} indirect)"
+	bad "the SMS handler's writes moved (${sm107_n_safe} \$safe_number, ${sm107_n_phone} \$phone, ${sm107_n_area} \$area_code, ${sm107_subs} substr of which ${sm107_subs_safe} on \$safe_number, ${sm107_indirect} indirect; with strings kept ${sm107_f_safe}/${sm107_f_phone}/${sm107_f_area})"
 fi
 
 # ROW THREE -- the class, tree-wide: a value DB::escapeString() produced
@@ -19164,10 +19289,11 @@ fi
 #
 # This is a line-order heuristic over one file at a time, not data flow.
 # It does not see an assignment or a substr() call split across lines, an
-# escape and a slice on the same line, a value reached through an alias or
-# an array element, a slice handed the escaper's return value directly, a
-# slice that runs before the escape on the next pass of a loop, or one name
-# meaning different things in two functions. An assignment made inside a
+# escape and a slice on the same line, a reset written later on the slice's
+# own line, which clears the record before that slice is checked, a value
+# reached through an alias or an array element, a slice handed the escaper's
+# return value directly, a slice that runs before the escape on the next
+# pass of a loop, or one name meaning different things in two functions. An assignment made inside a
 # condition clears the record whether or not the condition held, and a '.='
 # neither records nor clears. A right-hand side that merely mentions the
 # escaper is recorded as escaped, which does not establish that the value
