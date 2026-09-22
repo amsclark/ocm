@@ -18852,6 +18852,91 @@ if grep -F 'if ($data_string === false)' cms/services/twilio.php \
 else
 	bad "an unencodable SparkPost body is not refused"
 fi
+# 107. cms/services/twilio.php sliced an already-escaped number
+#
+# The inbound SMS handler escaped $_POST['From'] and then took three
+# substr() slices of the result, interpolating them into the contact
+# lookup. Escaping doubles a backslash and puts one before a quote, so a
+# slice boundary could separate a backslash from what it protected and
+# leave a lone backslash at the end of a value. MariaDB then read the
+# query's next quote as ordinary text, joined two string literals, and the
+# phone comparison disappeared; other placements made the query
+# unparseable and the message was lost. Measured on the unpatched file
+# against a seeded contact: of 75 single-character insertions, 0 widened
+# the result set and 18 broke the query. With the strip in place, 0 broke
+# it and 0 widened it.
+#
+# The first two rows are code-presence checks, filtered so the pattern
+# quoted in a comment does not pass. Reaching this code needs a signed
+# Twilio request, so they say the guard is written, not that it ran. The
+# third row is a sweep of the whole tree and can fail on a file this fix
+# never touched.
+echo
+echo "107. the inbound SMS number is stripped before it is sliced"
+
+if grep -F "preg_replace('/[^0-9+]/', '', \$number);" cms/services/twilio.php \
+	| grep -qvF '//'; then
+	ok "the inbound SMS number is stripped to digits and a plus"
+else
+	bad "the inbound SMS number is no longer stripped before slicing"
+fi
+
+# Both offsets must read the stripped value, and the escaping must wrap the
+# slice rather than feed it. Three lines carry a slice: two build $phone and
+# one builds $area_code. Comment lines are dropped from both counts, so
+# leaving the fixed text in a comment beside reverted code does not pass.
+sm107_slices="$(grep -F 'substr($safe_number' cms/services/twilio.php \
+	| grep -vF '//' | grep -c '')"
+sm107_area="$(grep -F '$area_code = DB::escapeString(substr($safe_number, 2, 3));' \
+	cms/services/twilio.php | grep -vF '//' | grep -c '')"
+if [ "$sm107_slices" -eq 3 ] && [ "$sm107_area" -eq 1 ]; then
+	ok "the SMS slices read the stripped number and are escaped after slicing"
+else
+	bad "the SMS slices no longer read the stripped number (${sm107_slices} slices, ${sm107_area} area_code)"
+fi
+
+# Class guard: no file may slice a value that DB::escapeString() produced
+# earlier in the same file. Order matters and a plain grep cannot see it --
+# cms/modules/case-outcomes.php slices $problem_code on one line and escapes
+# it on the next, which is the safe order and must not be reported. So awk
+# reads each file once, records the line number of every assignment from the
+# escaper, and reports a substr() only when it reads such a variable on a
+# LATER line. Comment and docblock lines are skipped. Every caller in the
+# tree now slices first and escapes second, so this sweep is expected to
+# find nothing; it can fail on a file this fix never touched.
+sm107_sliced=0
+for sm107_f in $(grep -rlF 'DB::escapeString' cms/ --include='*.php' 2>/dev/null)
+do
+	sm107_hits="$(awk '
+		/^[ \t]*(\/\/|\*|\/\*)/ { next }
+		{
+			line = $0
+			if (match(line, /\$[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*DB::escapeString/)) {
+				v = substr(line, RSTART, RLENGTH)
+				sub(/[ \t]*=.*$/, "", v)
+				esc[v] = NR
+			}
+			rest = line
+			while (match(rest, /substr\(\$[A-Za-z_][A-Za-z0-9_]*/)) {
+				u = substr(rest, RSTART + 7, RLENGTH - 7)
+				if ((u in esc) && esc[u] < NR) {
+					print FILENAME ":" NR ": substr() slices " u \
+						" escaped on line " esc[u]
+				}
+				rest = substr(rest, RSTART + RLENGTH)
+			}
+		}
+	' "$sm107_f")"
+	if [ -n "$sm107_hits" ]; then
+		sm107_sliced=$((sm107_sliced + $(printf '%s\n' "$sm107_hits" | grep -c '')))
+		printf '    %s\n' "$sm107_hits"
+	fi
+done
+if [ "$sm107_sliced" -eq 0 ]; then
+	ok "no PHP file slices a value that DB::escapeString() produced earlier"
+else
+	bad "${sm107_sliced} site(s) slice a value that DB::escapeString() produced"
+fi
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

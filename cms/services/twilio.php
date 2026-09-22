@@ -233,9 +233,26 @@ $body = isset($_POST['Body']) ? (string) $_POST['Body'] : '';
 
 $case_id = '';
 
-$clean_number = DB::escapeString($number);
-$phone = substr($clean_number, 5, 3) . '-' . substr($clean_number, 8);
-$area_code = substr($clean_number, 2, 3);
+/*    The slicing comes after the stripping, not after the escaping. Escaping
+	doubles a backslash and puts one in front of a quote, so a substr()
+	boundary can land between a backslash and the character it protects. Both
+	of the offsets below are such a boundary: a number carrying a quote at
+	raw index 4 left $area_code ending in a lone backslash, which made
+	MariaDB read the query's next quote as ordinary text and join two string
+	literals into one. The phone comparison then disappeared, and other
+	placements made the query unparseable, so the message was dropped
+	instead of saved.
+
+	Removing every character that is not a digit or a plus first means a
+	slice can no longer end on an escape character, because there is nothing
+	left to escape. The offsets are unchanged, so a well-formed E.164 number
+	gives the same area code and phone it gave before. The escaping stays
+	even though it now has nothing to do, because these two values are
+	interpolated into a query below and the call is what says so. */
+$safe_number = preg_replace('/[^0-9+]/', '', $number);
+$phone = DB::escapeString(substr($safe_number, 5, 3) . '-'
+	. substr($safe_number, 8));
+$area_code = DB::escapeString(substr($safe_number, 2, 3));
 
 $response_message = "If you are getting this message, an error has occurred.";
 
