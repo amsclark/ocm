@@ -70,8 +70,16 @@ BODY="$(mktemp)"
 # Piping it in twice would mean two copies of it in this file, and two copies of
 # that scan disagreeing about what a tag is, is the failure the scan's own checks
 # exist to catch.
-CAL_PY="$(mktemp)"
-trap 'rm -f "$COOKIES" "$BODY" "$CAL_PY"' EXIT
+#
+# In a directory of its own, and not straight into the temp directory, because
+# running python3 on a FILE puts that file's directory first on the import path where
+# piping the same code in puts the working directory. A review found that: with the
+# parser at /tmp/tmp.XXXXXX, a /tmp/html5lib.py written by any local user would be
+# imported in place of the real one, on a box where this suite runs. mktemp -d makes
+# a directory its owner alone can read or write.
+CAL_DIR="$(mktemp -d)"
+CAL_PY="$CAL_DIR/cal_shape.py"
+trap 'rm -f "$COOKIES" "$BODY"; rm -rf "$CAL_DIR"' EXIT
 
 pass=0
 fail=0
@@ -740,10 +748,18 @@ import sys
 # treat any ImportError as absence" also swallows an ImportError raised INSIDE
 # html5lib, so a machine with html5lib installed and one of its dependencies
 # missing reported this check as skipped when it should have failed loudly.
-if importlib.util.find_spec('html5lib') is None:
-	sys.stdout.write('no-html5lib\n')
-	sys.exit(3)
-import html5lib
+#
+# Asked for only when a reply is going to be parsed. --selftest exercises the byte
+# scan, which is string walking and imports nothing, so requiring html5lib for it
+# made the cases FAIL on the machines where the live check SKIPS -- a dependency the
+# cases do not have, reported as a broken check. A review found that, and found the
+# comment in the shell half already claiming the cases need no html5lib while this
+# ran before argv was read.
+if sys.argv[1:2] != ['--selftest']:
+	if importlib.util.find_spec('html5lib') is None:
+		sys.stdout.write('no-html5lib\n')
+		sys.exit(3)
+	import html5lib
 
 # HTML splits a class attribute on ASCII whitespace. Python's str.split() also
 # splits on U+00A0 and U+2003, and a browser keeps those inside a token, so
@@ -1469,8 +1485,7 @@ def _comment_end(text, at):
 	"""The offset just past the comment that starts with '<!--' at at.
 
 	This walks html5lib's six comment states rather than looking for the places a
-	comment can end, because where it ends is not a property any list of shapes
-	states. The previous round listed four ends -- '<!-->' closing at the '>',
+	comment can end. The previous round listed four ends -- '<!-->' closing at the '>',
 	'<!--->' at the '->', then '-->' and '--!>' -- and that list was wrong in the
 	unsafe direction. A NUL byte in commentStartState appends a replacement
 	character and does NOT change the state, so a comment opened, given a NUL and
@@ -1480,14 +1495,20 @@ def _comment_end(text, at):
 	without the NUL prints refuse taglen -- the whole of the previous round's fix
 	bypassed by one byte. A NUL in the four LATER states does the opposite, sending
 	the tokeniser back to commentState, so a '--' with a NUL between it and the '>'
-	does not close the comment at all. No list of end shapes says both of those
-	things, which is why this is a state machine now.
+	does not close the comment at all. Those four patterns say neither of those
+	things. A review pointed out that this is not an argument against enumeration as
+	such -- six states are a finite machine, so some regular expression does match
+	the same spans -- and it is right: what was wrong with the list was the list. The
+	states are what the tokeniser itself is written in, which is what makes them the
+	thing to copy, and the thing a check against the tokeniser can be read against.
 
 	The transitions are read off _tokenizer.py lines 1165-1300. In the two start
-	states a NUL is ignored and a '>' closes; in commentEndState a '-' keeps the
-	state, a '!' moves to commentEndBangState and anything else drops back to the
-	body; in the four later states a NUL drops back to the body. End of input closes
-	the comment wherever it falls, which is what the tokeniser does too.
+	states a NUL leaves the STATE alone -- it still appends a replacement character
+	to the comment's data, so it is not ignored, it just does not move the machine --
+	and a '>' closes. In commentEndState a '>' closes, a '-' keeps the state, a '!'
+	moves to commentEndBangState and anything else drops back to the body. In the
+	four states after the two start states a NUL drops back to the body. End of input
+	closes the comment wherever it falls, which is what the tokeniser does too.
 
 	Checked against the tokeniser itself, exhaustively rather than by example. For
 	every string over the alphabet this machine branches on -- '-', '>', '!', NUL and
@@ -1496,6 +1517,18 @@ def _comment_end(text, at):
 	tokens it emits when fed the tail from the offset this returns: 292968 bodies, no
 	disagreement. The same sweep against the four-end version disagreed on 7315 of
 	97656 cases, every one of them carrying a NUL.
+
+	That comparison is weaker than it sounds, and a review showed why with a case
+	rather than an argument. In '<!--></' followed by 33000 letters the comment ends
+	at 5, and a version returning 33007 would pass this oracle anyway: html5lib
+	discards the unfinished end tag, so both token lists come back EMPTY and equal,
+	while the scan misses a 33000 byte tag. Joining adjacent character runs removes
+	evidence about token counts the same way. So the review re-ran the sweep
+	comparing the tokeniser's own stream POSITION at the comment token -- which is
+	the thing this function returns -- over the same 292968 cases, 20000 wider ones
+	carrying CR, CRLF and non-ASCII text, and 20 comments long enough to cross the
+	tokeniser's chunk boundary, and found no mismatch. That is the comparison that
+	settles it; the one above is what found the NUL.
 	"""
 	size = len(text)
 	i = at + 4
@@ -1618,13 +1651,17 @@ def tag_shape(text):
 		# after <!--> the tokeniser is reading ordinary markup while the skip is still
 		# looking for a -->, and it runs past whatever it finds. The skip does not
 		# merely mis-count that span: where no later --> follows, it stops measuring
-		# tags for the rest of the text, so both the longest tag and the attribute
-		# count come back as 0 whatever is there -- the unsafe direction for two
-		# bounds at once. Where a later --> does follow, the skip resumes after it and
-		# measures again, so only the tags between the two are lost: in
-		# <!--><a x>--><div y> the old skip loses the <a> and still reports the <div>
-		# as 7 bytes with 1 attribute. Either way the reply chooses which of its tags
-		# are measured, which is the part that makes it a bypass and not a mis-count.
+		# tags for the rest of the text, so nothing after the comment reaches either
+		# maximum, whatever is there -- the unsafe direction for two bounds at once.
+		# Both numbers then report whatever was measured BEFORE the comment, which a
+		# review was right to point out is 0 only when that is nothing: a payload
+		# opening with the comment makes it nothing, and <div y><!--><a x> keeps the
+		# <div>'s 7 and 1 and loses the <a>. Where a later --> does follow, the skip
+		# resumes after it and measures again, so only the tags between the two are
+		# lost: in <!--><a x>--><div y> the old skip loses the <a> and still reports
+		# the <div> as 7 bytes with 1 attribute. Either way the reply chooses which of
+		# its tags are measured, which is the part that makes it a bypass rather than
+		# a mis-count.
 		#
 		# Measured, both halves of that. <!--><textarea>--> in front of the previous
 		# round's payload left the tokeniser building a real <textarea> element while
@@ -1747,7 +1784,9 @@ def label(element):
 #
 # Written with escapes and never with literal bytes: this code is spliced into a
 # shell heredoc, so a real NUL would not survive it and a literal CJK character
-# would make the script's own encoding load-bearing.
+# would make the script's own encoding load-bearing. A review found three cases
+# below holding a literal CJK character while this said they did not; they are
+# escapes now, so the claim and the code agree.
 SELFTEST = (
 	# text, longest tag bytes, most attributes, text bytes, raw-text name, why
 	('<td>', 4, 0, 0, '', 'bare tag'),
@@ -1763,7 +1802,7 @@ SELFTEST = (
 	('<td><!-- <tr a b> --><th a>', 6, 1, 17, '', 'only the comment is skipped'),
 	('<!--<x y="-->&&&<!--" >', 0, 0, 23, '', 'a swallowed terminator cannot hide it'),
 	('<!doctype html>', 0, 0, 15, '', 'a doctype is not a tag, so it is text'),
-	('<html title="一一">', 21, 1, 0, '', 'a CJK value counted as bytes'),
+	('<html title="\u4e00\u4e00">', 21, 1, 0, '', 'a CJK value counted as bytes'),
 	('<html title="', 13, 1, 0, '', 'unclosed quote runs to the end'),
 	('<td class="a', 12, 1, 0, '', 'unterminated tag runs to the end'),
 	('<3 not a tag <td a>', 6, 1, 13, '', 'a < before a digit is text, not a tag'),
@@ -1771,8 +1810,8 @@ SELFTEST = (
 	('<td a="1"/>', 11, 1, 0, '', 'self closing with a value'),
 	('<td\ta\nb>', 8, 2, 0, '', 'tab and newline separate names'),
 	('<td a="x">text<tr b c d e>', 12, 4, 4, '', 'the longest tag wins, not the first'),
-	('一一', 0, 0, 6, '', 'text alone, counted as bytes'),
-	('<td>一</td>', 5, 0, 3, '', 'CJK text between tags counted as bytes'),
+	('\u4e00\u4e00', 0, 0, 6, '', 'text alone, counted as bytes'),
+	('<td>\u4e00</td>', 5, 0, 3, '', 'CJK text between tags counted as bytes'),
 	('a<td>b</td>c', 5, 0, 3, '', 'text before, between and after'),
 	('<td>&&&&&</td>', 5, 0, 5, '', 'bare ampersands are text bytes'),
 	# The raw-text name. Only a start tag whose NAME is one of the two counts, so the
@@ -1789,8 +1828,12 @@ SELFTEST = (
 	('<textareax>', 11, 0, 0, '', 'a longer name is a different element'),
 	('<div><plaintext><textarea>', 11, 0, 0, 'plaintext', 'the FIRST one is kept'),
 	('<div>&&&<textarea>&&&', 10, 0, 6, 'textarea', 'the other three still count'),
-	# Where the comment ENDS. Under a search for '-->' every one of these reported a
-	# longest tag of 0 and 0 attributes, whatever followed it. See _comment_end().
+	# Where the comment ENDS. Most of these a search for '-->' read as ending later
+	# than html5lib does, so the markup after the real end went unmeasured and came
+	# back as no tag and no attributes. Three it read correctly, and they are kept
+	# for that: <!----> and <!--a--> carry a '-->' where the comment really ends, and
+	# <!--!> closes nowhere, which is what a search for '-->' also concludes. A
+	# review named the first two. See _comment_end().
 	('<!-->x<td a b c>', 10, 3, 6, '', 'a comment closed at the > by <!-->'),
 	('<!--->x<td a b>', 8, 2, 7, '', 'a comment closed at the -> by <!--->'),
 	('<!---->x<td a>', 6, 1, 8, '', 'the ordinary --> with an empty comment'),
@@ -1801,14 +1844,17 @@ SELFTEST = (
 	('<!--><textarea>-->', 10, 0, 8, 'textarea',
 		'an early end no longer hides a raw-text element'),
 	# A NUL, which is why the four end shapes became six states. In the two START
-	# states the tokeniser ignores it and keeps the state, so a '>' after one still
-	# closes the comment early; in the four later states it goes back to the body, so
-	# a '--' with a NUL after it does not close at all.
+	# states the tokeniser appends a replacement character but does not move the
+	# state, so a '>' after one still closes the comment early; in the four states
+	# after those it goes back to the body, so a '--' with a NUL after it does not
+	# close at all.
 	('<!--\x00>x<td a b c>', 10, 3, 7, '', 'a NUL does not stop the > closing it'),
 	('<!--\x00\x00\x00>x<td a b>', 8, 2, 9, '', 'a RUN of NULs does not either'),
 	('<!---\x00>x<td a>', 6, 1, 8, '', 'the same in commentStartDashState'),
-	('<!--a--\x00>x<td a b c>', 0, 0, 20, '',
+	('<!--a-\x00>x<td a b>', 0, 0, 17, '',
 		'a NUL in commentEndDash goes back to the body, so this does NOT close'),
+	('<!--a--\x00>x<td a b c>', 0, 0, 20, '',
+		'the same one state on, in commentEnd: a review named this state wrongly'),
 	('<!--a--\x00-->x<td a b>', 8, 2, 12, '', 'that comment ends at the later -->'),
 	('<!--a--!\x00>x<td a>', 0, 0, 17, '',
 		'a NUL in commentEndBang goes back to the body too'),
@@ -19722,15 +19768,20 @@ elif [ ! -s "$CAL_PY" ]; then
 else
 	# The expected count is written out here as well as in the parser, so that
 	# deleting cases cannot make this pass with fewer of them. html5lib is not
-	# needed: the scan is pure byte walking and runs before any import of it.
+	# needed: the scan is byte walking, and the parser asks for html5lib only when
+	# it is given a reply to parse. This said so before it was true. A review ran
+	# --selftest with site packages disabled, got no-html5lib and exit 3, and was
+	# right to call it a defect: the cases failed on a missing dependency they do
+	# not use, on exactly the runs where the live check above skips for the same
+	# reason.
 	st_out="$(python3 "$CAL_PY" --selftest 2>&1)"
 	st_rc=$?
 	if [ "$st_rc" != 0 ]; then
 		bad "the reply-shape scan failed its own cases (exit ${st_rc}): $(printf '%s' "$st_out" | tr '\n' ' ')"
-	elif printf '%s' "$st_out" | grep -qxF 'selftest: 50 passed, 0 failed'; then
-		ok "all 50 reply-shape scan cases agree with the scan"
+	elif printf '%s' "$st_out" | grep -qxF 'selftest: 51 passed, 0 failed'; then
+		ok "all 51 reply-shape scan cases agree with the scan"
 	else
-		bad "the reply-shape scan did not report its 50 cases passing: $(printf '%s' "$st_out" | tr '\n' ' ')"
+		bad "the reply-shape scan did not report its 51 cases passing: $(printf '%s' "$st_out" | tr '\n' ' ')"
 	fi
 fi
 
