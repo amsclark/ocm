@@ -121,7 +121,8 @@ base_cleanup() {
 		# tail as a whole path, so it deleted the keep directory and an unrelated file
 		# inside it. A prefix of a path and a whole path missing only its NUL look the
 		# same here. So the tail is named and left alone: one leaked temporary file is
-		# a smaller harm than removing something this suite never made.
+		# a smaller harm than removing something this suite never made. No later append
+		# closes it either; the writer refuses a list that does not end on a boundary.
 		if [ -n "$p" ]; then
 			printf 'smoke: cleanup list ends mid-record, leaving %s behind\n' "$p" >&2
 		fi
@@ -140,11 +141,52 @@ if [ "$TEMP_RC" -ne 0 ] || [ -z "$TEMP_REG" ] || [ ! -f "$TEMP_REG" ]; then
 	exit 1
 fi
 
+# Whether the list ends on a record boundary: its last byte is the NUL that closed the
+# last record. Printed as a number rather than compared as text, because command
+# substitution drops a trailing NUL and a trailing newline alike, and a path may end in
+# a newline. An empty list has no last byte and is not closed, so the caller below asks
+# only about a list with something in it.
+smoke_temp_closed() {
+	[ "$(tail -c 1 "$TEMP_REG" 2>/dev/null | od -An -tu1 | tr -d ' \n')" = '0' ]
+}
+
 # One record, ending in a NUL rather than a newline because a path may hold a newline
 # and cannot hold a NUL. It reports whether the list took it, and every direct caller
 # checks that.
+#
+# A record goes in whole or not at all. An append that stops part way leaves bytes with
+# no NUL after them, and the next append that succeeds would close that record with the
+# wrong path: the first path's leading bytes followed by the whole of the second. The
+# cleanup would then remove an object at the combined name, which is the defect two
+# earlier commits set out to close, arriving by a different route. A review found it.
+#
+# So the size is read before the write and again after it, and the last byte is checked
+# both times. A list that already ends mid-record is not extended, and a write of this
+# own record that fell short is undone by cutting the list back to where it started --
+# which can only drop bytes this call wrote, because a record is only ever appended.
+# Either way the call fails and the caller removes the object it was recording.
+#
+# Two limits remain. If the cut back itself fails, the partial bytes stay, and the next
+# append is then refused rather than merging with them. And a run killed outright in the
+# middle of an append leaves the partial bytes with no cleanup at all, because a shell
+# killed by a signal runs no EXIT trap; measured with a byte-exact RLIMIT_FSIZE, which
+# kills the shell rather than returning a short write.
 smoke_temp_add() {
+	local was now
+	was="$(stat -c %s "$TEMP_REG" 2>/dev/null)" || return 1
+	if [ "$was" -gt 0 ] && ! smoke_temp_closed; then
+		printf 'smoke: cleanup list ends mid-record, not writing down %s\n' "$1" >&2
+		return 1
+	fi
 	printf '%s\0' "$1" >> "$TEMP_REG"
+	now="$(stat -c %s "$TEMP_REG" 2>/dev/null)" || return 1
+	if [ "$now" -gt "$was" ] && smoke_temp_closed; then
+		return 0
+	fi
+	if ! truncate -s "$was" "$TEMP_REG" 2>/dev/null; then
+		printf 'smoke: cleanup list holds a partial record and was not cut back\n' >&2
+	fi
+	return 1
 }
 
 # Both helpers record the path BEFORE reporting mktemp's own status, because mktemp can
@@ -156,8 +198,9 @@ smoke_temp_add() {
 # a full filesystem, a list whose directory has gone, a list replaced by a directory --
 # the new object is removed here and the call fails, because a path the caller holds and
 # the list does not is the leak this replaced. A review found the earlier version
-# reporting success in that case. Removing the list itself is not one of those cases:
-# >> makes it again, and the records already in it are what is lost.
+# reporting success in that case. A list that has been removed is one of those cases as
+# well: >> would make it again, holding this one path and none of the ones before it, so
+# the size the writer reads first is what refuses that.
 #
 # The assignment carries || rc=$? so that an errexit inherited from the caller, under
 # bash -O inherit_errexit or in POSIX mode, cannot end the helper's subshell on a failed
