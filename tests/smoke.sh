@@ -2899,17 +2899,20 @@ MFAPY
 				"$OCM_URL/enroll_mfa.php" >/dev/null
 		}
 		# Where the enrolled session stands, asked with a fresh request.
-		# The POST's own reply cannot answer it: a reply lost in transit
-		# says nothing, and the already-enrolled redirect will not read a
-		# code again to produce another one.
+		# A received application reply would be evidence too, but a POST
+		# whose reply was lost supplies none, and the already-enrolled
+		# redirect will not read a code again to produce another. Returns
+		# curl's status, so a page that refused can be told apart from a
+		# request that never arrived.
 		mfa_app_get() {
 			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
 				"$OCM_URL/" >/dev/null
 		}
-		# 'enc:' or 'none' for a row that was read, and empty for a read
-		# that was not: adb() suppresses errors, so a dropped connection
-		# and a missing row both come back empty and neither may be taken
-		# for an account that is merely not enrolled yet.
+		# 'enc:' for an encrypted secret, 'none' for no secret, another
+		# prefix for a value this check does not expect, and empty only
+		# for a row that was not read: adb() suppresses errors, so a
+		# dropped connection and a missing row both come back empty and
+		# neither may be taken for an account not yet enrolled.
 		mfa_enrol_state() {
 			adb "SELECT IF(totp_secret IS NULL OR totp_secret = '', 'none', LEFT(totp_secret, 4)) FROM users WHERE user_id = ${MFA_UID}"
 		}
@@ -2938,6 +2941,7 @@ MFAPY
 			mfa_enrol_try=0
 			mfa_enrol_done=0
 			mfa_enrol_opened=0
+			mfa_enrol_got=0
 			mfa_enrol_early=0
 			mfa_enrol_unread=0
 			MFA_ENROL_WINDOW=''
@@ -2953,8 +2957,9 @@ MFAPY
 					# MFA_ENROL_WINDOW holding a window no code was
 					# verified against, so stop here instead. On the first
 					# try nothing has posted a real code yet, so an
-					# enrolled account is a broken starting state rather
-					# than a lost reply, and it is reported as one.
+					# enrolled account is not a lost reply. It is a broken
+					# starting state for this check, which need not be a
+					# fault in the server, and it is reported as one.
 					if [ "$mfa_enrol_try" = 1 ]; then
 						mfa_enrol_early=1
 					else
@@ -2963,11 +2968,13 @@ MFAPY
 					break
 				fi
 				if [ "$mfa_enrol_row" != 'none' ]; then
-					# The read failed. Treating that as "not enrolled yet"
-					# is what would let a stored secret this loop cannot
-					# see be followed by a second POST, and the window the
-					# comparison below then expects would belong to a code
-					# the server never verified.
+					# Neither answer: the row was not read, or it holds
+					# something this check does not recognise. Treating
+					# that as "not enrolled yet" is what would let a stored
+					# secret this loop cannot see be followed by a second
+					# POST, and the window the comparison below then
+					# expects would belong to a code the server never
+					# verified.
 					mfa_enrol_unread=1
 					break
 				fi
@@ -2978,9 +2985,12 @@ MFAPY
 				mfa_enroll_post "$MFA_ENROL_CODE"
 				# The row, not the page: the page cannot tell "this code
 				# enrolled the account" from "it was already enrolled".
-				# The read before the POST said 'none', so a secret that
-				# is present now was written by this POST, and
-				# MFA_ENROL_WINDOW is the window its code came from.
+				# The read before the POST said 'none', and nothing else
+				# in this suite writes that column while the POST is in
+				# flight, so a secret present now came from this POST and
+				# MFA_ENROL_WINDOW is the window its code came from. A
+				# second run against the same database would break that,
+				# as it would most of this file's fixtures.
 				mfa_enrol_row="$(mfa_enrol_state)"
 				if [ "$mfa_enrol_row" = 'enc:' ]; then
 					mfa_enrol_done=1
@@ -2990,13 +3000,16 @@ MFAPY
 			done
 			if [ "$mfa_enrol_done" = 1 ]; then
 				mfa_app_get
-				if grep -qi 'logout' "$BODY" \
+				mfa_enrol_got=$?
+				if [ "$mfa_enrol_got" = 0 ] && grep -qi 'logout' "$BODY" \
 					&& ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 					mfa_enrol_opened=1
 				fi
 			fi
 			if [ "$mfa_enrol_done" = 1 ] && [ "$mfa_enrol_opened" = 1 ]; then
 				ok "the right enrollment code finishes enrollment and opens the application"
+			elif [ "$mfa_enrol_done" = 1 ] && [ "$mfa_enrol_got" != 0 ]; then
+				bad "the account enrolled but the application page never arrived (curl exit ${mfa_enrol_got}) - it was not checked"
 			elif [ "$mfa_enrol_done" = 1 ]; then
 				bad "the account enrolled but is still sent to the enrollment page"
 			elif [ "$mfa_enrol_early" = 1 ]; then
@@ -3008,14 +3021,21 @@ MFAPY
 			fi
 			# The replay bound seeded at enrollment. This is the assertion
 			# that catches storing floor(time()/30) instead of the matched
-			# window. MFA_ENROL_WINDOW belongs to the try whose POST wrote
-			# the secret -- the read before that POST said there was none --
-			# and it came out of the same python run as the code that try
-			# sent. A try that could not establish that is reported above
-			# instead of reaching here with a window to compare. The 25e
-			# login below sees the same defect, but only while the run is
-			# still in the window the bad write burned.
-			if [ "$(adb "SELECT totp_last_used FROM users WHERE user_id = ${MFA_UID}")" = "$MFA_ENROL_WINDOW" ]; then
+			# window. It is claimed only where a POST of this run wrote the
+			# secret: MFA_ENROL_WINDOW then belongs to that POST, because
+			# the read before it said there was none, and it came out of
+			# the same python run as the code it sent. Anything else is
+			# reported as unchecked rather than compared -- two empty
+			# strings match, so an unenrolled account and an unreadable
+			# bound would otherwise agree. The bound is read the same
+			# determinate way as the secret, so a read that failed is not
+			# mistaken for a window. The 25e login below sees the same
+			# defect, but only while the run is still in the window the bad
+			# write burned.
+			mfa_enrol_bound="$(adb "SELECT IF(totp_last_used IS NULL, 'null', totp_last_used) FROM users WHERE user_id = ${MFA_UID}")"
+			if [ "$mfa_enrol_done" = 0 ] || [ -z "$MFA_ENROL_WINDOW" ]; then
+				bad "the stored enrollment window was not checked - no code sent by this run enrolled the account"
+			elif [ "$mfa_enrol_bound" = "$MFA_ENROL_WINDOW" ]; then
 				ok "enrollment records the window the accepted code belonged to"
 			else
 				bad "enrollment recorded a different window than the code it accepted - the account's next code will be refused"
@@ -3091,6 +3111,13 @@ MFAPY
 				mfa_pair_set="$(mfa_code_pair "$MFA_SECRET")"
 				mfa_pair_window="${mfa_pair_set%% *}"
 				mfa_pair_code="${mfa_pair_set#* }"
+				# The clock can also move back between the check above and
+				# this run. What was generated is the only reading that
+				# settles it, so the spent window is compared against that
+				# before it is replaced.
+				if [ "$mfa_pair_window" = "$mfa_pair_last" ]; then
+					break
+				fi
 				mfa_pair_last="$mfa_pair_window"
 				mfa_rl_clear
 				mfa_login "$mfa_pair_code"
