@@ -168,10 +168,36 @@ function send_mail_notification($user_id, $case_id, $case_number, $sender_name)
 		$message = "{$sender_name} has sent a new SMS message, you can view it at:  "
 			. pl_canonical_origin() . "{$base_url}/case.php?case_id={$case_id}&screen=sms";
 		
-		$data_string = '{"options": {"sandbox": false, "open_tracking": false, "click_tracking": false}, "content": {"from": "' 
-			. pl_settings_get('sparkpost_from_address') 
-			. '", "subject": "' . $subject . '", "text":"' . $message 
-			. '"}, "recipients": [{"address": "' . $to . '"}]}';
+		// json_encode escapes the values rather than trusting them. Four of
+		// them reach this body as text, and two are supplied by a member of
+		// staff: $case_number arrives through $subject, and $sender_name
+		// through $message. The other two are the from-address setting and
+		// the recipient address. Concatenated in, a quote in any of them
+		// closed the field it was inside and opened another, so a value could
+		// add a field to the request this server makes. The shape of the body
+		// is unchanged.
+		//
+		// Invalid UTF-8 makes json_encode return false, where concatenation
+		// sent the bytes as they were. The flag substitutes those bytes so a
+		// name in another encoding still sends, and the check below refuses
+		// rather than posting an empty body if encoding fails for some other
+		// reason.
+		$data_string = json_encode(array(
+			'options' => array(
+				'sandbox' => false,
+				'open_tracking' => false,
+				'click_tracking' => false),
+			'content' => array(
+				'from' => pl_settings_get('sparkpost_from_address'),
+				'subject' => $subject,
+				'text' => $message),
+			'recipients' => array(
+				array('address' => $to))), JSON_INVALID_UTF8_SUBSTITUTE);
+
+		if ($data_string === false)
+		{
+			return false;
+		}
 		
 		$c = curl_init();
 		curl_setopt($c, CURLOPT_URL, 'https://api.sparkpost.com/api/v1/transmissions');

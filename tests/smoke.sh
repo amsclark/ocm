@@ -18794,6 +18794,55 @@ print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
 			AND username = '${sm105_user}'" >/dev/null 2>&1
 	fi
 fi
+# 106. cms/services/twilio.php built the body it posts to SparkPost by
+# concatenating four values into a hand-written JSON literal: the from-address
+# setting, the subject, the message text and the recipient address. Two of
+# them carry text a member of staff writes -- a case number reaches the
+# subject and a sender name reaches the message -- and none of the four was
+# escaped. A double quote in any of them closed the field it was inside and
+# opened another, so the value decided the shape of the request rather than
+# only its contents, and could add a field SparkPost would honour. The body is
+# now built by json_encode(), which escapes every value it is given.
+#
+# This is a tree sweep, not a request. The notification needs a live SparkPost
+# key and an outbound call, so what is checked is that no PHP file writes a
+# JSON body by hand and that the replacement kept its two deliberate parts.
+echo
+echo "106. no PHP file hand-writes a JSON request body"
+
+# This counts FILES rather than matching lines. The one literal this closed
+# spanned two lines, so a line count read as two findings for one site, and a
+# later multi-line literal would misreport the same way.
+#
+# The pattern is the opening of a JSON object inside a PHP string, which is
+# what somebody writing a literal by hand types. It does not match
+# json_encode() output, which is built at run time rather than written.
+json_literal_files="$(grep -rlF '{"' cms/ --include='*.php' 2>/dev/null | wc -l)"
+if [ "$json_literal_files" -eq 0 ]; then
+	ok "no PHP file builds a JSON request body as a hand-written literal"
+else
+	bad "${json_literal_files} PHP file(s) still build JSON as a hand-written literal"
+fi
+
+# The encoder call that replaced it must keep the flag that leaves a name in
+# another encoding sendable. Without the flag json_encode() returns false on
+# invalid UTF-8 and the notification is dropped, where concatenation had sent
+# the bytes as they were.
+if grep -qF 'JSON_INVALID_UTF8_SUBSTITUTE' cms/services/twilio.php; then
+	ok "the SparkPost body is encoded with the invalid-UTF-8 substitution flag"
+else
+	bad "the SparkPost body has lost JSON_INVALID_UTF8_SUBSTITUTE"
+fi
+
+# An encoder that returns false must not be posted as an empty body. This
+# checks the refusal is present, not that it fires: making json_encode() fail
+# for a reason other than encoding needs a value no caller of this function
+# can supply.
+if grep -qF '$data_string === false' cms/services/twilio.php; then
+	ok "an unencodable SparkPost body is refused rather than posted empty"
+else
+	bad "an unencodable SparkPost body is not refused"
+fi
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
