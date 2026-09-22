@@ -235,20 +235,26 @@ $case_id = '';
 
 /*    The slicing comes after the stripping, not after the escaping. Escaping
 	doubles a backslash and puts one in front of a quote, so a substr()
-	boundary can land between a backslash and the character it protects. Both
-	of the offsets below are such a boundary: a number carrying a quote at
-	raw index 4 left $area_code ending in a lone backslash, which made
-	MariaDB read the query's next quote as ordinary text and join two string
-	literals into one. The phone comparison then disappeared, and other
-	placements made the query unparseable, so the message was dropped
-	instead of saved.
+	boundary can land between a backslash and the character it protects.
+	There are three offsets below, and the area code's ends at raw index 4:
+	a number carrying a quote there left $area_code holding a lone
+	backslash at its end, which made MariaDB read the closing quote of that
+	value as ordinary text and join it to the next string literal in the
+	query. The phone comparison then disappeared. Other placements left a
+	backslash elsewhere and made the query unparseable, so the message was
+	dropped instead of saved. Whether any placement can be made to widen
+	the result set instead was not established either way.
 
 	Removing every character that is not a digit or a plus first means a
-	slice can no longer end on an escape character, because there is nothing
-	left to escape. The offsets are unchanged, so a well-formed E.164 number
-	gives the same area code and phone it gave before. The escaping stays
-	even though it now has nothing to do, because these two values are
-	interpolated into a query below and the call is what says so. */
+	slice can no longer end on an escape character, because the escaper is
+	left with nothing to escape. The offsets are unchanged, so a sender made
+	only of digits and a plus derives the area code and phone it derived
+	before, well formed or not. A sender written with spaces, dashes, dots
+	or parentheses derives different values than before, because removing a
+	character shifts every later one to the left; those senders never
+	derived a matching pair anyway. The escaping stays even though it now
+	has nothing to do, because all three slices feed two values that are
+	interpolated into a query below, and the call is what says so. */
 $safe_number = preg_replace('/[^0-9+]/', '', $number);
 $phone = DB::escapeString(substr($safe_number, 5, 3) . '-'
 	. substr($safe_number, 8));

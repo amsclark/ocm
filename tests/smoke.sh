@@ -18858,75 +18858,148 @@ fi
 # substr() slices of the result, interpolating them into the contact
 # lookup. Escaping doubles a backslash and puts one before a quote, so a
 # slice boundary could separate a backslash from what it protected and
-# leave a lone backslash at the end of a value. MariaDB then read the
-# query's next quote as ordinary text, joined two string literals, and the
-# phone comparison disappeared; other placements made the query
-# unparseable and the message was lost. Measured on the unpatched file
-# against a seeded contact: of 75 single-character insertions, 0 widened
-# the result set and 18 broke the query. With the strip in place, 0 broke
-# it and 0 widened it.
+# leave a lone backslash at the end of a value. MariaDB then read that
+# value's closing quote as ordinary text and joined it to the next string
+# literal, and the phone comparison disappeared; other placements left a
+# backslash elsewhere, made the query unparseable, and lost the message.
 #
-# The first two rows are code-presence checks, filtered so the pattern
-# quoted in a comment does not pass. Reaching this code needs a signed
-# Twilio request, so they say the guard is written, not that it ran. The
-# third row is a sweep of the whole tree and can fail on a file this fix
-# never touched.
+# What was measured on the unpatched file, against one seeded contact, was
+# that of 75 single-character insertions none returned a row that contact
+# did not already match, and 18 made the query fail. That is narrow: it
+# says those probes did not widen the result set, not that none can. With
+# the strip in place none failed, and inserting a character the strip
+# removes derives the original number again, so it matches exactly what
+# the clean number matches.
+#
+# The first two rows are code-presence checks. Reaching this code needs a
+# signed Twilio request, so they say the guard is written, not that it
+# ran. Both read a comment-stripped copy of the file, so the pattern
+# quoted in a // comment, a # comment or a /* */ block does not satisfy
+# them. The stripper does not parse string literals, so a comment marker
+# inside a string would be cut as well; no line these rows look for holds
+# one. The third row is a static sweep of the whole tree and can fail on a
+# file this fix never touched.
 echo
 echo "107. the inbound SMS number is stripped before it is sliced"
 
-if grep -F "preg_replace('/[^0-9+]/', '', \$number);" cms/services/twilio.php \
-	| grep -qvF '//'; then
-	ok "the inbound SMS number is stripped to digits and a plus"
+# Print a PHP file with its comments removed, one output line per input
+# line so line numbers still mean something. A // or # tail is cut, and a
+# /* */ block is cut even where it spans lines. String literals are not
+# parsed, so a comment marker inside a string is cut too.
+sm107_code_only()
+{
+	awk '
+		{
+			line = $0
+			out = ""
+			while (1)
+			{
+				if (sm107_inblock)
+				{
+					p = index(line, "*/")
+					if (p == 0) { break }
+					sm107_inblock = 0
+					line = substr(line, p + 2)
+					continue
+				}
+				b = index(line, "/*")
+				s = index(line, "//")
+				h = index(line, "#")
+				cut = 0
+				if (s > 0 && (h == 0 || s < h)) { cut = s }
+				else if (h > 0) { cut = h }
+				if (b > 0 && (cut == 0 || b < cut))
+				{
+					out = out substr(line, 1, b - 1)
+					line = substr(line, b + 2)
+					sm107_inblock = 1
+					continue
+				}
+				if (cut > 0) { out = out substr(line, 1, cut - 1) }
+				else { out = out line }
+				break
+			}
+			print out
+		}
+	' "$1"
+}
+
+sm107_clean="$(sm107_code_only cms/services/twilio.php)"
+
+# The strip must be live code and must be the only thing that assigns
+# $safe_number, so that a later line cannot hand the slices the raw number
+# back again.
+sm107_assign="$(printf '%s\n' "$sm107_clean" | grep -cF '$safe_number =')"
+sm107_strip="$(printf '%s\n' "$sm107_clean" \
+	| grep -cF "\$safe_number = preg_replace('/[^0-9+]/', '', \$number);")"
+if [ "$sm107_assign" -eq 1 ] && [ "$sm107_strip" -eq 1 ]; then
+	ok "the inbound SMS number is stripped to digits and a plus, once"
 else
-	bad "the inbound SMS number is no longer stripped before slicing"
+	bad "the SMS strip is not the sole assignment to \$safe_number (${sm107_assign} assignments, ${sm107_strip} strips)"
 fi
 
-# Both offsets must read the stripped value, and the escaping must wrap the
-# slice rather than feed it. Three lines carry a slice: two build $phone and
-# one builds $area_code. Comment lines are dropped from both counts, so
-# leaving the fixed text in a comment beside reverted code does not pass.
-sm107_slices="$(grep -F 'substr($safe_number' cms/services/twilio.php \
-	| grep -vF '//' | grep -c '')"
-sm107_area="$(grep -F '$area_code = DB::escapeString(substr($safe_number, 2, 3));' \
-	cms/services/twilio.php | grep -vF '//' | grep -c '')"
-if [ "$sm107_slices" -eq 3 ] && [ "$sm107_area" -eq 1 ]; then
-	ok "the SMS slices read the stripped number and are escaped after slicing"
+# All three offsets must read the stripped value, and both interpolated
+# values must be escaped after slicing rather than before. Three lines
+# carry a slice: two build $phone and one builds $area_code.
+sm107_slices="$(printf '%s\n' "$sm107_clean" | grep -cF 'substr($safe_number')"
+sm107_area="$(printf '%s\n' "$sm107_clean" \
+	| grep -cF '$area_code = DB::escapeString(substr($safe_number, 2, 3));')"
+sm107_phone="$(printf '%s\n' "$sm107_clean" \
+	| grep -cF "\$phone = DB::escapeString(substr(\$safe_number, 5, 3) . '-'")"
+if [ "$sm107_slices" -eq 3 ] && [ "$sm107_area" -eq 1 ] \
+	&& [ "$sm107_phone" -eq 1 ]; then
+	ok "both SMS values read the stripped number and are escaped after slicing"
 else
-	bad "the SMS slices no longer read the stripped number (${sm107_slices} slices, ${sm107_area} area_code)"
+	bad "the SMS slices or their escaping moved (${sm107_slices} slices, ${sm107_area} area_code, ${sm107_phone} phone)"
 fi
 
-# Class guard: no file may slice a value that DB::escapeString() produced
-# earlier in the same file. Order matters and a plain grep cannot see it --
-# cms/modules/case-outcomes.php slices $problem_code on one line and escapes
-# it on the next, which is the safe order and must not be reported. So awk
-# reads each file once, records the line number of every assignment from the
-# escaper, and reports a substr() only when it reads such a variable on a
-# LATER line. Comment and docblock lines are skipped. Every caller in the
-# tree now slices first and escapes second, so this sweep is expected to
-# find nothing; it can fail on a file this fix never touched.
+# Class guard: a static sweep for the same shape elsewhere. Comments are
+# removed first, then awk reads each file once, records the line number of
+# every assignment whose right-hand side calls DB::escapeString(), drops
+# that record when the name is later given something else, and reports a
+# substr() that reads such a name on a LATER line. It expects to find
+# nothing. cms/modules/case-outcomes.php slices $problem_code on one line
+# and escapes it on the next, which is the safe order, and is correctly
+# left alone.
+#
+# This is a line-order heuristic over one file at a time, not data flow.
+# It does not see an assignment or a substr() call split across lines, an
+# escape and a slice on the same line, a second escaped assignment on the
+# same line, a value reached through an alias or an array element, a slice
+# handed the escaper's return value directly, a slice that runs before the
+# escape on the next pass of a loop, or one name meaning different things
+# in two functions. Text inside a heredoc is read as code. So a clean run
+# is evidence, not proof, and a report can be a false one.
 sm107_sliced=0
 for sm107_f in $(grep -rlF 'DB::escapeString' cms/ --include='*.php' 2>/dev/null)
 do
-	sm107_hits="$(awk '
-		/^[ \t]*(\/\/|\*|\/\*)/ { next }
+	sm107_hits="$(sm107_code_only "$sm107_f" | awk -v fn="$sm107_f" '
 		{
 			line = $0
-			if (match(line, /\$[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*DB::escapeString/)) {
+			if (match(line, /\$[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*[^=]/)) {
 				v = substr(line, RSTART, RLENGTH)
 				sub(/[ \t]*=.*$/, "", v)
-				esc[v] = NR
+				eq = index(line, "=")
+				rhs = substr(line, eq + 1)
+				if (rhs ~ /^[ \t]*DB::escapeString/) {
+					esc[v] = NR
+				}
+				else if (index(rhs, v) == 0) {
+					delete esc[v]
+				}
 			}
 			rest = line
-			while (match(rest, /substr\(\$[A-Za-z_][A-Za-z0-9_]*/)) {
-				u = substr(rest, RSTART + 7, RLENGTH - 7)
+			while (match(rest, /substr\([ \t]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+				u = substr(rest, RSTART, RLENGTH)
+				sub(/^substr\([ \t]*/, "", u)
 				if ((u in esc) && esc[u] < NR) {
-					print FILENAME ":" NR ": substr() slices " u \
+					print fn ":" NR ": substr() slices " u \
 						" escaped on line " esc[u]
 				}
 				rest = substr(rest, RSTART + RLENGTH)
 			}
 		}
-	' "$sm107_f")"
+	')"
 	if [ -n "$sm107_hits" ]; then
 		sm107_sliced=$((sm107_sliced + $(printf '%s\n' "$sm107_hits" | grep -c '')))
 		printf '    %s\n' "$sm107_hits"
