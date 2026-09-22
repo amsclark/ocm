@@ -844,35 +844,57 @@ BYTES = 65536
 # is a bad check and is worth fixing once, properly, rather than chased shape by
 # shape.
 TAGS = 2048
-# Raised from 512 this round, because 512 refused this endpoint's own output. A
-# year of 600 zeros is a real HTTP 200 whose navigation anchor is 660 bytes, and
-# the true ceiling is 8130 bytes at 8070 zeros, where Apache's LimitRequestLine
-# refuses the request line rather than the application refusing the value. The
-# reason it is safe to raise: length was only ever a proxy for the attribute count,
-# TAGATTRS counts that directly now, and length on its own is measured to cost
-# nothing -- 8130 bytes in one tag is 0.002s and 60014 bytes in one tag is 0.004s.
-# So this is a shape check with room for anything the emitters can produce, not a
-# cost bound. Range-validating year is an application change and is reported, not
-# made here.
-TAGLEN = 8192
+# Raised from 512 two rounds ago because 512 refused this endpoint's own output,
+# and raised again here because 8192 did not clear that output by enough to be
+# worth calling a bound. A year of 600 zeros is a real HTTP 200 whose navigation
+# anchor is 660 bytes. Asked over HTTP for the largest it can be made to send, the
+# answer is 8157 bytes: field_name and container are echoed into the same anchor
+# and are truncated to 64 characters each, so making them one character each buys
+# room for more of year, and 8097 zeros is the last value accepted before Apache
+# answers 414 on the request line. 8192 sat 35 bytes above that.
+#
+# 35 bytes is not headroom, and what holds that ceiling is LimitRequestLine, a
+# deployment setting this repository does not control: a deployment that raises it
+# would have this check refuse its own endpoint's output, which is the exact
+# failure that moved TAGLEN off 512. So the margin is now large enough that only
+# BYTES can be the binding limit.
+#
+# What this is not: a cost bound. Length on its own is measured cheap -- 8130 bytes
+# in one tag is 0.002s and 60014 bytes in one tag is 0.004s -- but two measurements
+# of long tags do not prove that no long tag is expensive, and nothing here rests
+# on that. The per-tag attribute count, which was the real cost behind the old
+# proxy, is measured directly by TAGATTRS, and BUDGET bounds whatever neither of
+# them predicts. Range-validating year is an application change and is reported,
+# not made here.
+TAGLEN = 32768
 TAGATTRS = 64
-# The product above, over-estimated in the safe direction: text bytes are at least
-# the character token count and < characters are at least the stack depth. The
-# threshold is read off a built curve, not extrapolated. Legitimate replies sit at
-# 20972 (196 < characters, 107 bytes of text, the six-week months), and the largest
-# any accepted request can reach is 1471860, at the LimitRequestLine ceiling above.
-# This is five times that and sixteen times below the 108677277 of the shape that
-# started this round. Measured cost at or under it: 0.19s, against 0.006s live.
+# The product above. Both factors are normally over-estimates -- < characters are
+# at least the stack depth, and text bytes are normally at least the in-body
+# character token count -- but "normally" is doing work in that sentence and the
+# exception is handled at RAWTEXT_INBODY below rather than papered over here.
+# The threshold is read off a built curve, not extrapolated. Legitimate replies sit
+# at 20972 (196 < characters, 107 bytes of text, the six-week months), and the
+# largest any accepted request can reach is 1476720, measured over HTTP at the
+# LimitRequestLine ceiling above: 180 < characters and 8204 bytes of text. That
+# figure was wrong twice before being measured -- 1471860 here, then 1473660 from
+# reading the emitters -- which is the argument for asking the endpoint rather than
+# the source. This threshold is 5.4 times it, and 13.58 times below the 108677277
+# of the shape that started the previous round. Measured cost at or under it:
+# 0.19s, against 0.006s live.
 #
 # The product predicts cost only loosely -- 2386802 costs 0.134s while 11298201
 # costs 0.109s, because a div stack carries a second quadratic of its own -- so
 # this is a fast-fail and not the bound that holds. BUDGET is the bound that holds.
+# A measured demonstration of the difference, from the round that added the two
+# names at RAWTEXT_INBODY: a reply this product reads as 214856 and lets through
+# spends 0.903 CPU seconds, 37 times inside a fast-fail it walks past and well
+# inside the bound that stops it.
 PRODUCT = 8000000
 # CPU seconds, not wall-clock seconds, so a loaded machine cannot fail the check:
 # ITIMER_VIRTUAL counts only time this process spends on a processor. Everything
-# legitimate is three orders of magnitude inside this -- the live reply costs 0.006s
-# and the worst legitimate reply measured 0.05s -- so it is a bound on the failure
-# mode rather than a deadline anything real has to meet. Measured to interrupt
+# legitimate is far inside this -- the live reply costs 0.006s and the worst
+# legitimate reply measured 0.05s, which this clears by 100 times -- so it is a
+# bound on the failure mode rather than a deadline anything real has to meet. Measured to interrupt
 # html5lib cleanly: a budget of 0.05 fires at 0.056 CPU seconds inside a parse that
 # would have taken 0.860.
 BUDGET = 5.0
@@ -882,7 +904,42 @@ BUDGET = 5.0
 # process instead of refusing politely, which the shell half reports as a reply it
 # could not read -- loud, which is the right direction. It is never expected to be
 # the thing that stops a run.
+#
+# For the kernel to need no cooperation, both halves of the limit have to be set.
+# Measured: setting the soft limit and passing the inherited hard limit through
+# left hard=-1, and a process that inherited SIGXCPU as ignored then ran 2.65 CPU
+# seconds past a 1 second soft limit and exited 0. Setting the hard limit to the
+# same number killed it with SIGKILL, which no disposition can refuse. Both are
+# done at start_budget(), along with putting SIGXCPU back to its default so the
+# soft limit is lethal on its own.
 HARD_BUDGET = 60
+# The two element names whose content html5lib tokenises as text while leaving the
+# tree builder in its in-body insertion mode, so that their bytes arrive at
+# InBodyPhase.processCharacters -- which is the one place the cost BUDGET bounds is
+# spent. This is the complete set, read off the library rather than guessed: in
+# html5lib 1.2's html5parser.py, exactly three methods assign a tokeniser state,
+# and only the two inside InBodyPhase (lines 919 to 1644) matter -- plaintextState
+# at 1066 and rcdataState at 1204, reached by <plaintext> and <textarea>. The third
+# is in InHeadPhase. Every other raw-text name -- title, style, script, xmp,
+# iframe, noembed, noframes, noscript -- goes through parseRCDataRawtext, which
+# pushes TextPhase, and TextPhase.processCharacters does not reconstruct anything.
+# Measured, in in-body character tokens for the same 7000 hidden bytes: textarea
+# 7099 and plaintext 7099, against 95 for each of title in the head, title in the
+# body, style, xmp, iframe and noembed.
+#
+# Why they are refused here rather than measured. tag_shape() has no tokeniser
+# state, so it reads '<a ' + 50000 & characters + '>' inside a <textarea> as a tag
+# and counts 107 bytes of text where the parser sees 52122 character tokens. That
+# under-counts the PRODUCT fast-fail, which is the direction that lets an expensive
+# reply through: measured, such a reply reads as product 214856, walks past a
+# threshold of 8000000, and costs 0.903 CPU seconds -- the same cost class as the
+# shape that made the previous round add a budget at all. Both names are already
+# refused by ALLOWED below, so refusing them from the scan changes no verdict; it
+# moves the refusal to before the cost instead of after it. The cheaper of the two
+# is worth writing down as well, because it shows what the cost actually counts:
+# plaintext hides the same 52199 bytes but the tokeniser emits them as 45 character
+# tokens rather than 52122, and it costs 0.17s. The multiplier is tokens, not bytes.
+RAWTEXT_INBODY = frozenset(('plaintext', 'textarea'))
 # What this endpoint sends: a table of rows and cells holding anchors, and the
 # one script element that loads the click handler. The rest of the list is plain
 # flow markup a future template could reasonably use. ANYTHING ELSE IS REFUSED,
@@ -1126,7 +1183,14 @@ def refuse(reason):
 	so it says so rather than passing it, which is the only direction that is
 	safe: refusing a good reply is noise a person reads, but passing a reply the
 	client cannot draw is the fault every earlier round of this check had.
+
+	The timer repeats, so it is cancelled before anything is written. A fire after
+	the write and before the exit wrote a second refusal line, and two refusal lines
+	break the one-verdict protocol the shell half reads. Cancelling first costs
+	nothing on the paths that never armed it, because setitimer(0) on an unarmed
+	timer is a no-op, and the verdict path already cancels before it writes.
 	"""
+	stop_budget()
 	safe = REASON.sub(lambda hit: '.%X.' % ord(hit.group()), reason)
 	sys.stdout.write('refuse %s\n' % safe[:60])
 	sys.exit(4)
@@ -1156,7 +1220,13 @@ def start_budget():
 		room = HARD_BUDGET
 		if hard != resource.RLIM_INFINITY:
 			room = min(HARD_BUDGET, hard)
-		resource.setrlimit(resource.RLIMIT_CPU, (room, hard))
+		# Both halves, and the hard limit lowered too: at the soft limit the kernel
+		# sends SIGXCPU, which a disposition inherited from whatever launched this
+		# can ignore, and at the hard limit it sends SIGKILL, which nothing can. A
+		# limit is only ever lowered here, never raised, so this cannot fail on
+		# privileges. SIGXCPU goes back to its default for the same reason.
+		resource.setrlimit(resource.RLIMIT_CPU, (room, room))
+		signal.signal(signal.SIGXCPU, signal.SIG_DFL)
 	except (OSError, ValueError):
 		# A platform that will not take the hard limit still gets the timer, which
 		# is the mechanism that is measured to work. Failing the whole check over
@@ -1248,6 +1318,17 @@ def json_string(element, name):
 		# 20000 open brackets made this parser traceback and exit 1, which told
 		# the shell only that the parser exited 1 -- a confusing failure where an
 		# invalid field is the honest answer.
+		#
+		# Round 21 raised TAGLEN from 8192 to 32768, which turned that from a
+		# path an earlier bound kept out of reach into a live one. Measured:
+		# json.loads starts raising at 9998 open brackets, and 9998 of them in
+		# this attribute make a tag of 10135 bytes -- above the old 8192 and far
+		# below the new 32768 -- so a reply carrying them now reaches this line.
+		# It returns None, and the reply is REJECTED rather than refused: the
+		# verdict reports the field name as not the one asked for, which is the
+		# honest answer, in 0.056s. Against a copy of this parser narrowed to
+		# except ValueError the same reply exits 1 with a traceback. So the
+		# second name in this clause is load bearing now, not defensive.
 		return None
 	return parsed if isinstance(parsed, str) else None
 
@@ -1327,6 +1408,10 @@ def tag_shape(text):
 	"""The longest start or end tag in UTF-8 BYTES, the most attribute names on any
 	one tag, and the UTF-8 BYTES that fall outside a tag.
 
+	Also the name of the first start tag, if any, from RAWTEXT_INBODY, because inside
+	one of those two elements this scan's idea of what is a tag and the parser's come
+	apart and the third number stops being an over-estimate. See RAWTEXT_INBODY.
+
 	The quadratic costs are in the second and third numbers. On the second: a > inside
 	a quoted value hid 15752 attributes behind a reported longest tag of 158 -- the
 	same number the legitimate reply reports -- and a 4.409s parse, so the scan tracks
@@ -1336,15 +1421,20 @@ def tag_shape(text):
 	of CJK measured 215; every count here is bytes.
 
 	Only a < followed by an ASCII letter, or </ plus a letter, is read as a tag, so
-	<!--, <!doctype and a < before a digit are not measured as tags -- and their bytes
-	therefore count as TEXT. Markup inside a comment IS measured as a tag, which
-	over-measures the first two numbers and under-measures the third. Both errors are
-	deliberate and in opposite directions for a reason: over-measuring a tag refuses a
-	reply a browser would draw, which is loud, while under-measuring passes one it
-	would not. For the text bytes the safe direction is to over-count, and treating a
-	comment's markup as tags under-counts it -- measured, a comment is not a cheap
-	route to this cost anyway, because its content is one comment token and not
-	character tokens at all.
+	<!doctype and a < before a digit are not measured as tags -- and their bytes
+	therefore count as TEXT. Over-measuring a tag refuses a reply a browser would
+	draw, which is loud; under-measuring passes one it would not, and for the text
+	bytes the safe direction is therefore to over-count.
+
+	Two places used to under-count instead, and both are now handled rather than
+	admitted. A comment is skipped whole to its first --> and charged to text, because
+	until this round its markup was measured as tags: that let a fake tag swallow the
+	comment's own terminator and charge 48095 bytes of character data to one attribute
+	value, an under-count of 367 times that passed every bound. And inside a
+	RAWTEXT_INBODY element the tokeniser emits as text what this scan reads as tags,
+	an under-count of 107 bytes against 52122 character tokens; rather than give this
+	scan the parser state it would need to count that honestly, a reply carrying
+	either name is refused before the parse. See RAWTEXT_INBODY.
 
 	An unterminated tag or an unclosed quote runs to the end of the text, which is
 	what the tokeniser would do and the safe direction.
@@ -1352,13 +1442,38 @@ def tag_shape(text):
 	longest = 0
 	most = 0
 	textbytes = 0
+	rawtext = ''
 	size = len(text)
 	at = 0
 	cursor = 0                                  # first byte not yet accounted for
 	while True:
 		at = text.find('<', at)
 		if at < 0:
-			return longest, most, textbytes + _run(text, cursor, size)
+			return longest, most, textbytes + _run(text, cursor, size), rawtext
+		# A comment first, because until this round the scan had no idea of one and a
+		# fake tag could swallow the comment's own terminator. In <!--<x y="--> the
+		# tokeniser closes the comment at that -->, while this scan read <x y=" as a
+		# tag and everything after it as that tag's quoted attribute value. Measured,
+		# that charged 48095 bytes of in-body character data to a tag, reported 131
+		# text bytes -- a 367-fold under-count -- passed every bound with a product of
+		# 261869 against 8000000, and cost 0.847 CPU seconds for a reply that then
+		# reported a perfectly good calendar.
+		#
+		# Skipping to the first --> and charging the span to text is what the tokeniser
+		# does, and every way this can be wrong over-counts rather than under-counts: a
+		# comment's content is one comment token and no character tokens at all, so a
+		# span taken for a comment is charged text that is never emitted. The ends this
+		# misses -- --!> also closes a comment, and <!--> closes at the > -- leave the
+		# span running to the end of the text, which over-counts as well. Against the
+		# endpoint's own output none of this can fire: 0 of 91 real replies contain a
+		# comment at all.
+		if text[at:at + 4] == '<!--':
+			shut = text.find('-->', at + 4)
+			stop = size if shut < 0 else shut + 3
+			textbytes += _run(text, cursor, stop)
+			cursor = stop
+			at = stop
+			continue
 		after = at + 1
 		if after < size and text[after] == '/':
 			after += 1
@@ -1367,10 +1482,19 @@ def tag_shape(text):
 			continue
 		textbytes += _run(text, cursor, at)
 		i = after
-		run = 1 + (1 if text[at + 1] == '/' else 0)
+		closing = text[at + 1] == '/'
+		run = 1 + (1 if closing else 0)
 		while i < size and text[i] not in WS and text[i] not in '/>':
 			run += _width(text[i])
 			i += 1
+		# Matched on a start tag's name, not on any occurrence of the word: the name
+		# in a day label, in an attribute value or inside a comment does not set this,
+		# because a browser makes an element from none of them. The comment case is
+		# skipped above rather than matched here, which is why this differs from
+		# refuse template and refuse formatting -- those two ask the whole text and do
+		# fire on a comment, deliberately and loudly.
+		if not closing and not rawtext and text[after:i].lower() in RAWTEXT_INBODY:
+			rawtext = text[after:i].lower()
 		state = 0                                   # 0 seek, 1 name, 2 after
 		quote = ''                                  # 3 before value, 4 quoted, 5 bare
 		attrs = 0
@@ -1423,7 +1547,7 @@ def tag_shape(text):
 			most = attrs
 		cursor = i
 		at = i if i > at else at + 1
-	return longest, most, textbytes
+	return longest, most, textbytes, rawtext
 
 def label(element):
 	"""What a person reads in the element, with the invisible taken off."""
@@ -1475,11 +1599,16 @@ if FORMATTING.search(text):
 tags = text.count('<')
 if tags > TAGS:
 	refuse('tags')
-tag_bytes, tag_attrs, text_bytes = tag_shape(text)
+tag_bytes, tag_attrs, text_bytes, rawtext = tag_shape(text)
 if tag_bytes > TAGLEN:
 	refuse('taglen')
 if tag_attrs > TAGATTRS:
 	refuse('tagattrs')
+# Before the product, because it is the reason the product can be wrong. ALLOWED
+# refuses both names anyway, so this reaches the same verdict by the same reason
+# string -- it just reaches it before the cost rather than after.
+if rawtext:
+	refuse('element:%s' % rawtext)
 if tags * text_bytes > PRODUCT:
 	refuse('product')
 
