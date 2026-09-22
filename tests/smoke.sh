@@ -71,9 +71,11 @@ OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 # the trap in force where the file was made: 3 were covered, 47 were named only by a
 # trap installed further down, and 23 were named by no installed trap at all.
 #
-# So nothing is named. The helpers record what they hand out, and a file is covered
-# from the moment it is written down, wherever in the run it is made. A section added
-# later is covered if it asks a helper for its files.
+# So the traps below name no paths of their own. The helpers record what they hand out,
+# and a file is removed at exit if its whole record reached the list and the run leaves
+# through a path that runs base_cleanup. A section added later is covered if it asks a
+# helper for its files; a name it derives from one, as the suffixes below do, has to be
+# written down as well.
 #
 # Two of those 23 cannot be reached by a trap up here whatever it names: they are local
 # to sm76_login, and both of its callers run it inside a command substitution, so the
@@ -85,27 +87,37 @@ OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 # when the subshell closes. That is the same mistake in a smaller shape, and it is
 # why this is not an array.
 #
-# The cleanup is a function rather than a string, because 62 sections below install an
-# EXIT trap of their own and then restore this one by writing out 'base_cleanup;
-# cleanup_x', and three more compose it with a body of their own. A review found that
-# every one of those copies had been written before the parser directory existed, so a
-# completed run left it behind. Named once, a restored trap cannot drop half of it.
+# The cleanup is a function rather than a string, because every one of the 129 EXIT
+# traps in this file has to name it: 64 install it alone, 62 compose it with a section
+# cleanup as 'base_cleanup; cleanup_x', and three with a body of their own. A review
+# found that each of those copies had been written before the parser directory existed,
+# so a completed run left it behind. Named once, none of them can drop half of it.
 #
 # It is armed before the list exists, and the list is empty until something is made.
-# rm -f '' removes nothing and returns 0; an UNSET name under set -u would fail instead,
-# so the name is declared.
+# rm -f -- '' removes nothing and returns 0; an UNSET name under set -u would fail
+# instead, so the name is declared.
 TEMP_REG=''
 base_cleanup() {
-	local p
-	# Records are separated by NUL, so || [ -n "$p" ] is what picks up a last record
-	# whose NUL never reached the file, which is what a run killed mid-append leaves.
+	local p=''
 	if [ -n "$TEMP_REG" ] && [ -f "$TEMP_REG" ]; then
-		while IFS= read -r -d '' p || [ -n "$p" ]; do
+		# Records are separated by NUL, and -- because a path may begin with a dash,
+		# which rm would otherwise read as an option.
+		while IFS= read -r -d '' p; do
 			[ -n "$p" ] || continue
-			rm -rf "$p"
+			rm -rf -- "$p"
 		done < "$TEMP_REG"
+		# Anything after the last NUL is a record whose write was cut short, and it is
+		# NOT removed. A review induced a real short write with RLIMIT_FSIZE: the list
+		# took 'keep' out of 'keep/tmp.XXXXXX', and the loop this replaced treated that
+		# tail as a whole path, so it deleted the keep directory and an unrelated file
+		# inside it. A prefix of a path and a whole path missing only its NUL look the
+		# same here. So the tail is named and left alone: one leaked temporary file is
+		# a smaller harm than removing something this suite never made.
+		if [ -n "$p" ]; then
+			printf 'smoke: cleanup list ends mid-record, leaving %s behind\n' "$p" >&2
+		fi
 	fi
-	rm -f "$TEMP_REG"
+	rm -f -- "$TEMP_REG"
 }
 trap base_cleanup EXIT
 
@@ -120,8 +132,8 @@ if [ "$TEMP_RC" -ne 0 ] || [ -z "$TEMP_REG" ] || [ ! -f "$TEMP_REG" ]; then
 fi
 
 # One record, ending in a NUL rather than a newline because a path may hold a newline
-# and cannot hold a NUL. It reports whether the list took it, and no caller ignores
-# that.
+# and cannot hold a NUL. It reports whether the list took it, and every direct caller
+# checks that.
 smoke_temp_add() {
 	printf '%s\0' "$1" >> "$TEMP_REG"
 }
@@ -132,9 +144,11 @@ smoke_temp_add() {
 # one list serves both.
 #
 # A path is handed back only once it is written down. If the list cannot be written --
-# a full filesystem, a removed list -- the new object is removed here and the call
-# fails, because a path the caller holds and the list does not is the leak this
-# replaced. A review found the earlier version reporting success in that case.
+# a full filesystem, a list whose directory has gone, a list replaced by a directory --
+# the new object is removed here and the call fails, because a path the caller holds and
+# the list does not is the leak this replaced. A review found the earlier version
+# reporting success in that case. Removing the list itself is not one of those cases:
+# >> makes it again, and the records already in it are what is lost.
 #
 # The assignment carries || rc=$? so that an errexit inherited from the caller, under
 # bash -O inherit_errexit or in POSIX mode, cannot end the helper's subshell on a failed
@@ -145,7 +159,7 @@ smoke_temp() {
 	local p rc=0
 	p="$(mktemp "$@")" || rc=$?
 	if [ -n "$p" ] && ! smoke_temp_add "$p"; then
-		rm -rf "$p"
+		rm -rf -- "$p"
 		printf 'smoke: could not add %s to the cleanup list\n' "$p" >&2
 		return 1
 	fi
@@ -156,7 +170,7 @@ smoke_tempdir() {
 	local p rc=0
 	p="$(mktemp -d "$@")" || rc=$?
 	if [ -n "$p" ] && ! smoke_temp_add "$p"; then
-		rm -rf "$p"
+		rm -rf -- "$p"
 		printf 'smoke: could not add %s to the cleanup list\n' "$p" >&2
 		return 1
 	fi
@@ -164,14 +178,31 @@ smoke_tempdir() {
 	printf '%s\n' "$p"
 }
 
+# A helper that fails prints nothing, so an unchecked assignment leaves an empty name.
+# For BODY that is not only a broken test: the loop below would then write down '.txt',
+# '.hdr' and the fifteen other suffixes relative to the working directory, and the
+# cleanup would remove those names at exit whether or not this suite made them. A review
+# reproduced that with a mktemp that failed on its third call, and again with one that
+# returned success and printed nothing: a .txt file the suite did not own was deleted on
+# a normal startup exit. Both names are checked the way CAL_DIR is below.
 COOKIES="$(smoke_temp)"
+COOKIES_RC=$?
 BODY="$(smoke_temp)"
+BODY_RC=$?
+if [ "$COOKIES_RC" -ne 0 ] || [ -z "$COOKIES" ] || [ ! -f "$COOKIES" ] \
+	|| [ "$BODY_RC" -ne 0 ] || [ -z "$BODY" ] || [ ! -f "$BODY" ]; then
+	printf 'smoke: mktemp made no cookie jar or no file to hold a response body\n'
+	exit 1
+fi
 
-# Seventeen sections write a second file beside $BODY by adding a fixed suffix to its
-# name. No helper makes those, so no helper can record them, and a review found them
-# outside the list. They are written down here, where the whole set is in one place and
-# a reader can check it against the file. A suffix a run never reaches costs one rm of a
-# path that is not there.
+# Seventeen names, across fifteen sections -- 88 and 89 each use two -- are written
+# beside $BODY by adding a fixed suffix to its name. No helper makes those, so no helper
+# can record them, and a review found them outside the list. They are written down here,
+# where the whole set is in one place and a reader can check it against the file. A
+# suffix a run never reaches costs one rm of a path that is not there. They are not
+# reserved by making them: a file already at one of these names would be removed at exit
+# by a run that never reached that section. $BODY is a fresh mktemp name, so a stranger
+# sitting at $BODY.txt is not a case this suite can produce.
 for SMOKE_SUFFIX in attr83 cl csp88 csp88b csp89bound csp89emit dl hdr ic ical lg \
 	mac76l oe sv templib82c txt vcal68e; do
 	if ! smoke_temp_add "$BODY.$SMOKE_SUFFIX"; then
