@@ -20,9 +20,11 @@ set -uo pipefail
 SMOKE_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "${SMOKE_DIR}/.." && pwd)"
 # Without set -e a cd that fails leaves the name empty instead of stopping, and every
-# fixture path built below from an empty SMOKE_DIR is a path at the root of the
-# filesystem. Five of those are written and then removed at exit, so an empty value here
-# would put a name this suite does not own into the cleanup list.
+# path built below from an empty SMOKE_DIR is a path at the root of the filesystem. This
+# suite writes none of those any more -- the files it makes all come from mktemp -- but
+# it reads committed fixtures under tests/fixtures and sweeps the source tree under
+# REPO_DIR, and a check that reads the wrong directory passes or fails for the wrong
+# reason.
 if [ -z "$SMOKE_DIR" ] || [ ! -d "$SMOKE_DIR" ] \
 	|| [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR" ]; then
 	printf 'smoke: cannot work out which directory this script is in\n'
@@ -80,11 +82,14 @@ OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 # the trap in force where the file was made: 3 were covered, 47 were named only by a
 # trap installed further down, and 23 were named by no installed trap at all.
 #
-# So the traps below name no paths of their own. The helpers record what they hand out,
-# and a file is removed at exit if its whole record reached the list and the run leaves
-# through a path that runs base_cleanup. A section added later is covered if it asks a
-# helper for its files; a name it derives from one, as the suffixes below do, has to be
-# written down as well.
+# So almost no trap below names a path of its own: two still carry an inline rm beside
+# base_cleanup, where the path is removed twice and the second removal is a no-op. The
+# helpers record what they hand out, and a file whose whole record reached the list is
+# one the cleanup ATTEMPTS to remove, on a run that leaves through a path running
+# base_cleanup. That is not a promise it goes: the list can be lost or replaced, and the
+# cleanup does not check each rm. A section added later is covered if it asks a helper
+# for its files; a name it derives from one, as the suffixes below do, has to be written
+# down as well.
 #
 # Two of those 23 cannot be reached by a trap up here whatever it names: they are local
 # to sm76_login, and both of its callers run it inside a command substitution, so the
@@ -98,9 +103,12 @@ OCM_USER="${OCM_USER:-${ADMIN_USER:-admin}}"
 #
 # The cleanup is a function rather than a string, because every one of the 129 EXIT
 # traps in this file has to name it: 64 install it alone, 62 compose it with a section
-# cleanup as 'base_cleanup; cleanup_x', and three with a body of their own. A review
-# found that each of those copies had been written before the parser directory existed,
-# so a completed run left it behind. Named once, none of them can drop half of it.
+# cleanup as 'base_cleanup; cleanup_x', and three have a body of their own. That is the
+# grouping by name; counted by form it is 64 alone, 63 with a second function -- one of
+# the three calls restore_https, itself a section cleanup under another name -- and two
+# with an inline rm. A review found that each of those copies had been written before
+# the parser directory existed, so a completed run left it behind. Named once, none of
+# them can drop half of it.
 #
 # It is armed before the list exists, and the list is empty until something is made.
 # rm -f -- '' removes nothing and returns 0; an UNSET name under set -u would fail
@@ -253,8 +261,13 @@ fi
 # where the whole set is in one place and a reader can check it against the file. A
 # suffix a run never reaches costs one rm of a path that is not there. They are not
 # reserved by making them: a file already at one of these names would be removed at exit
-# by a run that never reached that section. $BODY is a fresh mktemp name, so a stranger
-# sitting at $BODY.txt is not a case this suite can produce.
+# by a run that never reached that section, and the cleanup removes a directory there as
+# readily as a file. $BODY being a fresh mktemp name says only that the BASE was unused
+# when mktemp made it. It says nothing about $BODY.txt: an earlier run that was
+# interrupted can have left one behind after its own base was removed, and mktemp is
+# free to hand the base out again. A review measured that, and it needs no stranger on
+# the box. Holding these seventeen in a directory of their own would close it; that is a
+# change to every section that writes one, not to this loop.
 for SMOKE_SUFFIX in attr83 cl csp88 csp88b csp89bound csp89emit dl hdr ic ical lg \
 	mac76l oe sv templib82c txt vcal68e; do
 	if ! smoke_temp_add "$BODY.$SMOKE_SUFFIX"; then
@@ -7809,39 +7822,45 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		"$OCM_URL/case.php?case_id=${MDCASE}&screen=docs" >/dev/null
 	MDTOK="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" | head -1 | sed -e 's/.*value="//' -e 's/"$//')"
 	
-	# These five are the only paths this suite writes on the host that are not a name
-	# mktemp made: the upload test declares a MIME type per file and the file has to
-	# carry the matching extension. The trap above used to name them, and a trap is
-	# armed before the files it names exist -- the five are written here, twenty lines
-	# and three commands later -- so a run interrupted in between removed whatever was
-	# already sitting at those names. They go in the cleanup list instead, each one
-	# only after its own write returned success, so a run that stops before this point
-	# removes nothing it did not write. A write that succeeded over a file someone else
-	# had left at one of these names does take that file over, and the name is then
-	# removed at exit; these are this suite's own fixture names, and the alternative is
-	# leaving our own fixtures behind.
+	# The upload test declares a MIME type per file and the file has to carry the
+	# matching extension, so these five names are fixed rather than made by mktemp.
+	# They used to be written beside this script in tests/, and a review found two
+	# things wrong with that. A write took over whatever another run, or an earlier
+	# interrupted run, had left at one of those names -- and if that was a symlink, the
+	# write landed somewhere else entirely and the cleanup removed the link. And the
+	# write and its entry in the cleanup list were two commands, so an exit in between
+	# left the file behind, as did a write that failed after creating the file.
+	#
+	# A private directory from mktemp -d closes all of it. mktemp -d makes the
+	# directory before it prints the name, so the helper records a directory that
+	# exists, and it is in the list before any of the five is written. Removing it
+	# removes all five, whatever state their writes left them in, and no other run can
+	# be using those names inside it.
+	MDDIR="$(smoke_tempdir)"
+	MDDIR_RC=$?
+	if [ "$MDDIR_RC" -ne 0 ] || [ -z "$MDDIR" ] || [ ! -d "$MDDIR" ]; then
+		printf 'smoke: mktemp -d made no private directory for the document fixtures\n'
+		exit 1
+	fi
 	md_fixture() {
 		# $1 the path, $2 the status its write returned, read before anything else runs.
+		# Nothing is recorded or removed here: the directory holding it is already in
+		# the cleanup list, so a write that failed part way needs only a failed test.
 		if [ "$2" -ne 0 ]; then
 			bad "md fixture $1 was not written"
 			return 1
 		fi
-		if ! smoke_temp_add "$1"; then
-			bad "md fixture $1 could not be added to the cleanup list"
-			rm -f -- "$1"
-			return 1
-		fi
 	}
-	printf '<script>alert(1)</script>ZZMDMARKER\n' > "${SMOKE_DIR}/zzmd.html"
-	md_fixture "${SMOKE_DIR}/zzmd.html" $?
-	printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n' > "${SMOKE_DIR}/zzmd.svg"
-	md_fixture "${SMOKE_DIR}/zzmd.svg" $?
-	printf '%%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%%%EOF\n' > "${SMOKE_DIR}/zzmd.pdf"
-	md_fixture "${SMOKE_DIR}/zzmd.pdf" $?
-	printf 'ZZMDONE\n' > "${SMOKE_DIR}/zzmd1.txt"
-	md_fixture "${SMOKE_DIR}/zzmd1.txt" $?
-	printf 'ZZMDTWO longer body so the two sizes differ\n' > "${SMOKE_DIR}/zzmd2.txt"
-	md_fixture "${SMOKE_DIR}/zzmd2.txt" $?
+	printf '<script>alert(1)</script>ZZMDMARKER\n' > "${MDDIR}/zzmd.html"
+	md_fixture "${MDDIR}/zzmd.html" $?
+	printf '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>\n' > "${MDDIR}/zzmd.svg"
+	md_fixture "${MDDIR}/zzmd.svg" $?
+	printf '%%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%%%EOF\n' > "${MDDIR}/zzmd.pdf"
+	md_fixture "${MDDIR}/zzmd.pdf" $?
+	printf 'ZZMDONE\n' > "${MDDIR}/zzmd1.txt"
+	md_fixture "${MDDIR}/zzmd1.txt" $?
+	printf 'ZZMDTWO longer body so the two sizes differ\n' > "${MDDIR}/zzmd2.txt"
+	md_fixture "${MDDIR}/zzmd2.txt" $?
 	
 	md_upload() {
 		# $1 local file, $2 declared MIME type
@@ -7862,9 +7881,9 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	if [ -z "${MDTOK:-}" ] || [ -z "${MDCASE:-}" ]; then
 		bad "could not seed the document download fixtures"
 	else
-		md_upload "${SMOKE_DIR}/zzmd.html" "text/html"
-		md_upload "${SMOKE_DIR}/zzmd.svg" "image/svg+xml"
-		md_upload "${SMOKE_DIR}/zzmd.pdf" "application/pdf"
+		md_upload "${MDDIR}/zzmd.html" "text/html"
+		md_upload "${MDDIR}/zzmd.svg" "image/svg+xml"
+		md_upload "${MDDIR}/zzmd.pdf" "application/pdf"
 		
 		MDHTML="$(md_doc_id zzmd.html)"
 		MDSVG="$(md_doc_id zzmd.svg)"
@@ -7973,8 +7992,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		curl -sL --max-time 60 -b "$COOKIES" -c "$COOKIES" -o "$BODY" \
 			-F "_csrf=${MDTOK}" -F "case_id=${MDCASE}" -F "doc_type=C" \
 			-F "description=ZZMD multi" \
-			-F "doc_upload[]=@${SMOKE_DIR}/zzmd1.txt;type=text/plain" \
-			-F "doc_upload[]=@${SMOKE_DIR}/zzmd2.txt;type=text/plain" \
+			-F "doc_upload[]=@${MDDIR}/zzmd1.txt;type=text/plain" \
+			-F "doc_upload[]=@${MDDIR}/zzmd2.txt;type=text/plain" \
 			"$OCM_URL/ops/upload_document.php" >/dev/null
 		MDSIZES="$(adb "SELECT COUNT(*) FROM doc_storage
 			WHERE case_id = ${MDCASE} AND doc_name IN ('zzmd1.txt','zzmd2.txt') AND doc_size > 0")"
