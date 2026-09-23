@@ -5653,10 +5653,11 @@ determine it's value,
 replace all instances of that tag,
 repeat until no more tags are present
 */
-/*	$escape_settings is what pl_template() worked out about the template
-	file it opened: true when the output is HTML. It defaults to false so a
-	call that does not say stays as it was. The function has no caller
-	outside this file.
+/*	$escape_settings is what pl_template() worked out from the template name
+	the CALLER asked for: true when that name is HTML. The file that is opened
+	in the end can carry another extension and does not decide this. It
+	defaults to false so a call that does not say stays as it was, and the
+	recursive call below passes it on unchanged.
 */
 function pl_template_sub($str, $template_data, $escape_settings = false)
 {

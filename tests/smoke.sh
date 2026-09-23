@@ -21808,16 +21808,22 @@ fi
 # always possible.
 #
 # The four rows after the database part are presence checks over the source:
-# they say the escape is written, not that it ran, and a review reproduced
-# four deliberately broken trees that all four of them still passed. The rows
-# that fetch pages and the rows that render fixtures in the container cover
-# all four between them, because those assert the whole rendered value.
+# they say the escape is written, not that it ran. A review reproduced four
+# deliberately broken trees that all four of those rows still passed, and
+# named a fifth, which was measured against a copy of the template class. The
+# rows that fetch pages and the rows that render fixtures in the container
+# cover all five between them, because those assert the whole rendered value.
 #
-#   * a format gate forced to skip HTML fails the two direct fixture rows and
-#     both home page rows.
+#   * a format gate forced to skip HTML fails the two fixture rows that ask
+#     for an HTML name, DIRHTML and LNHTML, and the signed-in home page
+#     administrator address row. The fixture row that asks for a name that is
+#     not HTML and the home page org name row both still pass, because
+#     neither of those wants an escape from that gate.
 #   * a settings copy that stops recording the names it took fails the two
-#     sign-in page rows, which are the only rows that read the template class
-#     on a template of its own; no fixture here covers it.
+#     sign-in page rows, the audit page row and the two fixture rows that
+#     render through the template class. system-audit.php draws
+#     templates/default.html through that class as well, so the sign-in pages
+#     are not its only readers.
 #   * escaping twice on the directive path fails the fixture row that renders
 #     the setting through a plugin.
 #   * dropping the flag where pl_template_sub() passes it to itself fails the
@@ -21826,6 +21832,10 @@ fi
 #     tag after the first is already inside the recursion, and the default
 #     template reaches the administrator address well after its first tag. No
 #     nested template is needed for this.
+#   * dropping one settings name from the recording, rather than all of them,
+#     fails the fixture row that renders that name through the template class.
+#     There is one such row for the org name and one for the administrator
+#     address, so neither name can be dropped on its own.
 #
 # What none of it pins is a double escape confined to one site that no row
 # reads separately. system-audit.php builds its own nav HTML, and the page
@@ -21837,9 +21847,11 @@ fi
 # The fixtures are removed from a shutdown function registered before either
 # directory is made, so a fatal error or an uncaught exception still clears
 # them, and an exit before that point has nothing to clear. A kill signal
-# leaves the temporary directory, its two files and its two symbolic links,
-# and the one template under the custom directory; every removal there ignores
-# its own errors, so a failure to clean up cannot fail the section.
+# leaves both directories -- the temporary one and the subdirectory made under
+# the custom directory -- and the three files and two symbolic links inside
+# them. Every removal there ignores its own errors, so the cleanup is
+# attempted rather than guaranteed, and a failure to clean up cannot fail the
+# section.
 echo
 echo "109. settings values reach HTML escaped"
 
@@ -21944,9 +21956,10 @@ if [ "$HAVE_DB" = 1 ]; then
 		fi
 
 		if [ "$sm109_signed" = 1 ]; then
-			# ROW FIVE -- the layout template's org name. Two sites feed it,
-			# the %%[org_name]%% tag and the buffer marker, and one match is
-			# enough for the row, so it does not say which one escaped.
+			# ROW FIVE -- the layout template's org name, which reaches the page
+			# from the buffer marker in pika-danio.php. index.php supplies no
+			# org_name and org_name is not a settings label, so the %%[org_name]%%
+			# tag in the layout resolves to nothing and this row reads one site.
 			#
 			# The home page is fetched again with the jar rather than reusing
 			# the body the sign-in left, so the status and curl's own exit
@@ -21980,19 +21993,22 @@ if [ "$HAVE_DB" = 1 ]; then
 			fi
 		fi
 
-		# ROW EIGHT -- the other engine, in the container, over five fixtures
+		# ROW EIGHT -- the other engine, in the container, over six fixtures
 		# in one run. pl_template() renders about 140 call sites and decides
 		# from the name the CALLER asked for whether a setting it resolves is
 		# escaped, so one fixture of each extension settles both halves, and a
 		# pair of symlinks settles that the answer follows the asked-for name
-		# and not the file that is opened in the end. A fifth fixture names the
-		# setting with a directive, which is the shape that would be escaped
-		# twice if the settings copy held escaped values.
+		# and not the file that is opened in the end. The last two fixtures go
+		# through the template class instead. One names the setting with a
+		# directive, which is the shape that would be escaped twice if the
+		# settings copy held escaped values. The other names the administrator
+		# address with no directive, so that dropping one name from the
+		# recording cannot pass while the org name still escapes.
 		#
 		# The pl_template() fixtures go under /tmp inside the container, so a
-		# killed run leaves nothing in the checkout. The pikaTempLib fixture
+		# killed run leaves nothing in the checkout. The pikaTempLib fixtures
 		# cannot go there: that class refuses a template outside its own
-		# directories. It goes in the custom directory, which is a named volume
+		# directories. They go in the custom directory, which is a named volume
 		# and also not the checkout.
 		#
 		# The directory name carries the shell's pid and a random number, so
@@ -22017,6 +22033,7 @@ if [ "$HAVE_DB" = 1 ]; then
 				}
 				@rmdir($d);
 				@unlink($c . "/ta.html");
+				@unlink($c . "/ad.html");
 				@rmdir($c);
 			});
 			@mkdir($d);
@@ -22026,12 +22043,15 @@ if [ "$HAVE_DB" = 1 ]; then
 			@symlink($d . "/real.html", $d . "/ask.txt");
 			@symlink($d . "/real.txt", $d . "/ask.html");
 			file_put_contents($c . "/ta.html", "A%%[owner_name,input_textarea]%%B");
+			file_put_contents($c . "/ad.html", "A%%[admin_email]%%B");
 			echo "DIRHTML:[", pl_template($d . "/real.html", array()), "]\n";
 			echo "DIRTXT:[", pl_template($d . "/real.txt", array()), "]\n";
 			echo "LNTXT:[", pl_template($d . "/ask.txt", array()), "]\n";
 			echo "LNHTML:[", pl_template($d . "/ask.html", array()), "]\n";
 			$t = new pikaTempLib($c . "/ta.html");
 			echo "TA:[", $t->draw(), "]\n";
+			$a = new pikaTempLib($c . "/ad.html");
+			echo "CLSADM:[", $a->draw(), "]\n";
 			echo "DONE109\n";
 			' </dev/null 2>/dev/null)"
 		sm109_prc=$?
@@ -22045,10 +22065,10 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ "$sm109_prc" -eq 0 ] \
 			&& printf '%s' "$SM109_PHP" | grep -qF 'DONE109'; then
 			sm109_php_ok=1
-			ok "the other engine rendered all five fixtures in the container and ran to the end"
+			ok "the other engine rendered all six fixtures in the container and ran to the end"
 		else
 			sm109_php_ok=0
-			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the five rows below are not run: ${SM109_PHP}"
+			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the six rows below are not run: ${SM109_PHP}"
 		fi
 
 		# Each row below asks for the whole rendered value, opening bracket to
@@ -22056,11 +22076,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		# brackets, so a half fix that escaped only < and > fails, and the
 		# closing ] proves the render was not cut short.
 		#
-		# The label of every needle names one line of the output and is not a
-		# substring of any other line, which is why the two direct renders are
-		# DIRHTML and DIRTXT: HTML:[ and TXT:[ would have matched inside
-		# LNHTML:[ and LNTXT:[, and then a missing direct render could have
-		# passed on the symlinked one's output.
+		# The label of every must-appear needle names one line of the output and
+		# is not a substring of any other line, which is why the two direct
+		# renders are DIRHTML and DIRTXT: HTML:[ and TXT:[ would have matched
+		# inside LNHTML:[ and LNTXT:[, and then a missing direct render could
+		# have passed on the symlinked one's output. One must-not-appear needle
+		# carries no label, the doubled ampersand the directive row refuses, so
+		# it would also match a doubled render on another line. That can only
+		# add a failure to that row, never let one pass.
 		#
 		# A row whose whole value is too long to spell out passes a second
 		# must-appear needle as a fourth argument, so that it can pin the start
@@ -22112,7 +22135,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			"LNHTML:[A${SM109_ESC}B]" "LNHTML:[A${SM109_PAY}B]"
 
 		# ROW THIRTEEN -- pikaTempLib's directive path, escaped once. This is
-		# the only fixture of the five that goes through that class.
+		# one of the two fixtures here that go through that class.
 		# template_plugins/input_textarea.php escapes its own output, and
 		# template_plugins/menu.php escapes a selected value it does not
 		# recognise, so a settings copy holding escaped values spells an
@@ -22122,7 +22145,18 @@ if [ "$HAVE_DB" = 1 ]; then
 			"the template class's directive path escapes the setting once, not twice" \
 			"${SM109_ESC}</textarea>B]" 'ZZ109&amp;lt;img' 'TA:[A<textarea '
 
-		# ROW FOURTEEN -- the restore, and a read that proves it landed. The
+		# ROW FOURTEEN -- the same class on a tag with no directive, so this
+		# row reads its direct replacement. It asks for the administrator
+		# address because every other row that reads this class reads the org
+		# name: the two sign-in pages, the audit page and row thirteen. A copy
+		# that stopped recording just admin_email would leave that address raw
+		# on every page this class draws, the audit layout among them, and
+		# every other row here would still pass.
+		sm109_php_row \
+			"the template class escapes a setting it replaced itself, not only one a plugin read" \
+			"CLSADM:[A${SM109_AESC}B]" "CLSADM:[A${SM109_APAY}B]"
+
+		# ROW FIFTEEN -- the restore, and a read that proves it landed. The
 		# trap runs the same two statements again at exit, which is harmless
 		# and is what covers a suite that dies before this point.
 		sm109_set owner_name "$sm109_own_old"
@@ -22140,7 +22174,7 @@ else
 	printf '  skip settings escaping requests (needs a running docker compose stack)\n'
 fi
 
-# ROW FIFTEEN -- the first engine's two halves, over the source, so a refactor
+# ROW SIXTEEN -- the first engine's two halves, over the source, so a refactor
 # that drops either is caught even with no stack. The copy records which names
 # came from the settings, and direct replacement escapes those and only those.
 sm109_first=0
@@ -22154,7 +22188,7 @@ else
 	bad "only ${sm109_first} of the 2 halves of the template settings escape are still written"
 fi
 
-# ROW SIXTEEN -- the raw list, and that base_url is on it. base_url is read
+# ROW SEVENTEEN -- the raw list, and that base_url is on it. base_url is read
 # inside a CSS url() in CSS text, which does not decode HTML entities, so
 # escaping it would point the rule at a path that does not exist.
 if grep -q 'function pl_settings_template_raw' cms/app/lib/pl.php \
@@ -22164,7 +22198,7 @@ else
 	bad "the not-HTML settings list is gone or no longer names base_url"
 fi
 
-# ROW SEVENTEEN -- the four reads that do not go through the settings copy,
+# ROW EIGHTEEN -- the four reads that do not go through the settings copy,
 # across three files. Each has to still wrap its read. The count is four so a
 # change that escapes three of them and drops the fourth fails this row.
 sm109_sites=0
@@ -22182,7 +22216,7 @@ else
 	bad "only ${sm109_sites} of the 4 reads outside the settings copy are written escaped"
 fi
 
-# ROW EIGHTEEN -- the second engine's gate, over the source. The rows above
+# ROW NINETEEN -- the second engine's gate, over the source. The rows above
 # that run it need a stack, and a change that escaped every template or none
 # of them would otherwise be caught nowhere on a machine with no containers.
 # The three parts are the format test over the name the caller asked for, the

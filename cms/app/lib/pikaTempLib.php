@@ -680,11 +680,14 @@ class pikaTempLib {
 			string mode, so the mode is already settled by the time this runs.
 			
 			A tag the page supplies itself is not touched, because the isset()
-			below skips it, and so it is never recorded either. That is what
-			keeps pika_cms.php's org_name and admin_email from being escaped
-			twice, and it is also how a page that needs a setting raw can still
-			have it. A null the page stored does not count as supplied: isset()
-			is false for it, so the setting fills the tag and is recorded.
+			below skips it, and so it is never recorded either. That is what keeps
+			pika_cms.php's admin_email from being escaped twice, and it is also how
+			a page that needs a setting raw can still have it. The org name read in
+			that same file is safe for another reason: org_name is not a settings
+			label, so it is never a candidate here at all. A null the page stored
+			does not count as supplied: isset() is false for it, so the setting
+			fills the tag, and it is recorded if the three conditions below also
+			hold -- file mode, a scalar value and neither exclusion.
 			
 			pl_settings_template_raw() holds the settings that must not be
 			escaped because they are not read as HTML text. A value that is not a
