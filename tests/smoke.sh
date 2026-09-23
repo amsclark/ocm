@@ -18883,9 +18883,11 @@ fi
 # comparison made after two removals, so it is blind to reindentation, to
 # a comment added inside the block, and to anything else those removals
 # erase: a close tag reads as a semicolon, so text put outside PHP between
-# the statements leaves the pinned text alone as well. Row three sees a
-# comment only as a change to the hash, and sees text put outside PHP only
-# as a change to the tag counts, so between them the two rows cover a
+# the statements leaves the pinned text alone as well. Row three does not
+# recover a comment added here either: it hashes this same filtered view,
+# and the comment is gone from it. What it does see is a tag spelling
+# written inside one, which counts towards its raw tag totals, and text put
+# outside PHP, for the same reason. So between them the two rows cover a
 # close-and-reopen pair added here, not every edit these removals discard.
 # Whitespace written inside a string literal is turned into a byte that is
 # not whitespace before the deletion, so a space, a tab or a carriage
@@ -18902,10 +18904,12 @@ fi
 # as the fix, and a write hidden behind a comment marker inside a string,
 # none of which a count of "$phone =" would see. A write placed inside an
 # interpolation is not in this view at all; the second set of counts below
-# is what reads those. The file must also hold exactly three substr()
-# calls, matched without regard to case, all three reading $safe_number,
-# and none of ${, $$, eval( or extract(, each of which could write a name
-# these counts cannot follow.
+# is what reads those. This view must also hold three occurrences of the
+# text substr( and three of substr($safe_number, -- counted with
+# whitespace removed and in lower case, so each slice counted is a slice of
+# that name written out. Both are counts of text and not of calls. The view
+# must hold none of ${, $$, eval( or extract(, each of which could write a
+# name these counts cannot follow.
 #
 # Emptying string bodies also removes any code interpolated into them, so
 # the same three names are counted a second time over the code with string
@@ -18968,7 +18972,11 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # not end the string holding it, and an interpolation can hold a string
 # that holds another interpolation. Heredoc and nowdoc bodies are dropped,
 # so PHP-looking text inside one is not read as code. Text outside
-# <?php ?> is dropped, and a close tag stands in for a semicolon. A // or
+# <?php ?> is dropped, and a close tag stands in for a semicolon. The
+# opening keyword is matched without regard to case, and only where a
+# space, a tab, a carriage return or the end of the line follows it, which
+# is what PHP accepts: <?phpx opens on its <? alone, as it does for PHP
+# where short tags are on. A // or
 # # tail ends at the first ?> or carriage return on the line, as PHP ends
 # it: PHP treats a lone carriage return as a line ending, so a statement
 # written after one on the same line is live code, and a scan that read
@@ -18984,8 +18992,12 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # \002 ends. One marker per kind rather than one for all three, so that
 # swapping a space for a tab inside a literal changes this output too: the
 # marking records that whitespace was written there, and which kind.
-# Those four characters are what the row below deletes, and no others are
-# marked. A vertical tab and a form feed are not deleted there, so marking
+# What the row below deletes is a space, a tab, a newline and a carriage
+# return. The markers are none of those, so they survive that deletion and
+# whitespace written inside a literal still tells on itself there; those
+# four are the whitespace characters that can reach this mode, and no
+# others are marked. A vertical tab and a form feed are not deleted there,
+# so marking
 # one would put a marker in this mode's output where mode 1 keeps the byte
 # itself, and the two would stop agreeing. PHP 8.2 does not accept either
 # between tokens; no PHP file under cms/ holds one, though binary assets
@@ -18997,11 +19009,20 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # token_get_all(), character for character once whitespace is removed, in
 # both of the first two modes; with 2 the same holds once the marker bytes
 # are dropped along with the whitespace, which is the only order that claim
-# is made in. The fixtures disagree on one shape, a bare <?, which this
-# scan always reads as an opening tag. That is what PHP does where
-# short_open_tag is on, which is how it was set in the PHP 8.2 container
-# these comparisons were run in; where it is off, it makes the sweep below
-# read such a block as code rather than skip it.
+# is made in. Agreement over a corpus is not completeness: the shapes the
+# fixtures disagree on are the ones that were looked for, not all there
+# are. Three were found, and each keeps text PHP does not run rather than
+# dropping text it does. A bare <? is always read as an opening tag, which
+# is what PHP does where short_open_tag is on, how it was set in the PHP
+# 8.2 container these comparisons were run in; where it is off, it makes
+# the sweep below read such a block as code rather than skip it. A comment
+# written on a heredoc's closing line is kept, because that line is printed
+# without being scanned. Text after __halt_compiler() is kept, though PHP
+# stops reading code there. The direction was measured for each: the code
+# PHP does run is still present in this output. One that dropped code PHP
+# runs would be a defect in this filter and not a note here, which is what
+# reading <?phpx as <?php followed by an x was, until the keyword test
+# above was made to require whitespace after it.
 sm107_code_only()
 {
 	awk -v keepstr="${2:-1}" '
@@ -19056,7 +19077,9 @@ sm107_code_only()
 				{
 					if (c == "<" && d == "?")
 					{
-						if (substr(line, i + 2, 3) == "php")
+						kw = tolower(substr(line, i + 2, 3))
+						e = substr(line, i + 5, 1)
+						if (kw == "php" && (e == "" || (e in wsm)))
 						{
 							i = i + 5
 						}
@@ -19362,7 +19385,7 @@ if [ "$sm107_sha_have" = "$sm107_sha_want" ] && [ "$sm107_close" -eq 2 ] \
 	&& [ "$sm107_open" -eq 2 ]; then
 	ok "the SMS handler's hashed view and tag counts are unmoved"
 else
-	bad "the SMS handler's code moved (${sm107_sha_have}, ${sm107_close} close tags, ${sm107_open} open tags); if the change is intended, record that hash in this row"
+	bad "the SMS handler's code moved (${sm107_sha_have}, ${sm107_close} close tags, ${sm107_open} open tags); if the hash moved and the change is intended, record that hash here; a tag count that moved is a different failure and replacing the hash does not answer it"
 fi
 
 # ROW FOUR -- the class, tree-wide: a value DB::escapeString() produced
@@ -19375,10 +19398,14 @@ fi
 # name after it must share a line, and so must substr( and the name it
 # slices. Later parts of either expression may wrap.
 #
-# Each assignment on a line is taken in turn, and a right-hand side is read
-# from that assignment's own '=' up to the next ';', so a second statement
-# on the line is not misread as part of the first, and a comparison earlier
-# on the line does not displace it. The name test ends at a character that
+# The assignments taken in turn are the non-overlapping ones this
+# expression matches, and a right-hand side is read from that assignment's
+# own '=' up to the next ';', so a second statement on the line is not
+# misread as part of the first, and a comparison earlier on the line does
+# not displace it. The match takes in the first character of the right-hand
+# side and the scan resumes after it, so an assignment written immediately
+# after another, as in $a = $b = ..., is not matched in its own right. The
+# name test ends at a character that
 # cannot continue an ASCII name, so $value does not read as a mention of
 # $val. Only an ASCII letter, digit or underscore continues a name there,
 # so a name spelled with a high byte, which PHP allows, reads as a mention
@@ -19397,12 +19424,16 @@ fi
 # It does not see either of those two pairs split across lines, an
 # escape and a slice on the same line, a reset written later on the slice's
 # own line, which clears the record before that slice is checked, a value
-# reached through an alias or an array element, a slice handed the escaper's
+# reached through an alias, a slice handed the escaper's
 # return value directly, a slice that runs before the escape on the next
 # pass of a loop, or one name meaning different things in two functions.
 # A qualifying reset inside a condition clears the record whether or not
-# the condition held, and a '.=' neither records nor clears. So a clean
-# run is evidence, not proof, and a report can be a false one.
+# the condition held, and a '.=' neither records nor clears. An assignment
+# to an array element is not recorded at all, since the name this reads
+# ends before the '['; the slice matcher, on the other hand, reads an array
+# access by the name it starts with, so a slice of $x['k'] is checked
+# against a record held for $x. So a clean run is evidence, not proof, and
+# a report can be a false one.
 sm107_sliced=0
 for sm107_f in $(grep -rliE 'DB[[:space:]]*::[[:space:]]*escapeString' cms/ --include='*.php' 2>/dev/null)
 do
