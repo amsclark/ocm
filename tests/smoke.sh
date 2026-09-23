@@ -4813,9 +4813,18 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 	# The login form is rate limited per address. This section produces several
 	# deliberate failures, so clear the counters between steps or a later
 	# assertion passes because everything is locked out.
+	#
+	# A clear that does not run leaves the counters from this section's own
+	# deliberate failures in place, and a reply that was locked out reads in the
+	# body the same way a refused password does. Record that, so a refusal
+	# reported later can say the lockout was not ruled out rather than blame the
+	# code the account sent.
+	mfa_rl_failed=0
 	mfa_rl_clear() {
-		docker compose "${COMPOSE_ARGS[@]}" exec -T app \
-			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+		if ! docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1; then
+			mfa_rl_failed=1
+		fi
 	}
 
 	cleanup_mfa() {
@@ -5596,6 +5605,8 @@ MFAPY
 				ok "the password and a current code sign the account in"
 			elif [ "$mfa_pair_nobound" = 1 ]; then
 				bad "the code was refused and the replay bound could not be read on any try, so a refusal this run caused itself cannot be told from a wrong one - neither check was decided"
+			elif [ "$mfa_rl_failed" = 1 ]; then
+				bad "a valid password and a valid code were refused, and clearing the login rate limit did not run at least once in this section - a lockout left by this section's own deliberate failures was not ruled out"
 			else
 				bad "a valid password and a valid code were refused"
 			fi
@@ -24412,8 +24423,8 @@ if [ "$HAVE_DB" = 1 ]; then
 				bad "$1 did not come back, so nothing about its escaping is settled (curl exit ${sm109_crc}, status ${sm109_code})"
 				return
 			fi
-			sm109_raw="$(grep -cF "$2" "$BODY")"
-			sm109_esc="$(grep -cF "$3" "$BODY")"
+			sm109_raw="$(grep -cF -e "$2" "$BODY")"
+			sm109_esc="$(grep -cF -e "$3" "$BODY")"
 			if [ "$sm109_raw" -eq 0 ] && [ "$sm109_esc" -ge 1 ]; then
 				ok "$1 renders the setting with its markup escaped"
 			else
@@ -24629,9 +24640,9 @@ if [ "$HAVE_DB" = 1 ]; then
 			if [ "$sm109_php_ok" != 1 ]; then
 				return
 			fi
-			if printf '%s' "$SM109_PHP" | grep -qF "$2" \
-				&& printf '%s' "$SM109_PHP" | grep -qF "${4:-$2}" \
-				&& ! printf '%s' "$SM109_PHP" | grep -qF "$3"; then
+			if printf '%s' "$SM109_PHP" | grep -qF -e "$2" \
+				&& printf '%s' "$SM109_PHP" | grep -qF -e "${4:-$2}" \
+				&& ! printf '%s' "$SM109_PHP" | grep -qF -e "$3"; then
 				ok "$1"
 			else
 				bad "not true: $1 -- fixture output was ${SM109_PHP}"
