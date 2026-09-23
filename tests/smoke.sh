@@ -20113,10 +20113,35 @@ fi
 # readings report one opener and one closer. Counting the three bytes
 # themselves answers that: the reader accepts at most one opener for each
 # occurrence, so the row fails unless the occurrences and the reported
-# openers are the same number. That count is stricter than the reader needs.
-# A spelling with no label after it is rejected and is harmless, and it
-# still fails the row; so does one written inside a heredoc body, which the
-# reader does not scan. Neither is in the tree today, and no shorter test
+# openers are the same number.
+#
+# What that equality settles is coverage: no occurrence stands in a place
+# this reader never looked at. It does not settle whether the reader agrees
+# with PHP about where a body ends, and one shape shows the difference. PHP
+# reads the file below as a single heredoc, opened on its fourth line and
+# closed on its eleventh, because the label on the sixth line stands inside a
+# braced interpolation that is still open:
+#
+#	$a = <<<A
+#	{$x->{word("
+#	A
+#	<<<B
+#	two
+#	B;
+#	")}}
+#	A;
+#
+# The reader closes A on the sixth line and reads the seventh as a second
+# opener, so two occurrences meet two reported openers, nothing is left
+# unclosed, and the count says nothing. Measured on PHP 8.2.33, which lints
+# that file and runs it. The row still refuses it, but by the hash and not by
+# the count: the bodies the reader reports are hashed, so a heredoc of any
+# shape entering the tree fails the row until someone reads it against PHP.
+#
+# The count is also stricter than the reader needs. A spelling with no label
+# after it is rejected and is harmless, and it still fails the row; so does
+# one written inside a heredoc body that the reader still holds open, which
+# it does not scan. Neither is in the tree today, and no shorter test
 # separates a rejected spelling from one that hid a real opener beside it.
 # The other direction, a real opener the reader passes over, is removed by
 # testing every position on the line.
