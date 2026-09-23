@@ -401,9 +401,30 @@ switch($action)
 			$a["phone_alt"] = "";
 		}
 		
-		if ($_POST['ssn0'] || $_POST['ssn1'] || $_POST['ssn2'])
+		/*	The three parts are joined and stored, and the store is not the
+			input funnel. pl_grab_vars() cleaned the fields it knows about a
+			few lines up, but these arrive straight out of the request and
+			are read here by name, so nothing has looked at them. What is
+			stored is later put into SQL by callers that escape it and into
+			HTML by templates that do not, so the part the input mask asks
+			for is the part to keep: digits, and nothing else.
+
+			A part sent with anything else loses it instead of carrying it
+			into the record, and a part made only of other characters now
+			counts as empty, which is what the mask means by empty. The
+			digits are not bounded to the widths the mask draws, so an
+			over-long run is still cut by the column rather than here. The
+			?? '' keeps an absent field from raising a warning on PHP 8.
+			The same lines appear at every site in this file that builds one
+			of these two values.
+		*/
+		$mask_ssn0 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn0'] ?? ''));
+		$mask_ssn1 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn1'] ?? ''));
+		$mask_ssn2 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn2'] ?? ''));
+
+		if ($mask_ssn0 || $mask_ssn1 || $mask_ssn2)
 		{
-			$a['ssn'] = "{$_POST['ssn0']}-{$_POST['ssn1']}-{$_POST['ssn2']}";
+			$a['ssn'] = "{$mask_ssn0}-{$mask_ssn1}-{$mask_ssn2}";
 		}
 		
 		else if (!isset($a['ssn']))
@@ -486,9 +507,16 @@ switch($action)
 		$con = pl_grab_vars('contacts');
 		
 		// handle input masks
-		if ($_POST['phone_a'] || $_POST['phone_b'])
+		/*	$phone_a and $phone_b are read, and never assigned, by branches
+			further down this file, so the locals here are named apart from
+			them rather than waking those branches up.
+		*/
+		$mask_phone_a = preg_replace('/[^0-9]/', '', (string) ($_POST['phone_a'] ?? ''));
+		$mask_phone_b = preg_replace('/[^0-9]/', '', (string) ($_POST['phone_b'] ?? ''));
+
+		if ($mask_phone_a || $mask_phone_b)
 		{
-			$con["phone"] = "{$_POST['phone_a']}-{$_POST['phone_b']}";
+			$con["phone"] = "{$mask_phone_a}-{$mask_phone_b}";
 		}
 		
 		else if (!isset($con['phone']))
@@ -506,9 +534,13 @@ switch($action)
 			$con["phone_alt"] = "";
 		}
 		
-		if ($_POST['ssn0'] || $_POST['ssn1'] || $_POST['ssn2'])
+		$mask_ssn0 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn0'] ?? ''));
+		$mask_ssn1 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn1'] ?? ''));
+		$mask_ssn2 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn2'] ?? ''));
+
+		if ($mask_ssn0 || $mask_ssn1 || $mask_ssn2)
 		{
-			$con['ssn'] = "{$_POST['ssn0']}-{$_POST['ssn1']}-{$_POST['ssn2']}";
+			$con['ssn'] = "{$mask_ssn0}-{$mask_ssn1}-{$mask_ssn2}";
 		}
 		
 		else if (!isset($con['ssn']))
@@ -690,9 +722,12 @@ switch($action)
 	$con = pl_grab_vars('contacts');
 	
 	// handle input masks
-	if ($_POST['phone_a'] || $_POST['phone_b'])
+	$mask_phone_a = preg_replace('/[^0-9]/', '', (string) ($_POST['phone_a'] ?? ''));
+	$mask_phone_b = preg_replace('/[^0-9]/', '', (string) ($_POST['phone_b'] ?? ''));
+
+	if ($mask_phone_a || $mask_phone_b)
 	{
-		$con["phone"] = "{$_POST['phone_a']}-{$_POST['phone_b']}";
+		$con["phone"] = "{$mask_phone_a}-{$mask_phone_b}";
 	}
 	
 	else
@@ -710,9 +745,13 @@ switch($action)
 		$con["phone_alt"] = "";
 	}
 	
-	if ($_POST['ssn0'] || $_POST['ssn1'] || $_POST['ssn2'])
+	$mask_ssn0 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn0'] ?? ''));
+	$mask_ssn1 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn1'] ?? ''));
+	$mask_ssn2 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn2'] ?? ''));
+
+	if ($mask_ssn0 || $mask_ssn1 || $mask_ssn2)
 	{
-		$con['ssn'] = "{$_POST['ssn0']}-{$_POST['ssn1']}-{$_POST['ssn2']}";
+		$con['ssn'] = "{$mask_ssn0}-{$mask_ssn1}-{$mask_ssn2}";
 	}
 	
 	else
@@ -791,9 +830,13 @@ switch($action)
 		$a["phone_alt"] = "";
 	}
 	
-	if ($_POST['ssn0'] || $_POST['ssn1'] || $_POST['ssn2'])
+	$mask_ssn0 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn0'] ?? ''));
+	$mask_ssn1 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn1'] ?? ''));
+	$mask_ssn2 = preg_replace('/[^0-9]/', '', (string) ($_POST['ssn2'] ?? ''));
+
+	if ($mask_ssn0 || $mask_ssn1 || $mask_ssn2)
 	{
-		$a['ssn'] = "{$_POST['ssn0']}-{$_POST['ssn1']}-{$_POST['ssn2']}";
+		$a['ssn'] = "{$mask_ssn0}-{$mask_ssn1}-{$mask_ssn2}";
 	}
 	
 	else if (!isset($a['ssn']))

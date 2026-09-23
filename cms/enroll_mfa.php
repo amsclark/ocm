@@ -94,7 +94,7 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 		forward. The replay bound is seeded below instead.
 	*/
 	elseif (false !== $pending && strlen((string) $pending) > 0
-		&& false !== pl_totp_verify_window((string) $pending, $code))
+		&& false !== ($code_window = pl_totp_verify_window((string) $pending, $code)))
 	{
 		$stored = false;
 		
@@ -102,7 +102,7 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 		{
 			DB::preparedQuery(
 				'UPDATE users SET totp_enabled = 1, totp_secret = ?, totp_last_used = ? WHERE user_id = ? LIMIT 1',
-				array($token, (int) floor(time() / 30), $uid)
+				array($token, (int) $code_window, $uid)
 			);
 			$stored = true;
 		}
@@ -114,9 +114,17 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 		
 		if ($stored)
 		{
-			/*	The window is marked used as part of the same write. The code
-				the user typed here must not be usable again at the login
-				form inside its own 30 seconds.
+			/*	The window marked used is the one the accepted code belonged
+				to, not the one the clock is in by the time the row is
+				written. The two differ whenever the code that matched was
+				not from the write-time window, which the verifier's one
+				window of tolerance allows on its own -- no boundary has to
+				be crossed. Both differences are wrong.
+				pl_totp_verify_window() skips every window at or below the
+				bound, so a bound above the matched window refuses codes the
+				user can still be looking at, including the one they just
+				typed. A bound below it leaves that same code usable again at
+				the login form for as long as it stays inside tolerance.
 			*/
 			pl_auth_rate_limit_reset_all($rl_keys);
 			pl_audit('user.totp_self_enrolled', 'user', $uid, array('username' => $username), $uid, $username);

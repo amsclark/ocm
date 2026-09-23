@@ -18,7 +18,9 @@ require_once('pikaTempLib.php');
 
 $main_html = $html = array();
 $base_url = pl_settings_get('base_url');
-$branding = pl_settings_get('owner_name');
+// Interpolated into the nav HTML below, and typed into
+// system-settings.php.
+$branding = pl_html_escape(pl_settings_get('owner_name'));
 
 $main_html['page_title'] = $page_title = 'Audit Log';
 $main_html['nav'] = "<a href=\"{$base_url}/\">{$branding} Home</a> &gt; "

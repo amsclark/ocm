@@ -429,11 +429,32 @@ fi
 # only the first post in a section meets the challenge.
 #
 # Usage: sm_reauth_post <scope> <url> [curl -d args ...]
-# The reply body is left in $BODY, exactly as a plain curl would leave it.
+# The reply body is left in $BODY, with two differences from a plain curl.
+# $BODY is truncated before the FIRST transfer, so no page from an earlier
+# request survives it. A transfer that fails part way through still leaves
+# the bytes it did write. The challenge-answering transfer has no truncation
+# of its own, but it writes to the same -o file, and curl truncates that
+# file at the first byte of the second response's body -- and also when that
+# transfer completes carrying no body at all. So the challenge page is
+# still there only when the second transfer failed before any of its body
+# arrived; a second response that broke off part way through has already
+# replaced it with its own partial page.
+# The helper's own status is not curl's either: it returns 0 where
+# the page needed no challenge, and the second curl's status where one was
+# answered. A first transfer that failed before the challenge field
+# arrived also returns 0, but one that failed after writing that field
+# takes the challenge path, so what comes back is the second curl's
+# status. A caller that needs to know whether its request arrived has to
+# capture the status of a curl it made itself.
 sm_reauth_post() {
 	sm_ra_scope="$1"
 	sm_ra_url="$2"
 	shift 2
+	# Truncate first. A transfer that fails before any of the body
+	# arrives does not write to $BODY at all, leaving the previous page
+	# there, and if that page happened to be a reauth prompt this would
+	# post a token belonging to an earlier request.
+	: > "$BODY"
 	curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" "$@" "$sm_ra_url" >/dev/null
 	if grep -q 'name="_reauth_scope"' "$BODY"; then
 		sm_ra_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]{64}"' "$BODY" \
@@ -4767,7 +4788,28 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 
 
 	mfa_code()   { python3 "$MFA_PY" "$1" "${2:-0}"; }
+	# The window and its code from one run. Two shell commands can be split
+	# by a boundary and then disagree about which window is current.
+	mfa_code_pair() { python3 "$MFA_PY" "$1" "${2:-0}" pair; }
 	mfa_window() { python3 -c 'import time; print(int(time.time()) // 30)'; }
+	# Block until the current 30-second window has just begun, leaving at
+	# least 17 seconds before the next one starts. Without it the window a
+	# code was built for and the window the server is in when it reads the
+	# code differ at random, which is what made the enrollment checks below
+	# pass or fail by luck. It is slack, not a guarantee: a long enough
+	# pause still crosses the boundary, and the iteration cap below can
+	# return without a fresh window at all. So no caller trusts it. The
+	# enrollment loop decides from the stored row and the login loop
+	# re-reads the window, and both retry rather than assert on an unstable
+	# pass. Capped: a stopped clock must not hang the suite.
+	mfa_wait_fresh() {
+		mfa_fresh_waited=0
+		while [ "$(python3 -c 'import time; print(int(time.time()) % 30)')" -gt 12 ] \
+			&& [ "$mfa_fresh_waited" -lt 31 ]; do
+			sleep 1
+			mfa_fresh_waited=$((mfa_fresh_waited+1))
+		done
+	}
 	# The login form is rate limited per address. This section produces several
 	# deliberate failures, so clear the counters between steps or a later
 	# assertion passes because everything is locked out.
@@ -4798,7 +4840,12 @@ counter = int(time.time()) // 30 + offset
 digest = hmac.new(key, struct.pack('>Q', counter), hashlib.sha1).digest()
 start = digest[19] & 0x0f
 value = struct.unpack('>I', digest[start:start + 4])[0] & 0x7fffffff
-sys.stdout.write('%06d' % (value % 1000000))
+code = '%06d' % (value % 1000000)
+
+if len(sys.argv) > 3 and sys.argv[3] == 'pair':
+	sys.stdout.write('%d %s' % (counter, code))
+else:
+	sys.stdout.write(code)
 MFAPY
 
 	# read_all so that a successful sign-in lands on a page this section can
@@ -4812,6 +4859,7 @@ MFAPY
 		VALUES (${MFA_UID}, '${MFA_USER}', '${MFA_HASH}', 1, '${MFA_GROUP}', 0)" >/dev/null
 
 	mfa_admin_edit() {
+		: > "$BODY"
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/system-users.php?action=edit&user_id=${MFA_UID}" >/dev/null
 	}
@@ -4819,18 +4867,40 @@ MFAPY
 	# administrator can reach these columns, so drive it rather than the table.
 	mfa_admin_set() {
 		mfa_admin_edit
+		mfa_admin_set_got=$?
 		mfa_tok="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
+		# Without a token the update below is refused for that reason,
+		# and the checks that read the row afterwards would blame the
+		# form for not saving a value it was never asked to save.
+		if [ "$mfa_admin_set_got" != 0 ] || [ -z "$mfa_tok" ]; then
+			bad "the account form could not be fetched with a CSRF token (curl exit ${mfa_admin_set_got}) - the MFA value was not posted"
+			return 1
+		fi
 		sm_reauth_post user_admin "$OCM_URL/system-users.php" \
 			-d "action=update&user_id=${MFA_UID}&_csrf=${mfa_tok}" \
 			-d "username=${MFA_USER}&enabled=1&group_id=${MFA_GROUP}" \
 			-d "totp_enabled=$1"
 	}
+	# Truncate the body first. A transfer that fails before any of the
+	# response body arrives does not touch curl's -o file at all, so
+	# without this a grep below reads the page the PREVIOUS request left
+	# there and reports on that page instead of this one. One that breaks
+	# off part way through does overwrite it, with its own partial page.
 	mfa_login() {
 		: > "$MFA_JAR"
+		: > "$BODY"
 		curl -sL --max-time 30 -c "$MFA_JAR" -b "$MFA_JAR" -o "$BODY" \
 			-d "login_user=${MFA_USER}&login_pass=${MFA_PASS}&auth_id=1&totp=${1:-}" \
 			"$OCM_URL/" >/dev/null
+	}
+	# Fetch one page as the fixture's own session. Returns curl's
+	# status, so a page that refused is not confused with a fetch that
+	# failed, and truncates the body first, because a transfer that fails
+	# before any of the body arrives does not touch curl's -o file.
+	mfa_jar_get() {
+		: > "$BODY"
+		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$1" >/dev/null
 	}
 
 	if [ -z "$MFA_HASH" ] || [ -z "${MFA_UID:-}" ]; then
@@ -4838,26 +4908,35 @@ MFAPY
 	else
 		# 25a. The control renders, and the account's own secret does not.
 		mfa_admin_edit
-		if grep -q 'Multi-Factor Authentication' "$BODY" \
-			&& grep -q 'name="totp_enabled"' "$BODY"; then
-			ok "the account form carries the MFA control"
+		mfa_admin_got=$?
+		# Two of the four checks below pass on an absent string, so an
+		# empty body answers them both. A fetch that did not complete
+		# would report that the form carries no secret input and offers
+		# no reset without either page having been seen.
+		if [ "$mfa_admin_got" != 0 ]; then
+			bad "fetching the account form did not complete (curl exit ${mfa_admin_got}) - the four MFA control checks were not run"
 		else
-			bad "the account form has no MFA control - pl_mfa_admin_control() rendered nothing"
-		fi
-		if grep -q 'Off. This account signs in with a password only.' "$BODY"; then
-			ok "a new account reports MFA off"
-		else
-			bad "a new account does not report MFA off"
-		fi
-		if grep -q 'name="totp_secret"' "$BODY"; then
-			bad "the account form carries a totp_secret input - an admin page must never handle the secret"
-		else
-			ok "the account form carries no totp_secret input"
-		fi
-		if grep -q '>Reset<' "$BODY"; then
-			bad "the account form offers a reset for an account with no enrolled device"
-		else
-			ok "the account form offers no reset before a device is enrolled"
+			if grep -q 'Multi-Factor Authentication' "$BODY" \
+				&& grep -q 'name="totp_enabled"' "$BODY"; then
+				ok "the account form carries the MFA control"
+			else
+				bad "the account form has no MFA control - pl_mfa_admin_control() rendered nothing"
+			fi
+			if grep -q 'Off. This account signs in with a password only.' "$BODY"; then
+				ok "a new account reports MFA off"
+			else
+				bad "a new account does not report MFA off"
+			fi
+			if grep -q 'name="totp_secret"' "$BODY"; then
+				bad "the account form carries a totp_secret input - an admin page must never handle the secret"
+			else
+				ok "the account form carries no totp_secret input"
+			fi
+			if grep -q '>Reset<' "$BODY"; then
+				bad "the account form offers a reset for an account with no enrolled device"
+			else
+				ok "the account form offers no reset before a device is enrolled"
+			fi
 		fi
 
 		# 25b. Turning it on writes the flag and nothing else.
@@ -4881,13 +4960,24 @@ MFAPY
 		# 25c. The gate holds the account on the enrollment page.
 		mfa_rl_clear
 		mfa_login
-		if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+		mfa_gate_got=$?
+		if [ "$mfa_gate_got" != 0 ]; then
+			bad "the pre-enrollment login did not complete (curl exit ${mfa_gate_got}) - the gate was not checked"
+		elif grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 			ok "a user with MFA on and no device lands on the enrollment page"
 		else
 			bad "the enrollment gate did not fire - a user with MFA on reached the application"
 		fi
-		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/case_list.php" >/dev/null
-		if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+		# The login above leaves the enrollment page behind, and that
+		# page carries the very string this check greps for. A fetch
+		# that did not complete used to leave it there and pass, so the
+		# gate could be absent for every request but the login itself
+		# and nothing here would say so.
+		mfa_jar_get "$OCM_URL/case_list.php"
+		mfa_gate_page=$?
+		if [ "$mfa_gate_page" != 0 ]; then
+			bad "fetching case_list.php did not complete (curl exit ${mfa_gate_page}) - the gate was not checked on an ordinary page"
+		elif grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 			ok "the gate also holds an ordinary page request"
 		else
 			bad "case_list.php was served to an un-enrolled account"
@@ -4895,80 +4985,381 @@ MFAPY
 
 		# 25d. Enrolment: the page hands out a key, a wrong code is refused
 		# and stores nothing, the right code stores the secret encrypted.
-		curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/enroll_mfa.php" >/dev/null
+		# The pending secret rides in the encrypted enroll_token, so an
+		# earlier render of this page carries a matched key, token and
+		# CSRF triple. A fetch that did not complete used to leave one
+		# behind, and the whole of 25d would then run on a page this
+		# run never received.
+		mfa_jar_get "$OCM_URL/enroll_mfa.php"
+		mfa_enrol_page=$?
 		MFA_SECRET="$(sed -n 's/.*class="enroll-key">\([A-Z2-7]*\)<.*/\1/p' "$BODY" | head -1)"
 		MFA_TOKEN="$(grep -oE 'name="enroll_token" value="[^"]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([^"]*)".*/\1/')"
 		MFA_CSRF="$(grep -oE 'name="_csrf" value="[0-9a-f]*"' "$BODY" \
 			| head -1 | sed -E 's/.*value="([0-9a-f]*)".*/\1/')"
-		if [ "${#MFA_SECRET}" -ge 16 ] && [ -n "$MFA_TOKEN" ] && [ "${#MFA_CSRF}" -eq 64 ]; then
-			ok "the enrollment page renders a key, a pending token and a CSRF token"
+		# Both checks below read this one response, so both belong under
+		# its completion. The sign-out link was scraped from $BODY after
+		# the branch above had already reported the fetch as lost, and a
+		# partial response that happened to carry the link passed.
+		if [ "$mfa_enrol_page" != 0 ]; then
+			bad "fetching the enrollment page did not complete (curl exit ${mfa_enrol_page}) - neither its fields nor its way out was checked"
 		else
-			bad "the enrollment page is incomplete (key ${#MFA_SECRET} chars, token ${#MFA_TOKEN} chars, csrf ${#MFA_CSRF} chars)"
-		fi
+			if [ "${#MFA_SECRET}" -ge 16 ] && [ -n "$MFA_TOKEN" ] && [ "${#MFA_CSRF}" -eq 64 ]; then
+				ok "the enrollment page renders a key, a pending token and a CSRF token"
+			else
+				bad "the enrollment page is incomplete (key ${#MFA_SECRET} chars, token ${#MFA_TOKEN} chars, csrf ${#MFA_CSRF} chars)"
+			fi
 
-		# The way out. An account that is held on the enrollment page has
-		# exactly one other link, and the enrollment gate lets exactly one
-		# other page through. A link that 404s leaves a user who cannot
-		# enrol -- lost phone, no authenticator app yet -- with no way to
-		# end the session at all. Follow the link the page actually renders
-		# rather than reading the source, so a future edit that points it
-		# somewhere else is caught too.
-		MFA_OUT="$(sed -n 's/.*<a href="\([^"]*logout[^"]*\)".*/\1/p' "$BODY" | head -1)"
-		# base_url is a path, not an absolute URL, on a stock install.
-		case "$MFA_OUT" in
-			http*) ;;
-			/*) MFA_OUT="$(printf '%s' "$OCM_URL" | sed -E 's#^(https?://[^/]+).*#\1#')${MFA_OUT}" ;;
-		esac
-		# Without the fixture's cookies: following it with them would end the
-		# session the rest of this section still needs. Whether the URL
-		# exists is the whole question.
-		if [ -n "$MFA_OUT" ] \
-			&& [ "$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' "$MFA_OUT")" != 404 ]; then
-			ok "the enrollment page's sign-out link resolves"
-		else
-			bad "the enrollment page's sign-out link is broken (${MFA_OUT:-none found})"
+			# The way out. An account that is held on the enrollment page
+			# has exactly one other link, and the enrollment gate lets
+			# exactly one other page through. A link that 404s leaves a
+			# user who cannot enrol -- lost phone, no authenticator app
+			# yet -- with no way to end the session at all. Follow the
+			# link the page actually renders rather than reading the
+			# source, so a future edit that points it somewhere else is
+			# caught too.
+			MFA_OUT="$(sed -n 's/.*<a href="\([^"]*logout[^"]*\)".*/\1/p' "$BODY" | head -1)"
+			# base_url is a path, not an absolute URL, on a stock install.
+			case "$MFA_OUT" in
+				http*) ;;
+				/*) MFA_OUT="$(printf '%s' "$OCM_URL" | sed -E 's#^(https?://[^/]+).*#\1#')${MFA_OUT}" ;;
+			esac
+			# Without the fixture's cookies: following it with them would
+			# end the session the rest of this section still needs.
+			# Whether the URL exists is the whole question. curl prints
+			# 000 and exits non-zero for a request that did not arrive,
+			# and 000 is not 404, so the status has to be read too or a
+			# probe that never got there counts as a working link.
+			if [ -z "$MFA_OUT" ]; then
+				bad "the enrollment page renders no sign-out link"
+			else
+				mfa_out_code="$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' "$MFA_OUT")"
+				mfa_out_got=$?
+				if [ "$mfa_out_got" != 0 ]; then
+					bad "probing the sign-out link did not complete (curl exit ${mfa_out_got}) - whether it resolves was not checked"
+				elif [ "$mfa_out_code" = 404 ]; then
+					bad "the enrollment page's sign-out link is broken (${MFA_OUT} answered 404)"
+				else
+					ok "the enrollment page's sign-out link resolves"
+				fi
+			fi
 		fi
 
 		mfa_enroll_post() {
+			: > "$BODY"
 			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" \
 				--data-urlencode "enroll_token=${MFA_TOKEN}" \
 				--data-urlencode "_csrf=${MFA_CSRF}" \
 				--data-urlencode "mfa_code=$1" \
 				"$OCM_URL/enroll_mfa.php" >/dev/null
 		}
+		# Where the enrolled session stands, asked with a fresh request.
+		# A received application reply would be evidence too, but a POST
+		# whose reply was lost supplies none, and the already-enrolled
+		# redirect will not read a code again to produce another. Returns
+		# curl's status, which says whether the transfer completed, so a
+		# page that refused is not confused with a fetch that failed.
+		mfa_app_get() {
+			mfa_jar_get "$OCM_URL/"
+		}
+		# 'enc:' for an encrypted secret, 'none' for no secret, another
+		# prefix for a value this check does not expect, and empty only
+		# for a row that was not read: adb() suppresses errors, so a
+		# dropped connection and a missing row both come back empty and
+		# neither may be taken for an account not yet enrolled.
+		mfa_enrol_state() {
+			adb "SELECT IF(totp_secret IS NULL OR totp_secret = '', 'none', LEFT(totp_secret, 4)) FROM users WHERE user_id = ${MFA_UID}"
+		}
 
 		if [ "${#MFA_SECRET}" -lt 16 ]; then
 			bad "no enrollment key - the rest of section 25 is untested"
 		else
 			mfa_enroll_post 000000
-			if grep -q 'That code did not match' "$BODY" \
+			mfa_enrol_seed=$?
+			# A refusal counts only if the code got there. The POST helper
+			# truncates the body first, so no earlier page can supply the
+			# refusal text; a transfer that failed part way through can
+			# still leave bytes of its own, so the status is what decides
+			# this and not the body. Without it the server would be
+			# accused of accepting a code it never received.
+			if [ "$mfa_enrol_seed" != 0 ]; then
+				bad "the wrong-code enrollment POST did not complete (curl exit ${mfa_enrol_seed}) - it was not checked"
+			elif grep -q 'That code did not match' "$BODY" \
 				&& [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ]; then
 				ok "a wrong enrollment code is refused and stores nothing"
 			else
 				bad "a wrong enrollment code was accepted, or stored a secret anyway"
 			fi
 
-			MFA_ENROL_WINDOW="$(mfa_window)"
-			MFA_ENROL_CODE="$(mfa_code "$MFA_SECRET")"
-			mfa_enroll_post "$MFA_ENROL_CODE"
-			if grep -qi 'logout' "$BODY" && ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
-				ok "the right enrollment code finishes enrollment and opens the application"
-			else
-				bad "the right enrollment code did not finish enrollment"
+			# Enroll with the code for the PREVIOUS window. It is inside
+			# pl_totp_verify_window()'s one-window tolerance, so enrollment
+			# still succeeds, and it makes the window the server ought to
+			# record differ from the window it is in while recording it --
+			# the only way to see which of the two it stores. The window and
+			# the code come from one python run, so a boundary cannot land
+			# between them. A boundary that falls before the server verifies
+			# the code makes it two windows old and refused, so the POST is
+			# retried: the enroll_token and the _csrf field survive a refusal,
+			# which the wrong-code check above has just used them for.
+			mfa_enrol_try=0
+			mfa_enrol_done=0
+			mfa_enrol_opened=0
+			mfa_enrol_got=0
+			mfa_enrol_early=0
+			mfa_enrol_unread=0
+			mfa_enrol_unsent=0
+			mfa_enrol_outside=0
+			MFA_ENROL_WINDOW=''
+			# A wrong-code POST whose transfer did not complete may still
+			# be running, and its code is not certainly wrong: the
+			# generator takes value % 1000000, so 000000 is a code some
+			# secret and window produce. It carried a pending secret of
+			# its own, so it can enroll the account at any point after
+			# this -- including between a read and a POST below, where
+			# neither would show it. Every check in this block rests on
+			# knowing which POST enrolled the account, and nothing here
+			# can wait for that one, so the retry loop does not run.
+			# mfa_enrol_done then stays 0, which is what makes each check
+			# needing an enrolled account report itself unchecked rather
+			# than decide from an account that never enrolled.
+			mfa_enrol_seed_lost=0
+			if [ "$mfa_enrol_seed" != 0 ]; then
+				mfa_enrol_seed_lost=1
 			fi
-			if [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
+			while [ "$mfa_enrol_try" -lt 3 ] && [ "$mfa_enrol_done" = 0 ] \
+				&& [ "$mfa_enrol_early" = 0 ] && [ "$mfa_enrol_unread" = 0 ] \
+				&& [ "$mfa_enrol_seed_lost" = 0 ] \
+				&& [ "$mfa_enrol_outside" = 0 ] \
+				&& [ "$mfa_enrol_unsent" = 0 ]; do
+				mfa_enrol_try=$((mfa_enrol_try+1))
+				mfa_enrol_row="$(mfa_enrol_state)"
+				if [ "$mfa_enrol_row" = 'enc:' ]; then
+					# Nothing this loop sent can have put a secret here.
+					# enroll_mfa.php runs its UPDATE before it answers --
+					# DB::preparedQuery() executes the statement
+					# synchronously and the connection autocommits -- so a
+					# POST that completed and left the row reading 'none'
+					# wrote nothing, and the read after every POST below
+					# says exactly that. A POST whose transfer did not
+					# complete stops the loop rather than being retried,
+					# and a wrong-code POST that did not complete has
+					# already stopped the whole block. From the second
+					# try on that leaves nothing inside this run that
+					# could have written the secret, so it came from
+					# outside. On the first try the seed POST is a
+					# candidate too: its 000000 is a code the generator
+					# can produce, so a server that took it enrolled the
+					# account before the loop began. A row an earlier
+					# run left behind is not a candidate on any try --
+					# the fixture is read by user_id, and that id is
+					# MAX(user_id) + 1 read after the delete, so no row
+					# that already existed holds it, whether or not the
+					# delete did anything. A second run working the same
+					# database at the same time can be. Posting again
+					# would answer the
+					# already-enrolled redirect without the code being
+					# read, and leave MFA_ENROL_WINDOW holding a window
+					# nothing verified, so stop. The two cases are
+					# reported apart because they say different things
+					# about the starting state: on the first try the
+					# secret was already there before any real enrollment
+					# code was sent, and after it the secret appeared
+					# while the run was working.
+					if [ "$mfa_enrol_try" != 1 ]; then
+						mfa_enrol_outside=1
+					else
+						mfa_enrol_early=1
+					fi
+					break
+				fi
+				if [ "$mfa_enrol_row" != 'none' ]; then
+					# Neither answer: the row was not read, or it holds
+					# something this check does not recognise. Treating
+					# that as "not enrolled yet" is what would let a stored
+					# secret this loop cannot see be followed by a second
+					# POST, and the window the comparison below then
+					# expects would belong to a code the server never
+					# verified.
+					mfa_enrol_unread=1
+					break
+				fi
+				mfa_wait_fresh
+				MFA_ENROL_PAIR="$(mfa_code_pair "$MFA_SECRET" -1)"
+				MFA_ENROL_WINDOW="${MFA_ENROL_PAIR%% *}"
+				MFA_ENROL_CODE="${MFA_ENROL_PAIR#* }"
+				if [ -z "$MFA_ENROL_WINDOW" ] || [ -z "$MFA_ENROL_CODE" ]; then
+					# The generator produced nothing. Posting an empty
+					# code would spend a try and answer nothing.
+					mfa_enrol_unsent=1
+					break
+				fi
+				mfa_enroll_post "$MFA_ENROL_CODE"
+				mfa_enrol_sent=$?
+				if [ "$mfa_enrol_sent" != 0 ]; then
+					# A POST whose transfer did not complete may still be
+					# running. Retrying it is what let a stalled POST
+					# store its own window after the retry had replaced
+					# the window this check compares against, which made
+					# a wrong stored window agree with the expectation.
+					# Nothing this check can wait for settles it.
+					mfa_enrol_unsent=1
+					break
+				fi
+				# The row, not the page: the page cannot tell "this code
+				# enrolled the account" from "it was already enrolled".
+				# Reading it here is also what attributes the secret to
+				# the code just sent. enroll_mfa.php writes the row before
+				# it answers and the connection autocommits, so every
+				# earlier POST of this loop that completed and was
+				# followed by 'none' wrote nothing; a POST whose transfer
+				# did not complete stops the loop, and a read that
+				# answered neither stops it too. Reaching 'enc:' here
+				# therefore leaves the code sent just above as the only
+				# candidate. Round 64 dropped the window whenever more
+				# than one POST had been sent, on the belief that a POST
+				# could commit after answering. It cannot, and the retry
+				# this loop is built around made that the ordinary path: a
+				# correct server reported the window unchecked every time
+				# a code aged out and was resent.
+				mfa_enrol_row="$(mfa_enrol_state)"
+				if [ "$mfa_enrol_row" = 'enc:' ]; then
+					mfa_enrol_done=1
+				elif [ "$mfa_enrol_row" != 'none' ]; then
+					mfa_enrol_unread=1
+				fi
+			done
+			if [ "$mfa_enrol_done" = 1 ]; then
+				mfa_app_get
+				mfa_enrol_got=$?
+				if [ "$mfa_enrol_got" = 0 ] && grep -qi 'logout' "$BODY" \
+					&& ! grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+					mfa_enrol_opened=1
+				fi
+			fi
+			if [ "$mfa_enrol_done" = 1 ] && [ "$mfa_enrol_opened" = 1 ]; then
+				ok "the right enrollment code finishes enrollment and opens the application"
+			elif [ "$mfa_enrol_done" = 1 ] && [ "$mfa_enrol_got" != 0 ]; then
+				bad "the account enrolled but fetching the application did not complete (curl exit ${mfa_enrol_got}) - it was not checked"
+			elif [ "$mfa_enrol_done" = 1 ]; then
+				bad "the account enrolled but the application page did not come back signed in"
+			elif [ "$mfa_enrol_early" = 1 ]; then
+				bad "the account was already enrolled before any real enrollment code was sent"
+			elif [ "$mfa_enrol_outside" = 1 ]; then
+				bad "a secret appeared while this run was enrolling and no code it sent was accepted - something outside the run wrote the row"
+			elif [ "$mfa_enrol_seed_lost" = 1 ]; then
+				bad "the wrong-code enrollment POST did not complete, so it may still enroll the account with a code of its own - every check below that needs an enrolled account reports itself unchecked"
+			elif [ "$mfa_enrol_unread" = 1 ]; then
+				bad "the enrollment state came back as '${mfa_enrol_row}', which is neither the enc: prefix of an encrypted secret nor the 'none' this check expects for an empty one - the row was not read, or it holds something else, and every check below it is unreliable"
+			elif [ "$mfa_enrol_unsent" = 1 ]; then
+				bad "no enrollment code was built, or its POST did not complete - what reached the server is unknown and every check below it is unreliable"
+			else
+				bad "the right enrollment code did not finish enrollment after 3 tries"
+			fi
+			# The replay bound seeded at enrollment. This is the assertion
+			# that catches storing floor(time()/30) instead of the matched
+			# window. It is claimed only where a POST of this run wrote the
+			# secret: MFA_ENROL_WINDOW then belongs to that POST, because
+			# the read before it said there was none, that POST returned a
+			# reply of its own, and the window came out of the same python
+			# run as the code it sent. Anything else is reported as
+			# unchecked rather than compared -- two empty strings match, so
+			# an unenrolled account and an unreadable bound would otherwise
+			# agree. An unreadable bound reads back as the empty string
+			# and is not compared at all: it is not a wrong window, and
+			# reporting it as one would accuse the server on no
+			# evidence. A wrong window is reported by direction, because
+			# the two directions are opposite defects. Above the accepted
+			# code's window, the code a synchronized authenticator shows
+			# is refused until the clock passes the stored window -- but
+			# not every code the account has: the window after the stored
+			# one clears the bound a window early, because the verifier
+			# tries the clock's window plus one. Below it, and where no
+			# bound was stored at all, nothing closes the code just
+			# accepted and it stays usable for the rest of the verifier's
+			# tolerance. Equality is the correct outcome and is reported
+			# as one above, so neither direction covers it. The 25e login
+			# below sees neither defect where it could read the bound: it
+			# then waits the clock past that bound before sending
+			# anything. Where every read failed it reports that instead
+			# of judging the refusal.
+			mfa_enrol_bound="$(adb "SELECT IF(totp_last_used IS NULL, 'null', totp_last_used) FROM users WHERE user_id = ${MFA_UID}")"
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "the stored enrollment window was not checked - this run did not confirm an enrolled account"
+			elif [ -z "$MFA_ENROL_WINDOW" ]; then
+				bad "the stored enrollment window was not checked - the window the accepted code came from was not recorded"
+			elif [ -z "$mfa_enrol_bound" ]; then
+				bad "the stored enrollment window could not be read - it was not checked"
+			elif [ "$mfa_enrol_bound" = "$MFA_ENROL_WINDOW" ]; then
+				ok "enrollment records the window the accepted code belonged to"
+			elif [ "$mfa_enrol_bound" = 'null' ]; then
+				bad "enrollment stored no replay bound - nothing closes the code it just accepted and it stays usable for the rest of the verifier's tolerance"
+			else
+				case "$mfa_enrol_bound" in
+					*[!0-9]*)
+						bad "enrollment stored a replay bound that is not a window number (${mfa_enrol_bound})"
+						;;
+					*)
+						# Both operands, not one. A non-numeric window on
+						# the right made [ exit 2, which takes the else
+						# and reports the "above" direction without
+						# having compared anything.
+						case "$MFA_ENROL_WINDOW" in
+							*[!0-9]*)
+								bad "the window the accepted code came from is not a window number (${MFA_ENROL_WINDOW}), so the stored bound ${mfa_enrol_bound} could not be compared with it"
+								;;
+							*)
+								if [ "$mfa_enrol_bound" -lt "$MFA_ENROL_WINDOW" ]; then
+									bad "enrollment recorded a window below the code it accepted - nothing closes that code and it stays usable for the rest of the verifier's tolerance"
+								else
+									bad "enrollment recorded a window above the code it accepted - the code a synchronized authenticator shows is refused until the clock passes that window"
+								fi
+								;;
+						esac
+						;;
+				esac
+			fi
+			# Everything from here to the end of 25f asks what an enrolled
+			# account does, and none of it was gated on the enrollment
+			# having happened. An account with no secret answers that the
+			# secret is not encrypted and that the enrollment page handed
+			# out a second key -- neither of which is the server's fault
+			# -- and Reset's two checks below passed for free, because
+			# there was nothing there to reset. Each group that decides
+			# something about an enrolled account now reports itself
+			# unchecked instead of deciding from a premise the run failed
+			# to establish. The audit row for the reset action is left
+			# ungated on purpose: Reset writes that row whether or not a
+			# device was enrolled, so enrollment is not a premise it
+			# needs. It is not scoped to this run either -- the query
+			# matches any user at any time, and nothing in this section
+			# clears audit_log, so a row an earlier run left behind
+			# answers it. The enrollment failure itself is already
+			# reported above, so these lines say what was lost rather
+			# than reporting a second server failure for one cause.
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so whether the stored secret is encrypted at rest was not checked"
+			elif [ "$(adb "SELECT LEFT(totp_secret, 4) FROM users WHERE user_id = ${MFA_UID}")" = 'enc:' ]; then
 				ok "the stored secret is encrypted at rest"
 			else
 				bad "the stored secret is not in the enc: format - it may be cleartext"
 			fi
-			if [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'user.totp_self_enrolled' LIMIT 1")" ]; then
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so whether audit_log records user.totp_self_enrolled was not checked"
+			elif [ -n "$(adb "SELECT 1 FROM audit_log WHERE action = 'user.totp_self_enrolled' LIMIT 1")" ]; then
 				ok "audit_log recorded user.totp_self_enrolled"
 			else
 				bad "audit_log has no user.totp_self_enrolled row"
 			fi
-			curl -sL --max-time 30 -b "$MFA_JAR" -o "$BODY" "$OCM_URL/enroll_mfa.php" >/dev/null
-			if grep -q 'class="enroll-key"' "$BODY"; then
+			# This one looks for a string that must be absent, so an
+			# empty body answers it. Truncating alone would turn a lost
+			# fetch into a pass; the status is what decides it.
+			mfa_jar_get "$OCM_URL/enroll_mfa.php"
+			mfa_reissue_got=$?
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so whether the enrollment page refuses to re-issue a key was not checked"
+			elif [ "$mfa_reissue_got" != 0 ]; then
+				bad "re-fetching the enrollment page did not complete (curl exit ${mfa_reissue_got}) - it was not checked"
+			elif grep -q 'class="enroll-key"' "$BODY"; then
 				bad "enroll_mfa.php hands out a second key to an already-enrolled account"
 			else
 				ok "enroll_mfa.php refuses to re-issue a key to an enrolled account"
@@ -4977,58 +5368,296 @@ MFAPY
 			# 25e. The login form now needs the code.
 			mfa_rl_clear
 			mfa_login
-			if grep -q 'login_pass' "$BODY"; then
-				ok "the password alone no longer signs the account in"
+			mfa_pw_got=$?
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so neither the password-only refusal nor its wording was checked"
+			elif [ "$mfa_pw_got" != 0 ]; then
+				bad "the password-only login did not complete (curl exit ${mfa_pw_got}) - neither check below it was run"
 			else
-				bad "the password alone still signs an MFA account in"
-			fi
-			if grep -q 'The credentials you supplied are invalid' "$BODY"; then
-				ok "the refusal does not say which factor was wrong"
-			else
-				bad "the refusal message names the failing factor"
+				if grep -q 'login_pass' "$BODY"; then
+					ok "the password alone no longer signs the account in"
+				else
+					bad "the password alone still signs an MFA account in"
+				fi
+				if grep -q 'The credentials you supplied are invalid' "$BODY"; then
+					ok "the refusal does not say which factor was wrong"
+				else
+					bad "the refusal message names the failing factor"
+				fi
 			fi
 
-			# Wait for the next 30-second window so that the code used during
-			# enrollment is in the past. Capped: a stopped clock must not hang
-			# the suite.
-			mfa_waited=0
-			while [ "$(mfa_window)" = "$MFA_ENROL_WINDOW" ] && [ "$mfa_waited" -lt 35 ]; do
-				sleep 1
-				mfa_waited=$((mfa_waited+1))
+			# A current code signs in, and then the same code is refused.
+			# Both are decided in one pass, and the result is accepted only
+			# if the window did not move across the two requests. A code
+			# stays valid into the next window -- the verifier's -1 offset --
+			# and expires only after two, so a refusal from a later window
+			# could come from the bound or from age. Holding both requests
+			# inside one window removes the question. A refusal is never
+			# asserted on without that stability, so it cannot be blamed
+			# on the server for the wrong reason. An accepted sign-in is
+			# asserted on where the replay request was lost, because a
+			# code the server took is not ambiguous the way a refusal is.
+			# Where the loop instead ran out of tries, both halves are
+			# reported unchecked together, the accepted sign-in included.
+			mfa_pair_try=0
+			mfa_pair_stable=0
+			mfa_pair_in=0
+			mfa_pair_out=0
+			mfa_pair_lost=0
+			mfa_pair_sent=0
+			mfa_pair_back=0
+			# The window a code must exceed is the highest of the bounds
+			# this loop has read and the windows it picked to send. A read
+			# replaces the value only with a number above it, or with any
+			# number while it is still empty. The exit status is not looked
+			# at, so a failed read that prints a higher number still counts.
+			# Remembering only the previous one is not enough: a clock that
+			# moves back two windows produces a code the server still
+			# refuses, and the login half would then report that a correct
+			# server rejected a valid code.
+			#
+			# A bound that could not be read is not the same as no bound.
+			# With no bound nothing is spent, so a fresh code must be
+			# accepted and a refusal is the server's to answer for. With
+			# an unreadable one this loop does not know which windows are
+			# spent, so it cannot tell a replay refusal it caused itself
+			# from a wrong one. The two are separated here, and the
+			# second is reported instead of blamed on the server.
+			mfa_pair_read() {
+				adb "SELECT IF(totp_last_used IS NULL, 'null', totp_last_used) FROM users WHERE user_id = ${MFA_UID}"
+			}
+			# The clock this loop judges a window by. Anything carrying a
+			# character that is not a digit is blanked, and every use is
+			# guarded on the result being non-empty. For output like
+			# 'abc' the filter only suppresses the shell's diagnostic:
+			# the bare comparison exits 2, which reads as false, and the
+			# guarded one is false as well. For '-1', '+1' or a space-padded '1' it does
+			# change the answer, because the shell accepts all three as
+			# integers and would compare them. That is deliberate: a
+			# clock that did not print an unsigned decimal cannot be used
+			# to judge a window, and an unsigned decimal is all
+			# mfa_window() prints. What keeps a spent window out of a
+			# request is the break below, which compares the generated
+			# window against that same highest of the bounds read and the
+			# windows picked.
+			mfa_pair_clock() {
+				mfa_pair_now="$(mfa_window)"
+				case "$mfa_pair_now" in
+					*[!0-9]*) mfa_pair_now='' ;;
+				esac
+			}
+			# mfa_pair_nobound records whether any re-read inside the
+			# loop ever answered. The seed read does not clear it and no
+			# later read sets it again, so cleared means at least one
+			# in-loop read answered and set means none did -- not that
+			# the read on the try which sent the code answered. The
+			# unchecked-result branch below exists for a loop that cannot
+			# tell a replay refusal it caused itself from a wrong one,
+			# and only a bound this loop read can decide that.
+			# Letting the seed clear the flag reported an undecidable
+			# refusal as a correct server refusing a valid code: with
+			# every in-loop read failing the spent window stays at the
+			# seed until the first send raises it, so the loop can send a
+			# window the server has since closed.
+			mfa_pair_nobound=1
+			mfa_pair_spent=''
+			mfa_pair_seed="$(mfa_pair_read)"
+			case "$mfa_pair_seed" in
+				'') ;;
+				*[!0-9]*) ;;
+				*) mfa_pair_spent="$mfa_pair_seed" ;;
+			esac
+			while [ "$mfa_enrol_done" = 1 ] && [ "$mfa_pair_try" -lt 3 ] \
+				&& [ "$mfa_pair_stable" = 0 ]; do
+				mfa_pair_try=$((mfa_pair_try+1))
+				# Re-read it, do not trust the seed. A server that stores
+				# the clock's window at login too raises its bound above
+				# every window this loop sent, so the window after the one
+				# spent here is refused for the server's reason and the
+				# login half would call that a correct code refused.
+				# Raising the spent window to whatever the server now
+				# holds asks the next question above both of them.
+				mfa_pair_live="$(mfa_pair_read)"
+				# 'null' or a number is an answer about what the server
+				# holds; anything else, the empty string included, means
+				# the row was not read. Only a number is a bound, and
+				# only a number may reach the comparisons below, which
+				# would exit 2 rather than answer on anything else.
+				case "$mfa_pair_live" in
+					null) mfa_pair_nobound=0; mfa_pair_live='' ;;
+					'') mfa_pair_live='' ;;
+					*[!0-9]*) mfa_pair_live='' ;;
+					*) mfa_pair_nobound=0 ;;
+				esac
+				if [ -n "$mfa_pair_live" ] \
+					&& { [ -z "$mfa_pair_spent" ] \
+						|| [ "$mfa_pair_live" -gt "$mfa_pair_spent" ]; }; then
+					mfa_pair_spent="$mfa_pair_live"
+				fi
+				mfa_wait_fresh
+				# A retry must not send a code from a window already
+				# spent: that is refused as a replay, which is the opposite
+				# of what the login half is asking. Wait the clock past it.
+				mfa_pair_waited=0
+				mfa_pair_clock
+				while [ -n "$mfa_pair_spent" ] && [ -n "$mfa_pair_now" ] \
+					&& [ "$mfa_pair_now" -le "$mfa_pair_spent" ] \
+					&& [ "$mfa_pair_waited" -lt 35 ]; do
+					sleep 1
+					mfa_pair_waited=$((mfa_pair_waited+1))
+					mfa_pair_clock
+				done
+				# The cap is not a guarantee: a clock that stops at or
+				# below the spent window reaches it and returns. Sending
+				# that window's code would be refused as a replay, which is
+				# exactly the answer the login half must not be given, so
+				# leave both checks unclaimed rather than ask a question
+				# with a known wrong answer.
+				if [ -n "$mfa_pair_spent" ] && [ -n "$mfa_pair_now" ] \
+					&& [ "$mfa_pair_now" -le "$mfa_pair_spent" ]; then
+					break
+				fi
+				# One run for both, so the window this try is judged against
+				# is the code's own window and not a separate clock reading.
+				mfa_pair_set="$(mfa_code_pair "$MFA_SECRET")"
+				mfa_pair_window="${mfa_pair_set%% *}"
+				mfa_pair_code="${mfa_pair_set#* }"
+				# The clock can also move back between the check above and
+				# this run, so what was generated is compared as well, and
+				# the spent window only ever rises. A generator that
+				# produced nothing stops the loop for the same reason:
+				# there is no code to ask the question with, and a window
+				# that is not a plain number is no more usable than a
+				# missing one -- it would make the comparison below exit 2
+				# instead of answering, and the loop would then send a code
+				# from a window it never checked was unspent.
+				case "$mfa_pair_window" in
+					*[!0-9]*) mfa_pair_window='' ;;
+				esac
+				if [ -z "$mfa_pair_window" ]; then
+					break
+				fi
+				if [ -n "$mfa_pair_spent" ] \
+					&& [ "$mfa_pair_window" -le "$mfa_pair_spent" ]; then
+					break
+				fi
+				mfa_pair_spent="$mfa_pair_window"
+				mfa_rl_clear
+				mfa_login "$mfa_pair_code"
+				mfa_pair_sent=$?
+				mfa_pair_in=0
+				if [ "$mfa_pair_sent" = 0 ] \
+					&& ! grep -q 'login_pass' "$BODY" \
+					&& grep -qi 'logout' "$BODY"; then
+					mfa_pair_in=1
+				fi
+				# mfa_login truncates the cookie jar, so this is a fresh
+				# sign-in attempt and not a request inside the session the
+				# line above opened.
+				mfa_rl_clear
+				mfa_login "$mfa_pair_code"
+				mfa_pair_back=$?
+				mfa_pair_out=0
+				if [ "$mfa_pair_back" = 0 ] && grep -q 'login_pass' "$BODY"; then
+					mfa_pair_out=1
+				fi
+				# Either transfer failing ends the loop. The guards above
+				# would hold a retry back until the clock passed a window
+				# this loop knows it spent, but a request that did not
+				# arrive spends nothing the loop can see, so what the
+				# server now holds is unknown -- and the page left behind
+				# says nothing about a request that never got there.
+				if [ "$mfa_pair_sent" != 0 ] || [ "$mfa_pair_back" != 0 ]; then
+					mfa_pair_lost=1
+					break
+				fi
+				if [ "$(mfa_window)" = "$mfa_pair_window" ]; then
+					mfa_pair_stable=1
+				fi
 			done
-
-			mfa_rl_clear
-			mfa_login "$MFA_ENROL_CODE"
-			if grep -q 'login_pass' "$BODY"; then
-				ok "a code that was already used is refused"
-			else
-				bad "a used code was accepted a second time - the replay guard is not working"
-			fi
-
-			mfa_rl_clear
-			mfa_login "$(mfa_code "$MFA_SECRET")"
-			if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			# Which half a lost transfer costs depends on which one it
+			# was. A sign-in that completed and succeeded is a sign-in,
+			# whatever happened to the replay request after it, so that
+			# answer is kept. A sign-in that completed and was refused
+			# is not an answer here, because the window was never
+			# confirmed to have held still and the code may simply have
+			# aged out.
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so neither signing in with a current code nor refusing that code a second time was checked"
+			elif [ "$mfa_pair_lost" = 1 ] && [ "$mfa_pair_sent" != 0 ]; then
+				bad "the sign-in request did not complete, so neither the sign-in nor the replay was checked"
+			elif [ "$mfa_pair_lost" = 1 ] && [ "$mfa_pair_in" = 1 ]; then
 				ok "the password and a current code sign the account in"
+			elif [ "$mfa_pair_lost" = 1 ]; then
+				bad "the replay request did not complete and the sign-in before it was refused - whether the window held still is unknown, so neither was checked"
+			elif [ "$mfa_pair_stable" = 0 ]; then
+				bad "a login and a replay never landed in one unspent 30-second window - neither signing in with a current code nor refusing that code a second time was checked"
+			elif [ "$mfa_pair_in" = 1 ]; then
+				ok "the password and a current code sign the account in"
+			elif [ "$mfa_pair_nobound" = 1 ]; then
+				bad "the code was refused and the replay bound could not be read on any try, so a refusal this run caused itself cannot be told from a wrong one - neither check was decided"
 			else
 				bad "a valid password and a valid code were refused"
+			fi
+			# Claimed only where the code was accepted first. Refusing a code
+			# that was never accepted says nothing about replay.
+			#
+			# A sign-in that completed and succeeded is kept as an answer
+			# above even when the replay request after it was lost. This
+			# half is not: its reply did not arrive, so whether the guard
+			# ran is unknown -- the request itself may well have been
+			# processed. Saying so is what makes the region emit two
+			# assertions on that path. Without it the sign-in's ok was the
+			# only line, and a run whose replay request timed out passed
+			# with the replay guard -- the control this check exists for --
+			# never evaluated. A sign-in that was refused needs the same
+			# line for the same reason: the block above answers only the
+			# sign-in half, so without this the region printed one
+			# assertion and named nothing for the other.
+			if [ "$mfa_pair_lost" = 1 ] && [ "$mfa_pair_sent" = 0 ] \
+				&& [ "$mfa_pair_in" = 1 ]; then
+				bad "the replay request did not complete, so whether a used code is refused a second time was not checked"
+			elif [ "$mfa_enrol_done" = 1 ] && [ "$mfa_pair_lost" = 0 ] \
+				&& [ "$mfa_pair_stable" = 1 ] && [ "$mfa_pair_in" = 0 ] \
+				&& [ "$mfa_pair_nobound" = 0 ]; then
+				bad "the code was refused, so whether a used code is refused a second time was not checked"
+			elif [ "$mfa_pair_lost" = 0 ] && [ "$mfa_pair_stable" = 1 ] \
+				&& [ "$mfa_pair_in" = 1 ]; then
+				if [ "$mfa_pair_out" = 1 ]; then
+					ok "the same code is refused a second time inside its own window"
+				else
+					bad "a used code was accepted a second time - the replay guard is not working"
+				fi
 			fi
 
 			# 25f. The admin sees the enrolled state, and Reset sends the
 			# account back to enrollment without turning the requirement off.
 			mfa_admin_edit
-			if grep -q 'An authenticator is enrolled' "$BODY"; then
-				ok "the account form reports the enrolled device"
+			mfa_admin_got2=$?
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so neither the enrolled-state report nor the reset option was checked"
+			elif [ "$mfa_admin_got2" != 0 ]; then
+				bad "fetching the account form did not complete (curl exit ${mfa_admin_got2}) - neither enrolled-state check was run"
 			else
-				bad "the account form does not report the enrolled device"
-			fi
-			if grep -q '>Reset<' "$BODY"; then
-				ok "the account form offers the reset option once a device is enrolled"
-			else
-				bad "the account form offers no reset option for an enrolled device"
+				if grep -q 'An authenticator is enrolled' "$BODY"; then
+					ok "the account form reports the enrolled device"
+				else
+					bad "the account form does not report the enrolled device"
+				fi
+				if grep -q '>Reset<' "$BODY"; then
+					ok "the account form offers the reset option once a device is enrolled"
+				else
+					bad "the account form offers no reset option for an enrolled device"
+				fi
 			fi
 
 			mfa_admin_set 2
-			if [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ] \
+			# An account with no secret passes the emptiness test for
+			# free, so without an enrollment this reported that Reset had
+			# dropped a device that was never there.
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so whether Reset drops the device and keeps the requirement was not checked"
+			elif [ -z "$(adb "SELECT totp_secret FROM users WHERE user_id = ${MFA_UID} AND LENGTH(totp_secret) > 0")" ] \
 				&& [ "$(adb "SELECT totp_enabled FROM users WHERE user_id = ${MFA_UID}")" = 1 ]; then
 				ok "reset drops the device and keeps the requirement"
 			else
@@ -5041,7 +5670,17 @@ MFAPY
 			fi
 			mfa_rl_clear
 			mfa_login
-			if grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
+			mfa_reset_got=$?
+			# An account that never enrolled is held at the enrollment
+			# page after a Reset that did nothing, so this passed without
+			# testing the reset. That is not true of whatever Reset did:
+			# one that also turned the requirement off would have let the
+			# account in, and this check would have detected that.
+			if [ "$mfa_enrol_done" = 0 ]; then
+				bad "this run did not confirm an enrolled account, so whether a reset account is sent back to the enrollment page was not checked"
+			elif [ "$mfa_reset_got" != 0 ]; then
+				bad "the login after a reset did not complete (curl exit ${mfa_reset_got}) - it was not checked"
+			elif grep -q 'Set up Multi-Factor Authentication' "$BODY"; then
 				ok "a reset account is sent back to the enrollment page"
 			else
 				bad "a reset account reached the application without enrolling"
@@ -5061,7 +5700,10 @@ MFAPY
 			fi
 			mfa_rl_clear
 			mfa_login
-			if ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
+			mfa_off_got=$?
+			if [ "$mfa_off_got" != 0 ]; then
+				bad "the login after MFA was turned off did not complete (curl exit ${mfa_off_got}) - it was not checked"
+			elif ! grep -q 'login_pass' "$BODY" && grep -qi 'logout' "$BODY"; then
 				ok "the account signs in with a password again"
 			else
 				bad "the account cannot sign in after MFA was turned off"
@@ -5081,9 +5723,13 @@ MFAPY
 		MFA_KEY="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			cat /var/www/html/cms-custom/config/totp_encryption_key 2>/dev/null \
 			| tr -d '\r\n')"
+		: > "$BODY"
 		curl -sL --max-time 30 -b "$COOKIES" -o "$BODY" \
 			"$OCM_URL/search.php?s=%25%25%5Btotp_encryption_key%5D%25%25" >/dev/null
-		if grep -q 'name="s" size="48" value=""' "$BODY" \
+		mfa_key_got=$?
+		if [ "$mfa_key_got" != 0 ]; then
+			bad "fetching the search page did not complete (curl exit ${mfa_key_got}) - the key tag was not checked"
+		elif grep -q 'name="s" size="48" value=""' "$BODY" \
 			&& { [ -z "$MFA_KEY" ] || ! grep -qF -e "$MFA_KEY" "$BODY"; }
 		then
 			ok "a totp_encryption_key tag in the search box resolves to nothing"
@@ -20454,6 +21100,3733 @@ GPPY
 			bad "$(printf '%s' "$gp_out" | tr '\n' ' ')"
 		fi
 	fi
+fi
+
+echo
+
+# 105. pl_totp_mark_used() records the window a code was accepted in, closing
+# that window and every earlier one to a replay. What it writes is therefore a
+# floor, and a floor may only rise: writing a lower window back over a higher
+# one reopens every code between the two to a replay that the higher value had
+# already refused.
+#
+# Two ordinary requests are enough to try it, with no attacker involved. The
+# verifier skips any window at or below the stored one, so a lower window is
+# only ever accepted while the stored value is still the older one. Two
+# overlapping requests do that: each reads the row before the other records,
+# so both verify, one of them a window later than the other, and before this
+# fix the later write was the one that stuck.
+#
+# The check calls the function rather than racing two requests, because a race
+# cannot be made to happen on demand. Three calls decide it: one below the
+# stored window, one above it, and one against a row holding NULL, which is
+# what an account that has never verified a code holds.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	# The fixture case numbered ZZPRPREFS carries the process id, and its
+	# cleanup matches on its case id and its number together. That pairing is
+	# the pattern followed here. The name carries a random number as well,
+	# because a process id repeats - after a reboot, and across two hosts
+	# sharing one database - and two runs that pick the same name can each
+	# read, change and delete the other's row while believing it is their
+	# own.
+	#
+	# Every statement below that reads or changes the fixture row matches on
+	# the name as well as the id. Three do not, and cannot: the id comes from
+	# a MAX over the whole table, the INSERT that creates the row has nothing
+	# to match on yet, and the function under test takes a user id, so the id
+	# is all its own UPDATE has to pick a row with, and the three calls
+	# cannot narrow it. That UPDATE does carry one further predicate, on the
+	# bound it is about to write, but that is the guard under test rather
+	# than a check on whose row this is. "Cannot" describes how this fixture
+	# is built, not a limit of SQL.
+	sm105_user="zzfloor_${$}_${RANDOM}"
+	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	case "$sm105_uid" in
+		''|*[!0-9]*) sm105_uid='' ;;
+	esac
+	if [ -z "$sm105_uid" ]; then
+		bad "could not read a free user id, so the replay floor was not checked"
+	else
+		# group_id is NOT NULL with a default of NOGROUP, so the fixture needs
+		# no group row. The account is never signed in: every call below runs
+		# the function directly, so the password and the secret stay empty.
+		#
+		# The count matches on the name as well as the id, because the id came
+		# from MAX(user_id) + 1 and another insert can take it first. It is
+		# the only check that the INSERT worked, since the INSERT's own status
+		# is discarded.
+		#
+		# What it establishes is that a row carrying this run's name holds
+		# this id. That is evidence of ownership rather than proof of it, and
+		# it is only as strong as the name is unrepeated. A run that loses the
+		# id to another insert counts zero as long as the row that won carries
+		# a different name, and it then reports the fixture as missing instead
+		# of working on a row it did not create. A random number can repeat,
+		# so a colliding pair is a smaller chance rather than none.
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
+			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP')" \
+			>/dev/null 2>&1
+		sm105_seeded="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm105_uid} AND username = '${sm105_user}'")"
+
+		# The window this account already spent, and the value the function
+		# must refuse to go below.
+		sm105_floor() {
+			adb "SELECT IFNULL(totp_last_used, 'null') FROM users
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'"
+		}
+
+		# PL_DISABLE_SECURITY, because this runs php with no session at all;
+		# the same CLI probe idiom as section 76. The marker says the call
+		# ran, so a php failure cannot be read as a value that did not move.
+		sm105_mark() {
+			docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+pl_totp_mark_used((int) $argv[1], (int) $argv[2]);
+print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
+		}
+
+		if [ "$sm105_seeded" != 1 ]; then
+			bad "the totp floor fixture user was not created, so none of the three calls were checked"
+		else
+			# A lower window must not win. Master writes it unconditionally,
+			# so this is the assertion that separates the two.
+			adb "UPDATE users SET totp_last_used = 101
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'" >/dev/null 2>&1
+			sm105_out="$(sm105_mark 100)"
+			sm105_got="$(sm105_floor)"
+			case "$sm105_out" in
+			*MARKED*)
+				if [ "$sm105_got" = 101 ]; then
+					ok "a window below the stored one leaves the replay floor at 101"
+				else
+					bad "a window below the stored one moved the replay floor from 101 to '$sm105_got'"
+				fi
+				;;
+			*)
+				bad "the mark-used call did not run, so a lower window was not checked"
+				;;
+			esac
+
+			# A real login still has to be able to raise it, or the floor
+			# would freeze at the first code an account ever used.
+			sm105_out="$(sm105_mark 102)"
+			sm105_got="$(sm105_floor)"
+			case "$sm105_out" in
+			*MARKED*)
+				if [ "$sm105_got" = 102 ]; then
+					ok "a window above the stored one raises the replay floor to 102"
+				else
+					bad "a window above the stored one left the replay floor at '$sm105_got'"
+				fi
+				;;
+			*)
+				bad "the mark-used call did not run, so a higher window was not checked"
+				;;
+			esac
+
+			# An account that has never verified a code holds NULL, which is
+			# not a lower window and must not be treated as one.
+			adb "UPDATE users SET totp_last_used = NULL
+				WHERE user_id = ${sm105_uid}
+				AND username = '${sm105_user}'" >/dev/null 2>&1
+			sm105_out="$(sm105_mark 100)"
+			sm105_got="$(sm105_floor)"
+			case "$sm105_out" in
+			*MARKED*)
+				if [ "$sm105_got" = 100 ]; then
+					ok "the first window an account uses sets the replay floor from NULL"
+				else
+					bad "the first window an account uses left the replay floor at '$sm105_got'"
+				fi
+				;;
+			*)
+				bad "the mark-used call did not run, so the NULL row was not checked"
+				;;
+			esac
+		fi
+
+		adb "DELETE FROM users WHERE user_id = ${sm105_uid}
+			AND username = '${sm105_user}'" >/dev/null 2>&1
+	fi
+fi
+# 106. cms/services/twilio.php built the body it posts to SparkPost by
+# concatenating four values into a hand-written JSON literal: the from-address
+# setting, the subject, the message text and the recipient address. Two of
+# them carry text a member of staff writes -- a case number reaches the
+# subject and a sender name reaches the message -- and none of the four was
+# escaped. A double quote in any of them closed the field it was inside and
+# opened another, so the value decided the shape of the request rather than
+# only its contents, and could add a field SparkPost would honour. The body is
+# now built by json_encode(), which escapes every value it is given.
+#
+# This is a tree sweep, not a request. The notification needs a live SparkPost
+# key and an outbound call, so what is checked is that no PHP file writes a
+# JSON body by hand and that the replacement kept its two deliberate parts.
+echo
+echo "106. no PHP file hand-writes a JSON request body"
+
+# This counts FILES rather than matching lines. The one literal this closed
+# spanned two lines, so a line count read as two findings for one site, and a
+# later multi-line literal would misreport the same way.
+#
+# The pattern is the opening of a JSON object inside a PHP string, which is
+# what somebody writing a literal by hand types. It does not match
+# json_encode() output, which is built at run time rather than written.
+json_literal_files="$(grep -rlF '{"' cms/ --include='*.php' 2>/dev/null | wc -l)"
+if [ "$json_literal_files" -eq 0 ]; then
+	ok "no PHP file builds a JSON request body as a hand-written literal"
+else
+	bad "${json_literal_files} PHP file(s) still build JSON as a hand-written literal"
+fi
+
+# The encoder call that replaced it must keep the flag that keeps a value
+# holding invalid UTF-8 sendable. Without the flag json_encode() returns false
+# on invalid UTF-8 and the notification is dropped, where concatenation had
+# sent the bytes as they were.
+#
+# The pattern is the end of the encoder call, not the name on its own, and the
+# second grep drops comment lines, so neither the name nor the whole call
+# quoted in a comment passes this row. It is a presence check either way: it
+# says the argument is written in the code, not that the call runs.
+if grep -F '), JSON_INVALID_UTF8_SUBSTITUTE);' cms/services/twilio.php \
+	| grep -qvF '//'; then
+	ok "the SparkPost body is encoded with the invalid-UTF-8 substitution flag"
+else
+	bad "the SparkPost body has lost JSON_INVALID_UTF8_SUBSTITUTE"
+fi
+
+# An encoder that returns false must not be posted as an empty body. The
+# pattern is the whole if, and the second grep drops comment lines, so the
+# comparison quoted in a comment beside a disabled guard does not pass this
+# row. It is still a presence check rather than proof the branch runs:
+# reaching it needs a settings value, not a value any caller of this function
+# supplies.
+if grep -F 'if ($data_string === false)' cms/services/twilio.php \
+	| grep -qvF '//'; then
+	ok "an unencodable SparkPost body is refused rather than posted empty"
+else
+	bad "an unencodable SparkPost body is not refused"
+fi
+# 107. cms/services/twilio.php sliced an already-escaped number
+#
+# The inbound SMS handler escaped $_POST['From'] and then took three
+# substr() slices of the result, interpolating them into the contact
+# lookup. Escaping doubles a backslash and puts one before a quote, so a
+# slice boundary could separate a backslash from what it protected and
+# leave a lone backslash at the end of a value. MariaDB then read that
+# value's closing quote as ordinary text and joined it to the next string
+# literal, and the phone comparison disappeared; other placements left a
+# backslash elsewhere, made the query unparseable, and lost the message.
+#
+# What was measured on the unpatched file, against one seeded contact, was
+# that of 75 single-character insertions none returned a row that contact
+# did not already match, and 18 made the query fail. That is narrow: it
+# says those probes did not widen the result set, not that none can. With
+# the strip in place none failed, and inserting a character the strip
+# removes derives the original number again, so it matches exactly what
+# the clean number matches.
+#
+# The first two rows read the source, not a live request. Reaching this
+# code needs a signed Twilio request, so they say the guard is written,
+# not that it ran.
+#
+# Row one pins the fix. It takes the file's code with the comments removed
+# and every space, tab, carriage return and newline deleted, and requires
+# the three statements to appear in it exactly once, character for
+# character. Pinning the whole block instead of counting features of it is
+# what stops a second spelling of the same write from passing. It is a
+# comparison made after two removals, so it is blind to reindentation, to
+# a comment added inside the block, and to anything else those removals
+# erase: a close tag reads as a semicolon, so text put outside PHP between
+# the statements leaves the pinned text alone as well. Row three does not
+# recover a comment added here either: it hashes this same filtered view,
+# and the comment is gone from it. What it does see is a tag spelling
+# written inside one, which counts towards its raw tag totals, and text put
+# outside PHP, for the same reason. So between them the two rows cover a
+# close-and-reopen pair added here, not every edit these removals discard.
+# Whitespace written inside a string literal is turned into a byte that is
+# not whitespace before the deletion, so a space, a tab or a carriage
+# return added to the strip pattern changes the pinned text instead of
+# disappearing with it.
+#
+# Row two closes the other half, an addition placed outside the block.
+# Over the same code with every string body emptied as well, $safe_number
+# must appear four times, $phone once and $area_code once. The uses of
+# $phone and $area_code that build the query sit inside a double-quoted
+# string, so emptying string bodies leaves each name once, and a statement
+# added in code outside a string body that writes one of them under that
+# name raises its count. That catches a .=, a write put on the same line
+# as the fix, and a write hidden behind a comment marker inside a string,
+# none of which a count of "$phone =" would see. A write placed inside an
+# interpolation is not in this view at all; the second set of counts below
+# is what reads those. This view must also hold three occurrences of the
+# text substr( and three of substr($safe_number, -- counted with
+# whitespace removed and in lower case, so each slice counted is a slice of
+# that name written out. Both are counts of text and not of calls. The view
+# must hold none of ${, $$, eval( or extract(, each of which could write a
+# name these counts cannot follow.
+#
+# Emptying string bodies also removes any code interpolated into them, so
+# the same three names are counted a second time over the code with string
+# bodies kept, where each must appear four times, and substr( and
+# DB::escapeString are counted over that view as well, where each must
+# appear three times. Added text raises one of these five counts when it
+# holds that count's text. Replacing an occurrence that is already there
+# with a write of the same name keeps all three name counts, which is what
+# the slice and escaper counts are for: reintroducing the defect inside an
+# interpolation by writing substr( and DB::escapeString there raises one of
+# those two.
+#
+# All five are counts of fixed text, not of PHP calls and not of variable
+# identities. A call spelled so that its name does not appear as text,
+# such as ('substr')(('DB'.'::escapeString')($x), 2, 3), raises neither
+# call count, and a write through $GLOBALS raises no name count. A call to
+# a helper raises none either, unless the text of the call, or of the
+# helper itself, holds one of the five. Row three is what covers those.
+#
+# Row three closes what those removals and those counts hide. The whole of
+# the file's code, not just the block, must hash to the value recorded when
+# the fix landed, so a statement added in the code this filter retains
+# fails this row however it is spelled. What it pins is that filter's
+# output, which is not the same as every byte PHP executes: the filter is
+# not a lexer, and where the two disagree, PHP can run a statement this row
+# does not hash. The disagreement that was found and closed is a lone
+# carriage return ending a line comment.
+#
+# Within the view, it is blind to what row one is blind to, since it reads
+# the same one: reindentation, comments, and the body of a heredoc, which
+# the filter drops, so an expression interpolated into a heredoc is dropped
+# with it. Whitespace between code tokens is deleted rather than parsed.
+# Text put outside PHP is not hashed either, because a close tag reads as a
+# semicolon, so the source is separately required to hold the two close
+# tags and two open tags its XML reply template already uses. Adding a pair
+# to emit output from inside the fix raises both counts. Those are raw
+# substring totals: they do not say where PHP starts and stops, tag text
+# written inside a comment or a string counts towards them, and existing
+# text outside PHP can be rewritten without moving either total.
+#
+# The cost is that a change to the hashed view fails row three until the
+# hash is reviewed and replaced; the failure message prints the value to
+# put there. A tag-count failure is a different thing and is not answered
+# by replacing the hash.
+#
+# Row four is a static sweep of every PHP file under cms/, 308 of the
+# repository's 313, and can fail on a file this fix never touched.
+echo
+echo "107. the inbound SMS number is stripped before it is sliced"
+
+# Print a PHP file's code with the comments removed, one output line per
+# input line so line numbers still mean something. With a second argument
+# of 0 the body of every string literal is emptied as well.
+#
+# The scan tracks single-quoted, double-quoted and backtick strings, so a
+# comment marker inside a string is not read as a comment and a string
+# that runs over several lines stays one string. Inside a double-quoted or
+# backtick string a {$ or ${ interpolation returns to reading code until
+# its braces balance again, so a quote written inside an interpolation does
+# not end the string holding it, and an interpolation can hold a string
+# that holds another interpolation. Heredoc and nowdoc bodies are dropped,
+# so PHP-looking text inside one is not read as code. A body line ends
+# the block only where the whole run of label bytes it starts with,
+# after any indentation, is the opening label. PHP counts a letter, a
+# digit, an underscore and every byte from 0x80 up as a label byte, so
+# TXT_2, and TXT followed by a byte above 0x7f, are each a label of
+# their own and neither ends a heredoc opened on TXT. The run test
+# reads a NUL as a label byte, which PHP does not; row six requires no
+# php file under cms/ to hold a NUL, so that difference cannot be
+# reached here. Two shapes this line model does not follow PHP on
+# remain, and rows six and seven keep the tree clear of both. A body
+# line whose label run is the label ends the block here even where PHP
+# is still inside a quoted string opened by a braced interpolation on
+# an earlier line, so a review's file closed its heredoc early, opened
+# a block comment that never closed, and hid an escape and a slice
+# written after it. And a lone carriage return ends a line for PHP's
+# heredoc boundaries while this filter reads records split on newlines
+# only, so a heredoc opened and closed inside one such record takes the
+# rest of that record with it. Text outside
+# <?php ?> is dropped, and a close tag stands in for a semicolon. The
+# opening keyword is matched without regard to case, and only where a
+# space, a tab, a carriage return or the end of the line follows it, which
+# is what PHP accepts: <?phpx opens on its <? alone, as it does for PHP
+# where short tags are on. A // or
+# # tail ends at the first ?> or carriage return on the line, as PHP ends
+# it: PHP treats a lone carriage return as a line ending, so a statement
+# written after one on the same line is live code, and a scan that read
+# only to the newline would drop it. #[ opens a PHP 8 attribute and is
+# kept; an ordinary # comment cannot be spelled exactly #[, so keeping it
+# retains no comment.
+#
+# A second argument of 2 keeps string bodies as 1 does, but writes a space
+# inside a string body as a \001 byte, a tab as \003 and a carriage return
+# as \004, and ends a line the string continues past with a \002, so a
+# caller that deletes whitespace cannot lose a whitespace character that
+# was written inside a literal. A newline inside a literal is the line the
+# \002 ends. One marker per kind rather than one for all three, so that
+# swapping a space for a tab inside a literal changes this output too: the
+# marking records that whitespace was written there, and which kind.
+# What the row below deletes is a space, a tab, a newline and a carriage
+# return. The markers are none of those, so they survive that deletion and
+# whitespace written inside a literal still tells on itself there; those
+# four are the whitespace characters that can reach this mode, and no
+# others are marked. A vertical tab and a form feed are not deleted there,
+# so marking
+# one would put a marker in this mode's output where mode 1 keeps the byte
+# itself, and the two would stop agreeing. PHP 8.2 does not accept either
+# between tokens; no PHP file under cms/ holds one, though binary assets
+# in the tree do.
+#
+# This is not a PHP parser. It was checked against one: for all 308 PHP
+# files under cms/, and for fixtures holding each shape named above, its
+# output matches the output of a stripper built on PHP's own
+# token_get_all(), character for character once whitespace is removed, in
+# both of the first two modes; with 2 the same holds once the marker bytes
+# are dropped along with the whitespace, which is the only order that claim
+# is made in. Removing the whitespace is part of that claim and not a
+# convenience: a review's own reference stripper matched 307 of the 308
+# raw, the one difference being the file that ends in a close tag, a
+# carriage return and a newline, where this filter writes a semicolon
+# and a newline and that reference kept the carriage return. Both
+# comparisons drop heredoc bodies whole, so agreement over them says
+# nothing about code PHP would run inside one.
+#
+# Agreement over a corpus is not completeness: the shapes the
+# fixtures disagree on are the ones that were looked for, not all there
+# are. Four remain. A bare <? is always read as an opening tag, which is
+# what PHP does where short_open_tag is on, how it was set in the PHP 8.2
+# container these comparisons were run in. Where it is off PHP reads such
+# a block as text, and then this filter can lose code PHP runs: measured
+# with the setting off, a block comment left unclosed inside such a block
+# takes the rest of the file with it, and in the string-emptied mode an
+# unterminated string does the same. Row five requires the tree to hold no
+# tag either shape needs. Text after
+# __halt_compiler() is kept, though
+# PHP stops reading code there. That one retains text rather than dropping
+# it, and that on its own does not establish the disagreement is harmless
+# to a row below: retained text can supply an occurrence row two counts,
+# and can hold an assignment row four saves and then reads as an escape.
+#
+# The third is a body line inside a heredoc whose label run equals the
+# label, where PHP is still inside a quoted string opened by a braced
+# interpolation on an earlier line: this filter ends the heredoc there
+# and PHP does not, so a review closed a heredoc early, opened a block
+# comment that never closed, and hid an escape and a slice behind it.
+# The fourth is a lone carriage return, which ends a line for PHP and
+# not for this filter, so a heredoc opened and closed after one sits
+# inside a single record here and takes the rest of that record with it.
+# Row six requires no php file under cms/ to hold either a NUL or an
+# unpaired carriage return, and row seven pins every heredoc and nowdoc
+# body in the tree, so neither shape can be reached without failing a
+# row first.
+#
+# A divergence that drops code PHP runs is a defect in this filter, not a
+# note here. Three were found that way and all are fixed: reading <?phpx as
+# <?php followed by an x, until the keyword test above was made to require
+# an accepted byte after the keyword, and printing a heredoc's closing
+# line without scanning it, which let a block comment opened on that line
+# be read as code, so a close tag written inside that comment discarded
+# later real PHP. The third was matching a heredoc closing label with an
+# ASCII-only pattern, which ended the block on a body line holding the
+# label followed by a byte above 0x7f and then read that line as code: a
+# review wrote a file whose heredoc body line was the label, such a byte
+# and a block comment opener, and every mode dropped the live code after
+# it while the tree held no bare short open tag at all.
+sm107_code_only()
+{
+	awk -v keepstr="${2:-1}" '
+		BEGIN {
+			st = 6
+			hid = ""
+			nest = 0
+			ks = (keepstr == 0) ? 0 : 1
+			mark = (keepstr == 2) ? 1 : 0
+			stx = sprintf("%c", 2)
+			wsm[" "] = sprintf("%c", 1)
+			wsm["\t"] = sprintf("%c", 3)
+			wsm["\r"] = sprintf("%c", 4)
+			lbls = "0123456789_"
+			lbls = lbls "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+			lbls = lbls "abcdefghijklmnopqrstuvwxyz"
+			for (lbi = 1; lbi <= length(lbls); lbi++)
+			{
+				lbl[substr(lbls, lbi, 1)] = 1
+			}
+			# 1 to 127 and not 0 to 127: awk cannot hold a NUL in a
+			# string, so a NUL falls outside this table and reads as a
+			# label byte, which PHP does not do. Row six requires no php
+			# file under cms/ to hold one, so that cannot be reached.
+			for (lbi = 1; lbi <= 127; lbi++)
+			{
+				asc[sprintf("%c", lbi)] = 1
+			}
+		}
+		function sm107_label(ch)
+		{
+			if (ch == "")
+			{
+				return 0
+			}
+			if (ch in lbl)
+			{
+				return 1
+			}
+			if (ch in asc)
+			{
+				return 0
+			}
+			return 1
+		}
+		function sm107_labelrun(s, p,    q)
+		{
+			q = p
+			while (sm107_label(substr(s, q, 1)) == 1)
+			{
+				q = q + 1
+			}
+			return q - p
+		}
+		function sm107_tail(s,    t, r)
+		{
+			t = index(s, "?>")
+			r = index(s, "\r")
+			if (r > 0 && (t == 0 || r < t))
+			{
+				return r
+			}
+			return t
+		}
+		{
+			line = $0
+			out = ""
+			hdstart = 0
+			if (st == 4)
+			{
+				hdj = 1
+				while (substr(line, hdj, 1) == " " || substr(line, hdj, 1) == "\t")
+				{
+					hdj = hdj + 1
+				}
+				hdlen = sm107_labelrun(line, hdj)
+				if (hdlen > 0 && substr(line, hdj, hdlen) == hid)
+				{
+					st = 0
+					hdpre = substr(line, 1, hdj - 1) hid
+					hdstart = hdj + hdlen
+				}
+				if (hdstart == 0)
+				{
+					print ""
+					next
+				}
+			}
+			n = length(line)
+			i = 1
+			if (hdstart > 0)
+			{
+				out = hdpre
+				i = hdstart
+			}
+			while (i <= n)
+			{
+				c = substr(line, i, 1)
+				d = substr(line, i + 1, 1)
+				em = (ks == 1 || nest == 0)
+				if (st == 6)
+				{
+					if (c == "<" && d == "?")
+					{
+						kw = tolower(substr(line, i + 2, 3))
+						e = substr(line, i + 5, 1)
+						if (kw == "php" && (e == "" || (e in wsm)))
+						{
+							i = i + 5
+						}
+						else if (substr(line, i + 2, 1) == "=")
+						{
+							i = i + 3
+						}
+						else
+						{
+							i = i + 2
+						}
+						st = 0
+						continue
+					}
+					i = i + 1
+					continue
+				}
+				if (st == 3)
+				{
+					if (c == "*" && d == "/")
+					{
+						st = 0
+						i = i + 2
+					}
+					else
+					{
+						i = i + 1
+					}
+					continue
+				}
+				if (st == 1 || st == 2 || st == 5)
+				{
+					if (c == "\\")
+					{
+						if (ks == 1)
+						{
+							out = out c
+							if (mark == 1 && (d in wsm))
+							{
+								out = out wsm[d]
+							}
+							else
+							{
+								out = out d
+							}
+						}
+						i = i + 2
+						continue
+					}
+					if ((st == 1 && c == "\047") || (st == 2 && c == "\"") \
+						|| (st == 5 && c == "`"))
+					{
+						st = 0
+						if (em)
+						{
+							out = out c
+						}
+						i = i + 1
+						continue
+					}
+					if (st != 1 && c == "{" && d == "$")
+					{
+						nest = nest + 1
+						iret[nest] = st
+						ibr[nest] = 1
+						st = 0
+						if (ks == 1)
+						{
+							out = out c
+						}
+						i = i + 1
+						continue
+					}
+					if (st != 1 && c == "$" && d == "{")
+					{
+						nest = nest + 1
+						iret[nest] = st
+						ibr[nest] = 1
+						st = 0
+						if (ks == 1)
+						{
+							out = out c d
+						}
+						i = i + 2
+						continue
+					}
+					if (ks == 1)
+					{
+						if (mark == 1 && (c in wsm))
+						{
+							out = out wsm[c]
+						}
+						else
+						{
+							out = out c
+						}
+					}
+					i = i + 1
+					continue
+				}
+				if (nest > 0 && c == "{")
+				{
+					ibr[nest] = ibr[nest] + 1
+					if (em)
+					{
+						out = out c
+					}
+					i = i + 1
+					continue
+				}
+				if (nest > 0 && c == "}")
+				{
+					ibr[nest] = ibr[nest] - 1
+					if (em)
+					{
+						out = out c
+					}
+					i = i + 1
+					if (ibr[nest] == 0)
+					{
+						st = iret[nest]
+						nest = nest - 1
+					}
+					continue
+				}
+				if (c == "?" && d == ">")
+				{
+					st = 6
+					if (em)
+					{
+						out = out ";"
+					}
+					i = i + 2
+					continue
+				}
+				if (c == "/" && d == "/")
+				{
+					ct = sm107_tail(substr(line, i))
+					if (ct > 0)
+					{
+						i = i + ct - 1
+						continue
+					}
+					break
+				}
+				if (c == "#" && d == "[")
+				{
+					if (em)
+					{
+						out = out "#["
+					}
+					i = i + 2
+					continue
+				}
+				if (c == "#")
+				{
+					ct = sm107_tail(substr(line, i))
+					if (ct > 0)
+					{
+						i = i + ct - 1
+						continue
+					}
+					break
+				}
+				if (c == "/" && d == "*")
+				{
+					st = 3
+					i = i + 2
+					continue
+				}
+				if (c == "<" && d == "<" && substr(line, i + 2, 1) == "<")
+				{
+					hdj = i + 3
+					while (substr(line, hdj, 1) == " " || substr(line, hdj, 1) == "\t")
+					{
+						hdj = hdj + 1
+					}
+					hdq = substr(line, hdj, 1)
+					if (hdq == "\047" || hdq == "\"")
+					{
+						hdj = hdj + 1
+					}
+					else
+					{
+						hdq = ""
+					}
+					hdlen = sm107_labelrun(line, hdj)
+					hdok = 0
+					if (hdlen > 0 && index("0123456789", substr(line, hdj, 1)) == 0)
+					{
+						hdok = 1
+						if (hdq != "" && substr(line, hdj + hdlen, 1) != hdq)
+						{
+							hdok = 0
+						}
+					}
+					if (hdok == 1)
+					{
+						hid = substr(line, hdj, hdlen)
+						st = 4
+						if (em)
+						{
+							out = out substr(line, i)
+						}
+						i = n + 1
+						continue
+					}
+				}
+				if (c == "\047")
+				{
+					st = 1
+					if (em)
+					{
+						out = out c
+					}
+					i = i + 1
+					continue
+				}
+				if (c == "\"")
+				{
+					st = 2
+					if (em)
+					{
+						out = out c
+					}
+					i = i + 1
+					continue
+				}
+				if (c == "`")
+				{
+					st = 5
+					if (em)
+					{
+						out = out c
+					}
+					i = i + 1
+					continue
+				}
+				if (em)
+				{
+					out = out c
+				}
+				i = i + 1
+			}
+			if (mark == 1 && (st == 1 || st == 2 || st == 5))
+			{
+				out = out stx
+			}
+			print out
+		}
+	' "$1"
+}
+
+# Count how many times a fixed string occurs in a one-line value.
+sm107_count()
+{
+	printf '%s\n' "$2" | awk -v needle="$1" '
+		{
+			n = 0
+			s = $0
+			while ((p = index(s, needle)) > 0)
+			{
+				n = n + 1
+				s = substr(s, p + length(needle))
+			}
+			print n
+		}
+	'
+}
+
+sm107_file=cms/services/twilio.php
+sm107_ws0="$(sm107_code_only "$sm107_file" 2 | tr -d ' \t\n\r')"
+sm107_nostr="$(sm107_code_only "$sm107_file" 0 | tr -d ' \t\n\r' | tr 'A-Z' 'a-z')"
+sm107_full="$(sm107_code_only "$sm107_file" 1 | tr -d ' \t\n\r')"
+sm107_full_lc="$(printf '%s' "$sm107_full" | tr 'A-Z' 'a-z')"
+
+# ROW ONE -- the three statements, pinned character for character.
+sm107_pin="\$safe_number=preg_replace('/[^0-9+]/','',\$number);"
+sm107_pin="${sm107_pin}\$phone=DB::escapeString(substr(\$safe_number,5,3)"
+sm107_pin="${sm107_pin}.'-'.substr(\$safe_number,8));"
+sm107_pin="${sm107_pin}\$area_code=DB::escapeString(substr(\$safe_number,2,3));"
+sm107_n_pin="$(sm107_count "$sm107_pin" "$sm107_ws0")"
+if [ "$sm107_n_pin" -eq 1 ]; then
+	ok "the inbound number is stripped, then sliced, then each whole slice is escaped"
+else
+	bad "the stripped-then-sliced-then-escaped block is not present exactly once (${sm107_n_pin})"
+fi
+
+# ROW TWO -- the name and call-text counts in this file are the ones the
+# fix landed with.
+sm107_n_safe="$(sm107_count '$safe_number' "$sm107_nostr")"
+sm107_n_phone="$(sm107_count '$phone' "$sm107_nostr")"
+sm107_n_area="$(sm107_count '$area_code' "$sm107_nostr")"
+sm107_subs="$(sm107_count 'substr(' "$sm107_nostr")"
+sm107_subs_safe="$(sm107_count 'substr($safe_number,' "$sm107_nostr")"
+sm107_indirect=0
+for sm107_k in '${' '$$' 'eval(' 'extract('
+do
+	sm107_indirect=$((sm107_indirect + $(sm107_count "$sm107_k" "$sm107_nostr")))
+done
+# The same names over the code with string bodies kept, where a write put
+# inside a {$ ... } interpolation still shows up.
+sm107_f_safe="$(sm107_count '$safe_number' "$sm107_full")"
+sm107_f_phone="$(sm107_count '$phone' "$sm107_full")"
+sm107_f_area="$(sm107_count '$area_code' "$sm107_full")"
+sm107_f_subs="$(sm107_count 'substr(' "$sm107_full_lc")"
+sm107_f_esc="$(sm107_count 'db::escapestring' "$sm107_full_lc")"
+if [ "$sm107_n_safe" -eq 4 ] && [ "$sm107_n_phone" -eq 1 ] \
+	&& [ "$sm107_n_area" -eq 1 ] && [ "$sm107_subs" -eq 3 ] \
+	&& [ "$sm107_subs_safe" -eq 3 ] && [ "$sm107_indirect" -eq 0 ] \
+	&& [ "$sm107_f_safe" -eq 4 ] && [ "$sm107_f_phone" -eq 4 ] \
+	&& [ "$sm107_f_area" -eq 4 ] && [ "$sm107_f_subs" -eq 3 ] \
+	&& [ "$sm107_f_esc" -eq 3 ]; then
+	ok "the number's name and call-text counts in the SMS handler are unmoved"
+else
+	bad "the SMS handler's writes moved (${sm107_n_safe} \$safe_number, ${sm107_n_phone} \$phone, ${sm107_n_area} \$area_code, ${sm107_subs} substr of which ${sm107_subs_safe} on \$safe_number, ${sm107_indirect} indirect; with strings kept ${sm107_f_safe}/${sm107_f_phone}/${sm107_f_area}, ${sm107_f_subs} substr, ${sm107_f_esc} escape)"
+fi
+
+# ROW THREE -- the whole view, not just the block.
+sm107_sha_want=2d0d799a9499de7e6ff6439cb57d8b1b609e864b682fc001776d7fdb46181dc4
+sm107_sha_have="$(printf '%s' "$sm107_ws0" | sha256sum | cut -d' ' -f1)"
+sm107_close="$(grep -o '?>' "$sm107_file" | grep -c '')"
+sm107_open="$(grep -o '<?php' "$sm107_file" | grep -c '')"
+if [ "$sm107_sha_have" = "$sm107_sha_want" ] && [ "$sm107_close" -eq 2 ] \
+	&& [ "$sm107_open" -eq 2 ]; then
+	ok "the SMS handler's hashed view and tag counts are unmoved"
+else
+	bad "the SMS handler's filtered code or raw tag totals changed (${sm107_sha_have}, ${sm107_close} close tags, ${sm107_open} open tags; expected ${sm107_sha_want}, 2 and 2); if the hash moved and the change is intended, record that hash here; a tag count that moved is a different failure and replacing the hash does not answer it"
+fi
+
+# ROW FOUR -- the class, tree-wide: a value DB::escapeString() produced
+# on an earlier line, then sliced. Both names are matched without regard
+# to case, because PHP function and method names are case-insensitive, and
+# a space, a tab or a carriage return written around the :: or before
+# substr's opening paren is allowed for, so DB :: escapeString($x) and
+# substr ($x, 0, 3) are both read as the calls they are. A newline is not:
+# this reads one line at a time, so an assignment's own = and the escaper
+# name after it must share a line, and so must substr( and the name it
+# slices. Later parts of either expression may wrap.
+#
+# The assignments taken in turn are the non-overlapping ones this
+# expression matches, and a right-hand side is read from that assignment's
+# own '=' up to the next ';', so a second statement on the line is not
+# misread as part of the first, and a comparison earlier on the line does
+# not displace it. The match takes in the first character of the right-hand
+# side and the scan resumes after it. Without whitespace after the first
+# '=', that character is the next variable's '$', so in $a=$b=... the
+# second assignment is not matched separately; with whitespace there, as
+# in $a = $b = ..., both can match. The name test ends at a character that
+# cannot continue an ASCII name, so $value does not read as a mention of
+# $val. Only an ASCII letter, digit or underscore continues a name there,
+# so a name spelled with a high byte, which PHP allows, reads as a mention
+# of the shorter name it starts with.
+#
+# Among the assignments it recognises, a record is deleted when the
+# right-hand side holds neither the text db::escapestring, whitespace
+# removed and case ignored, nor a matching occurrence of the saved name;
+# an assignment that passes the old value through, such as $x = trim($x),
+# keeps the record. That test is over matched text and not over what PHP
+# calls, so a right-hand side which merely mentions the escaper is
+# recorded as escaped, and that does not establish that the value finally
+# assigned is escaped.
+#
+# This is a line-order heuristic over one file at a time, not data flow.
+# It does not see either of those two pairs split across lines, an
+# escape and a slice on the same line, a reset written later on the slice's
+# own line, which clears the record before that slice is checked, a value
+# reached through an alias, a slice handed the escaper's
+# return value directly, a slice that runs before the escape on the next
+# pass of a loop, or one name meaning different things in two functions.
+# A qualifying reset inside a condition clears the record whether or not
+# the condition held, and a '.=' neither records nor clears. An assignment
+# to an array element is not recorded at all, since the name this reads
+# ends before the '['; the slice matcher, on the other hand, reads an array
+# access by the name it starts with, so a slice of $x['k'] is checked
+# against a record held for $x. So a clean run is evidence, not proof, and
+# a report can be a false one.
+sm107_sliced=0
+for sm107_f in $(grep -rliE 'DB[[:space:]]*::[[:space:]]*escapeString' cms/ --include='*.php' 2>/dev/null)
+do
+	sm107_hits="$(sm107_code_only "$sm107_f" 0 | awk -v fn="$sm107_f" '
+		function sm107_names(s, name,    n, p, q, at, nxt)
+		{
+			n = length(name)
+			p = 1
+			while ((q = index(substr(s, p), name)) > 0)
+			{
+				at = p + q - 1
+				nxt = substr(s, at + n, 1)
+				if (nxt !~ /[A-Za-z0-9_]/) { return 1 }
+				p = at + n
+			}
+			return 0
+		}
+		{
+			line = $0
+			rest = line
+			while (match(rest, /\$[A-Za-z_][A-Za-z0-9_]*[ \t\r]*=[^=]/)) {
+				v = substr(rest, RSTART, RLENGTH)
+				sub(/[ \t\r]*=.*$/, "", v)
+				rhs = substr(rest, RSTART + RLENGTH - 1)
+				sc = index(rhs, ";")
+				if (sc > 0) { rhs = substr(rhs, 1, sc - 1) }
+				rhsns = rhs
+				gsub(/[ \t\r]/, "", rhsns)
+				if (index(tolower(rhsns), "db::escapestring") > 0) {
+					esc[v] = NR
+				}
+				else if (sm107_names(rhs, v) == 0) {
+					delete esc[v]
+				}
+				rest = substr(rest, RSTART + RLENGTH)
+			}
+			rest = line
+			while (match(rest, /[sS][uU][bB][sS][tT][rR][ \t\r]*\([ \t\r]*\$[A-Za-z_][A-Za-z0-9_]*/)) {
+				u = substr(rest, RSTART, RLENGTH)
+				sub(/^[sS][uU][bB][sS][tT][rR][ \t\r]*\([ \t\r]*/, "", u)
+				if ((u in esc) && esc[u] < NR) {
+					print fn ":" NR ": substr() takes " u \
+						", text-matched as escaped on line " esc[u]
+				}
+				rest = substr(rest, RSTART + RLENGTH)
+			}
+		}
+	')"
+	if [ -n "$sm107_hits" ]; then
+		sm107_sliced=$((sm107_sliced + $(printf '%s\n' "$sm107_hits" | grep -c '')))
+		printf '%s\n' "$sm107_hits" | sed 's/^/    /'
+	fi
+done
+if [ "$sm107_sliced" -eq 0 ]; then
+	ok "no PHP file matches the escape-then-slice pattern this scan looks for"
+else
+	bad "${sm107_sliced} site(s) match the escape-then-slice pattern this scan looks for"
+fi
+
+# ROW FIVE -- one of the preconditions rows one to four rest on. It is not
+# the only one, and holding it does not on its own make those rows sound:
+# any other divergence between the filter above and PHP can hide code too,
+# and one did until it was fixed this round. What this row rules out is the
+# one shape of divergence that needs a tag PHP does not open a block on.
+# Where short_open_tag is off PHP reads a bare short open tag as text, and
+# then the filter above can lose code PHP runs, as the paragraph there
+# records.
+# Both of the shapes that lose code that way need such a tag, so this row
+# requires every PHP file under cms/ to hold none: with one present, row
+# four's sweep could skip a file's later code and still report nothing.
+#
+# What counts as a tag here is PHP's own rule, measured in the container
+# the suite runs against. <?= always opens a block. <?php opens one where
+# the keyword is followed by a space, a tab, a carriage return, a newline
+# or the end of the file, the keyword itself being case insensitive. So
+# <?PHP opens one, and <?php0, <?php_ and <?php! do not: with
+# short_open_tag on PHP reads those three as a bare <? followed by code,
+# and with it off as inline text. This row counts every occurrence of a
+# spelling PHP does not open a block on, wherever it stands. It counts
+# <?= separately and requires that count to be zero too. The tree holds
+# none today, and <?= is the one spelling that turning short_open_tag off
+# does not disarm, so a file that grew one would read PHP's setting
+# differently from every sentence above. An earlier shape of this row said
+# in its own pass message that no spelling PHP may read as a bare tag
+# stood anywhere while passing over every <?=; the count answers that.
+#
+# The scan of the files outside that scope is asked one question about
+# itself before it is trusted: given a file holding one <? with a nul byte
+# before it, it must answer one. An awk that ended its record at a nul
+# would answer none, and would go on reading no <? that stands after a
+# nul in any file here. mawk answers one, and so does busybox awk, which
+# starts a new record at the nul and counts the <? in that second record.
+# Such an awk is already caught in one other place, but only by accident:
+# four of the seven allowed names are images, and a fifth an icon, and
+# they hold nul bytes before the <? they are allowed, so their counts
+# would fall short. That is an accident of what those files happen to
+# hold, and it would go with the allowance. The self-test states the
+# property instead of resting on it.
+#
+# The scan reads the file's own bytes because the filter cannot be asked
+# instead. No one of the filter's three outputs answers the question this
+# row asks. Where such a spelling stands outside PHP the filter reads it
+# as an opening tag and removes those bytes, so no mode shows it; the same
+# holds inside a comment, and inside a heredoc body, which the filter
+# drops. Inside a quoted string the modes disagree: mode 0 empties the
+# body, while modes 1 and 2 keep the spelling and do report it. Where it
+# stands inside a block PHP has already opened, all three modes keep it,
+# because there the filter is reading code and those bytes are code.
+# Measured on fixtures holding <?php0 echo 1; in each of those five
+# places. That is a limit of these three outputs and not of every filter
+# that could be written: an instrumented filter, or PHP's own tokenizer,
+# can report an opening tag directly.
+#
+# Four such spellings used to stand in the tree, inside a string in
+# cms/app/lib/pikaFileArray.php and inside a dead comment in
+# cms/app/lib/pikaSettings.php, and an earlier shape of this row allowed
+# them by name. The allowance is gone and so are they: the first file now
+# writes the open tag of the file it generates in two pieces, and the dead
+# copy in the second was deleted. Allowing a site by name could only pin
+# the count and the text of the line holding it, which a review showed was
+# not enough: a file that kept both allowed lines unchanged and opened a
+# block comment between them hid live code from the filter and passed.
+#
+# A report is answered by reading the file named. Bytes PHP may read as a
+# bare tag fail this row even inside a string or a comment, because a raw
+# scan cannot tell those from code; write such a tag in two pieces, as
+# pikaFileArray.php does.
+#
+# The scan must not pass by failing either. The list of files comes from
+# find, is NUL separated, and holds every regular file under cms/ whose
+# name ends .php, so a name holding a space or a newline is read whole.
+# A list holding any byte at all must end in a NUL, or its last name may
+# be a fragment of a longer one: a list cut short in the middle of a name
+# it had not finished writing would otherwise be read as a shorter list
+# that matched its own count. What is tested is the list's length in
+# bytes and not how many NULs it holds, because a list holding one
+# unfinished name holds no NUL at all: a review handed this row a
+# producer that exited zero and wrote one name with no terminator, and
+# an earlier shape of this check asked for a terminator only where it
+# had already found one, so that list read as empty and the row passed.
+#
+# The entries are counted before the loop and the loop's
+# own count must match, so a truncated list, or a read that stops part way
+# through one, fails the row. What these checks settle is that the list did
+# not stop before a NUL it should have ended with, and that the loop and the
+# count agree about how many records it holds. They cannot settle that no
+# record was lost before the count was taken by find alone: a find that
+# silently left a file out would be counted and looped over consistently.
+# So the php files under cms/ are enumerated a second time, by the shell's
+# own recursive glob rather than by find, and the two counts must agree. A
+# producer that quietly drops a name is then counted by something that did
+# not produce the list. The second enumeration takes the same view of the
+# tree as the first on purpose -- a regular file, no symlink followed --
+# and the shell's recursive glob does not descend a symlinked directory
+# either. Each file's scan must exit zero and must
+# print 0 and nothing else: the scan prints that byte and a newline, and
+# the shell drops trailing newlines from what it captures, so the value
+# tested is the single character 0. What the row tests is that captured
+# value and not the scan's raw bytes. The shell drops every trailing
+# newline and every NUL, so a scan that printed 0 and a second newline, or
+# 0 and a NUL, is not told apart from one that printed 0 and a newline.
+# Byte identity of the scan's output is not what this row settles.
+#
+# No count reaches shell arithmetic. Each is compared as text, and a count
+# of ten digits or more fails validation: a string of digits can still be
+# an arithmetic error -- 08 is not octal, and a number past 64 bits wraps
+# -- and a review used exactly that to stop an earlier loop early and have
+# it report a pass anyway.
+#
+# A temporary file that cannot be made, a find that exits non-zero, an
+# empty list, an entry under cms/ that is neither a directory nor a
+# regular file, and a name holding .php before its end each fail the row
+# as well. The last two are a cautious answer rather than a necessary one:
+# find does not follow a symlink and the name test would not match such a
+# name, so either one could leave a php file unscanned, and the row fails
+# rather than work out whether the particular entry or name in front of it
+# does. The status of the find that took each of those two counts is
+# checked too, so a count that was never taken cannot read as zero.
+#
+# The scope is every regular file under cms/ whose name ends .php. PHP
+# source under another name would stand outside it, so a second scan reads
+# every other regular file under cms/ and counts every <? in it, whatever
+# follows. Counting only <?php and <?= would not do: with short_open_tag
+# on, a file named cms/hidden.inc holding <? echo "EXECUTED"; is PHP that
+# runs, and a review showed such a file passing a scan that looked only
+# for those two spellings while row four's own search, which takes names
+# ending .php, did not reach it either. A bare <? is counted too.
+#
+# Seven files under cms/ hold a <? today, and this row allows each by name
+# and by count and nothing else: the property list at
+# cms/app/scripts/com.pikasoftware.cms-csv-download.plist holds one, in
+# <?xml; cms/favicon.ico holds one, in its binary; the four JPEG files
+# under cms/images/ hold three each, once in <?xml and twice in <?xpac;
+# and cms/templates/client-tpl.xml holds one, in <? xml -- a space after
+# the question mark, which PHP with short tags on does open a block on.
+# None of the seven is named next to include, include_once, require,
+# require_once, file_get_contents, fopen, readfile or show_source in any
+# php file under cms/, read at this commit: the property list is served as
+# a download by cms/system-mac_download.php and the four images are
+# backgrounds in cms/css/screen.css.php. So none of them is read as PHP.
+# The row also fails if one of the seven is no longer there, so an
+# allowance it still carries cannot quietly stop being measured, and each
+# of the seven is pinned by the sha256 of its bytes as well as by its
+# count. The count alone was not enough: a subagent replaced the whole of
+# cms/favicon.ico with php source whose only <? was the <?php that opened
+# it, which is the one occurrence the allowance blesses, and every row
+# here passed. The seven are a property list, an icon, an xml template and
+# four images, none of them edited in this repository's history, so
+# pinning their bytes costs nothing until one is deliberately replaced.
+#
+# A file added later under a name that does not end .php fails this row as
+# soon as it holds a <? at all, and one of the seven whose count moves
+# fails it as well. A file outside the scope holding no open tag runs no
+# PHP and passes. The cost is that a note under cms/ quoting <?php in
+# prose fails this row until it is either allowed here by name or moved
+# out of the tree. The same terminator, count and status checks apply to
+# that second list.
+sm107_bare_prog='
+{
+	s = $0
+	i = index(s, "<?")
+	while (i > 0) {
+		rest = substr(s, i + 2)
+		c = substr(rest, 1, 1)
+		k = tolower(substr(rest, 1, 3))
+		b = substr(rest, 4, 1)
+		if (c == "=") {
+			e = e + 1
+			out = out sep FNR ": " $0
+			sep = "\n"
+		}
+		else if (k == "php" && (length(rest) == 3 || b == " " || b == "\t" || b == "\r")) {
+			n = n + 0
+		}
+		else {
+			n = n + 1
+			out = out sep FNR ": " $0
+			sep = "\n"
+		}
+		s = rest
+		i = index(s, "<?")
+	}
+}
+END {
+	printf "%d %d", n + 0, e + 0
+	if (out != "") {
+		printf "\n%s", out
+	}
+	printf "\n"
+}'
+sm107_other_prog='
+{
+	s = $0
+	i = index(s, "<?")
+	while (i > 0) {
+		n = n + 1
+		s = substr(s, i + 2)
+		i = index(s, "<?")
+	}
+}
+END {
+	printf "%d\n", n + 0
+}'
+sm107_bare_tmp="$(mktemp 2>/dev/null)"
+sm107_bare_tmp_rc=$?
+sm107_bare_special="$(find cms/ ! -type d ! -type f -print0 2>/dev/null \
+	| tr -dc '\0' | wc -c | tr -d ' \n')"
+sm107_bare_special_rc=$?
+sm107_bare_odd="$(find cms/ \( -type f -o -type l \) -name '*.php*' ! -name '*.php' \
+	-print0 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' \n')"
+sm107_bare_odd_rc=$?
+sm107_glob_files=0
+sm107_glob_rc=1
+sm107_glob_shopt="$(shopt -p globstar nullglob 2>/dev/null)"
+if shopt -s globstar nullglob 2>/dev/null
+then
+	sm107_glob_rc=0
+	for sm107_g in cms/**/*.php
+	do
+		if [ -f "$sm107_g" ] && [ ! -L "$sm107_g" ]
+		then
+			sm107_glob_files=$((sm107_glob_files + 1))
+		fi
+	done
+fi
+eval "$sm107_glob_shopt" 2>/dev/null
+sm107_bare_rc=1
+sm107_bare_bytes=''
+sm107_bare_entries=''
+sm107_bare_tail=''
+sm107_bare_files=0
+sm107_bare_bad=0
+sm107_bare_other_rc=1
+sm107_bare_other_bytes=''
+sm107_bare_other_entries=''
+sm107_bare_other_tail=''
+sm107_bare_other_files=0
+sm107_bare_other_bad=0
+sm107_bare_other_known=0
+sm107_bare_counted=no
+sm107_bare_nulscan=''
+sm107_bare_nulscan_rc=1
+sm107_bare_ready=no
+if [ "$sm107_bare_tmp_rc" -eq 0 ] && [ -n "$sm107_bare_tmp" ] && [ -w "$sm107_bare_tmp" ]
+then
+	sm107_bare_ready=yes
+	find cms/ -type f -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
+	sm107_bare_rc=$?
+	sm107_bare_bytes="$(wc -c < "$sm107_bare_tmp" | tr -d ' \n')"
+	sm107_bare_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c | tr -d ' \n')"
+	sm107_bare_tail="$(tail -c 1 -- "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_bare_files=$((sm107_bare_files + 1))
+		sm107_bare_out="$(awk "$sm107_bare_prog" < "$sm107_f" 2>/dev/null)"
+		sm107_bare_awk_rc=$?
+		if [ "$sm107_bare_awk_rc" -ne 0 ] || [ "$sm107_bare_out" != "0 0" ]
+		then
+			sm107_bare_bad=$((sm107_bare_bad + 1))
+			printf '    %s: the scan exited %s and said\n' \
+				"$sm107_f" "$sm107_bare_awk_rc"
+			printf '%s\n' "$sm107_bare_out" | sed 's/^/      /'
+		fi
+	done < "$sm107_bare_tmp"
+	find cms/ -type f ! -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
+	sm107_bare_other_rc=$?
+	sm107_bare_other_bytes="$(wc -c < "$sm107_bare_tmp" | tr -d ' \n')"
+	sm107_bare_other_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c \
+		| tr -d ' \n')"
+	sm107_bare_other_tail="$(tail -c 1 -- "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_bare_other_files=$((sm107_bare_other_files + 1))
+		sm107_bare_want=0
+		sm107_bare_wsha=''
+		case "$sm107_f" in
+		cms/app/scripts/com.pikasoftware.cms-csv-download.plist)
+			sm107_bare_want=1
+			sm107_bare_wsha=ca938f7485040a1edf248553d03bf2a127790438ee8928272b9aab6d55df90c0
+			;;
+		cms/favicon.ico)
+			sm107_bare_want=1
+			sm107_bare_wsha=9420b8a27df6851dc91d94fef504e01d115f3c3945eb18f1a5d67ce993605c25
+			;;
+		cms/templates/client-tpl.xml)
+			sm107_bare_want=1
+			sm107_bare_wsha=ca3e2df45ad3ed387afe9ccd8d4eca75759db24ac110dfcc094bcd0cf40a8d9b
+			;;
+		cms/images/4-gray-high.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=9d26fdc64157f72960ce174812524788b12763e7961f57541318e102edd22612
+			;;
+		cms/images/drop-shadow.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=71af8a11bb3c724da758c5447d853011b268c46b31b2c00666e272a29a41c156
+			;;
+		cms/images/tab_gradient.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=354533b625808c78620c9a9e4c37c7a6db85b30b95efc9c2de3711c0dbb1f485
+			;;
+		cms/images/th-gradient.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=643fdfbe5bbe5e894672ca4a26bd96b137b0e724c23a01fefea36396010c3bda
+			;;
+		esac
+		if [ "$sm107_bare_want" != 0 ]
+		then
+			sm107_bare_other_known=$((sm107_bare_other_known + 1))
+			sm107_bare_gsha="$(sha256sum < "$sm107_f" | cut -d' ' -f1)"
+			if [ "$sm107_bare_gsha" != "$sm107_bare_wsha" ]
+			then
+				sm107_bare_other_bad=$((sm107_bare_other_bad + 1))
+				printf '    %s: this file is allowed %s occurrence(s) of <? because of what it is, and its bytes hash to %s, not to the %s read when that allowance was written\n' \
+					"$sm107_f" "$sm107_bare_want" \
+					"$sm107_bare_gsha" "$sm107_bare_wsha"
+			fi
+		fi
+		sm107_bare_out="$(awk "$sm107_other_prog" < "$sm107_f" 2>/dev/null)"
+		sm107_bare_awk_rc=$?
+		if [ "$sm107_bare_awk_rc" -ne 0 ] \
+			|| [ "$sm107_bare_out" != "$sm107_bare_want" ]
+		then
+			sm107_bare_other_bad=$((sm107_bare_other_bad + 1))
+			printf '    %s: the count of <? here is "%s" where "%s" is allowed, and the scan exited %s\n' \
+				"$sm107_f" "$sm107_bare_out" "$sm107_bare_want" \
+				"$sm107_bare_awk_rc"
+		fi
+	done < "$sm107_bare_tmp"
+	printf 'a\000<?php\n' > "$sm107_bare_tmp"
+	sm107_bare_nulscan="$(awk "$sm107_other_prog" < "$sm107_bare_tmp" 2>/dev/null)"
+	sm107_bare_nulscan_rc=$?
+	rm -f "$sm107_bare_tmp"
+fi
+if [ "$sm107_bare_ready" != yes ]
+then
+	bad "the short open tag row has no temporary file it can write its list of php files to: mktemp exited ${sm107_bare_tmp_rc} and named '${sm107_bare_tmp}'"
+elif [ "$sm107_bare_rc" -ne 0 ]
+then
+	bad "the short open tag row could not list the php files under cms/: find, or the write of its output, exited ${sm107_bare_rc}"
+elif [ "$sm107_bare_other_rc" -ne 0 ]
+then
+	bad "the short open tag row could not list the files under cms/ outside its own scope: find, or the write of its output, exited ${sm107_bare_other_rc}"
+elif [ "$sm107_bare_special_rc" -ne 0 ] || [ "$sm107_bare_odd_rc" -ne 0 ]
+then
+	bad "the short open tag row could not take stock of what stands under cms/: the count of entries that are neither a directory nor a regular file exited ${sm107_bare_special_rc} and the count of names holding .php before their end exited ${sm107_bare_odd_rc}"
+else
+	sm107_bare_counted=yes
+	case "$sm107_bare_entries" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_other_entries" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_bytes" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_other_bytes" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_special" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_odd" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_tail" in '' | *[!0-9]* | ??*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_other_tail" in '' | *[!0-9]* | ??*) sm107_bare_counted=no ;; esac
+	if [ "$sm107_bare_counted" != yes ]
+	then
+		bad "the short open tag row could not count what it was about to read: ${sm107_bare_bytes} byte(s) and '${sm107_bare_entries}' entries, ${sm107_bare_other_bytes} byte(s) and '${sm107_bare_other_entries}' entries outside its scope, entries that are neither a directory nor a regular file '${sm107_bare_special}', names past .php '${sm107_bare_odd}', and list terminators '${sm107_bare_tail}' and '${sm107_bare_other_tail}'"
+	elif [ "$sm107_bare_bytes" != 0 ] && [ "$sm107_bare_tail" != 1 ]
+	then
+		bad "the short open tag row was handed a list of php files holding ${sm107_bare_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+	elif [ "$sm107_bare_other_bytes" != 0 ] && [ "$sm107_bare_other_tail" != 1 ]
+	then
+		bad "the short open tag row was handed a list of the files outside its scope holding ${sm107_bare_other_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+	elif [ "$sm107_bare_entries" = 0 ]
+	then
+		bad "the short open tag row was given no file to read, so it scanned nothing"
+	elif [ "$sm107_bare_files" != "$sm107_bare_entries" ]
+	then
+		bad "the short open tag row scanned ${sm107_bare_files} of the ${sm107_bare_entries} file(s) its own list held"
+	elif [ "$sm107_bare_other_files" != "$sm107_bare_other_entries" ]
+	then
+		bad "the short open tag row read ${sm107_bare_other_files} of the ${sm107_bare_other_entries} file(s) outside its scope its own list held"
+	elif [ "$sm107_bare_special" != 0 ] || [ "$sm107_bare_odd" != 0 ]
+	then
+		bad "the short open tag row cannot reach every php file under cms/: ${sm107_bare_special} entr(y|ies) that are neither a directory nor a regular file, which find will not follow or read, and ${sm107_bare_odd} name(s) holding .php before their end"
+	elif [ "$sm107_glob_rc" -ne 0 ] \
+		|| [ "$sm107_glob_files" != "$sm107_bare_entries" ]
+	then
+		bad "the two enumerations of the php files under cms/ disagree: find named ${sm107_bare_entries} and the shell's own recursive glob named ${sm107_glob_files}, the glob exiting ${sm107_glob_rc}, so one of them left a file out and this row cannot say it read every php file under cms/"
+	elif [ "$sm107_bare_other_known" != 7 ]
+	then
+		bad "the short open tag row allows a <? in seven named files outside its scope and found ${sm107_bare_other_known} of them, so an allowance it still carries is no longer measured"
+	elif [ "$sm107_bare_nulscan_rc" -ne 0 ] || [ "$sm107_bare_nulscan" != 1 ]
+	then
+		bad "the scan of the files outside this row's scope answered '${sm107_bare_nulscan}' and exited ${sm107_bare_nulscan_rc} for a file holding one <? with a nul byte before it, where 1 was expected, so the awk in use here ends its record at a nul and a <? standing after one in such a file would not be counted"
+	elif [ "$sm107_bare_other_bad" != 0 ]
+	then
+		bad "${sm107_bare_other_bad} of the ${sm107_bare_other_files} file(s) under cms/ whose name does not end .php hold a count of <? this row does not allow, so php source may stand outside this row's scope: either the name should end .php, or the count must be allowed here by name once it is settled the file is not read as php"
+	elif [ "$sm107_bare_bad" != 0 ]
+	then
+		bad "${sm107_bare_bad} of the ${sm107_bare_files} php file(s) under cms/ hold a spelling PHP may read as a bare short open tag, or hold a <?=, or could not be scanned"
+	else
+		ok "every <? in the ${sm107_bare_files} php file(s) under cms/ is <?php followed by a space, a tab, a carriage return or the end of its line, none is spelled <?=, which PHP opens a block on whatever short_open_tag is set to, every one of those files was scanned, both enumerations of them agreed, and no <? stands in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope beyond the counts and the bytes the seven named files are allowed"
+	fi
+fi
+sm107_tree_ok=yes
+if [ "$sm107_bare_counted" != yes ] || [ "$sm107_bare_special" != 0 ] \
+	|| [ "$sm107_bare_odd" != 0 ] || [ "$sm107_glob_rc" -ne 0 ] \
+	|| [ "$sm107_glob_files" != "$sm107_bare_entries" ]
+then
+	sm107_tree_ok=no
+fi
+# Row six is the filter's line model, stated as a property of the tree.
+# The filter reads a file as records split on newlines, and rows one to
+# four rest on that. PHP does not: it also ends a line at a lone carriage
+# return, so a heredoc opened and closed after one stands inside a single
+# record here. A review used exactly that to hide an escape and a slice
+# from every mode while row five, which scans raw bytes and asks a
+# different question, still passed. The same review showed the label run
+# reading a NUL as a label byte where PHP reads it as a bad character.
+#
+# So this row requires every php file under cms/ to hold no NUL at all,
+# and no carriage return that is not the first byte of a CRLF pair. One
+# file is written with CRLF throughout, cms/reports/missing_outcomes/
+# index.php, and its 45 carriage returns are allowed by name and by
+# count; every other file must hold none. The pair test is the count of
+# carriage returns against the count of lines whose last byte is one,
+# which are equal only where every carriage return is followed by a
+# newline. The file's own last byte is counted separately, because a
+# final line with no newline to end it would otherwise read as a pair.
+# Both parts were checked together over every byte string up to eight
+# bytes long built from A, carriage return and newline: of those 9840
+# strings, 8160 hold a carriage return that is not followed by a newline,
+# and this row raises all 8160 and none of the rest, under both awks on
+# this box. The nul ban is what keeps that true. An awk may start a new
+# record at a nul byte -- busybox awk does, mawk does not -- and there a
+# carriage return standing before a nul becomes the last byte of its own
+# record and reads as a pair: on the four bytes A, carriage return, nul,
+# newline, mawk raises this row and busybox awk does not. With nuls
+# banned, both awks read the same records, so which one runs the suite
+# cannot change this row's answer.
+#
+# What this row does not do is make the filter read a carriage return as
+# PHP does. It fails the moment a file arrives that would need that, and
+# until then the difference cannot be reached. The cost is that a php
+# file written with CRLF line endings fails this row until it is either
+# converted or allowed here by name and by count.
+#
+# Row seven pins the heredoc and nowdoc bodies. The filter drops a body
+# whole, so an expression PHP would run inside one is in no mode's
+# output: {$obj->{run_live()}} written in a body calls run_live(). A
+# review also wrote a body line that ends the heredoc for this filter
+# but not for PHP, inside a quoted string opened by a braced
+# interpolation on an earlier line. Neither can be answered by reading
+# one file, so this row reads every heredoc and nowdoc under cms/ and
+# pins the set: six openers in three files, each closed in the file that
+# opened it, and the extracted text hashed. Those six bodies stood in
+# the corpus the filter was compared with PHP's own tokenizer over, and
+# hold no escape, no slice and no call.
+#
+# The inventory is read in the list's sorted order, one run of a second,
+# A closing marker does not end the reader's work on that line. Since PHP
+# 7.3 the marker may be followed by more code, and that code may open a
+# second heredoc, so after printing a close this reader scans the rest of
+# the line for another opener. Codex found that gap in an earlier shape of
+# this row, which stopped at the marker and so read the second heredoc's
+# body as though it were code. None of the six closing markers under cms/
+# is followed by anything but a semicolon, so reading on changes nothing
+# that is counted today; it is the shape a seventh heredoc would need. The
+# resumed scan can also be wrong in the other direction, and codex showed
+# that direction is not safe on its own. A false opener does not only raise
+# the count; it can take the place of a real one. On the line
+# A; $s='<<<B'; $b=<<<C the reader takes B from inside the string, closes it
+# at the later B;, and never reads C, which is the opener PHP takes and whose
+# body holds that same B; line. Both readings report one opener and one
+# closer, so no count moves and the hash is whatever the wrong reading
+# produced. So the row below also counts how many times those three bytes
+# occur under cms/ at all, and fails unless every one of them became a
+# reported opener.
+#
+# smaller reader per file. That reader is not the filter and shares no
+# code with it, so where a heredoc ends is settled twice by two readers
+# rather than once. It tests every position on a line that begins an
+# opener's first three bytes, and not the first such position alone: a
+# subagent asked this row for a file whose opener line began with those
+# three bytes inside a block comment, followed by a digit, and an earlier
+# shape of this reader read that one position, found it was no label, and
+# abandoned the whole line. The reader then wrote nothing for the file,
+# its name was dropped from the view below, the counts and the hash did
+# not move, and a body holding a live call passed. Reading on to the next
+# position answers that, and answers the same shape written with the
+# three bytes inside a string or with no label after them at all.
+#
+# The reader is given raw lines and is told nothing about where PHP code
+# stands, so it reports an opener's spelling inside a comment or a string
+# as an opener. That direction is not safe by itself. Most of the time such
+# an opener is never closed and the unclosed count moves, but where the same
+# line also carries the opener PHP reads, the false one swallows it and both
+# readings report one opener and one closer. Counting the three bytes
+# themselves answers that: the reader accepts at most one opener for each
+# occurrence, so the row fails unless the occurrences and the reported
+# openers are the same number.
+#
+# What that equality settles is coverage: no occurrence stands in a place
+# this reader never looked at. It does not settle whether the reader agrees
+# with PHP about where a body ends, and one shape shows the difference. PHP
+# reads the file below as a single heredoc, opened on its fourth line and
+# closed on its eleventh, because the label on the sixth line stands inside a
+# braced interpolation that is still open:
+#
+#	$a = <<<A
+#	{$x->{word("
+#	A
+#	<<<B
+#	two
+#	B;
+#	")}}
+#	A;
+#
+# The reader closes A on the sixth line and reads the seventh as a second
+# opener, so two occurrences meet two reported openers, nothing is left
+# unclosed, and the count says nothing. Measured on PHP 8.2.33, which lints
+# that file and runs it. The row still refuses it, but by the hash and not by
+# the count: the bodies the reader reports are hashed, so a heredoc of any
+# shape entering the tree fails the row until someone reads it against PHP.
+#
+# The count is also stricter than the reader needs. A spelling with no label
+# after it is rejected and is harmless, and it still fails the row; so does
+# one written inside a heredoc body that the reader still holds open, which
+# it does not scan. Neither is in the tree today, and no shorter test
+# separates a rejected spelling from one that hid a real opener beside it.
+# The other direction, a real opener the reader passes over, is removed by
+# testing every position on the line.
+#
+# The name of a file holding no heredoc is dropped
+# from the hashed view, so adding a php file that opens none does not
+# move the hash. Adding, moving or editing a heredoc anywhere under cms/
+# does, and that is the point: the row fails until someone reads the new
+# body against PHP and replaces the hash here.
+#
+# The two rows share one list and one read of the tree. A list the first
+# of them could not trust fails both, and so does a tree row five could
+# not account for: neither of these two rows takes its own stock of the
+# entries under cms/ that are neither a directory nor a regular file, or
+# of the names holding .php before their end, so both refuse to report
+# until row five's stock-take has come out clean and its two enumerations
+# have agreed. A subagent put in the tree a symlink named cms/zz_out.php,
+# and then a file named cms/zz_upper.PHP, each holding a seventh heredoc,
+# a nul byte and a lone carriage return; find reached neither, and both of
+# these rows said ok on a measurement they had not made.
+sm107_cr_prog='
+{
+	s = $0
+	i = index(s, "\r")
+	while (i > 0) {
+		crs = crs + 1
+		s = substr(s, i + 1)
+		i = index(s, "\r")
+	}
+	if (substr($0, length($0), 1) == "\r") {
+		pairs = pairs + 1
+	}
+}
+END {
+	printf "%d %d\n", crs + 0, pairs + 0
+}'
+sm107_hd_prog='
+BEGIN {
+	hd = sprintf("%c%c%c", 60, 60, 60)
+}
+function sm107_hd_label(ch) {
+	if (ch == "") {
+		return 0
+	}
+	if (ch ~ /^[0-9A-Za-z_]$/) {
+		return 1
+	}
+	if (ch ~ /^[\001-\177]$/) {
+		return 0
+	}
+	return 1
+}
+function sm107_hd_run(s, p,    q) {
+	q = p
+	while (sm107_hd_label(substr(s, q, 1)) == 1) {
+		q = q + 1
+	}
+	return q - p
+}
+function sm107_hd_scan(s, p,    i, j, q, n) {
+	while (1) {
+		i = index(substr(s, p), hd)
+		if (i == 0) {
+			return 0
+		}
+		i = p + i - 1
+		j = i + 3
+		while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") {
+			j = j + 1
+		}
+		q = substr(s, j, 1)
+		if (q == "\047" || q == "\"") {
+			j = j + 1
+		} else {
+			q = ""
+		}
+		n = sm107_hd_run(s, j)
+		if (n > 0 && substr(s, j, 1) !~ /^[0-9]$/ &&
+			(q == "" || substr(s, j + n, 1) == q)) {
+			id = substr(s, j, n)
+			st = 1
+			printf "LABEL %s\n", id
+			return j + n
+		}
+		p = i + 1
+	}
+}
+{
+	if (st == 0) {
+		sm107_hd_scan($0, 1)
+		next
+	}
+	k = 1
+	while (substr($0, k, 1) == " " || substr($0, k, 1) == "\t") {
+		k = k + 1
+	}
+	n = sm107_hd_run($0, k)
+	if (n > 0 && substr($0, k, n) == id) {
+		st = 0
+		printf "END %s\n", id
+		sm107_hd_scan($0, k + n)
+		next
+	}
+	printf "BODY %s\n", $0
+}
+END {
+	if (st == 1) {
+		printf "UNCLOSED %s\n", id
+	}
+}'
+sm107_hd_view='
+/^FILE / {
+	f = $0
+	next
+}
+{
+	if (f != "") {
+		print f
+		f = ""
+	}
+	print
+}'
+sm107_hd_tri_prog='
+BEGIN {
+	hd = sprintf("%c%c%c", 60, 60, 60)
+}
+{
+	p = 1
+	while (1) {
+		i = index(substr($0, p), hd)
+		if (i == 0) {
+			break
+		}
+		n = n + 1
+		p = p + i
+	}
+}
+END {
+	printf "%d\n", n + 0
+}'
+sm107_pre_tmp="$(mktemp 2>/dev/null)"
+sm107_pre_tmp_rc=$?
+sm107_pre_acc="$(mktemp 2>/dev/null)"
+sm107_pre_acc_rc=$?
+sm107_pre_ready=no
+sm107_pre_rc=1
+sm107_pre_bytes=''
+sm107_pre_entries=''
+sm107_pre_tail=''
+sm107_pre_files=0
+sm107_pre_bad=0
+sm107_pre_known=0
+sm107_pre_hd_bad=0
+sm107_hd_tri=0
+sm107_hd_tri_bad=0
+sm107_hd_files=''
+sm107_hd_open=''
+sm107_hd_close=''
+sm107_hd_unclosed=''
+sm107_hd_sha=''
+if [ "$sm107_pre_tmp_rc" -eq 0 ] && [ -n "$sm107_pre_tmp" ] \
+	&& [ -w "$sm107_pre_tmp" ] && [ "$sm107_pre_acc_rc" -eq 0 ] \
+	&& [ -n "$sm107_pre_acc" ] && [ -w "$sm107_pre_acc" ]
+then
+	sm107_pre_ready=yes
+	find cms/ -type f -name '*.php' -print0 2>/dev/null \
+		| LC_ALL=C sort -z > "$sm107_pre_tmp"
+	sm107_pre_rc=$?
+	sm107_pre_bytes="$(wc -c < "$sm107_pre_tmp" | tr -d ' \n')"
+	sm107_pre_entries="$(tr -dc '\0' < "$sm107_pre_tmp" | wc -c | tr -d ' \n')"
+	sm107_pre_tail="$(tail -c 1 -- "$sm107_pre_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_pre_files=$((sm107_pre_files + 1))
+		sm107_pre_want=0
+		case "$sm107_f" in
+		cms/reports/missing_outcomes/index.php)
+			sm107_pre_want=45
+			;;
+		esac
+		if [ "$sm107_pre_want" != 0 ]
+		then
+			sm107_pre_known=$((sm107_pre_known + 1))
+		fi
+		sm107_pre_out="$(awk "$sm107_cr_prog" < "$sm107_f" 2>/dev/null)"
+		sm107_pre_awk_rc=$?
+		sm107_pre_nul="$(tr -dc '\0' < "$sm107_f" | wc -c | tr -d ' \n')"
+		sm107_pre_last="$(tail -c 1 -- "$sm107_f" | tr -dc '\r' | wc -c \
+			| tr -d ' \n')"
+		if [ "$sm107_pre_awk_rc" -ne 0 ] \
+			|| [ "$sm107_pre_out" != "$sm107_pre_want $sm107_pre_want" ] \
+			|| [ "$sm107_pre_nul" != 0 ] || [ "$sm107_pre_last" != 0 ]
+		then
+			sm107_pre_bad=$((sm107_pre_bad + 1))
+			printf '    %s: carriage returns and line-ending pairs "%s" where "%s" is allowed, %s nul byte(s), %s carriage return(s) at its end, and the count exited %s\n' \
+				"$sm107_f" "$sm107_pre_out" \
+				"$sm107_pre_want $sm107_pre_want" "$sm107_pre_nul" \
+				"$sm107_pre_last" "$sm107_pre_awk_rc"
+		fi
+		printf 'FILE %s\n' "$sm107_f" >> "$sm107_pre_acc"
+		awk "$sm107_hd_prog" < "$sm107_f" >> "$sm107_pre_acc"
+		sm107_pre_hd_rc=$?
+		if [ "$sm107_pre_hd_rc" -ne 0 ]
+		then
+			sm107_pre_hd_bad=$((sm107_pre_hd_bad + 1))
+		fi
+		sm107_pre_tri="$(awk "$sm107_hd_tri_prog" < "$sm107_f" \
+			2>/dev/null)"
+		sm107_pre_tri_rc=$?
+		case "$sm107_pre_tri" in
+		'' | *[!0-9]* | ??????????*)
+			sm107_pre_tri=0
+			sm107_pre_tri_rc=1
+			;;
+		esac
+		if [ "$sm107_pre_tri_rc" -ne 0 ]
+		then
+			sm107_hd_tri_bad=$((sm107_hd_tri_bad + 1))
+		fi
+		sm107_hd_tri=$((sm107_hd_tri + sm107_pre_tri))
+	done < "$sm107_pre_tmp"
+	sm107_hd_files="$(grep -c '^FILE ' "$sm107_pre_acc")"
+	sm107_hd_open="$(grep -c '^LABEL ' "$sm107_pre_acc")"
+	sm107_hd_close="$(grep -c '^END ' "$sm107_pre_acc")"
+	sm107_hd_unclosed="$(grep -c '^UNCLOSED ' "$sm107_pre_acc")"
+	sm107_hd_sha="$(awk "$sm107_hd_view" "$sm107_pre_acc" | sha256sum \
+		| cut -d' ' -f1)"
+	rm -f "$sm107_pre_tmp" "$sm107_pre_acc"
+fi
+sm107_pre_counted=yes
+case "$sm107_pre_bytes" in '' | *[!0-9]* | ??????????*) sm107_pre_counted=no ;; esac
+case "$sm107_pre_entries" in '' | *[!0-9]* | ??????????*) sm107_pre_counted=no ;; esac
+case "$sm107_pre_tail" in '' | *[!0-9]* | ??*) sm107_pre_counted=no ;; esac
+sm107_hd_counted=yes
+case "$sm107_hd_files" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_open" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_close" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_unclosed" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_tri" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+if [ "$sm107_pre_ready" != yes ]
+then
+	bad "the line model row has no temporary file it can write to: mktemp exited ${sm107_pre_tmp_rc} and named '${sm107_pre_tmp}', then exited ${sm107_pre_acc_rc} and named '${sm107_pre_acc}'"
+elif [ "$sm107_pre_rc" -ne 0 ]
+then
+	bad "the line model row could not list and sort the php files under cms/: find, the sort, or the write of its output, exited ${sm107_pre_rc}"
+elif [ "$sm107_pre_counted" != yes ]
+then
+	bad "the line model row could not count what it was about to read: ${sm107_pre_bytes} byte(s), '${sm107_pre_entries}' entries and '${sm107_pre_tail}' list terminators"
+elif [ "$sm107_pre_bytes" != 0 ] && [ "$sm107_pre_tail" != 1 ]
+then
+	bad "the line model row was handed a list holding ${sm107_pre_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+elif [ "$sm107_pre_entries" = 0 ]
+then
+	bad "the line model row was given no file to read, so it read nothing"
+elif [ "$sm107_pre_files" != "$sm107_pre_entries" ]
+then
+	bad "the line model row read ${sm107_pre_files} of the ${sm107_pre_entries} file(s) its own list held"
+elif [ "$sm107_tree_ok" != yes ]
+then
+	bad "the line model row cannot say what stands under cms/: the row above it counted '${sm107_bare_special}' entr(y|ies) that are neither a directory nor a regular file and '${sm107_bare_odd}' name(s) holding .php before their end, and its two enumerations named '${sm107_bare_entries}' and '${sm107_glob_files}' php file(s), so a php file this row never read may stand there"
+elif [ "$sm107_pre_known" != 1 ]
+then
+	bad "the line model row allows CRLF line endings in one named php file and found ${sm107_pre_known} of them, so an allowance it still carries is no longer measured"
+elif [ "$sm107_pre_bad" != 0 ]
+then
+	bad "${sm107_pre_bad} of the ${sm107_pre_files} php file(s) under cms/ hold a nul byte, or a carriage return this row does not allow, either of which the filter's line model reads differently from PHP"
+else
+	ok "no nul byte, and no carriage return outside the 45 CRLF pairs of the one file allowed them, in any of the ${sm107_pre_files} php file(s) under cms/, so the filter's records are the lines PHP reads"
+fi
+if [ "$sm107_pre_ready" != yes ] || [ "$sm107_pre_rc" -ne 0 ] \
+	|| [ "$sm107_pre_counted" != yes ] || [ "$sm107_pre_entries" = 0 ] \
+	|| [ "$sm107_pre_files" != "$sm107_pre_entries" ] \
+	|| [ "$sm107_tree_ok" != yes ] \
+	|| { [ "$sm107_pre_bytes" != 0 ] && [ "$sm107_pre_tail" != 1 ]; }
+then
+	bad "the heredoc inventory row has no list of php files it can trust, or no tree it can trust: the row above it did not get one"
+elif [ "$sm107_hd_counted" != yes ]
+then
+	bad "the heredoc inventory row could not count what it read: '${sm107_hd_files}' file name(s), '${sm107_hd_open}' opener(s), '${sm107_hd_close}' closer(s) and '${sm107_hd_unclosed}' opener(s) left unclosed"
+elif [ "$sm107_pre_hd_bad" != 0 ]
+then
+	bad "the reader of heredoc bodies exited non-zero on ${sm107_pre_hd_bad} of the ${sm107_pre_files} php file(s) under cms/"
+elif [ "$sm107_hd_files" != "$sm107_pre_files" ]
+then
+	bad "the heredoc inventory names ${sm107_hd_files} file(s) where ${sm107_pre_files} were read, so a name was lost between the read and the inventory"
+elif [ "$sm107_hd_unclosed" != 0 ]
+then
+	bad "${sm107_hd_unclosed} heredoc or nowdoc under cms/ is opened in a file that ends before closing it, which this filter reads as a body running to the end of that file"
+elif [ "$sm107_hd_tri_bad" != 0 ]
+then
+	bad "the count of heredoc opener spellings did not answer with a number, or exited non-zero, on ${sm107_hd_tri_bad} of the ${sm107_pre_files} php file(s) under cms/"
+elif [ "$sm107_hd_tri" != "$sm107_hd_open" ]
+then
+	bad "the first three bytes of a heredoc opener occur ${sm107_hd_tri} time(s) in the php files under cms/ and ${sm107_hd_open} of them were read as an opener, so one of them stands where this reader does not look; a spelling inside a string or a comment can stand in for the opener PHP reads later on the same line, and that substitution moves no count"
+elif [ "$sm107_hd_open" != 6 ] || [ "$sm107_hd_close" != 6 ] \
+	|| [ "$sm107_hd_tri" != 6 ]
+then
+	bad "the heredoc and nowdoc inventory under cms/ holds ${sm107_hd_open} opener(s), ${sm107_hd_close} closer(s) and ${sm107_hd_tri} occurrence(s) of an opener's first three bytes where the six of each read against PHP were expected"
+elif [ "$sm107_hd_sha" != b9d81d46f81dfbc738921f86a0b0ce6c5c255ec500d97d85ce01854ffb4b86d1 ]
+then
+	bad "the heredoc and nowdoc text under cms/ hashes to ${sm107_hd_sha}, not to the b9d81d46 the six bodies read against PHP hash to, so a body was added, moved or changed and must be read against PHP before this hash is replaced"
+else
+	ok "the heredoc and nowdoc inventory under cms/ is the six openers in three files whose bodies were read against PHP, each closed in the file that opened it, its text hashes to b9d81d46, and those six are every occurrence of an opener's first three bytes in those files"
+fi
+# ROW EIGHT -- the one directory outside cms/ that the application reads.
+# Every row above takes cms/ as the tree. cms-custom/ is read on nearly
+# every request: cms-custom/config/default_prefs.php is included by the
+# bootstrap, and the two files under cms-custom/subtemplates/ are
+# rendered as templates. So php there is php no row above has read, and
+# a subagent found the tree itself working around that. The generator at
+# cms/app/lib/pikaFileArray.php writes the open tag of the file it
+# generates in two pieces, with a comment saying the section needs the
+# tree to hold none of that spelling -- and writes that generated file
+# into cms-custom/, where row five cannot see it either way.
+#
+# Widening the rows above into cms-custom/ would move every pin they
+# carry, and would fail row five at once on
+# cms-custom/config/settings.php.example, a name holding .php before its
+# end. This row pins the directory whole instead: four regular files,
+# three directories, no entry that is neither, exactly one name ending
+# .php and that one cms-custom/config/default_prefs.php, no line holding
+# the first three bytes of a heredoc opener, and a sha256 over a manifest
+# of each file's own sha256 and path in sorted order. A pinned manifest
+# is stronger here than any scan and much shorter to write: it fails on a
+# new file, a deleted one, a rename, and any change of content, whatever
+# that content is, so it does not have to know what to look for.
+#
+# The cost is that nothing in cms-custom/ can change without someone
+# reading the change and replacing the hash. That is the point, and it is
+# cheap: these four files have not been edited in this repository's
+# history. A local install that writes cms-custom/config/settings.php
+# fails this row too, which is correct -- that file would be read on
+# every request and no row here reads it.
+#
+# The repository's other php files stand outside cms/ and outside
+# cms-custom/: .semgrep/ocm-sinks.php and three fixtures under
+# tests/fixtures/. None is served or included by the application, and
+# none is pinned here.
+sm107_cst_tmp="$(mktemp 2>/dev/null)"
+sm107_cst_tmp_rc=$?
+sm107_cst_acc="$(mktemp 2>/dev/null)"
+sm107_cst_acc_rc=$?
+sm107_cst_dirs="$(find cms-custom/ -type d 2>/dev/null | wc -l | tr -d ' \n')"
+sm107_cst_dirs_rc=$?
+sm107_cst_special="$(find cms-custom/ ! -type d ! -type f -print0 2>/dev/null \
+	| tr -dc '\0' | wc -c | tr -d ' \n')"
+sm107_cst_special_rc=$?
+sm107_cst_ready=no
+sm107_cst_rc=1
+sm107_cst_bytes=''
+sm107_cst_entries=''
+sm107_cst_tail=''
+sm107_cst_files=0
+sm107_cst_php=0
+sm107_cst_hd=0
+sm107_cst_hd_bad=0
+sm107_cst_at=''
+sm107_cst_sha=''
+if [ "$sm107_cst_tmp_rc" -eq 0 ] && [ -n "$sm107_cst_tmp" ] \
+	&& [ -w "$sm107_cst_tmp" ] && [ "$sm107_cst_acc_rc" -eq 0 ] \
+	&& [ -n "$sm107_cst_acc" ] && [ -w "$sm107_cst_acc" ]
+then
+	sm107_cst_ready=yes
+	find cms-custom/ -type f -print0 2>/dev/null \
+		| LC_ALL=C sort -z > "$sm107_cst_tmp"
+	sm107_cst_rc=$?
+	sm107_cst_bytes="$(wc -c < "$sm107_cst_tmp" | tr -d ' \n')"
+	sm107_cst_entries="$(tr -dc '\0' < "$sm107_cst_tmp" | wc -c | tr -d ' \n')"
+	sm107_cst_tail="$(tail -c 1 -- "$sm107_cst_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_cst_files=$((sm107_cst_files + 1))
+		case "$sm107_f" in
+		*.php)
+			sm107_cst_php=$((sm107_cst_php + 1))
+			sm107_cst_at="$sm107_f"
+			;;
+		esac
+		sm107_cst_hdn="$(grep -c '<<<' "$sm107_f" 2>/dev/null)"
+		case "$sm107_cst_hdn" in '' | *[!0-9]* | ??????????*)
+			sm107_cst_hdn=0
+			sm107_cst_hd_bad=$((sm107_cst_hd_bad + 1))
+			;;
+		esac
+		sm107_cst_hd=$((sm107_cst_hd + sm107_cst_hdn))
+		printf '%s %s\n' "$(sha256sum < "$sm107_f" | cut -d' ' -f1)" \
+			"$sm107_f" >> "$sm107_cst_acc"
+	done < "$sm107_cst_tmp"
+	sm107_cst_sha="$(sha256sum < "$sm107_cst_acc" | cut -d' ' -f1)"
+	rm -f "$sm107_cst_tmp" "$sm107_cst_acc"
+fi
+sm107_cst_counted=yes
+case "$sm107_cst_bytes" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_entries" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_tail" in '' | *[!0-9]* | ??*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_dirs" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_special" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+if [ "$sm107_cst_ready" != yes ]
+then
+	bad "the cms-custom row has no temporary file it can write to: mktemp exited ${sm107_cst_tmp_rc} and named '${sm107_cst_tmp}', then exited ${sm107_cst_acc_rc} and named '${sm107_cst_acc}'"
+elif [ "$sm107_cst_rc" -ne 0 ] || [ "$sm107_cst_dirs_rc" -ne 0 ] \
+	|| [ "$sm107_cst_special_rc" -ne 0 ]
+then
+	bad "the cms-custom row could not take stock of cms-custom/: the list of its files exited ${sm107_cst_rc}, the count of its directories ${sm107_cst_dirs_rc}, and the count of entries that are neither a directory nor a regular file ${sm107_cst_special_rc}"
+elif [ "$sm107_cst_counted" != yes ]
+then
+	bad "the cms-custom row could not count what it was about to read: ${sm107_cst_bytes} byte(s), '${sm107_cst_entries}' entries, '${sm107_cst_tail}' list terminators, '${sm107_cst_dirs}' director(y|ies) and '${sm107_cst_special}' entr(y|ies) that are neither"
+elif [ "$sm107_cst_bytes" != 0 ] && [ "$sm107_cst_tail" != 1 ]
+then
+	bad "the cms-custom row was handed a list holding ${sm107_cst_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+elif [ "$sm107_cst_entries" = 0 ]
+then
+	bad "the cms-custom row was given no file to read, so it read nothing"
+elif [ "$sm107_cst_files" != "$sm107_cst_entries" ]
+then
+	bad "the cms-custom row read ${sm107_cst_files} of the ${sm107_cst_entries} file(s) its own list held"
+elif [ "$sm107_cst_hd_bad" != 0 ]
+then
+	bad "the cms-custom row could not count the lines holding the first three bytes of a heredoc opener in ${sm107_cst_hd_bad} of the ${sm107_cst_files} file(s) it read"
+elif [ "$sm107_cst_entries" != 4 ] || [ "$sm107_cst_dirs" != 3 ] \
+	|| [ "$sm107_cst_special" != 0 ]
+then
+	bad "cms-custom/ holds ${sm107_cst_entries} regular file(s), ${sm107_cst_dirs} director(y|ies) and ${sm107_cst_special} entr(y|ies) that are neither, where four, three and none were read when this row was written"
+elif [ "$sm107_cst_php" != 1 ] \
+	|| [ "$sm107_cst_at" != cms-custom/config/default_prefs.php ]
+then
+	bad "cms-custom/ holds ${sm107_cst_php} name(s) ending .php, the last of them '${sm107_cst_at}', where the one at cms-custom/config/default_prefs.php was read when this row was written: php outside cms/ is read by no other row in this section"
+elif [ "$sm107_cst_hd" != 0 ]
+then
+	bad "${sm107_cst_hd} line(s) under cms-custom/ hold the first three bytes of a heredoc opener, where none did when this row was written, and a heredoc there is read by no row in this section"
+elif [ "$sm107_cst_sha" != da75728c684745efb094027e39ce7c0f5924eee4d62e54a95d137768710774fa ]
+then
+	bad "the manifest of cms-custom/, each file's own sha256 and its path in sorted order, hashes to ${sm107_cst_sha} and not to the da75728c read when this row was written, so a file there was added, renamed, deleted or changed and must be read before this hash is replaced"
+else
+	ok "cms-custom/, the one directory outside cms/ the application reads, is the four files in three directories read when this row was written, one of them php and that one cms-custom/config/default_prefs.php, none of them holding a heredoc, and their manifest hashes to da75728c"
+fi
+echo
+echo "108. the masked SSN and phone parts are filtered before they are joined"
+
+# 108. cms/dataops.php built a contact's masked SSN and phone by joining
+# request parts straight into the value it stores. Three parts make an SSN
+# and two make a phone. pl_grab_vars() cleans the table columns it knows
+# about a few lines earlier, but these are separate field names it never
+# reads, so six live sites held twelve raw ssn interpolations and four raw
+# phone ones.
+#
+# The fix reduces each part to ASCII digits before the join, which is the
+# format these legacy part fields are meant to carry. Nothing in the tree
+# enforces that on the way in: cms/template_plugins/input_ssn.php only sets a
+# maximum length and cms/js/ssn-mask.js only inserts the dashes, so neither is
+# a rule about characters. The filter is the first place the format is
+# applied, not a repeat of a client-side check.
+#
+# Three behaviour changes come with it, all of them visible only for a part
+# that was never a valid part. PHP reads the string "0" as false, so a part
+# such as 0x filters to 0 and, when every other part in that join is false
+# too, takes the empty branch. On that branch three of the four arms keep a
+# whole ssn or phone field that pl_grab_vars() already supplied, so a dirty
+# part now exposes that fallback instead of overriding it, while the
+# deprecated arm still writes empty. And a part sent as an array now warns on
+# both paths: it warned before only when the condition was true, and an empty
+# array with every other part false used to skip the join without a cast.
+#
+# Row one reads the one file. Row two reads every php file under cms/. Rows
+# three and four drive the real page and read the stored column back out of
+# the database.
+#
+# What the two reading rows can and cannot settle. Row one counts text. It
+# establishes that the file still spells its filters, its conditions and its
+# joins the way it did when this row was written, and that each masked local
+# and each request part key is mentioned exactly as often as those spellings
+# account for in the copy it counts, so a second mention there has to move one
+# of the counts. Two things sit outside it. It does not read the data flow: a
+# spelling this row never names, a variable variable, an extract() or a
+# compact() would move a value without moving a count. And the copy it counts
+# is the one section 107's stripper hands back with strings kept, which still
+# drops a heredoc body, so a mention inside a heredoc is invisible to every
+# count here. Rows three and four are the behaviour evidence, and they cover
+# two of the six sites.
+
+if ! type sm107_code_only > /dev/null 2>&1
+then
+	bad "the comment stripper section 107 defines is gone, so section 108 cannot run"
+else
+
+sm108_file=cms/dataops.php
+sm108_flat="$(sm107_code_only "$sm108_file" 1 | tr '\t\n' '  ' | tr -s ' ') "
+
+# An exact-text count over the flattened copy.
+sm108_fixed()
+{
+	printf '%s\n' "$sm108_flat" | awk -v needle="$1" '
+		{
+			n = 0
+			s = $0
+			while ((p = index(s, needle)) > 0)
+			{
+				n = n + 1
+				s = substr(s, p + length(needle))
+			}
+			printf "%d\n", n + 0
+		}
+	'
+}
+
+# A regexp count over the same copy. The patterns below use [$] and a
+# character class for the quote rather than a backslash, because awk
+# processes escapes in a -v assignment and a backslash would not survive it.
+sm108_re()
+{
+	printf '%s\n' "$sm108_flat" | awk -v re="$1" '{ print gsub(re, "&") }'
+}
+
+# ROW ONE -- the six sites, counted, each filter tied to its own key.
+#
+# For each of the five part names three counts have to agree with each other.
+# S is the number of strip lines the name is expected to have, four for an
+# ssn part and two for a phone part.
+#
+#   the whole strip line, matched character for character          == S
+#   every mention of the masked local, whatever follows it         == 3 * S
+#   every quoted mention of the request key, either quote style    == S
+#
+# Three times S is the whole budget for the local: the strip line assigns it,
+# the condition reads it, and the join reads it, once each per site. One for S
+# is the whole budget for the key: only the strip line names it. So an extra
+# appearance of either name, anywhere the counted copy still shows it and with
+# any operator, puts a count over its budget. Codex review 63 measured an
+# earlier version passing
+# two regressions, and review 63b a third: writing the request back over a
+# local, restoring the conditions to read the request, and appending the
+# request to a local with .= and a double-quoted key. The third is why the
+# counts no longer read an operator or a quote style.
+#
+# A budget on its own is not enough, because a statement can replace one of
+# the three occurrences rather than add a fourth. Codex review 63c measured
+# exactly that: a condition rewritten to
+#
+#   if (($mask_ssn0 = $_POST["ssn" . "0"]) || $mask_ssn1 || $mask_ssn2)
+#
+# assigns the raw part over the filtered one, still mentions the local once,
+# and never spells the whole key in one pair of quotes. All three counts stay
+# where the row wants them. So the row also counts the two condition
+# spellings and the two join spellings character for character. Between them
+# the five exact counts name every occurrence the budget allows: S strips, S
+# conditions and S joins. A fourth statement pushes the budget over, as long
+# as the counted copy still shows it; rewriting one of the three drops that
+# statement's own exact count.
+#
+# What this row is and is not: five text counts over one file, not a data
+# flow. A raw read that spells neither the local nor the quoted key -- a
+# variable variable, extract(), compact(), or a constant assembled some other
+# way -- is outside it. Two of the six sites are covered behaviourally by
+# rows three and four instead. Measured against eight copies of the file: the
+# patched file passes, and six regressions fail, including review 63c's
+# condition write.
+sm108_row1_msg=''
+for sm108_spec in ssn0:4 ssn1:4 ssn2:4 phone_a:2 phone_b:2
+do
+	sm108_k="${sm108_spec%%:*}"
+	sm108_want="${sm108_spec##*:}"
+	sm108_strip="$(sm108_fixed "\$mask_${sm108_k} = preg_replace('/[^0-9]/', '', (string) (\$_POST['${sm108_k}'] ?? ''));")"
+	sm108_loc="$(sm108_re "[\$]mask_${sm108_k}[^A-Za-z0-9_]")"
+	sm108_men="$(sm108_re "[\"']${sm108_k}[\"']")"
+	for sm108_n in "$sm108_strip" "$sm108_loc" "$sm108_men"
+	do
+		case "$sm108_n" in
+		'' | *[!0-9]* | ??????????*)
+			sm108_row1_msg="${sm108_row1_msg} a count for ${sm108_k} came back as '${sm108_n}' and not as a number;"
+			continue 2
+			;;
+		esac
+	done
+	if [ "$sm108_strip" -ne "$sm108_want" ]
+	then
+		sm108_row1_msg="${sm108_row1_msg} ${sm108_k} has ${sm108_strip} strip line(s) where ${sm108_want} were expected;"
+	fi
+	if [ "$sm108_loc" -ne "$((sm108_strip * 3))" ]
+	then
+		sm108_row1_msg="${sm108_row1_msg} \$mask_${sm108_k} appears ${sm108_loc} time(s) where $((sm108_strip * 3)) were expected, one strip one condition and one join per site, so the mentions of it moved: a statement reads or writes it somewhere else, one of the three this row expects is gone, or an ordinary string spells it;"
+	fi
+	if [ "$sm108_men" -ne "$sm108_strip" ]
+	then
+		sm108_row1_msg="${sm108_row1_msg} the key ${sm108_k} is named ${sm108_men} time(s) in quotes where ${sm108_strip} were expected, so the quoted mentions of it moved: something other than the strip names that request part, a strip stopped naming it, or an ordinary string spells it;"
+	fi
+done
+
+sm108_ssn_asg="$(sm108_fixed "['ssn'] = \"{\$mask_ssn0}-{\$mask_ssn1}-{\$mask_ssn2}\";")"
+sm108_ph_asg="$(sm108_fixed "[\"phone\"] = \"{\$mask_phone_a}-{\$mask_phone_b}\";")"
+sm108_ssn_cnd="$(sm108_fixed "if (\$mask_ssn0 || \$mask_ssn1 || \$mask_ssn2)")"
+sm108_ph_cnd="$(sm108_fixed "if (\$mask_phone_a || \$mask_phone_b)")"
+sm108_row1=yes
+for sm108_n in "$sm108_ssn_asg" "$sm108_ph_asg" "$sm108_ssn_cnd" \
+	"$sm108_ph_cnd"
+do
+	case "$sm108_n" in '' | *[!0-9]* | ??????????*) sm108_row1=no ;; esac
+done
+if [ "$sm108_row1" != yes ]
+then
+	bad "the masked SSN and phone condition and join counts did not come back as numbers (${sm108_ssn_asg}, ${sm108_ph_asg}, ${sm108_ssn_cnd}, ${sm108_ph_cnd})"
+elif [ -n "$sm108_row1_msg" ]
+then
+	bad "the masked SSN and phone counts this row reads differ from the counts and the ratios it expects:${sm108_row1_msg}"
+elif [ "$sm108_ssn_cnd" -ne 4 ] || [ "$sm108_ph_cnd" -ne 2 ]
+then
+	bad "the masked SSN and phone conditions are no longer written as the row reads them: ${sm108_ssn_cnd} ssn and ${sm108_ph_cnd} phone condition(s) matched character for character where 4 and 2 were expected, so a condition is no longer written the way this row spells it: a different test, or the same test written differently"
+elif [ "$sm108_ssn_asg" -eq 4 ] && [ "$sm108_ph_asg" -eq 2 ]
+then
+	ok "in ${sm108_file} the filters, conditions and joins for the masked SSN and phone parts are still spelled as this row reads them: sixteen strip lines, four ssn and two phone conditions and four ssn and two phone joins all matched character for character, and in the copy this row counts no masked local or request key is named more often than those account for"
+else
+	bad "the masked SSN and phone joins moved: ${sm108_ssn_asg} ssn and ${sm108_ph_asg} phone join(s) where 4 and 2 were expected"
+fi
+
+# ROW TWO -- the class, over every php file under cms/. A request value named
+# inside an interpolating string, which is the shape a raw request byte
+# travels on when it goes into a value the code stores or emits. The row
+# reports the shape and not the use: it does not follow what the resulting
+# string is then used for, and a request value read only to pick something
+# out of an array is reported as well.
+#
+# Two earlier versions of this row read the file as text and both were wrong.
+# A regexp anchored to the assignment operator missed a concatenation, a
+# string cast and a second pair of parentheses (codex review 63b). A hand
+# written byte-by-byte quote tracker then missed a string nested inside
+# another string's braced expression, reported two shapes that interpolate
+# nothing at all, and could carry a wrong state forward and hide a real read
+# on a later line (codex review 63c, four fixtures, all four reproduced).
+#
+# Reading PHP as text is the mistake. This row asks PHP instead. It hands the
+# file list to php inside the app container, which runs token_get_all() and
+# walks the token stream keeping a stack of the string, heredoc, backtick and
+# brace contexts it is inside. A superglobal variable token found anywhere
+# inside an interpolating context is a hit. PHP only emits a quote as its own
+# token when the string really does interpolate, so a string that holds no
+# interpolation cannot produce one, and a nested string is nested on the
+# stack rather than mistaken for the end of the outer one.
+#
+# What that buys over the text versions: comments and the commented-out dead
+# copy under cms/ops/ are skipped by the tokenizer itself rather than by a
+# stripper, heredoc and nowdoc bodies are read instead of being invisible,
+# and a file that does not parse is reported as a failed scan rather than
+# passing quietly. The tokenizer is asked with TOKEN_PARSE for that last
+# part: review 63d measured that without it an unfinished string and a stray
+# closing brace both still tokenize, and such a file passed quietly.
+#
+# Measured on the unpatched tree this row reports the six sites in
+# cms/dataops.php and nothing else. Against the fixtures: all thirteen
+# interpolating one-line shapes, which covers the three the old regexp missed,
+# an escaped quote before the interpolation, a single quote inside the string,
+# a space before the subscript, the ${_POST[...]} brace spelling, a backtick
+# string, and $_SERVER and $_FILES as well as $_POST; a multi-line
+# interpolating string; and both of review 63c's missed reads. None of the
+# eleven shapes that do not interpolate a request value, and neither of review
+# 63c's two false positives.
+#
+# $_SERVER, $_FILES and $_COOKIE are counted although the fix is about named
+# part fields, because the shape and the risk are the same and the tree holds
+# none of them.
+#
+# What it still does not see: a request value reached through a local or a
+# variable variable rather than named in the string. A request value used as
+# a subscript inside an interpolation is counted, because it steers the
+# lookup whose result is interpolated.
+#
+# One shape is deliberately not a hit. A static property may be named _POST,
+# and reading it is a read of that class and not of the request. Review 63d
+# reported both of its spellings as false positives, so a variable token
+# whose previous significant token is :: is skipped -- unless a ( follows it,
+# because there the variable names the static method to call and its value
+# really is read from the request. Review 63e measured that second spelling
+# being skipped along with the property. The row needs the stack and the
+# token stream, because the tokenizer it rests on is php's.
+if [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip the request-interpolation class row (needs a running docker compose stack for php)\n'
+else
+	sm108_tmp="$(mktemp 2>/dev/null)"
+	sm108_tmp_rc=$?
+	sm108_hits="$(mktemp 2>/dev/null)"
+	sm108_hits_rc=$?
+	if [ "$sm108_tmp_rc" -ne 0 ] || [ -z "$sm108_tmp" ] || [ ! -w "$sm108_tmp" ] \
+		|| [ "$sm108_hits_rc" -ne 0 ] || [ -z "$sm108_hits" ] \
+		|| [ ! -w "$sm108_hits" ]
+	then
+		bad "the request-interpolation class row has no temporary file it can write to: mktemp exited ${sm108_tmp_rc} and named '${sm108_tmp}', then exited ${sm108_hits_rc} and named '${sm108_hits}'"
+	else
+		find cms/ -type f -name '*.php' -print0 2>/dev/null \
+			| LC_ALL=C sort -z > "$sm108_tmp"
+		sm108_find_rc=$?
+		# The shell counts the list itself, so that a list php only partly
+		# read cannot pass as a clean tree.
+		sm108_listed=0
+		while IFS= read -r -d '' sm108_f
+		do
+			sm108_listed=$((sm108_listed + 1))
+		done < "$sm108_tmp"
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+			$req = array("_POST", "_GET", "_REQUEST", "_COOKIE", "_SERVER", "_FILES");
+			$files = 0;
+			$bad = 0;
+			foreach (explode("\0", stream_get_contents(STDIN)) as $f)
+			{
+				if ($f === "") { continue; }
+				$files = $files + 1;
+				$src = @file_get_contents($f);
+				if ($src === false)
+				{
+					$bad = $bad + 1;
+					echo "SCANFAIL\t" . $f . "\tcould not be read\n";
+					continue;
+				}
+				try
+				{
+					$toks = token_get_all($src, TOKEN_PARSE);
+				}
+				catch (Throwable $e)
+				{
+					$toks = false;
+				}
+				if (!is_array($toks) || count($toks) < 1)
+				{
+					$bad = $bad + 1;
+					echo "SCANFAIL\t" . $f
+						. "\tthrew on parsing, or holds no tokens at all\n";
+					continue;
+				}
+				$stack = array();
+				$prev = 0;
+				$n = count($toks);
+				for ($i = 0; $i < $n; $i = $i + 1)
+				{
+					$t = $toks[$i];
+					if (!is_array($t))
+					{
+						if ($t === "\"")
+						{
+							if (end($stack) === "dq") { array_pop($stack); }
+							else { $stack[] = "dq"; }
+						}
+						else if ($t === "`")
+						{
+							if (end($stack) === "bt") { array_pop($stack); }
+							else { $stack[] = "bt"; }
+						}
+						else if ($t === "{") { $stack[] = "brace"; }
+						else if ($t === "}" && count($stack) > 0) { array_pop($stack); }
+						$prev = $t;
+						continue;
+					}
+					if ($t[0] === T_START_HEREDOC)
+					{
+						$stack[] = (strpos($t[1], chr(39)) === false) ? "hd" : "nd";
+						continue;
+					}
+					if ($t[0] === T_END_HEREDOC)
+					{
+						if (count($stack) > 0) { array_pop($stack); }
+						continue;
+					}
+					if ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES)
+					{
+						$stack[] = "curly";
+						continue;
+					}
+					if ($t[0] !== T_VARIABLE && $t[0] !== T_STRING_VARNAME)
+					{
+						if ($t[0] !== T_WHITESPACE && $t[0] !== T_COMMENT
+							&& $t[0] !== T_DOC_COMMENT)
+						{
+							$prev = $t[0];
+						}
+						continue;
+					}
+					$was = $prev;
+					$prev = $t[0];
+					if ($was === T_DOUBLE_COLON)
+					{
+						$j = $i + 1;
+						while ($j < $n && is_array($toks[$j])
+							&& ($toks[$j][0] === T_WHITESPACE
+								|| $toks[$j][0] === T_COMMENT
+								|| $toks[$j][0] === T_DOC_COMMENT))
+						{
+							$j = $j + 1;
+						}
+						if ($j >= $n || $toks[$j] !== "(")
+						{
+							continue;
+						}
+					}
+					$name = ltrim($t[1], "$");
+					if (!in_array($name, $req, true)) { continue; }
+					if (in_array("dq", $stack, true) || in_array("hd", $stack, true)
+						|| in_array("bt", $stack, true))
+					{
+						echo "HIT\t" . $f . "\t" . $t[2] . "\t" . $name . "\n";
+					}
+				}
+				if (count($stack) > 0)
+				{
+					$bad = $bad + 1;
+					echo "SCANFAIL\t" . $f . "\tended inside a string or a block\n";
+				}
+			}
+			echo "FILES\t" . $files . "\n";
+			echo "SCANFAILS\t" . $bad . "\n";
+' < "$sm108_tmp" > "$sm108_hits" 2>/dev/null
+		sm108_scan_rc=$?
+		sm108_files="$(sed -n -e 's/^FILES.//p' "$sm108_hits")"
+		sm108_scanfail="$(sed -n -e 's/^SCANFAILS.//p' "$sm108_hits")"
+		sm108_hit_n="$(grep -c '^HIT' "$sm108_hits")"
+		sm108_row2=yes
+		for sm108_n in "$sm108_files" "$sm108_scanfail" "$sm108_hit_n"
+		do
+			case "$sm108_n" in '' | *[!0-9]* | ??????????*) sm108_row2=no ;; esac
+		done
+		if [ "$sm108_find_rc" -ne 0 ]
+		then
+			bad "listing the php files under cms/ for the request-interpolation class row exited ${sm108_find_rc}"
+		elif [ "$sm108_scan_rc" -ne 0 ] || [ "$sm108_row2" != yes ]
+		then
+			bad "the request-interpolation scan exited ${sm108_scan_rc} and reported '${sm108_files}' file(s), '${sm108_scanfail}' failure(s) and '${sm108_hit_n}' hit(s), which is not a reading"
+		elif [ "$sm108_listed" -lt 300 ]
+		then
+			bad "the request-interpolation class row listed only ${sm108_listed} php file(s) under cms/, so the listing it rests on is not the tree"
+		elif [ "$sm108_files" -ne "$sm108_listed" ]
+		then
+			bad "php tokenized ${sm108_files} of the ${sm108_listed} php files the shell listed, so part of the tree was not read"
+		elif [ "$sm108_scanfail" -ne 0 ]
+		then
+			bad "${sm108_scanfail} of the ${sm108_files} php files could not be read, threw on parsing, or held no tokens at all, so they were not really scanned"
+			grep '^SCANFAIL' "$sm108_hits" | sed -n -e '1,20p' \
+				| while IFS= read -r sm108_line
+			do
+				printf '    %s\n' "$sm108_line"
+			done
+		elif [ "$sm108_hit_n" -eq 0 ]
+		then
+			ok "in none of the ${sm108_files} php files under cms/ does an interpolating string, heredoc or backtick name one of the request values this row looks for, read from php's own token stream, and every file came back with tokens"
+		else
+			bad "${sm108_hit_n} request value(s) are named inside an interpolating string, heredoc or backtick in the ${sm108_files} php files under cms/"
+			grep '^HIT' "$sm108_hits" | sed -n -e '1,20p' \
+				| while IFS= read -r sm108_line
+			do
+				printf '    %s\n' "$sm108_line"
+			done
+		fi
+		rm -f "$sm108_tmp" "$sm108_hits"
+	fi
+fi
+
+# ROW THREE -- the live path, for ssn. Rows one and two read the file; this
+# row drives the page and reads the column back. Of the four handler arms
+# that hold a live join, add_case_contact is the one that requires a
+# case_id, so cms/dataops.php runs pika_authorize('edit_case') on it and a
+# throwaway user who handles the fixture case is let through. The arm joins
+# the three ssn parts at the site row one counts, hands the array to
+# pikaCms::newContact(), and that writes the value into contacts.ssn and
+# mirrors it into aliases.ssn.
+#
+# Three POSTs. The first sends digits and asserts the record holds them, so
+# a strip that emptied every part would fail the row rather than pass it.
+# The second sends a part that mixes a digit with markup, 1<2, and asserts
+# the stored value is exactly 12-45-6789 in contacts and in the mirrored
+# alias both. Mixing matters: codex review 63b measured that a part of pure
+# markup cannot tell the intended filter apart from one that threw away any
+# part it found a bad byte in. The third sends parts that are all markup and
+# asserts nothing was stored, which is the branch the fix newly reaches: with
+# every part reduced to empty the condition is false, so an already supplied
+# whole ssn field would be kept and, with none supplied, an empty value is
+# written.
+#
+# The dirty part is three bytes so that the unpatched value, 1<2-45-6789, is
+# exactly eleven characters: contacts.ssn is varchar(11), and a longer part
+# would be cut by the column instead of by the fix, which would let the row
+# pass for the wrong reason.
+#
+# Reading nothing back is not the same as reading an empty column, and the
+# batch client prints an SQL NULL as the four letters NULL, which a stored
+# value could also be. Wrapping the column in a sentinel only moves that
+# collision to the sentinel, which review 63c pointed out, so the empty
+# assertion asks for counts instead: the contact row and its alias each have
+# to exist, and each has to satisfy ssn IS NULL OR ssn = ''. Four numbers,
+# nothing to spell. Every value read and every count read keeps the query's
+# exit status and is checked before it is compared, because a failed read
+# returns the empty string. The reads are keyed on the contact_id this run
+# recorded, not on the name, so an older contact of the same name cannot
+# answer for the row the POST was supposed to create.
+#
+# Ownership, which is what lets cleanup delete by id. It is two rules rather
+# than one, and codex reviews 63c and 63d are why.
+#
+# The three seeded rows, the group and the user and the case, are recorded
+# only when the INSERT reported success and the row also reads back by id
+# under this run's own name. A readback on its own proves that a row exists
+# and not which writer made it. The fixture names carry the process id and a
+# random number, and group_id is char(12), which is what bounds the tag to
+# six digits.
+#
+# The rows the page writes are recorded from a bound: the highest id in each
+# table is read just before the POST, and only ids above it are taken,
+# because nothing already there can be above a bound taken after it was
+# written. A bound settles timing and not authorship: it rules out a row that
+# was already there, and it does not say who wrote a row that was not. So the
+# contact read also requires exactly one row of this run's own name above it.
+# Two or more is a result that is not unique, whatever the cause, and that is
+# a named cleanup failure with nothing recorded rather than an adoption.
+#
+# Four tables take a bound, one per table cleanup deletes from. Review 63c
+# showed why a case needs its own: cases.client_id carries no foreign key in
+# the checked-in schema, so an older case can already name an id no contact
+# has yet, and collecting cases by client_id alone would adopt and delete it
+# once this run was given that id. Review 63d showed that aliases.contact_id
+# and conflict.contact_id are the same shape, so alias and conflict rows are
+# recorded by alias_id and conflict_id above their own bounds and deleted by
+# those ids. Deleting them by the parent id instead would delete an older
+# child row that was already pointing at the id this run was handed.
+#
+# What is left outside: a second writer that wins the same numeric id and
+# spells the same six-digit tag in the same run, or one that adds a child row
+# to this run's own contact or case while the row is running. Nothing here
+# rules those out; one database per run is what would. A failed bound read
+# stops the POST instead of guessing, and a failed readback counts as a
+# cleanup failure rather than passing quietly. After cleanup the row looks
+# for anything left behind, by the tag and by the ids it recorded, and fails
+# if it finds any. The login audit record is left: audit retention is
+# deliberate, and section 105 already covers it.
+#
+# The row needs the stack. Without it the POSTs cannot run, and rows one and
+# two are all that is left.
+if [ "${HAVE_DB:-0}" != 1 ]
+then
+	printf '  skip the stored masked SSN and phone checks (needs a running docker compose stack)\n'
+else
+	sm108_tag="$$${RANDOM}"
+	sm108_tag="${sm108_tag: -6}"
+	sm108_group="zzs108${sm108_tag}"
+	sm108_user="zzs108u${sm108_tag}"
+	sm108_pass='zz-s108-Passw0rd'
+	sm108_name="ZZS108${sm108_tag}"
+	sm108_jar="$(mktemp 2>/dev/null)"
+	sm108_jar_rc=$?
+	if [ "$sm108_jar_rc" -ne 0 ] || [ -z "$sm108_jar" ] || [ ! -w "$sm108_jar" ]
+	then
+		bad "the stored masked SSN and phone rows have no cookie jar they can write to: mktemp exited ${sm108_jar_rc} and named '${sm108_jar}'"
+		sm108_jar=''
+	fi
+	sm108_cids=''
+	sm108_caseids=''
+	sm108_aliasids=''
+	sm108_confids=''
+	sm108_max=''
+	sm108_casemax=''
+	sm108_amax=''
+	sm108_xmax=''
+	sm108_uid=''
+	sm108_case=''
+	sm108_own_group=0
+	sm108_own_user=0
+	sm108_cfail=0
+	sm108_cfail_msg=''
+	sm108_bound_fail=0
+	sm108_left=''
+
+	# A comma-separated list for an IN clause, or the empty string.
+	sm108_list()
+	{
+		printf '%s' "$1" | tr -s ' ' '\n' | grep -E '^[0-9]+$' \
+			| sort -un | tr '\n' ',' | sed -e 's/,$//'
+	}
+
+	# One value, with the query's exit status kept.
+	sm108_q()
+	{
+		sm108_qv="$(adb "$1")"
+		sm108_qrc=$?
+	}
+
+	sm108_del()
+	{
+		adb "$1" > /dev/null
+		if [ "$?" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} [${1}];"
+		fi
+	}
+
+	# A read cleanup depends on. A failure here would silently skip the
+	# deletes that follow it, so it is counted like a failed delete.
+	sm108_cq()
+	{
+		sm108_q "$1"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} read failed [${1}];"
+		fi
+	}
+
+	cleanup_sm108()
+	{
+		# Contacts, aliases, conflicts and cases go by ids this run recorded,
+		# in each table by that table's own id. The ids the page wrote were
+		# read back above a bound taken before the POST that wrote them; the
+		# seeded case, user and group were recorded from their own INSERT
+		# plus a readback under this run's own name. For those four tables
+		# there is no discovery left at cleanup time. The session rows are
+		# the exception review 63f names: the session ids are read here, the
+		# csrf rows then go by those session ids and the sessions by the
+		# user id.
+		# Review 63d is why the child rows are not deleted by a parent id: a
+		# row already pointing at the contact id or the case id this run was
+		# handed would go with them.
+		sm108_x="$(sm108_list "$sm108_confids")"
+		if [ -n "$sm108_x" ]
+		then
+			sm108_del "DELETE FROM conflict WHERE conflict_id IN (${sm108_x})"
+		fi
+		sm108_a="$(sm108_list "$sm108_aliasids")"
+		if [ -n "$sm108_a" ]
+		then
+			sm108_del "DELETE FROM aliases WHERE alias_id IN (${sm108_a})"
+		fi
+		sm108_c="$(sm108_list "$sm108_cids")"
+		if [ -n "$sm108_c" ]
+		then
+			sm108_del "DELETE FROM contacts WHERE contact_id IN (${sm108_c})"
+		fi
+		sm108_k="$(sm108_list "$sm108_caseids")"
+		if [ -n "$sm108_k" ]
+		then
+			sm108_del "DELETE FROM cases WHERE case_id IN (${sm108_k})"
+		fi
+		if [ "$sm108_own_user" -eq 1 ] && [ -n "$sm108_uid" ]
+		then
+			# csrf_tokens.session_id and user_sessions.session_id do not
+			# share a collation here, so comparing the two columns is an
+			# error and not a match. The ids are read out first and deleted
+			# one at a time by literal value, which compares against one
+			# column and so takes that column's own collation. The case
+			# guard is what makes the value safe to put in the statement.
+			sm108_cq "SELECT session_id FROM user_sessions WHERE user_id = ${sm108_uid}"
+			for sm108_sid in $sm108_qv
+			do
+				# session_create_id() can emit , and - as well, so they belong
+				# in the class. Anything else is not a shape this row will put
+				# in a statement, and skipping it silently would leave the
+				# token behind without saying so.
+				case "$sm108_sid" in
+				'' | *[!0-9A-Za-z,-]*)
+					sm108_cfail=$((sm108_cfail + 1))
+					sm108_cfail_msg="${sm108_cfail_msg} a session id was not a shape this row can put in a statement, so its csrf token was left;"
+					continue
+					;;
+				esac
+				sm108_del "DELETE FROM csrf_tokens WHERE session_id = '${sm108_sid}'"
+			done
+			sm108_del "DELETE FROM user_sessions WHERE user_id = ${sm108_uid}"
+			sm108_del "DELETE FROM users WHERE user_id = ${sm108_uid}"
+		fi
+		if [ "$sm108_own_group" -eq 1 ]
+		then
+			sm108_del "DELETE FROM \`groups\` WHERE group_id = '${sm108_group}'"
+		fi
+		if [ -n "$sm108_jar" ]
+		then
+			rm -f "$sm108_jar"
+		fi
+	}
+
+	# Whatever still carries this run's tag, or still carries one of the ids
+	# this run recorded, after cleanup has run. The csrf_tokens rows are
+	# reachable only through user_sessions, which is counted here, and the
+	# read that lists their session ids before the sessions go is already
+	# counted as a cleanup failure if it fails.
+	sm108_leftovers()
+	{
+		sm108_left=''
+		sm108_lc="$(sm108_list "$sm108_cids")"
+		sm108_lk="$(sm108_list "$sm108_caseids")"
+		for sm108_pair in \
+			"contacts:SELECT COUNT(*) FROM contacts WHERE last_name LIKE '${sm108_name}%'" \
+			"aliases:SELECT COUNT(*) FROM aliases WHERE last_name LIKE '${sm108_name}%'" \
+			"users:SELECT COUNT(*) FROM users WHERE username = '${sm108_user}'" \
+			"groups:SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${sm108_group}'" \
+			"the seeded case:SELECT COUNT(*) FROM cases WHERE number = 'ZZ${sm108_tag}'" \
+			"${sm108_lc:+contacts by id:SELECT COUNT(*) FROM contacts WHERE contact_id IN (${sm108_lc})}" \
+			"${sm108_lc:+alias rows by contact:SELECT COUNT(*) FROM aliases WHERE contact_id IN (${sm108_lc})}" \
+			"${sm108_lc:+conflict rows by contact:SELECT COUNT(*) FROM conflict WHERE contact_id IN (${sm108_lc})}" \
+			"${sm108_lc:+cases by client:SELECT COUNT(*) FROM cases WHERE client_id IN (${sm108_lc})}" \
+			"${sm108_lk:+cases by id:SELECT COUNT(*) FROM cases WHERE case_id IN (${sm108_lk})}" \
+			"${sm108_lk:+conflict rows by case:SELECT COUNT(*) FROM conflict WHERE case_id IN (${sm108_lk})}" \
+			"${sm108_uid:+sessions:SELECT COUNT(*) FROM user_sessions WHERE user_id = ${sm108_uid}}"
+		do
+			if [ -z "$sm108_pair" ]
+			then
+				continue
+			fi
+			sm108_q "${sm108_pair#*:}"
+			if [ "$sm108_qrc" -ne 0 ]
+			then
+				sm108_left="${sm108_left} ${sm108_pair%%:*} could not be counted;"
+			elif [ "$sm108_qv" != 0 ]
+			then
+				sm108_left="${sm108_left} ${sm108_qv} row(s) left in ${sm108_pair%%:*};"
+			fi
+		done
+	}
+
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sm108' EXIT
+
+	# Non-zero if there is no jar to keep the session in, if curl failed, if
+	# the answer still holds a password field, or if grep could not read the
+	# answer at all. Review 63e measured that last one passing as a login:
+	# grep answers 1 for no match and 2 for an error, so negating its exit
+	# status cannot tell the two apart. Only 1 is taken as a signed-in page.
+	sm108_login()
+	{
+		if [ -z "$sm108_jar" ]
+		then
+			return 1
+		fi
+		: > "$sm108_jar"
+		curl -sL --max-time 30 -c "$sm108_jar" -b "$sm108_jar" -o "$BODY" \
+			-X POST -d "login_user=$1&login_pass=$2&auth_id=1" \
+			"$OCM_URL/" > /dev/null
+		sm108_login_rc=$?
+		if [ "$sm108_login_rc" -ne 0 ]
+		then
+			return 1
+		fi
+		grep -q 'login_pass' "$BODY"
+		sm108_body_rc=$?
+		if [ "$sm108_body_rc" -ne 1 ]
+		then
+			return 1
+		fi
+		return 0
+	}
+
+	sm108_token()
+	{
+		curl -sL --max-time 30 -c "$sm108_jar" -b "$sm108_jar" \
+			"$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	# A fresh token, then the POST. Non-zero if either step failed, and
+	# non-zero without sending anything unless all four bounds were read.
+	# The bounds do not say who wrote a row. They rule out the rows that
+	# were already there, which is what cleanup needs before it deletes.
+	sm108_post()
+	{
+		if [ -z "${sm108_max:-}" ] || [ -z "${sm108_casemax:-}" ] \
+			|| [ -z "${sm108_amax:-}" ] || [ -z "${sm108_xmax:-}" ]
+		then
+			sm108_bound_fail=$((sm108_bound_fail + 1))
+			return 1
+		fi
+		# The pipeline's status, not only the length: the suite runs with
+		# pipefail, so a curl that never reached the page is visible here.
+		sm108_tok="$(sm108_token)"
+		sm108_tok_rc=$?
+		if [ "$sm108_tok_rc" -ne 0 ] || [ "${#sm108_tok}" -ne 64 ]
+		then
+			return 1
+		fi
+		curl -s --max-time 30 -c "$sm108_jar" -b "$sm108_jar" -o "$BODY" \
+			-X POST "$@" -d "_csrf=${sm108_tok}" \
+			"$OCM_URL/dataops.php" > /dev/null
+	}
+
+	# One bound. Empty unless the read succeeded and answered in digits,
+	# because a failed read answers with the empty string.
+	sm108_bound_one()
+	{
+		sm108_bv=''
+		sm108_q "$1"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			return
+		fi
+		case "${sm108_qv}" in
+		'' | *[!0-9]*)
+			return
+			;;
+		esac
+		sm108_bv="$sm108_qv"
+	}
+
+	# The highest id in each of the four tables cleanup deletes from, read
+	# before a POST. Anything above one of them afterwards was written after
+	# this call; which writer wrote it is a separate question, and the
+	# exactly-one check below does not answer it either -- one matching row
+	# settles that the result is unique and not who wrote it, so the
+	# concurrent-writer exclusion above still stands. A read that fails
+	# leaves its bound empty, and an empty bound stops the POST rather
+	# than letting it run unowned.
+	sm108_bound()
+	{
+		sm108_bound_one "SELECT COALESCE(MAX(contact_id), 0) FROM contacts"
+		sm108_max="$sm108_bv"
+		sm108_bound_one "SELECT COALESCE(MAX(case_id), 0) FROM cases"
+		sm108_casemax="$sm108_bv"
+		sm108_bound_one "SELECT COALESCE(MAX(alias_id), 0) FROM aliases"
+		sm108_amax="$sm108_bv"
+		sm108_bound_one "SELECT COALESCE(MAX(conflict_id), 0) FROM conflict"
+		sm108_xmax="$sm108_bv"
+	}
+
+	# Record what a POST created: the contact, the case that contact owns,
+	# and the alias and conflict rows written for that contact. Called
+	# whether or not the POST reported success, because a request can commit
+	# its writes and then time out. A read that fails here would silently
+	# leave a row for cleanup to miss, so it counts as a cleanup failure.
+	#
+	# Each of the five POSTs sends a last name of its own, so exactly one
+	# contact is expected above the bound. Two or more only means the result
+	# is not unique: another writer may have used the name, or this run's own
+	# request may have written twice. Either way which row the POST wrote is
+	# not settled, so none of them goes on the cleanup list and none of their
+	# child rows is looked for. The tag sweep after cleanup still counts them.
+	sm108_note()
+	{
+		sm108_cid=''
+		sm108_ncase=''
+		if [ -z "${sm108_max:-}" ] || [ -z "${sm108_casemax:-}" ] \
+			|| [ -z "${sm108_amax:-}" ] || [ -z "${sm108_xmax:-}" ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} no bound was recorded before the POST for ${1};"
+			return
+		fi
+		sm108_q "SELECT contact_id FROM contacts WHERE last_name = '$1' AND contact_id > ${sm108_max}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the contact for ${1} failed;"
+			return
+		fi
+		# Counted first, recorded afterwards. Review 63e measured the other
+		# order deleting a contact this run did not create: the loop put
+		# every match on the cleanup list before the count was known, and
+		# clearing the scalar afterwards did not take them off that list.
+		sm108_seen=0
+		sm108_cand=''
+		for sm108_one in $sm108_qv
+		do
+			case "$sm108_one" in
+			'' | *[!0-9]*)
+				continue
+				;;
+			esac
+			sm108_seen=$((sm108_seen + 1))
+			sm108_cand="$sm108_one"
+		done
+		if [ "$sm108_seen" -gt 1 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} ${sm108_seen} contacts named ${1} are above the bound, so which of them this POST wrote is not settled and none of them is recorded for deletion;"
+			return
+		fi
+		if [ "$sm108_seen" -ne 1 ]
+		then
+			return
+		fi
+		sm108_cid="$sm108_cand"
+		sm108_cids="${sm108_cids} ${sm108_cand}"
+		# This contact's alias and conflict rows, by their own ids and above
+		# their own bounds, because neither column is a foreign key and an
+		# older row can already point at the id this run was handed.
+		sm108_q "SELECT alias_id FROM aliases WHERE contact_id = ${sm108_cid} AND alias_id > ${sm108_amax}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the alias rows for ${1} failed;"
+		else
+			for sm108_one in $sm108_qv
+			do
+				case "$sm108_one" in
+				'' | *[!0-9]*)
+					continue
+					;;
+				esac
+				sm108_aliasids="${sm108_aliasids} ${sm108_one}"
+			done
+		fi
+		sm108_q "SELECT conflict_id FROM conflict WHERE contact_id = ${sm108_cid} AND conflict_id > ${sm108_xmax}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the conflict rows for ${1} failed;"
+		else
+			for sm108_one in $sm108_qv
+			do
+				case "$sm108_one" in
+				'' | *[!0-9]*)
+					continue
+					;;
+				esac
+				sm108_confids="${sm108_confids} ${sm108_one}"
+			done
+		fi
+		# This contact's case, and above the case bound, so an older case
+		# that already named this id is not taken for a new one.
+		sm108_q "SELECT case_id FROM cases WHERE client_id = ${sm108_cid} AND case_id > ${sm108_casemax}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the case for ${1} failed;"
+			return
+		fi
+		for sm108_one in $sm108_qv
+		do
+			case "$sm108_one" in
+			'' | *[!0-9]*)
+				continue
+				;;
+			esac
+			sm108_ncase="$sm108_one"
+			sm108_caseids="${sm108_caseids} ${sm108_one}"
+		done
+	}
+
+	# A group that may edit every case, so the fixture case is editable. The
+	# seed is only recorded for deletion once the row has been read back
+	# under this run's own name, so a collision cannot make cleanup delete
+	# a group that was already there.
+	sm108_q "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${sm108_group}'"
+	sm108_pre_group="$sm108_qv"
+	if [ "$sm108_qrc" -ne 0 ] || [ "$sm108_pre_group" != 0 ]
+	then
+		bad "the masked-field fixture group name ${sm108_group} is already taken or could not be read ('${sm108_pre_group}'), so the fixtures were not seeded"
+	else
+		adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+			VALUES ('${sm108_group}', NULL, 1, NULL, 1, 0, 0, 0, 1, NULL)" > /dev/null
+		sm108_ins_rc=$?
+		sm108_q "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${sm108_group}'"
+		if [ "$sm108_ins_rc" -eq 0 ] && [ "$sm108_qrc" -eq 0 ] \
+			&& [ "$sm108_qv" = 1 ]
+		then
+			sm108_own_group=1
+		fi
+	fi
+
+	sm108_hash="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' \
+		"$sm108_pass" < /dev/null 2>/dev/null)"
+	sm108_hash_rc=$?
+	if [ "$sm108_hash_rc" -ne 0 ]
+	then
+		# A container call that failed could still have printed something,
+		# and a half-written hash would seed a user who cannot log in.
+		sm108_hash=''
+	fi
+	if [ "$sm108_own_group" -eq 1 ] && [ -n "$sm108_hash" ]
+	then
+		sm108_bound_one "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users"
+		sm108_uid="$sm108_bv"
+	fi
+	if [ -n "$sm108_uid" ]
+	then
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+			VALUES (${sm108_uid}, '${sm108_user}', '${sm108_hash}', 1, '${sm108_group}', 0)" > /dev/null
+		sm108_ins_rc=$?
+		# The INSERT has to have succeeded AND the row has to read back by id
+		# and by name. A readback alone proves a row exists, not who wrote
+		# it, so the id would not be ours to delete.
+		sm108_q "SELECT COUNT(*) FROM users WHERE user_id = ${sm108_uid} AND username = '${sm108_user}'"
+		if [ "$sm108_ins_rc" -eq 0 ] && [ "$sm108_qrc" -eq 0 ] \
+			&& [ "$sm108_qv" = 1 ]
+		then
+			sm108_own_user=1
+		else
+			sm108_uid=''
+		fi
+	fi
+	if [ "$sm108_own_user" -eq 1 ]
+	then
+		sm108_bound_one "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases"
+		sm108_case="$sm108_bv"
+	fi
+	if [ -n "$sm108_case" ]
+	then
+		adb "INSERT INTO cases (case_id, number, user_id, office, status)
+			VALUES (${sm108_case}, 'ZZ${sm108_tag}', ${sm108_uid}, 'ZZOFF', '1')" > /dev/null
+		sm108_ins_rc=$?
+		sm108_q "SELECT COUNT(*) FROM cases WHERE case_id = ${sm108_case} AND number = 'ZZ${sm108_tag}'"
+		if [ "$sm108_ins_rc" -eq 0 ] && [ "$sm108_qrc" -eq 0 ] \
+			&& [ "$sm108_qv" = 1 ]
+		then
+			sm108_caseids="${sm108_caseids} ${sm108_case}"
+		else
+			sm108_case=''
+		fi
+	fi
+
+	if [ "$sm108_own_group" -ne 1 ] || [ "$sm108_own_user" -ne 1 ] \
+		|| [ -z "$sm108_case" ]
+	then
+		bad "could not seed the masked-field fixtures and read them back (group ${sm108_own_group}, user ${sm108_own_user}, case '${sm108_case}'), so the stored value is untested"
+	elif ! sm108_login "$sm108_user" "$sm108_pass"
+	then
+		bad "the throwaway masked-field user could not log in, so the stored value is untested"
+	else
+		ok "the throwaway masked-field user can log in"
+
+		# Digits, unchanged: the strip must not empty a good part.
+		sm108_bound
+		sm108_post \
+			-d "action=add_case_contact&case_id=${sm108_case}&relation_code=7" \
+			-d "last_name=${sm108_name}A&ssn0=123&ssn1=45&ssn2=6789"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}A"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the clean masked SSN POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the clean masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_q "SELECT ssn FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_clean="$sm108_qv"
+			sm108_clean_rc=$sm108_qrc
+			sm108_q "SELECT ssn FROM aliases WHERE contact_id = ${sm108_cid}"
+			sm108_alias="$sm108_qv"
+			sm108_alias_rc=$sm108_qrc
+			if [ "$sm108_clean_rc" -ne 0 ] || [ "$sm108_alias_rc" -ne 0 ]
+			then
+				bad "reading the clean masked SSN back exited ${sm108_clean_rc} for the contact and ${sm108_alias_rc} for the alias, so nothing was compared"
+			elif [ "$sm108_clean" = '123-45-6789' ] \
+				&& [ "$sm108_alias" = '123-45-6789' ]
+			then
+				ok "a masked SSN of digits is stored whole, in contacts and in the mirrored alias"
+			else
+				bad "a masked SSN of digits did not survive the strip: contacts holds '${sm108_clean}' and the alias holds '${sm108_alias}' where 123-45-6789 was expected"
+			fi
+		fi
+
+		# A part that mixes a digit with markup. The digit is the point: it
+		# has to survive while the markup does not, which a part of pure
+		# markup could not tell apart from a filter that dropped the whole
+		# part.
+		sm108_bound
+		sm108_post \
+			-d "action=add_case_contact&case_id=${sm108_case}&relation_code=7" \
+			-d "last_name=${sm108_name}B&ssn0=1<2&ssn1=45&ssn2=6789"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}B"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the markup masked SSN POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the markup masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_q "SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid}"
+			sm108_dirty_n="$sm108_qv"
+			sm108_dirty_n_rc=$sm108_qrc
+			sm108_q "SELECT ssn FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_stored="$sm108_qv"
+			sm108_stored_rc=$sm108_qrc
+			sm108_q "SELECT ssn FROM aliases WHERE contact_id = ${sm108_cid}"
+			sm108_dalias="$sm108_qv"
+			sm108_dalias_rc=$sm108_qrc
+			if [ "$sm108_dirty_n_rc" -ne 0 ] || [ "$sm108_dirty_n" != 1 ]
+			then
+				bad "counting the markup SSN contact's mirrored alias exited ${sm108_dirty_n_rc} and returned '${sm108_dirty_n}' where one row was expected, so nothing was read back"
+			elif [ "$sm108_stored_rc" -ne 0 ] || [ "$sm108_dalias_rc" -ne 0 ]
+			then
+				bad "reading the markup masked SSN back exited ${sm108_stored_rc} for the contact and ${sm108_dalias_rc} for the alias, so nothing was compared"
+			elif [ "$sm108_stored" = '12-45-6789' ] \
+				&& [ "$sm108_dalias" = '12-45-6789' ]
+			then
+				ok "a masked SSN part that mixes a digit with markup keeps the digit and drops the markup, in contacts and in the mirrored alias"
+			else
+				bad "a masked SSN part mixing a digit with markup was not reduced to its digits: contacts holds '${sm108_stored}' and the alias holds '${sm108_dalias}' where 12-45-6789 was expected"
+			fi
+		fi
+
+		# Every part markup: the condition goes false and nothing is stored.
+		# Read as four counts, so that no spelling of the stored value can
+		# answer for an absent row and no sentinel can be mistaken for one.
+		sm108_bound
+		sm108_post \
+			-d "action=add_case_contact&case_id=${sm108_case}&relation_code=7" \
+			-d "last_name=${sm108_name}C&ssn0=a<b&ssn1=c&ssn2=d"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}C"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the all-markup masked SSN POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the all-markup masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_empty_rc=0
+			sm108_empty_msg=''
+			for sm108_pair in \
+				"the contact row:SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid}" \
+				"its mirrored alias:SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid}" \
+				"the contact's empty ssn:SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid} AND (ssn IS NULL OR ssn = '')" \
+				"the alias's empty ssn:SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid} AND (ssn IS NULL OR ssn = '')"
+			do
+				sm108_q "${sm108_pair#*:}"
+				if [ "$sm108_qrc" -ne 0 ]
+				then
+					sm108_empty_rc=1
+					sm108_empty_msg="${sm108_empty_msg} counting ${sm108_pair%%:*} exited ${sm108_qrc};"
+				elif [ "$sm108_qv" != 1 ]
+				then
+					sm108_empty_msg="${sm108_empty_msg} ${sm108_pair%%:*} counted ${sm108_qv} where 1 was expected;"
+				fi
+			done
+			if [ "$sm108_empty_rc" -ne 0 ]
+			then
+				bad "reading the all-markup masked SSN back failed, so nothing was compared:${sm108_empty_msg}"
+			elif [ -n "$sm108_empty_msg" ]
+			then
+				bad "a masked SSN whose every part is markup did not leave one contact and one alias, each holding nothing:${sm108_empty_msg}"
+			else
+				ok "a masked SSN whose every part is markup leaves one contact and its one mirrored alias, and the ssn column of each is null or empty"
+			fi
+		fi
+
+		# ROW FOUR -- the live path, for phone. Both live phone joins sit in
+		# arms that take no case_id, so neither reaches the authorize call in
+		# cms/dataops.php; new_case is the one of those two that a form in
+		# the tree actually posts to. It creates a contact, then a case whose
+		# client_id it sets to that contact, then the link row. So the row
+		# uses the case this run recorded: this contact's, and above the case
+		# bound taken before the POST, which is what tells a case this POST
+		# inserted from an older one that already named the same client_id.
+		# The link is counted separately. Counting the link alone would not
+		# do: the checked-in schema puts no foreign key on conflict, so a
+		# link can name a case that is not there. That those arms run with no
+		# pika_authorize() call on the path is a separate finding, and is not
+		# what this row measures.
+		sm108_bound
+		sm108_post \
+			-d "action=new_case&last_name=${sm108_name}D" \
+			-d "phone_a=555&phone_b=1234"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}D"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the clean masked phone POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the clean masked phone POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		elif [ -z "$sm108_ncase" ] || [ "$sm108_ncase" = "$sm108_case" ]
+		then
+			bad "the clean masked phone POST recorded no case above the bound: it named '${sm108_ncase}' where a case id other than the seeded ${sm108_case} was expected, so no case matching this contact and bound came back, or the read failed; a case written with another client_id would be missed here too"
+		else
+			sm108_q "SELECT phone FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_phclean="$sm108_qv"
+			sm108_phclean_rc=$sm108_qrc
+			sm108_q "SELECT COUNT(*) FROM conflict WHERE contact_id = ${sm108_cid} AND case_id = '${sm108_ncase}'"
+			sm108_link_n="$sm108_qv"
+			sm108_link_n_rc=$sm108_qrc
+			if [ "$sm108_phclean_rc" -ne 0 ] || [ "$sm108_link_n_rc" -ne 0 ]
+			then
+				bad "reading the clean masked phone back exited ${sm108_phclean_rc} for the column and ${sm108_link_n_rc} for the link, so nothing was compared"
+			elif [ "$sm108_link_n" != 1 ]
+			then
+				bad "the clean masked phone POST left '${sm108_link_n}' link(s) between its contact and its own case ${sm108_ncase} where one was expected, so the arm did not finish"
+			elif [ "$sm108_phclean" = '555-1234' ]
+			then
+				ok "a masked phone of digits is stored whole, and the arm creates a case of its own above this run's bound and links its contact to that case"
+			else
+				bad "a masked phone of digits did not survive the strip: contacts.phone holds '${sm108_phclean}' where 555-1234 was expected"
+			fi
+		fi
+
+		sm108_bound
+		sm108_post \
+			-d "action=new_case&last_name=${sm108_name}E" \
+			-d "phone_a=555&phone_b=1x2"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}E"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the markup masked phone POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the markup masked phone POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_q "SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_phn="$sm108_qv"
+			sm108_phn_rc=$sm108_qrc
+			sm108_q "SELECT phone FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_phstored="$sm108_qv"
+			sm108_phstored_rc=$sm108_qrc
+			if [ "$sm108_phn_rc" -ne 0 ] || [ "$sm108_phn" != 1 ]
+			then
+				bad "counting the markup phone contact exited ${sm108_phn_rc} and returned '${sm108_phn}' where one row was expected, so nothing was read back"
+			elif [ "$sm108_phstored_rc" -ne 0 ]
+			then
+				bad "reading the markup masked phone back exited ${sm108_phstored_rc}, so nothing was compared"
+			elif [ "$sm108_phstored" = '555-12' ]
+			then
+				ok "a masked phone part carrying a letter keeps only its digits"
+			else
+				bad "a masked phone part carrying a letter was not reduced to its digits: contacts.phone holds '${sm108_phstored}' where 555-12 was expected"
+			fi
+		fi
+	fi
+
+	cleanup_sm108
+	sm108_leftovers
+	if [ "$sm108_bound_fail" -ne 0 ]
+	then
+		bad "${sm108_bound_fail} masked-field POST(s) were not sent because the contact, case, alias and conflict bounds they need in order to be cleaned up could not be read"
+	elif [ "$sm108_cfail" -ne 0 ]
+	then
+		bad "${sm108_cfail} of the masked-field cleanup checks did not pass -- a failed statement, a failed read, a read that matched more than one row, a missing bound or a session id of the wrong shape -- so fixture rows may be left behind:${sm108_cfail_msg}"
+	elif [ -n "$sm108_left" ]
+	then
+		bad "the masked-field cleanup reported no failures but the searches after it did not come back empty -- rows are still there, or a count query failed and what is left is unknown:${sm108_left}"
+	else
+		ok "the masked-field fixtures this run recorded are deleted, contacts aliases conflicts and cases by their own ids and the session rows by the session and user ids read at cleanup time, every delete and every read cleanup depends on reported success, and the tag and recorded-id searches that follow found no contact, alias, case, conflict row, session, user or group of this run's left"
+	fi
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
+fi
+
+# 109. Settings values reached HTML unescaped on five paths.
+#
+# owner_name and admin_email are typed into system-settings.php and stored as
+# they were typed. Four of the tags that resolve from pikaTempLib's settings
+# copy sit in HTML text, and two of those -- the desktop and the mobile
+# sign-in pages -- render before anybody has signed in. Direct replacement
+# substituted the value as it stood, so an org name holding markup was served
+# as markup to a visitor with no session.
+#
+# The copy is still raw. loadSettings() records which names it took from the
+# settings and draw() escapes those names, and only those, where it puts the
+# value into the page. Escaping the copy instead escapes twice for a tag with
+# a directive, because several plugins escape their own output.
+#
+# Three more sites never go through that copy. pika_cms.php sets org_name and
+# admin_email as page data, which the isset() in loadSettings() skips;
+# pika-danio.php substitutes the org name into the served buffer after the
+# template has been drawn; and system-audit.php interpolates it into its own
+# nav HTML. Each one is escaped at its own site now.
+#
+# The other engine, pl_template(), falls back to the same settings for a tag
+# the caller's data does not name, and five of its call sites render something
+# that is not HTML -- a calendar feed, an .EML file, a launchd plist and an
+# installer script -- with time_zone a setting and a tag in them. So it
+# decides from the format of the name the CALLER asked for, read before the
+# custom template path is resolved, and anything that is not HTML is left as
+# it was stored.
+#
+# This section writes a payload into both settings, fetches the four pages
+# that render them, and for each asserts the escaped spelling is present and
+# the raw one is absent. Both values are read before anything is written and
+# the section refuses to write unless it read them back, so a restore is
+# always possible.
+#
+# The four rows after the database part are presence checks over the source:
+# they say the escape is written, not that it ran. Reviews reproduced nine
+# families of deliberately broken tree that all four of those rows still
+# passed -- ten changes counting each of the two single-name recording drops
+# on its own. Five of the nine were measured against a copy of the tree rather
+# than read off the code. The rows that fetch pages and the rows that render
+# fixtures in the container cover all nine between them, because those assert
+# the whole rendered value, and the list below says which row answers which
+# break.
+#
+#   * a format gate forced to skip HTML fails the four fixture rows that ask
+#     for an HTML name -- DIRHTML, DIRHTM, LNHTML and the HTML section render
+#     -- and the signed-in home page administrator address row. The four
+#     fixture rows that ask for a name which is not HTML and the home page org
+#     name row all still pass, because none of those wants an escape from that
+#     gate.
+#   * a settings copy that stops recording the names it took fails the two
+#     sign-in page rows and the fixture row that renders the administrator
+#     address through the template class. It does not fail the audit page
+#     row: templates/default.html holds no owner_name tag at all, and
+#     system-audit.php escapes its own read, so that row never asks this
+#     copy for the org name. It does not fail the directive fixture row
+#     either, because the textarea plugin escapes its own output whatever
+#     the copy holds.
+#   * escaping twice on the directive path fails the fixture row that renders
+#     the setting through a plugin. A settings copy that held escaped values
+#     while direct replacement still escaped would fail the two sign-in page
+#     rows and the administrator address fixture row as well.
+#   * dropping the second spelling the gate accepts, .htm, rather than
+#     forcing the gate one way or the other, fails only the fixture row that
+#     asks for that spelling. Every other fixture here asks for .html or for
+#     a name that is not HTML at all, and the source rows below read the test
+#     itself, which is why one of them counts both spellings.
+#   * dropping the flag where pl_template_sub() passes it to itself fails the
+#     signed-in home page admin address row. That engine replaces one tag name
+#     per frame and hands the rest of the template to the next frame, so every
+#     tag after the first is already inside the recursion, and the default
+#     template reaches the administrator address well after its first tag. No
+#     nested template is needed for this.
+#   * replacing that same flag with a constant true, rather than dropping it,
+#     fails the fixture row that renders two different settings names from one
+#     template that is not HTML. Every other fixture here holds one name only,
+#     so the recursion in those finds no tag and returns before it reads the
+#     flag, which leaves them all passing. That pair is the reason a fixture
+#     carries a second name at all.
+#   * dropping one settings name from the recording, rather than all of
+#     them, is caught by name. Dropping the org name fails the two sign-in
+#     page rows. Dropping the administrator address fails the fixture row
+#     that renders that address through the template class, and nothing
+#     else here, which is why that row exists.
+#   * dropping the answer where pl_template() renders one row of a section
+#     fails the HTML section fixture row. The nested call resolves the
+#     setting inside the section body, so the pass over the whole template
+#     that follows sees a tag that has already been replaced and cannot
+#     escape it. No stock template uses a section, so a fixture is the only
+#     reader of that call.
+#   * replacing that same answer with a constant true, rather than dropping
+#     it, fails the section fixture row that asks for a name which is not
+#     HTML. Both breaks leave that call ignoring what the caller asked for,
+#     which is why the section body is rendered under each name: one row
+#     pins that the answer arrives, the other that it is the gate's answer
+#     and not a constant.
+#
+# What none of it pins is a double escape confined to one site that no row
+# reads separately. system-audit.php builds its own nav HTML, and the page
+# header on that same response still carries a correct owner name from
+# pika_exit(), so the audit row can match the escaped spelling from the header
+# while the nav holds the doubled one. The legacy reads in pika_cms.php have
+# no fixture of their own either.
+#
+# The fixtures are removed from a shutdown function registered before either
+# directory is made, so a fatal error or an uncaught exception still clears
+# them, and an exit before that point has nothing to clear. A kill signal
+# leaves both directories -- the temporary one and the subdirectory made under
+# the custom directory -- and the eight files and two symbolic links inside
+# them. Every removal there ignores its own errors, so the cleanup is
+# attempted rather than guaranteed, and a failure to clean up cannot fail the
+# section.
+echo
+echo "109. settings values reach HTML escaped"
+
+if [ "$HAVE_DB" = 1 ]; then
+	# The payload carries no single quote, so the UPDATE below cannot be
+	# closed by it, and the two markers differ in their first six characters
+	# so a match for one cannot be a match for the other.
+	SM109_PAY='ZZ109<img src=x onerror="zz109()">'
+	SM109_APAY='ZZ109A<img src=x onerror="zz109a()">'
+
+	# The whole escaped spelling, not a prefix. A row that asked only for
+	# ZZ109&lt;img would pass on a fix that escaped the angle brackets and
+	# left the double quote, which is the half that matters in an attribute.
+	SM109_ESC='ZZ109&lt;img src=x onerror=&quot;zz109()&quot;&gt;'
+	SM109_AESC='ZZ109A&lt;img src=x onerror=&quot;zz109a()&quot;&gt;'
+
+	# CONCAT puts a byte in front of the value, so a successful read of an
+	# empty value is still a non-empty answer. adb discards stderr and a
+	# failed statement prints nothing, which would otherwise look the same.
+	sm109_get() { adb "SELECT CONCAT('X', value) FROM settings WHERE label = '$1'"; }
+	sm109_set() {
+		adb "UPDATE settings SET value = '$(printf '%s' "$2" | sed "s/'/''/g")' WHERE label = '$1'" >/dev/null
+	}
+
+	# ROW ONE -- both values are readable and there is one row for each, so
+	# the restore at the end can put back what was there.
+	sm109_own_n="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'owner_name'")"
+	sm109_adm_n="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'admin_email'")"
+	sm109_own_read="$(sm109_get owner_name)"
+	sm109_adm_read="$(sm109_get admin_email)"
+	if [ "$sm109_own_n" = 1 ] && [ "$sm109_adm_n" = 1 ] \
+		&& [ -n "$sm109_own_read" ] && [ -n "$sm109_adm_read" ]; then
+		sm109_own_old="${sm109_own_read#X}"
+		sm109_adm_old="${sm109_adm_read#X}"
+		sm109_ready=1
+		ok "owner_name and admin_email each read back as exactly one row, so this section can restore them"
+	else
+		sm109_ready=0
+		bad "owner_name or admin_email did not read back as exactly one row (owner rows ${sm109_own_n}, admin rows ${sm109_adm_n}) -- refusing to write a payload it could not undo"
+	fi
+
+	if [ "$sm109_ready" = 1 ]; then
+		# The restore runs from the trap as well, so a suite interrupted
+		# between the write and the restore still puts the two values back,
+		# for the exits where a trap runs at all: a SIGKILL or a power loss
+		# leaves the payload stored, and then the next run's row one reads it
+		# as the value to restore. The rm the trap already carried is kept.
+		trap 'sm109_set owner_name "$sm109_own_old"; sm109_set admin_email "$sm109_adm_old"; rm -f "$COOKIES" "$BODY"' EXIT
+
+		sm109_set owner_name "$SM109_PAY"
+		sm109_set admin_email "$SM109_APAY"
+
+		sm109_fetch() {
+			sm109_code="$(curl -s --max-time 30 "$@" -o "$BODY" -w '%{http_code}')"
+			sm109_crc=$?
+		}
+
+		# Raw absent and escaped present, over a body that really arrived.
+		# curl's own status is read on the line after the call, because a
+		# transfer that failed part way through still reports 200 and leaves
+		# the previous body in place, which would pass any count on its own.
+		sm109_check() {
+			if [ "$sm109_crc" -ne 0 ] || [ "$sm109_code" != 200 ]; then
+				bad "$1 did not come back, so nothing about its escaping is settled (curl exit ${sm109_crc}, status ${sm109_code})"
+				return
+			fi
+			sm109_raw="$(grep -cF "$2" "$BODY")"
+			sm109_esc="$(grep -cF "$3" "$BODY")"
+			if [ "$sm109_raw" -eq 0 ] && [ "$sm109_esc" -ge 1 ]; then
+				ok "$1 renders the setting with its markup escaped"
+			else
+				bad "$1 renders the setting wrong: raw matches ${sm109_raw}, escaped matches ${sm109_esc} (want raw 0, escaped 1 or more)"
+			fi
+		}
+
+		# ROW TWO -- the desktop sign-in page, with no session at all. This
+		# is the site that mattered most: it is reachable by anybody.
+		sm109_fetch "$OCM_URL/index.php"
+		sm109_check "the desktop sign-in page" "$SM109_PAY" "$SM109_ESC"
+
+		# ROW THREE -- the mobile sign-in page, also with no session. The
+		# user agent is what picks the mobile template.
+		sm109_fetch -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' \
+			"$OCM_URL/m/index.php"
+		sm109_check "the mobile sign-in page" "$SM109_PAY" "$SM109_ESC"
+
+		# ROW FOUR -- a session, checked rather than assumed. Without this
+		# the two rows below would pass on a sign-in page, which renders
+		# owner_name escaped for its own reasons.
+		: > "$COOKIES"
+		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" \
+			-X POST -d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		sm109_lrc=$?
+		if [ "$sm109_lrc" -eq 0 ] && ! grep -q 'login_pass' "$BODY" \
+			&& grep -qi 'logout' "$BODY"; then
+			sm109_signed=1
+			ok "section 109 signed in: the home page came back with no sign-in field and a sign-out link"
+		else
+			sm109_signed=0
+			bad "section 109 could not sign in (curl exit ${sm109_lrc}), so the three signed-in rows below are not run"
+		fi
+
+		if [ "$sm109_signed" = 1 ]; then
+			# ROW FIVE -- the layout template's org name, which reaches the page
+			# from the buffer marker in pika-danio.php. index.php supplies no
+			# org_name and org_name is not a settings label, so the %%[org_name]%%
+			# tag in the layout resolves to nothing and this row reads one site.
+			#
+			# The home page is fetched again with the jar rather than reusing
+			# the body the sign-in left, so the status and curl's own exit
+			# belong to the fetch this row reads. The sign-out link is
+			# checked again on the new body: without it the row could pass on
+			# a sign-in page, which escapes owner_name for its own reasons.
+			sm109_fetch -L -b "$COOKIES" "$OCM_URL/"
+			if [ "$sm109_crc" -eq 0 ] && [ "$sm109_code" = 200 ] \
+				&& ! grep -qi 'logout' "$BODY"; then
+				bad "the home page fetched with the jar came back without a sign-out link, so the org name and admin address rows would not have been reading a signed-in page"
+			else
+				sm109_check "the signed-in home page org name" "$SM109_PAY" "$SM109_ESC"
+			fi
+
+			# ROW SIX -- the same body's admin address, which the layout
+			# writes into a mailto href.
+			sm109_check "the signed-in home page admin address" "$SM109_APAY" "$SM109_AESC"
+
+			# ROW SEVEN -- system-audit.php, which builds its nav HTML by
+			# interpolation rather than through a template. Its own page title
+			# is checked first: the fetch follows redirects, and an expired
+			# session lands on the sign-in page, which escapes owner_name for
+			# its own reasons and would pass the row without the audit page
+			# having been read at all.
+			sm109_fetch -L -b "$COOKIES" "$OCM_URL/system-audit.php"
+			if [ "$sm109_crc" -eq 0 ] && [ "$sm109_code" = 200 ] \
+				&& ! grep -qF 'Audit Log' "$BODY"; then
+				bad "the audit page came back without its own title, so its branding was never read"
+			else
+				sm109_check "the audit page branding" "$SM109_PAY" "$SM109_ESC"
+			fi
+		fi
+
+		# ROW EIGHT -- the other engine, in the container, over ten fixtures
+		# in one run. pl_template() renders about 140 call sites and decides
+		# from the name the CALLER asked for whether a setting it resolves is
+		# escaped, so one fixture of each extension settles both halves, and a
+		# pair of symlinks settles that the answer follows the asked-for name
+		# and not the file that is opened in the end. A fifth fixture puts the
+		# setting inside a section, which that engine resolves one row at a
+		# time in a nested call of its own, before the pass over the whole
+		# template, so the answer has to reach that call too. A sixth repeats
+		# that section body under a name that is not HTML, because a call
+		# hard-coded to escape there passes every other row in this section:
+		# what that call needs is the gate's answer, not a constant.
+		# A seventh names two different settings in one file that is not HTML,
+		# because that engine resolves one name per frame: the second name is
+		# the only setting this section reads from inside the recursion under a
+		# name that is not HTML. An eighth asks for .htm rather than .html,
+		# because the gate accepts two spellings and every other fixture here
+		# uses the first.
+		#
+		# The last two fixtures go through the template class instead. One
+		# names the setting with a directive, which is the shape that would be
+		# escaped twice if the settings copy held escaped values. The other
+		# names the administrator address with no directive, so that dropping
+		# that one name from the recording cannot pass while the org name
+		# still escapes.
+		#
+		# The pl_template() fixtures go under /tmp inside the container, so a
+		# killed run leaves nothing in the checkout. The pikaTempLib fixtures
+		# cannot go there: that class refuses a template outside its own
+		# directories. They go in the custom directory, which is a named volume
+		# and also not the checkout.
+		#
+		# The directory name carries the shell's pid and a random number, so
+		# two suites running at the same time do not write over each other, and
+		# both directories are removed from a shutdown function, so a snippet
+		# that dies part way through still tries to take its fixtures with it.
+		# Every removal there ignores its own errors, so that is attempted
+		# rather than guaranteed.
+		sm109_dir="/tmp/zz109tpl.$$.${RANDOM}"
+		SM109_PHP="$(docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-e ZZ109DIR="$sm109_dir" \
+			-w /var/www/html/cms app php -r '
+			function zz109sec() { return array(array("zz" => "1")); }
+			define("PL_DISABLE_SECURITY", true);
+			require_once("pika-danio.php");
+			pika_init();
+			require_once("app/lib/pikaTempLib.php");
+			$d = getenv("ZZ109DIR");
+			$c = pl_custom_directory() . "/" . basename($d);
+			register_shutdown_function(function () use ($d, $c) {
+				foreach (array("/real.html", "/real.txt", "/ask.txt",
+					"/ask.html", "/sec.html", "/sec.txt",
+					"/two.txt", "/real.htm") as $f)
+				{
+					@unlink($d . $f);
+				}
+				@rmdir($d);
+				@unlink($c . "/ta.html");
+				@unlink($c . "/ad.html");
+				@rmdir($c);
+			});
+			@mkdir($d);
+			@mkdir($c);
+			file_put_contents($d . "/real.html", "A%%[owner_name]%%B");
+			file_put_contents($d . "/real.txt", "A%%[owner_name]%%B");
+			@symlink($d . "/real.html", $d . "/ask.txt");
+			@symlink($d . "/real.txt", $d . "/ask.html");
+			file_put_contents($d . "/sec.html",
+				"%%[begin zz109sec]%%\nA%%[owner_name]%%B\n%%[end]%%\n");
+			file_put_contents($d . "/sec.txt",
+				"%%[begin zz109sec]%%\nA%%[owner_name]%%B\n%%[end]%%\n");
+			file_put_contents($d . "/two.txt",
+				"A%%[owner_name]%%B C%%[admin_email]%%D");
+			file_put_contents($d . "/real.htm", "A%%[owner_name]%%B");
+			file_put_contents($c . "/ta.html", "A%%[owner_name,input_textarea]%%B");
+			file_put_contents($c . "/ad.html", "A%%[admin_email]%%B");
+			echo "DIRHTML:[", pl_template($d . "/real.html", array()), "]\n";
+			echo "DIRTXT:[", pl_template($d . "/real.txt", array()), "]\n";
+			echo "LNTXT:[", pl_template($d . "/ask.txt", array()), "]\n";
+			echo "LNHTML:[", pl_template($d . "/ask.html", array()), "]\n";
+			echo "SEC:[", str_replace("\n", "",
+				pl_template($d . "/sec.html", array())), "]\n";
+			echo "SECTXT:[", str_replace("\n", "",
+				pl_template($d . "/sec.txt", array())), "]\n";
+			echo "TWOTXT:[", pl_template($d . "/two.txt", array()), "]\n";
+			echo "DIRHTM:[", pl_template($d . "/real.htm", array()), "]\n";
+			$t = new pikaTempLib($c . "/ta.html");
+			echo "TA:[", $t->draw(), "]\n";
+			$a = new pikaTempLib($c . "/ad.html");
+			echo "CLSADM:[", $a->draw(), "]\n";
+			echo "DONE109\n";
+			' </dev/null 2>/dev/null)"
+		sm109_prc=$?
+
+		# The command's own status is read on the line after it, and the
+		# closing marker is read as well. A snippet that died part way through
+		# still prints what it had already echoed, so a row that only looked
+		# for its own prefix would pass on that truncated output, and a docker
+		# exec that failed outright would leave the rows below judging an empty
+		# string.
+		if [ "$sm109_prc" -eq 0 ] \
+			&& printf '%s' "$SM109_PHP" | grep -qF 'DONE109'; then
+			sm109_php_ok=1
+			ok "the other engine rendered all ten fixtures in the container and ran to the end"
+		else
+			sm109_php_ok=0
+			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the ten rows below are not run: ${SM109_PHP}"
+		fi
+
+		# Each row below asks for the whole rendered value, opening bracket to
+		# closing bracket. The payload holds a double quote as well as angle
+		# brackets, so a half fix that escaped only < and > fails, and the
+		# closing ] proves the render was not cut short.
+		#
+		# Most must-appear needles carry a label that names one line of the
+		# output and is not a substring of any other line, which is why the two
+		# direct renders are DIRHTML and DIRTXT: HTML:[ and TXT:[ would have
+		# matched inside LNHTML:[ and LNTXT:[, and then a missing direct render
+		# could have passed on the symlinked one's output. The two section
+		# renders are SEC and SECTXT for that same reason: the colon in SEC:[
+		# keeps its needle from matching inside the SECTXT: line. TWOTXT sits
+		# safely beside the other three TXT labels because every needle in
+		# those rows carries its own label, and no other line begins TWOTXT:.
+		#
+		# Two of the directive row's needles carry no label: its first
+		# must-appear needle is a suffix, and its must-not-appear needle is the
+		# doubled ampersand. Each needle is also its own grep, so a row with
+		# two must-appear needles does not settle that both matched the SAME
+		# line. Nothing else in this output ends in </textarea>B] or starts
+		# TA:[A<textarea, so both of that row's must-appear needles can only
+		# match its own line as the fixtures stand, and the unlabelled
+		# must-not-appear needle can only add a failure, never let one pass.
+		#
+		# A row whose whole value is too long to spell out passes a second
+		# must-appear needle as a fourth argument, so that it can pin the start
+		# of the line and the closing bracket without writing what is between
+		# them. A row that gives no fourth argument checks its one needle twice,
+		# which is harmless.
+		sm109_php_row() {
+			if [ "$sm109_php_ok" != 1 ]; then
+				return
+			fi
+			if printf '%s' "$SM109_PHP" | grep -qF "$2" \
+				&& printf '%s' "$SM109_PHP" | grep -qF "${4:-$2}" \
+				&& ! printf '%s' "$SM109_PHP" | grep -qF "$3"; then
+				ok "$1"
+			else
+				bad "not true: $1 -- fixture output was ${SM109_PHP}"
+			fi
+		}
+
+		# ROW NINE -- an HTML template, escaped.
+		sm109_php_row \
+			"the other engine escapes the setting when the caller asked for an HTML template" \
+			"DIRHTML:[A${SM109_ESC}B]" "DIRHTML:[A${SM109_PAY}B]"
+
+		# ROW TEN -- a template that is not HTML, as it was stored. time_zone
+		# is a setting and a tag in the iCalendar templates, and
+		# templates/vcal.txt, templates/exchange_appt.txt and the two files in
+		# app/scripts are read the same way, so an entity put into one of those
+		# is a corrupt feed or a corrupt script.
+		sm109_php_row \
+			"the other engine leaves the setting as it was stored when the caller asked for a template that is not HTML" \
+			"DIRTXT:[A${SM109_PAY}B]" "DIRTXT:[A${SM109_ESC}B]"
+
+		# ROW ELEVEN -- asked for .txt, opened an .html file. A custom
+		# template_path() hook returns whatever name it likes and realpath()
+		# follows symlinks, so the file that is opened can carry either
+		# extension. What the caller does with the output is decided by what
+		# the caller asked for, so this one has to come back raw: it is a
+		# calendar feed whose deployment keeps its templates in HTML files.
+		sm109_php_row \
+			"the other engine follows the name the caller asked for when the file it opened is HTML" \
+			"LNTXT:[A${SM109_PAY}B]" "LNTXT:[A${SM109_ESC}B]"
+
+		# ROW TWELVE -- the other way round, and the one that matters for
+		# security: asked for .html, opened a file named .txt. Reading the
+		# opened name here would skip the escape on a page served as HTML.
+		sm109_php_row \
+			"the other engine escapes for an HTML request even when the file it opened is not named HTML" \
+			"LNHTML:[A${SM109_ESC}B]" "LNHTML:[A${SM109_PAY}B]"
+
+		# ROW THIRTEEN -- pikaTempLib's directive path, escaped once. This is
+		# one of the two fixtures here that go through that class.
+		# template_plugins/input_textarea.php escapes its own output, and
+		# template_plugins/menu.php escapes a selected value it does not
+		# recognise, so a settings copy holding escaped values spells an
+		# ampersand twice over here and stops a menu matching its own
+		# selection. &amp;lt; is what that looks like.
+		sm109_php_row \
+			"the template class's directive path escapes the setting once, not twice" \
+			"${SM109_ESC}</textarea>B]" 'ZZ109&amp;lt;img' 'TA:[A<textarea '
+
+		# ROW FOURTEEN -- the same class on a tag with no directive, so this
+		# row reads its direct replacement. It asks for the administrator
+		# address because the other rows that read this class read the org
+		# name: the two sign-in pages and row thirteen. The audit page row is
+		# not one of them -- templates/default.html holds no owner_name tag, so
+		# that page's org name comes from its own escaped read in
+		# system-audit.php. A copy that stopped recording just admin_email
+		# would leave that address raw on every page this class draws, the
+		# audit layout among them, and every other row here would still pass.
+		sm109_php_row \
+			"the template class escapes a setting it replaced itself, not only one a plugin read" \
+			"CLSADM:[A${SM109_AESC}B]" "CLSADM:[A${SM109_APAY}B]"
+
+		# ROW FIFTEEN -- a setting inside a section, which pl_template()
+		# resolves one row at a time in a nested call before the pass over the
+		# whole template. That nested call takes the answer as a third
+		# argument; without it the setting is already replaced by the time the
+		# outer pass runs, and no later pass can escape a tag that is gone. No
+		# stock template uses a section, so this fixture is the only reader of
+		# that call, together with the row below it. Measured: with the answer
+		# dropped at that one call, and nothing else changed, the fixture
+		# renders the payload raw.
+		sm109_php_row \
+			"a setting inside a section row is escaped by the nested call, not left for the outer pass" \
+			"SEC:[A${SM109_ESC}B]" "SEC:[A${SM109_PAY}B]"
+
+		# ROW SIXTEEN -- the same section body under a name that is not HTML.
+		# The row above fails if that nested call loses the gate's answer;
+		# this one fails if the call is handed a constant instead. An answer
+		# hard-coded to escape is wrong for a calendar feed and leaves every
+		# other row in this section passing, so the pair is what pins the
+		# answer rather than its presence. Measured: with a constant true at
+		# that one call, and nothing else changed, this fixture comes back
+		# escaped while the row above it still passes.
+		sm109_php_row \
+			"a setting inside a section row follows the asked-for name, so a name that is not HTML stays as it was stored" \
+			"SECTXT:[A${SM109_PAY}B]" "SECTXT:[A${SM109_ESC}B]"
+
+		# ROW SEVENTEEN -- two different settings names in one template that is
+		# not HTML. That engine replaces one name per frame and hands the rest
+		# of the template to the next frame, so the second name is resolved
+		# inside the recursion and the first is not. Every fixture above holds
+		# one name only, so the recursion in those finds no tag and returns
+		# before it reads the flag at all: a constant true passed to the
+		# recursive call would leave all of them passing. Here it escapes the
+		# administrator address and leaves the org name beside it as it was
+		# stored, which is a corrupt calendar feed from the second tag on.
+		# Measured: with a constant true at that one call, and nothing else
+		# changed, the second name comes back escaped, the first does not, and
+		# the single-name fixture beside it is unchanged.
+		sm109_php_row \
+			"two settings names in one template that is not HTML both stay as they were stored, not just the first" \
+			"TWOTXT:[A${SM109_PAY}B C${SM109_APAY}D]" \
+			"TWOTXT:[A${SM109_PAY}B C${SM109_AESC}D]"
+
+		# ROW EIGHTEEN -- the other spelling of an HTML name. The gate names two
+		# extensions, and every other fixture here asks for .html or for a name
+		# that is not HTML at all, so dropping the second spelling from the gate
+		# leaves all of them passing while every .htm caller stops escaping. The
+		# label is DIRHTM, which no other line holds: DIRHTML:[ does not contain
+		# DIRHTM:[, because the colon comes after the L there. Measured: with the
+		# gate as it is both spellings come back escaped; with the second spelling
+		# dropped and nothing else changed, the first still escapes and the second
+		# comes back as it was stored.
+		sm109_php_row \
+			"the other engine escapes the setting for the second spelling of an HTML name as well as the first" \
+			"DIRHTM:[A${SM109_ESC}B]" "DIRHTM:[A${SM109_PAY}B]"
+
+		# ROW NINETEEN -- the restore, and a read that proves it landed. The
+		# trap runs the same two statements again at exit, which is harmless
+		# and is what covers a suite that dies before this point.
+		sm109_set owner_name "$sm109_own_old"
+		sm109_set admin_email "$sm109_adm_old"
+		sm109_own_back="$(sm109_get owner_name)"
+		sm109_adm_back="$(sm109_get admin_email)"
+		if [ "$sm109_own_back" = "$sm109_own_read" ] \
+			&& [ "$sm109_adm_back" = "$sm109_adm_read" ]; then
+			ok "owner_name and admin_email read back byte for byte as they were before this section wrote to them"
+		else
+			bad "owner_name or admin_email did not read back as it was -- the payload may still be stored"
+		fi
+	fi
+else
+	printf '  skip settings escaping requests (needs a running docker compose stack)\n'
+fi
+
+# ROW TWENTY -- the first engine's two halves, over the source, so a refactor
+# that drops either is caught even with no stack. The copy records which names
+# came from the settings, and direct replacement escapes those and only those.
+sm109_first=0
+grep -qF '$this->_settings_escape[$setting] = true;' cms/app/lib/pikaTempLib.php \
+	&& sm109_first=$((sm109_first+1))
+grep -qF 'if (isset($this->_settings_escape[$tag]))' cms/app/lib/pikaTempLib.php \
+	&& sm109_first=$((sm109_first+1))
+if [ "$sm109_first" -eq 2 ]; then
+	ok "the template settings copy still records its names and direct replacement still escapes them"
+else
+	bad "only ${sm109_first} of the 2 halves of the template settings escape are still written"
+fi
+
+# ROW TWENTY-ONE -- the raw list, and that base_url is on it. base_url is read
+# inside a CSS url() in CSS text, which does not decode HTML entities, so
+# escaping it would point the rule at a path that does not exist.
+if grep -q 'function pl_settings_template_raw' cms/app/lib/pl.php \
+	&& grep -qF "'base_url'," cms/app/lib/pl.php; then
+	ok "the not-HTML settings list exists and still names base_url"
+else
+	bad "the not-HTML settings list is gone or no longer names base_url"
+fi
+
+# ROW TWENTY-TWO -- the four reads that do not go through the settings copy,
+# across three files. Each has to still wrap its read. The count is four so a
+# change that escapes three of them and drops the fourth fails this row.
+sm109_sites=0
+grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/pika_cms.php \
+	&& sm109_sites=$((sm109_sites+1))
+grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/pika-danio.php \
+	&& sm109_sites=$((sm109_sites+1))
+grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/system-audit.php \
+	&& sm109_sites=$((sm109_sites+1))
+grep -q "pl_html_escape(pl_settings_get('admin_email'))" cms/pika_cms.php \
+	&& sm109_sites=$((sm109_sites+1))
+if [ "$sm109_sites" -eq 4 ]; then
+	ok "the four reads outside the settings copy are all written escaped"
+else
+	bad "only ${sm109_sites} of the 4 reads outside the settings copy are written escaped"
+fi
+
+# ROW TWENTY-THREE -- the second engine's gate, over the source. The rows above
+# that run it need a stack, and a change that escaped every template or none
+# of them would otherwise be caught nowhere on a machine with no containers.
+# The four parts are the format test over the name the caller asked for, both
+# spellings the test accepts, the escape that reads its answer, and the
+# parameter the answer travels on.
+sm109_gate=0
+grep -qF 'pathinfo($template_file, PATHINFO_EXTENSION)' cms/app/lib/pl.php \
+	&& sm109_gate=$((sm109_gate+1))
+grep -qF "('html' === \$template_ext || 'htm' === \$template_ext)" \
+	cms/app/lib/pl.php && sm109_gate=$((sm109_gate+1))
+grep -qF 'if ($escape_settings && is_scalar($replacement)' cms/app/lib/pl.php \
+	&& sm109_gate=$((sm109_gate+1))
+grep -qF 'function pl_template_sub($str, $template_data, $escape_settings' \
+	cms/app/lib/pl.php && sm109_gate=$((sm109_gate+1))
+if [ "$sm109_gate" -eq 4 ]; then
+	ok "the other engine still decides from the name the caller asked for whether to escape a setting"
+else
+	bad "only ${sm109_gate} of the 4 parts of the template format gate are still written"
 fi
 
 echo
