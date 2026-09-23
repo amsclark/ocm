@@ -21773,6 +21773,601 @@ fi
 
 fi
 
+# 109. Settings values reached HTML unescaped on five paths.
+#
+# owner_name and admin_email are typed into system-settings.php and stored as
+# they were typed. Four of the tags that resolve from pikaTempLib's settings
+# copy sit in HTML text, and two of those -- the desktop and the mobile
+# sign-in pages -- render before anybody has signed in. Direct replacement
+# substituted the value as it stood, so an org name holding markup was served
+# as markup to a visitor with no session.
+#
+# The copy is still raw. loadSettings() records which names it took from the
+# settings and draw() escapes those names, and only those, where it puts the
+# value into the page. Escaping the copy instead escapes twice for a tag with
+# a directive, because several plugins escape their own output.
+#
+# Three more sites never go through that copy. pika_cms.php sets org_name and
+# admin_email as page data, which the isset() in loadSettings() skips;
+# pika-danio.php substitutes the org name into the served buffer after the
+# template has been drawn; and system-audit.php interpolates it into its own
+# nav HTML. Each one is escaped at its own site now.
+#
+# The other engine, pl_template(), falls back to the same settings for a tag
+# the caller's data does not name, and five of its call sites render something
+# that is not HTML -- a calendar feed, an .EML file, a launchd plist and an
+# installer script -- with time_zone a setting and a tag in them. So it
+# decides from the format of the name the CALLER asked for, read before the
+# custom template path is resolved, and anything that is not HTML is left as
+# it was stored.
+#
+# This section writes a payload into both settings, fetches the four pages
+# that render them, and for each asserts the escaped spelling is present and
+# the raw one is absent. Both values are read before anything is written and
+# the section refuses to write unless it read them back, so a restore is
+# always possible.
+#
+# The four rows after the database part are presence checks over the source:
+# they say the escape is written, not that it ran. Reviews reproduced nine
+# families of deliberately broken tree that all four of those rows still
+# passed -- ten changes counting each of the two single-name recording drops
+# on its own. Five of the nine were measured against a copy of the tree rather
+# than read off the code. The rows that fetch pages and the rows that render
+# fixtures in the container cover all nine between them, because those assert
+# the whole rendered value, and the list below says which row answers which
+# break.
+#
+#   * a format gate forced to skip HTML fails the four fixture rows that ask
+#     for an HTML name -- DIRHTML, DIRHTM, LNHTML and the HTML section render
+#     -- and the signed-in home page administrator address row. The four
+#     fixture rows that ask for a name which is not HTML and the home page org
+#     name row all still pass, because none of those wants an escape from that
+#     gate.
+#   * a settings copy that stops recording the names it took fails the two
+#     sign-in page rows and the fixture row that renders the administrator
+#     address through the template class. It does not fail the audit page
+#     row: templates/default.html holds no owner_name tag at all, and
+#     system-audit.php escapes its own read, so that row never asks this
+#     copy for the org name. It does not fail the directive fixture row
+#     either, because the textarea plugin escapes its own output whatever
+#     the copy holds.
+#   * escaping twice on the directive path fails the fixture row that renders
+#     the setting through a plugin. A settings copy that held escaped values
+#     while direct replacement still escaped would fail the two sign-in page
+#     rows and the administrator address fixture row as well.
+#   * dropping the second spelling the gate accepts, .htm, rather than
+#     forcing the gate one way or the other, fails only the fixture row that
+#     asks for that spelling. Every other fixture here asks for .html or for
+#     a name that is not HTML at all, and the source rows below read the test
+#     itself, which is why one of them counts both spellings.
+#   * dropping the flag where pl_template_sub() passes it to itself fails the
+#     signed-in home page admin address row. That engine replaces one tag name
+#     per frame and hands the rest of the template to the next frame, so every
+#     tag after the first is already inside the recursion, and the default
+#     template reaches the administrator address well after its first tag. No
+#     nested template is needed for this.
+#   * replacing that same flag with a constant true, rather than dropping it,
+#     fails the fixture row that renders two different settings names from one
+#     template that is not HTML. Every other fixture here holds one name only,
+#     so the recursion in those finds no tag and returns before it reads the
+#     flag, which leaves them all passing. That pair is the reason a fixture
+#     carries a second name at all.
+#   * dropping one settings name from the recording, rather than all of
+#     them, is caught by name. Dropping the org name fails the two sign-in
+#     page rows. Dropping the administrator address fails the fixture row
+#     that renders that address through the template class, and nothing
+#     else here, which is why that row exists.
+#   * dropping the answer where pl_template() renders one row of a section
+#     fails the HTML section fixture row. The nested call resolves the
+#     setting inside the section body, so the pass over the whole template
+#     that follows sees a tag that has already been replaced and cannot
+#     escape it. No stock template uses a section, so a fixture is the only
+#     reader of that call.
+#   * replacing that same answer with a constant true, rather than dropping
+#     it, fails the section fixture row that asks for a name which is not
+#     HTML. Both breaks leave that call ignoring what the caller asked for,
+#     which is why the section body is rendered under each name: one row
+#     pins that the answer arrives, the other that it is the gate's answer
+#     and not a constant.
+#
+# What none of it pins is a double escape confined to one site that no row
+# reads separately. system-audit.php builds its own nav HTML, and the page
+# header on that same response still carries a correct owner name from
+# pika_exit(), so the audit row can match the escaped spelling from the header
+# while the nav holds the doubled one. The legacy reads in pika_cms.php have
+# no fixture of their own either.
+#
+# The fixtures are removed from a shutdown function registered before either
+# directory is made, so a fatal error or an uncaught exception still clears
+# them, and an exit before that point has nothing to clear. A kill signal
+# leaves both directories -- the temporary one and the subdirectory made under
+# the custom directory -- and the eight files and two symbolic links inside
+# them. Every removal there ignores its own errors, so the cleanup is
+# attempted rather than guaranteed, and a failure to clean up cannot fail the
+# section.
+echo
+echo "109. settings values reach HTML escaped"
+
+if [ "$HAVE_DB" = 1 ]; then
+	# The payload carries no single quote, so the UPDATE below cannot be
+	# closed by it, and the two markers differ in their first six characters
+	# so a match for one cannot be a match for the other.
+	SM109_PAY='ZZ109<img src=x onerror="zz109()">'
+	SM109_APAY='ZZ109A<img src=x onerror="zz109a()">'
+
+	# The whole escaped spelling, not a prefix. A row that asked only for
+	# ZZ109&lt;img would pass on a fix that escaped the angle brackets and
+	# left the double quote, which is the half that matters in an attribute.
+	SM109_ESC='ZZ109&lt;img src=x onerror=&quot;zz109()&quot;&gt;'
+	SM109_AESC='ZZ109A&lt;img src=x onerror=&quot;zz109a()&quot;&gt;'
+
+	# CONCAT puts a byte in front of the value, so a successful read of an
+	# empty value is still a non-empty answer. adb discards stderr and a
+	# failed statement prints nothing, which would otherwise look the same.
+	sm109_get() { adb "SELECT CONCAT('X', value) FROM settings WHERE label = '$1'"; }
+	sm109_set() {
+		adb "UPDATE settings SET value = '$(printf '%s' "$2" | sed "s/'/''/g")' WHERE label = '$1'" >/dev/null
+	}
+
+	# ROW ONE -- both values are readable and there is one row for each, so
+	# the restore at the end can put back what was there.
+	sm109_own_n="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'owner_name'")"
+	sm109_adm_n="$(adb "SELECT COUNT(*) FROM settings WHERE label = 'admin_email'")"
+	sm109_own_read="$(sm109_get owner_name)"
+	sm109_adm_read="$(sm109_get admin_email)"
+	if [ "$sm109_own_n" = 1 ] && [ "$sm109_adm_n" = 1 ] \
+		&& [ -n "$sm109_own_read" ] && [ -n "$sm109_adm_read" ]; then
+		sm109_own_old="${sm109_own_read#X}"
+		sm109_adm_old="${sm109_adm_read#X}"
+		sm109_ready=1
+		ok "owner_name and admin_email each read back as exactly one row, so this section can restore them"
+	else
+		sm109_ready=0
+		bad "owner_name or admin_email did not read back as exactly one row (owner rows ${sm109_own_n}, admin rows ${sm109_adm_n}) -- refusing to write a payload it could not undo"
+	fi
+
+	if [ "$sm109_ready" = 1 ]; then
+		# The restore runs from the trap as well, so a suite interrupted
+		# between the write and the restore still puts the two values back,
+		# for the exits where a trap runs at all: a SIGKILL or a power loss
+		# leaves the payload stored, and then the next run's row one reads it
+		# as the value to restore. The rm the trap already carried is kept.
+		trap 'sm109_set owner_name "$sm109_own_old"; sm109_set admin_email "$sm109_adm_old"; rm -f "$COOKIES" "$BODY"' EXIT
+
+		sm109_set owner_name "$SM109_PAY"
+		sm109_set admin_email "$SM109_APAY"
+
+		sm109_fetch() {
+			sm109_code="$(curl -s --max-time 30 "$@" -o "$BODY" -w '%{http_code}')"
+			sm109_crc=$?
+		}
+
+		# Raw absent and escaped present, over a body that really arrived.
+		# curl's own status is read on the line after the call, because a
+		# transfer that failed part way through still reports 200 and leaves
+		# the previous body in place, which would pass any count on its own.
+		sm109_check() {
+			if [ "$sm109_crc" -ne 0 ] || [ "$sm109_code" != 200 ]; then
+				bad "$1 did not come back, so nothing about its escaping is settled (curl exit ${sm109_crc}, status ${sm109_code})"
+				return
+			fi
+			sm109_raw="$(grep -cF "$2" "$BODY")"
+			sm109_esc="$(grep -cF "$3" "$BODY")"
+			if [ "$sm109_raw" -eq 0 ] && [ "$sm109_esc" -ge 1 ]; then
+				ok "$1 renders the setting with its markup escaped"
+			else
+				bad "$1 renders the setting wrong: raw matches ${sm109_raw}, escaped matches ${sm109_esc} (want raw 0, escaped 1 or more)"
+			fi
+		}
+
+		# ROW TWO -- the desktop sign-in page, with no session at all. This
+		# is the site that mattered most: it is reachable by anybody.
+		sm109_fetch "$OCM_URL/index.php"
+		sm109_check "the desktop sign-in page" "$SM109_PAY" "$SM109_ESC"
+
+		# ROW THREE -- the mobile sign-in page, also with no session. The
+		# user agent is what picks the mobile template.
+		sm109_fetch -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' \
+			"$OCM_URL/m/index.php"
+		sm109_check "the mobile sign-in page" "$SM109_PAY" "$SM109_ESC"
+
+		# ROW FOUR -- a session, checked rather than assumed. Without this
+		# the two rows below would pass on a sign-in page, which renders
+		# owner_name escaped for its own reasons.
+		: > "$COOKIES"
+		curl -sL --max-time 30 -c "$COOKIES" -b "$COOKIES" -o "$BODY" \
+			-X POST -d "login_user=${OCM_USER}&login_pass=${OCM_PASSWORD}&auth_id=1" \
+			"$OCM_URL/" >/dev/null
+		sm109_lrc=$?
+		if [ "$sm109_lrc" -eq 0 ] && ! grep -q 'login_pass' "$BODY" \
+			&& grep -qi 'logout' "$BODY"; then
+			sm109_signed=1
+			ok "section 109 signed in: the home page came back with no sign-in field and a sign-out link"
+		else
+			sm109_signed=0
+			bad "section 109 could not sign in (curl exit ${sm109_lrc}), so the three signed-in rows below are not run"
+		fi
+
+		if [ "$sm109_signed" = 1 ]; then
+			# ROW FIVE -- the layout template's org name, which reaches the page
+			# from the buffer marker in pika-danio.php. index.php supplies no
+			# org_name and org_name is not a settings label, so the %%[org_name]%%
+			# tag in the layout resolves to nothing and this row reads one site.
+			#
+			# The home page is fetched again with the jar rather than reusing
+			# the body the sign-in left, so the status and curl's own exit
+			# belong to the fetch this row reads. The sign-out link is
+			# checked again on the new body: without it the row could pass on
+			# a sign-in page, which escapes owner_name for its own reasons.
+			sm109_fetch -L -b "$COOKIES" "$OCM_URL/"
+			if [ "$sm109_crc" -eq 0 ] && [ "$sm109_code" = 200 ] \
+				&& ! grep -qi 'logout' "$BODY"; then
+				bad "the home page fetched with the jar came back without a sign-out link, so the org name and admin address rows would not have been reading a signed-in page"
+			else
+				sm109_check "the signed-in home page org name" "$SM109_PAY" "$SM109_ESC"
+			fi
+
+			# ROW SIX -- the same body's admin address, which the layout
+			# writes into a mailto href.
+			sm109_check "the signed-in home page admin address" "$SM109_APAY" "$SM109_AESC"
+
+			# ROW SEVEN -- system-audit.php, which builds its nav HTML by
+			# interpolation rather than through a template. Its own page title
+			# is checked first: the fetch follows redirects, and an expired
+			# session lands on the sign-in page, which escapes owner_name for
+			# its own reasons and would pass the row without the audit page
+			# having been read at all.
+			sm109_fetch -L -b "$COOKIES" "$OCM_URL/system-audit.php"
+			if [ "$sm109_crc" -eq 0 ] && [ "$sm109_code" = 200 ] \
+				&& ! grep -qF 'Audit Log' "$BODY"; then
+				bad "the audit page came back without its own title, so its branding was never read"
+			else
+				sm109_check "the audit page branding" "$SM109_PAY" "$SM109_ESC"
+			fi
+		fi
+
+		# ROW EIGHT -- the other engine, in the container, over ten fixtures
+		# in one run. pl_template() renders about 140 call sites and decides
+		# from the name the CALLER asked for whether a setting it resolves is
+		# escaped, so one fixture of each extension settles both halves, and a
+		# pair of symlinks settles that the answer follows the asked-for name
+		# and not the file that is opened in the end. A fifth fixture puts the
+		# setting inside a section, which that engine resolves one row at a
+		# time in a nested call of its own, before the pass over the whole
+		# template, so the answer has to reach that call too. A sixth repeats
+		# that section body under a name that is not HTML, because a call
+		# hard-coded to escape there passes every other row in this section:
+		# what that call needs is the gate's answer, not a constant.
+		# A seventh names two different settings in one file that is not HTML,
+		# because that engine resolves one name per frame: the second name is
+		# the only setting this section reads from inside the recursion under a
+		# name that is not HTML. An eighth asks for .htm rather than .html,
+		# because the gate accepts two spellings and every other fixture here
+		# uses the first.
+		#
+		# The last two fixtures go through the template class instead. One
+		# names the setting with a directive, which is the shape that would be
+		# escaped twice if the settings copy held escaped values. The other
+		# names the administrator address with no directive, so that dropping
+		# that one name from the recording cannot pass while the org name
+		# still escapes.
+		#
+		# The pl_template() fixtures go under /tmp inside the container, so a
+		# killed run leaves nothing in the checkout. The pikaTempLib fixtures
+		# cannot go there: that class refuses a template outside its own
+		# directories. They go in the custom directory, which is a named volume
+		# and also not the checkout.
+		#
+		# The directory name carries the shell's pid and a random number, so
+		# two suites running at the same time do not write over each other, and
+		# both directories are removed from a shutdown function, so a snippet
+		# that dies part way through still tries to take its fixtures with it.
+		# Every removal there ignores its own errors, so that is attempted
+		# rather than guaranteed.
+		sm109_dir="/tmp/zz109tpl.$$.${RANDOM}"
+		SM109_PHP="$(docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-e ZZ109DIR="$sm109_dir" \
+			-w /var/www/html/cms app php -r '
+			function zz109sec() { return array(array("zz" => "1")); }
+			define("PL_DISABLE_SECURITY", true);
+			require_once("pika-danio.php");
+			pika_init();
+			require_once("app/lib/pikaTempLib.php");
+			$d = getenv("ZZ109DIR");
+			$c = pl_custom_directory() . "/" . basename($d);
+			register_shutdown_function(function () use ($d, $c) {
+				foreach (array("/real.html", "/real.txt", "/ask.txt",
+					"/ask.html", "/sec.html", "/sec.txt",
+					"/two.txt", "/real.htm") as $f)
+				{
+					@unlink($d . $f);
+				}
+				@rmdir($d);
+				@unlink($c . "/ta.html");
+				@unlink($c . "/ad.html");
+				@rmdir($c);
+			});
+			@mkdir($d);
+			@mkdir($c);
+			file_put_contents($d . "/real.html", "A%%[owner_name]%%B");
+			file_put_contents($d . "/real.txt", "A%%[owner_name]%%B");
+			@symlink($d . "/real.html", $d . "/ask.txt");
+			@symlink($d . "/real.txt", $d . "/ask.html");
+			file_put_contents($d . "/sec.html",
+				"%%[begin zz109sec]%%\nA%%[owner_name]%%B\n%%[end]%%\n");
+			file_put_contents($d . "/sec.txt",
+				"%%[begin zz109sec]%%\nA%%[owner_name]%%B\n%%[end]%%\n");
+			file_put_contents($d . "/two.txt",
+				"A%%[owner_name]%%B C%%[admin_email]%%D");
+			file_put_contents($d . "/real.htm", "A%%[owner_name]%%B");
+			file_put_contents($c . "/ta.html", "A%%[owner_name,input_textarea]%%B");
+			file_put_contents($c . "/ad.html", "A%%[admin_email]%%B");
+			echo "DIRHTML:[", pl_template($d . "/real.html", array()), "]\n";
+			echo "DIRTXT:[", pl_template($d . "/real.txt", array()), "]\n";
+			echo "LNTXT:[", pl_template($d . "/ask.txt", array()), "]\n";
+			echo "LNHTML:[", pl_template($d . "/ask.html", array()), "]\n";
+			echo "SEC:[", str_replace("\n", "",
+				pl_template($d . "/sec.html", array())), "]\n";
+			echo "SECTXT:[", str_replace("\n", "",
+				pl_template($d . "/sec.txt", array())), "]\n";
+			echo "TWOTXT:[", pl_template($d . "/two.txt", array()), "]\n";
+			echo "DIRHTM:[", pl_template($d . "/real.htm", array()), "]\n";
+			$t = new pikaTempLib($c . "/ta.html");
+			echo "TA:[", $t->draw(), "]\n";
+			$a = new pikaTempLib($c . "/ad.html");
+			echo "CLSADM:[", $a->draw(), "]\n";
+			echo "DONE109\n";
+			' </dev/null 2>/dev/null)"
+		sm109_prc=$?
+
+		# The command's own status is read on the line after it, and the
+		# closing marker is read as well. A snippet that died part way through
+		# still prints what it had already echoed, so a row that only looked
+		# for its own prefix would pass on that truncated output, and a docker
+		# exec that failed outright would leave the rows below judging an empty
+		# string.
+		if [ "$sm109_prc" -eq 0 ] \
+			&& printf '%s' "$SM109_PHP" | grep -qF 'DONE109'; then
+			sm109_php_ok=1
+			ok "the other engine rendered all ten fixtures in the container and ran to the end"
+		else
+			sm109_php_ok=0
+			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the ten rows below are not run: ${SM109_PHP}"
+		fi
+
+		# Each row below asks for the whole rendered value, opening bracket to
+		# closing bracket. The payload holds a double quote as well as angle
+		# brackets, so a half fix that escaped only < and > fails, and the
+		# closing ] proves the render was not cut short.
+		#
+		# Most must-appear needles carry a label that names one line of the
+		# output and is not a substring of any other line, which is why the two
+		# direct renders are DIRHTML and DIRTXT: HTML:[ and TXT:[ would have
+		# matched inside LNHTML:[ and LNTXT:[, and then a missing direct render
+		# could have passed on the symlinked one's output. The two section
+		# renders are SEC and SECTXT for that same reason: the colon in SEC:[
+		# keeps its needle from matching inside the SECTXT: line. TWOTXT sits
+		# safely beside the other three TXT labels because every needle in
+		# those rows carries its own label, and no other line begins TWOTXT:.
+		#
+		# Two of the directive row's needles carry no label: its first
+		# must-appear needle is a suffix, and its must-not-appear needle is the
+		# doubled ampersand. Each needle is also its own grep, so a row with
+		# two must-appear needles does not settle that both matched the SAME
+		# line. Nothing else in this output ends in </textarea>B] or starts
+		# TA:[A<textarea, so both of that row's must-appear needles can only
+		# match its own line as the fixtures stand, and the unlabelled
+		# must-not-appear needle can only add a failure, never let one pass.
+		#
+		# A row whose whole value is too long to spell out passes a second
+		# must-appear needle as a fourth argument, so that it can pin the start
+		# of the line and the closing bracket without writing what is between
+		# them. A row that gives no fourth argument checks its one needle twice,
+		# which is harmless.
+		sm109_php_row() {
+			if [ "$sm109_php_ok" != 1 ]; then
+				return
+			fi
+			if printf '%s' "$SM109_PHP" | grep -qF "$2" \
+				&& printf '%s' "$SM109_PHP" | grep -qF "${4:-$2}" \
+				&& ! printf '%s' "$SM109_PHP" | grep -qF "$3"; then
+				ok "$1"
+			else
+				bad "not true: $1 -- fixture output was ${SM109_PHP}"
+			fi
+		}
+
+		# ROW NINE -- an HTML template, escaped.
+		sm109_php_row \
+			"the other engine escapes the setting when the caller asked for an HTML template" \
+			"DIRHTML:[A${SM109_ESC}B]" "DIRHTML:[A${SM109_PAY}B]"
+
+		# ROW TEN -- a template that is not HTML, as it was stored. time_zone
+		# is a setting and a tag in the iCalendar templates, and
+		# templates/vcal.txt, templates/exchange_appt.txt and the two files in
+		# app/scripts are read the same way, so an entity put into one of those
+		# is a corrupt feed or a corrupt script.
+		sm109_php_row \
+			"the other engine leaves the setting as it was stored when the caller asked for a template that is not HTML" \
+			"DIRTXT:[A${SM109_PAY}B]" "DIRTXT:[A${SM109_ESC}B]"
+
+		# ROW ELEVEN -- asked for .txt, opened an .html file. A custom
+		# template_path() hook returns whatever name it likes and realpath()
+		# follows symlinks, so the file that is opened can carry either
+		# extension. What the caller does with the output is decided by what
+		# the caller asked for, so this one has to come back raw: it is a
+		# calendar feed whose deployment keeps its templates in HTML files.
+		sm109_php_row \
+			"the other engine follows the name the caller asked for when the file it opened is HTML" \
+			"LNTXT:[A${SM109_PAY}B]" "LNTXT:[A${SM109_ESC}B]"
+
+		# ROW TWELVE -- the other way round, and the one that matters for
+		# security: asked for .html, opened a file named .txt. Reading the
+		# opened name here would skip the escape on a page served as HTML.
+		sm109_php_row \
+			"the other engine escapes for an HTML request even when the file it opened is not named HTML" \
+			"LNHTML:[A${SM109_ESC}B]" "LNHTML:[A${SM109_PAY}B]"
+
+		# ROW THIRTEEN -- pikaTempLib's directive path, escaped once. This is
+		# one of the two fixtures here that go through that class.
+		# template_plugins/input_textarea.php escapes its own output, and
+		# template_plugins/menu.php escapes a selected value it does not
+		# recognise, so a settings copy holding escaped values spells an
+		# ampersand twice over here and stops a menu matching its own
+		# selection. &amp;lt; is what that looks like.
+		sm109_php_row \
+			"the template class's directive path escapes the setting once, not twice" \
+			"${SM109_ESC}</textarea>B]" 'ZZ109&amp;lt;img' 'TA:[A<textarea '
+
+		# ROW FOURTEEN -- the same class on a tag with no directive, so this
+		# row reads its direct replacement. It asks for the administrator
+		# address because the other rows that read this class read the org
+		# name: the two sign-in pages and row thirteen. The audit page row is
+		# not one of them -- templates/default.html holds no owner_name tag, so
+		# that page's org name comes from its own escaped read in
+		# system-audit.php. A copy that stopped recording just admin_email
+		# would leave that address raw on every page this class draws, the
+		# audit layout among them, and every other row here would still pass.
+		sm109_php_row \
+			"the template class escapes a setting it replaced itself, not only one a plugin read" \
+			"CLSADM:[A${SM109_AESC}B]" "CLSADM:[A${SM109_APAY}B]"
+
+		# ROW FIFTEEN -- a setting inside a section, which pl_template()
+		# resolves one row at a time in a nested call before the pass over the
+		# whole template. That nested call takes the answer as a third
+		# argument; without it the setting is already replaced by the time the
+		# outer pass runs, and no later pass can escape a tag that is gone. No
+		# stock template uses a section, so this fixture is the only reader of
+		# that call, together with the row below it. Measured: with the answer
+		# dropped at that one call, and nothing else changed, the fixture
+		# renders the payload raw.
+		sm109_php_row \
+			"a setting inside a section row is escaped by the nested call, not left for the outer pass" \
+			"SEC:[A${SM109_ESC}B]" "SEC:[A${SM109_PAY}B]"
+
+		# ROW SIXTEEN -- the same section body under a name that is not HTML.
+		# The row above fails if that nested call loses the gate's answer;
+		# this one fails if the call is handed a constant instead. An answer
+		# hard-coded to escape is wrong for a calendar feed and leaves every
+		# other row in this section passing, so the pair is what pins the
+		# answer rather than its presence. Measured: with a constant true at
+		# that one call, and nothing else changed, this fixture comes back
+		# escaped while the row above it still passes.
+		sm109_php_row \
+			"a setting inside a section row follows the asked-for name, so a name that is not HTML stays as it was stored" \
+			"SECTXT:[A${SM109_PAY}B]" "SECTXT:[A${SM109_ESC}B]"
+
+		# ROW SEVENTEEN -- two different settings names in one template that is
+		# not HTML. That engine replaces one name per frame and hands the rest
+		# of the template to the next frame, so the second name is resolved
+		# inside the recursion and the first is not. Every fixture above holds
+		# one name only, so the recursion in those finds no tag and returns
+		# before it reads the flag at all: a constant true passed to the
+		# recursive call would leave all of them passing. Here it escapes the
+		# administrator address and leaves the org name beside it as it was
+		# stored, which is a corrupt calendar feed from the second tag on.
+		# Measured: with a constant true at that one call, and nothing else
+		# changed, the second name comes back escaped, the first does not, and
+		# the single-name fixture beside it is unchanged.
+		sm109_php_row \
+			"two settings names in one template that is not HTML both stay as they were stored, not just the first" \
+			"TWOTXT:[A${SM109_PAY}B C${SM109_APAY}D]" \
+			"TWOTXT:[A${SM109_PAY}B C${SM109_AESC}D]"
+
+		# ROW EIGHTEEN -- the other spelling of an HTML name. The gate names two
+		# extensions, and every other fixture here asks for .html or for a name
+		# that is not HTML at all, so dropping the second spelling from the gate
+		# leaves all of them passing while every .htm caller stops escaping. The
+		# label is DIRHTM, which no other line holds: DIRHTML:[ does not contain
+		# DIRHTM:[, because the colon comes after the L there. Measured: with the
+		# gate as it is both spellings come back escaped; with the second spelling
+		# dropped and nothing else changed, the first still escapes and the second
+		# comes back as it was stored.
+		sm109_php_row \
+			"the other engine escapes the setting for the second spelling of an HTML name as well as the first" \
+			"DIRHTM:[A${SM109_ESC}B]" "DIRHTM:[A${SM109_PAY}B]"
+
+		# ROW NINETEEN -- the restore, and a read that proves it landed. The
+		# trap runs the same two statements again at exit, which is harmless
+		# and is what covers a suite that dies before this point.
+		sm109_set owner_name "$sm109_own_old"
+		sm109_set admin_email "$sm109_adm_old"
+		sm109_own_back="$(sm109_get owner_name)"
+		sm109_adm_back="$(sm109_get admin_email)"
+		if [ "$sm109_own_back" = "$sm109_own_read" ] \
+			&& [ "$sm109_adm_back" = "$sm109_adm_read" ]; then
+			ok "owner_name and admin_email read back byte for byte as they were before this section wrote to them"
+		else
+			bad "owner_name or admin_email did not read back as it was -- the payload may still be stored"
+		fi
+	fi
+else
+	printf '  skip settings escaping requests (needs a running docker compose stack)\n'
+fi
+
+# ROW TWENTY -- the first engine's two halves, over the source, so a refactor
+# that drops either is caught even with no stack. The copy records which names
+# came from the settings, and direct replacement escapes those and only those.
+sm109_first=0
+grep -qF '$this->_settings_escape[$setting] = true;' cms/app/lib/pikaTempLib.php \
+	&& sm109_first=$((sm109_first+1))
+grep -qF 'if (isset($this->_settings_escape[$tag]))' cms/app/lib/pikaTempLib.php \
+	&& sm109_first=$((sm109_first+1))
+if [ "$sm109_first" -eq 2 ]; then
+	ok "the template settings copy still records its names and direct replacement still escapes them"
+else
+	bad "only ${sm109_first} of the 2 halves of the template settings escape are still written"
+fi
+
+# ROW TWENTY-ONE -- the raw list, and that base_url is on it. base_url is read
+# inside a CSS url() in CSS text, which does not decode HTML entities, so
+# escaping it would point the rule at a path that does not exist.
+if grep -q 'function pl_settings_template_raw' cms/app/lib/pl.php \
+	&& grep -qF "'base_url'," cms/app/lib/pl.php; then
+	ok "the not-HTML settings list exists and still names base_url"
+else
+	bad "the not-HTML settings list is gone or no longer names base_url"
+fi
+
+# ROW TWENTY-TWO -- the four reads that do not go through the settings copy,
+# across three files. Each has to still wrap its read. The count is four so a
+# change that escapes three of them and drops the fourth fails this row.
+sm109_sites=0
+grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/pika_cms.php \
+	&& sm109_sites=$((sm109_sites+1))
+grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/pika-danio.php \
+	&& sm109_sites=$((sm109_sites+1))
+grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/system-audit.php \
+	&& sm109_sites=$((sm109_sites+1))
+grep -q "pl_html_escape(pl_settings_get('admin_email'))" cms/pika_cms.php \
+	&& sm109_sites=$((sm109_sites+1))
+if [ "$sm109_sites" -eq 4 ]; then
+	ok "the four reads outside the settings copy are all written escaped"
+else
+	bad "only ${sm109_sites} of the 4 reads outside the settings copy are written escaped"
+fi
+
+# ROW TWENTY-THREE -- the second engine's gate, over the source. The rows above
+# that run it need a stack, and a change that escaped every template or none
+# of them would otherwise be caught nowhere on a machine with no containers.
+# The four parts are the format test over the name the caller asked for, both
+# spellings the test accepts, the escape that reads its answer, and the
+# parameter the answer travels on.
+sm109_gate=0
+grep -qF 'pathinfo($template_file, PATHINFO_EXTENSION)' cms/app/lib/pl.php \
+	&& sm109_gate=$((sm109_gate+1))
+grep -qF "('html' === \$template_ext || 'htm' === \$template_ext)" \
+	cms/app/lib/pl.php && sm109_gate=$((sm109_gate+1))
+grep -qF 'if ($escape_settings && is_scalar($replacement)' cms/app/lib/pl.php \
+	&& sm109_gate=$((sm109_gate+1))
+grep -qF 'function pl_template_sub($str, $template_data, $escape_settings' \
+	cms/app/lib/pl.php && sm109_gate=$((sm109_gate+1))
+if [ "$sm109_gate" -eq 4 ]; then
+	ok "the other engine still decides from the name the caller asked for whether to escape a setting"
+else
+	bad "only ${sm109_gate} of the 4 parts of the template format gate are still written"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
