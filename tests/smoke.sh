@@ -19634,10 +19634,17 @@ fi
 # The scan must not pass by failing either. The list of files comes from
 # find, is NUL separated, and holds every regular file under cms/ whose
 # name ends .php, so a name holding a space or a newline is read whole.
-# The list's last byte must be a NUL, or its last name may be a fragment
-# of a longer one: a list cut short in the middle of a name it had not
-# finished writing would otherwise be read as a shorter list that matched
-# its own count. The entries are counted before the loop and the loop's
+# A list holding any byte at all must end in a NUL, or its last name may
+# be a fragment of a longer one: a list cut short in the middle of a name
+# it had not finished writing would otherwise be read as a shorter list
+# that matched its own count. What is tested is the list's length in
+# bytes and not how many NULs it holds, because a list holding one
+# unfinished name holds no NUL at all: a review handed this row a
+# producer that exited zero and wrote one name with no terminator, and
+# an earlier shape of this check asked for a terminator only where it
+# had already found one, so that list read as empty and the row passed.
+#
+# The entries are counted before the loop and the loop's
 # own count must match, so a truncated list, or a read that stops part way
 # through one, fails the row. What these checks settle is that the list did
 # not stop before a NUL it should have ended with, and that the loop and the
@@ -19670,12 +19677,34 @@ fi
 #
 # The scope is every regular file under cms/ whose name ends .php. PHP
 # source under another name would stand outside it, so a second scan reads
-# every other regular file under cms/ and the row fails if one of them
-# holds <?php or <?=. That measures the scope's claim rather than assuming
-# it: today none does, and a .inc, .phtml or .PHP file added later fails
-# this row until either its name ends .php or the scan is widened to reach
-# it. The two files under cms/ that hold a <? at all hold <?xml, which is
-# neither spelling. The same terminator, count and status checks apply to
+# every other regular file under cms/ and counts every <? in it, whatever
+# follows. Counting only <?php and <?= would not do: with short_open_tag
+# on, a file named cms/hidden.inc holding <? echo "EXECUTED"; is PHP that
+# runs, and a review showed such a file passing a scan that looked only
+# for those two spellings while row four's own search, which takes names
+# ending .php, did not reach it either. A bare <? is counted too.
+#
+# Seven files under cms/ hold a <? today, and this row allows each by name
+# and by count and nothing else: the property list at
+# cms/app/scripts/com.pikasoftware.cms-csv-download.plist holds one, in
+# <?xml; cms/favicon.ico holds one, in its binary; the four JPEG files
+# under cms/images/ hold three each, once in <?xml and twice in <?xpac;
+# and cms/templates/client-tpl.xml holds one, in <? xml -- a space after
+# the question mark, which PHP with short tags on does open a block on.
+# None of the seven is named next to include, include_once, require,
+# require_once, file_get_contents, fopen, readfile or show_source in any
+# php file under cms/, read at this commit: the property list is served as
+# a download by cms/system-mac_download.php and the four images are
+# backgrounds in cms/css/screen.css.php. So none of them is read as PHP.
+# The row also fails if one of the seven is no longer there, so an
+# allowance it still carries cannot quietly stop being measured.
+#
+# A file added later under a name that does not end .php fails this row as
+# soon as it holds a <? at all, and one of the seven whose count moves
+# fails it as well. A file outside the scope holding no open tag runs no
+# PHP and passes. The cost is that a note under cms/ quoting <?php in
+# prose fails this row until it is either allowed here by name or moved
+# out of the tree. The same terminator, count and status checks apply to
 # that second list.
 sm107_bare_prog='
 {
@@ -19713,22 +19742,13 @@ sm107_other_prog='
 	s = $0
 	i = index(s, "<?")
 	while (i > 0) {
-		r = substr(s, i + 2)
-		if (substr(r, 1, 1) == "=" || tolower(substr(r, 1, 3)) == "php") {
-			n = n + 1
-			out = out sep FNR ": " $0
-			sep = "\n"
-		}
-		s = r
+		n = n + 1
+		s = substr(s, i + 2)
 		i = index(s, "<?")
 	}
 }
 END {
-	printf "%d", n + 0
-	if (out != "") {
-		printf "\n%s", out
-	}
-	printf "\n"
+	printf "%d\n", n + 0
 }'
 sm107_bare_tmp="$(mktemp 2>/dev/null)"
 sm107_bare_tmp_rc=$?
@@ -19739,21 +19759,25 @@ sm107_bare_odd="$(find cms/ \( -type f -o -type l \) -name '*.php*' ! -name '*.p
 	-print0 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' \n')"
 sm107_bare_odd_rc=$?
 sm107_bare_rc=1
+sm107_bare_bytes=''
 sm107_bare_entries=''
 sm107_bare_tail=''
 sm107_bare_files=0
 sm107_bare_bad=0
 sm107_bare_other_rc=1
+sm107_bare_other_bytes=''
 sm107_bare_other_entries=''
 sm107_bare_other_tail=''
 sm107_bare_other_files=0
 sm107_bare_other_bad=0
+sm107_bare_other_known=0
 sm107_bare_ready=no
 if [ "$sm107_bare_tmp_rc" -eq 0 ] && [ -n "$sm107_bare_tmp" ] && [ -w "$sm107_bare_tmp" ]
 then
 	sm107_bare_ready=yes
 	find cms/ -type f -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
 	sm107_bare_rc=$?
+	sm107_bare_bytes="$(wc -c < "$sm107_bare_tmp" | tr -d ' \n')"
 	sm107_bare_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c | tr -d ' \n')"
 	sm107_bare_tail="$(tail -c 1 "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
 		| tr -d ' \n')"
@@ -19772,6 +19796,7 @@ then
 	done < "$sm107_bare_tmp"
 	find cms/ -type f ! -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
 	sm107_bare_other_rc=$?
+	sm107_bare_other_bytes="$(wc -c < "$sm107_bare_tmp" | tr -d ' \n')"
 	sm107_bare_other_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c \
 		| tr -d ' \n')"
 	sm107_bare_other_tail="$(tail -c 1 "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
@@ -19779,14 +19804,34 @@ then
 	while IFS= read -r -d '' sm107_f
 	do
 		sm107_bare_other_files=$((sm107_bare_other_files + 1))
+		sm107_bare_want=0
+		case "$sm107_f" in
+		cms/app/scripts/com.pikasoftware.cms-csv-download.plist)
+			sm107_bare_want=1
+			;;
+		cms/favicon.ico | cms/templates/client-tpl.xml)
+			sm107_bare_want=1
+			;;
+		cms/images/4-gray-high.jpg | cms/images/drop-shadow.jpg)
+			sm107_bare_want=3
+			;;
+		cms/images/tab_gradient.jpg | cms/images/th-gradient.jpg)
+			sm107_bare_want=3
+			;;
+		esac
+		if [ "$sm107_bare_want" != 0 ]
+		then
+			sm107_bare_other_known=$((sm107_bare_other_known + 1))
+		fi
 		sm107_bare_out="$(awk "$sm107_other_prog" < "$sm107_f" 2>/dev/null)"
 		sm107_bare_awk_rc=$?
-		if [ "$sm107_bare_awk_rc" -ne 0 ] || [ "$sm107_bare_out" != "0" ]
+		if [ "$sm107_bare_awk_rc" -ne 0 ] \
+			|| [ "$sm107_bare_out" != "$sm107_bare_want" ]
 		then
 			sm107_bare_other_bad=$((sm107_bare_other_bad + 1))
-			printf '    %s: the scan for a php open tag exited %s and said\n' \
-				"$sm107_f" "$sm107_bare_awk_rc"
-			printf '%s\n' "$sm107_bare_out" | sed 's/^/      /'
+			printf '    %s: the count of <? here is "%s" where "%s" is allowed, and the scan exited %s\n' \
+				"$sm107_f" "$sm107_bare_out" "$sm107_bare_want" \
+				"$sm107_bare_awk_rc"
 		fi
 	done < "$sm107_bare_tmp"
 	rm -f "$sm107_bare_tmp"
@@ -19807,22 +19852,24 @@ else
 	sm107_bare_counted=yes
 	case "$sm107_bare_entries" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
 	case "$sm107_bare_other_entries" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_bytes" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_other_bytes" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
 	case "$sm107_bare_special" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
 	case "$sm107_bare_odd" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
 	case "$sm107_bare_tail" in '' | *[!0-9]* | ??*) sm107_bare_counted=no ;; esac
 	case "$sm107_bare_other_tail" in '' | *[!0-9]* | ??*) sm107_bare_counted=no ;; esac
 	if [ "$sm107_bare_counted" != yes ]
 	then
-		bad "the short open tag row could not count what it was about to read: entries '${sm107_bare_entries}', entries outside its scope '${sm107_bare_other_entries}', entries that are neither a directory nor a regular file '${sm107_bare_special}', names past .php '${sm107_bare_odd}', and list terminators '${sm107_bare_tail}' and '${sm107_bare_other_tail}'"
+		bad "the short open tag row could not count what it was about to read: ${sm107_bare_bytes} byte(s) and '${sm107_bare_entries}' entries, ${sm107_bare_other_bytes} byte(s) and '${sm107_bare_other_entries}' entries outside its scope, entries that are neither a directory nor a regular file '${sm107_bare_special}', names past .php '${sm107_bare_odd}', and list terminators '${sm107_bare_tail}' and '${sm107_bare_other_tail}'"
+	elif [ "$sm107_bare_bytes" != 0 ] && [ "$sm107_bare_tail" != 1 ]
+	then
+		bad "the short open tag row was handed a list of php files holding ${sm107_bare_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+	elif [ "$sm107_bare_other_bytes" != 0 ] && [ "$sm107_bare_other_tail" != 1 ]
+	then
+		bad "the short open tag row was handed a list of the files outside its scope holding ${sm107_bare_other_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
 	elif [ "$sm107_bare_entries" = 0 ]
 	then
 		bad "the short open tag row was given no file to read, so it scanned nothing"
-	elif [ "$sm107_bare_tail" != 1 ]
-	then
-		bad "the short open tag row was handed a list of php files whose last entry is not terminated, so its last name may be a fragment of a longer one"
-	elif [ "$sm107_bare_other_entries" != 0 ] && [ "$sm107_bare_other_tail" != 1 ]
-	then
-		bad "the short open tag row was handed a list of the files outside its scope whose last entry is not terminated, so its last name may be a fragment of a longer one"
 	elif [ "$sm107_bare_files" != "$sm107_bare_entries" ]
 	then
 		bad "the short open tag row scanned ${sm107_bare_files} of the ${sm107_bare_entries} file(s) its own list held"
@@ -19832,14 +19879,17 @@ else
 	elif [ "$sm107_bare_special" != 0 ] || [ "$sm107_bare_odd" != 0 ]
 	then
 		bad "the short open tag row cannot reach every php file under cms/: ${sm107_bare_special} entr(y|ies) that are neither a directory nor a regular file, which find will not follow or read, and ${sm107_bare_odd} name(s) holding .php before their end"
+	elif [ "$sm107_bare_other_known" != 7 ]
+	then
+		bad "the short open tag row allows a <? in seven named files outside its scope and found ${sm107_bare_other_known} of them, so an allowance it still carries is no longer measured"
 	elif [ "$sm107_bare_other_bad" != 0 ]
 	then
-		bad "${sm107_bare_other_bad} of the ${sm107_bare_other_files} file(s) under cms/ whose name does not end .php hold a php open tag, so php source may stand outside this row's scope: either the name should end .php or this scan must be widened to reach it"
+		bad "${sm107_bare_other_bad} of the ${sm107_bare_other_files} file(s) under cms/ whose name does not end .php hold a count of <? this row does not allow, so php source may stand outside this row's scope: either the name should end .php, or the count must be allowed here by name once it is settled the file is not read as php"
 	elif [ "$sm107_bare_bad" != 0 ]
 	then
 		bad "${sm107_bare_bad} of the ${sm107_bare_files} php file(s) under cms/ hold a spelling PHP may read as a bare short open tag, or could not be scanned"
 	else
-		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned, and no php open tag in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope"
+		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned, and no <? in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope beyond the counts the seven named files are allowed"
 	fi
 fi
 echo
