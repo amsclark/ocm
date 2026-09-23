@@ -322,8 +322,20 @@ $plTemplate['header'] = "-->\n<style type='text/css'><!--\n{$pikaTheme}\n{$pikaF
 
 // more TEMPLATE VALUES
 $plTemplate["timestamp"] = date('g:i A * M j, Y');
-$plTemplate["org_name"] = pl_settings_get('owner_name');
-$plTemplate["admin_email"] = pl_settings_get('admin_email');
+/*	Both are typed into system-settings.php and stored as they were
+	typed. org_name is HTML text on templates/default.html and
+	m/default.html, and reports/case_print/case_print-form.php copies it
+	into that report's own data; admin_email is a mailto href on
+	templates/default.html and on templates/unavailable.html, which also
+	renders it as text.
+	
+	Escaped here because these two are page data. The settings copy in
+	pikaTempLib::loadSettings() escapes what it copies, but it skips a name
+	the page has already set, and these two are set under different names
+	anyway.
+*/
+$plTemplate["org_name"] = pl_html_escape(pl_settings_get('owner_name'));
+$plTemplate["admin_email"] = pl_html_escape(pl_settings_get('admin_email'));
 $plTemplate["vendor_email"] = PIKA_VENDOR_EMAIL;
 $plTemplate['post_title'] = ' [Pika CMS]';
 $plTemplate["user_handle"] = $auth_row['username'];

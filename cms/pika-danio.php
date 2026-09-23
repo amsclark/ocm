@@ -686,7 +686,13 @@ function pika_exit($buffer)
 	// 2013-08-14 AMW - I turned off Color Schemes, they seem antiquated.  We will see what feedback I get.
 	//$buffer = str_replace("/* color_scheme_value */", $theme_css_str, $buffer);
 	$buffer = str_replace("<!-- username -->", pl_clean_html($username), $buffer);
-	$buffer = str_replace("<!-- org_name -->", pl_settings_get('owner_name'), $buffer);
+	/*	The line above cleans the username before putting it in the served
+		buffer. This is the same substitution into the same buffer, and the
+		org name is typed into system-settings.php and stored as typed. It
+		lands in HTML text, next to the %%[org_name]%% tag on
+		templates/default.html line 233.
+	*/
+	$buffer = str_replace("<!-- org_name -->", pl_html_escape(pl_settings_get('owner_name')), $buffer);
 	
 	//mysql_close();  Don't do this; it will mess up plBase autosaving.
 	

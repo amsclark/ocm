@@ -625,11 +625,54 @@ class pikaTempLib {
 			system-settings.php still shows the database host and the base
 			directory.
 		*/
+		/*	The copy is escaped for HTML, in file mode only.
+			
+			These values are typed into system-settings.php and stored as they
+			were typed. Four of the tags that resolve from this copy sit in HTML
+			text -- owner_name on templates/login-form.html, m/login-form.html,
+			templates/enroll-mfa.html and reports/compen_bill/compen_bill.html --
+			and the first two of those render before anybody has signed in.
+			Direct replacement in draw() substitutes the value as it stands, so
+			an org name holding markup was served as markup on the sign-in page.
+			
+			Escaped here rather than in draw(): direct replacement is also how a
+			page hands already-built HTML to its layout template, so draw() has
+			no way to tell a setting from a page fragment and escaping there
+			would escape the page. This loop does know -- everything it copies is
+			a setting.
+			
+			File mode only, because string mode is document assembly. docgen.php
+			passes the body of an uploaded form template in as the template
+			string and template_plugins/javascript.php passes the contents of a
+			.js file; an HTML entity in a document or in JavaScript is wrong. The
+			constructor above decides the mode and leaves _file_name null in
+			string mode, so the mode is already settled by the time this runs.
+			
+			A tag the page supplies itself is not touched, because the isset()
+			below skips it. That is what keeps pika_cms.php's org_name and
+			admin_email from being escaped twice, and it is also how a page that
+			needs a setting raw can still have it.
+			
+			pl_settings_template_raw() holds the settings that must not be
+			escaped because they are not read as HTML text. A value that is not a
+			scalar is copied as it was: pl_html_escape() answers '' for an array,
+			and dropping a value is a change this fix has no reason to make.
+		*/
+		$escape_settings = !is_null($this->_file_name);
+		
 		foreach ($plSettings as $setting => $value)
 		{	
 			if(!pl_settings_template_blocked($setting) && !isset($this->_data[$setting]))
 			{
-				$this->_data[$setting] = $plSettings[$setting];
+				if ($escape_settings && is_scalar($plSettings[$setting])
+					&& !pl_settings_template_raw($setting))
+				{
+					$this->_data[$setting] = pl_html_escape($plSettings[$setting]);
+				}
+				else
+				{
+					$this->_data[$setting] = $plSettings[$setting];
+				}
 			}
 		}
 		return true;

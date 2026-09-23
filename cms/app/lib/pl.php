@@ -4593,6 +4593,46 @@ if (!function_exists('pl_settings_template_blocked'))
 }
 
 
+if (!function_exists('pl_settings_template_raw'))
+{
+	/*	Settings whose value must reach a template unescaped.
+	
+		The template layer escapes every other setting it resolves, because
+		the values named here are the ones that are not rendered as HTML
+		text. base_url is written into a CSS url() at
+		templates/default.html lines 126, 139 and 144, and into a style
+		attribute at line 231. A CSS url() does not decode HTML entities, so
+		an escaped ampersand there would be read as the six characters it is
+		spelled with and the rule would point at a path that does not exist.
+		
+		What keeps the list short is where the value comes from, not where it
+		goes. base_url is set in cms-custom/config/settings.php, which is PHP
+		the server already executes, and no form writes it --
+		subtemplates/system-settings.html renders it as a disabled input
+		named dont_use_base_url so that a POST cannot reach it. A setting an
+		admin types into a form does not belong here: escape it, and give the
+		one template that needs it raw its own data array instead, which the
+		isset() in pikaTempLib::loadSettings() leaves alone.
+	*/
+	function pl_settings_template_raw($label)
+	{
+		static $set = null;
+		
+		if (null === $set)
+		{
+			$set = array_flip(array(
+				// Config-file only, and read inside a CSS url() by the stock
+				// templates. 467 of the 479 setting tags in the tree are this
+				// one, nearly all of them quoted href, src and action values.
+				'base_url',
+			));
+		}
+		
+		return is_string($label) && isset($set[$label]);
+	}
+}
+
+
 function pl_settings_init($x = null)
 {
 	static $plSettings;
@@ -5394,6 +5434,31 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 		return '';
 	}
 	
+	/*	Whether a setting this template resolves has to be escaped, decided
+		from the file that was really opened.
+		
+		pl_template_sub() falls back to the application settings for a tag
+		the caller's data does not name, and substituted the value as it
+		stood. Most of what this function renders is HTML, and there
+		admin_email on templates/default.html lines 257 and 285 put a stored
+		value into a mailto href on every signed-in page.
+		
+		Five templates are not HTML, though, and the same fallback fills
+		them: templates/exchange_appt.txt becomes an .EML file, the ical.txt
+		under each zone in subtemplates/ical is served as text/Calendar,
+		templates/vcal.txt as text/calendar, and app/scripts holds a launchd
+		plist and a PHP script an operator runs from cron. time_zone is a
+		setting and a tag in the calendar templates, so escaping everything
+		would put an HTML entity in a calendar feed.
+		
+		So the extension decides, and anything that is not HTML keeps the old
+		behaviour. A new template that is not HTML is raw without being
+		listed anywhere, which is the safe way round for the formats: it
+		cannot be corrupted by a change nobody remembered to make here.
+	*/
+	$template_ext = strtolower((string) pathinfo($template_real, PATHINFO_EXTENSION));
+	$escape_settings = ('html' === $template_ext || 'htm' === $template_ext);
+	
 	$file = fopen($template_real, 'r');
 
 	if (!$file)
@@ -5461,7 +5526,8 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 					{
 						foreach ($section_data as $val)
 						{
-							$out .= pl_template_sub($section_text, $val);
+							$out .= pl_template_sub($section_text, $val,
+								$escape_settings);
 						}
 					}
 
@@ -5552,7 +5618,7 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 
 	fclose($file);
 
-	$out = pl_template_sub($out, $template_data);
+	$out = pl_template_sub($out, $template_data, $escape_settings);
 	
 	if (defined('PL_TEMPLATE_HTML_COMMENTS'))
 	{
@@ -5570,7 +5636,12 @@ determine it's value,
 replace all instances of that tag,
 repeat until no more tags are present
 */
-function pl_template_sub($str, $template_data)
+/*	$escape_settings is what pl_template() worked out about the template
+	file it opened: true when the output is HTML. It defaults to false so a
+	call that does not say stays as it was. The function has no caller
+	outside this file.
+*/
+function pl_template_sub($str, $template_data, $escape_settings = false)
 {
 	static $app_settings = null;
 	// this value is flipped later if a menu is specified
@@ -6000,6 +6071,20 @@ function pl_template_sub($str, $template_data)
 	{
 		// we have the name, now replace the first and any additional fields
 		$replacement = is_null($app_settings[$next_name]) ? '' : $app_settings[$next_name];
+		
+		/*	A setting is stored as an administrator typed it, so in HTML it
+			has to be escaped. pl_settings_template_raw() holds the ones that
+			are not read as HTML text even on an HTML page -- base_url, which
+			the stock templates read inside a CSS url(). A value that is not a
+			scalar is left as it was, the same as in
+			pikaTempLib::loadSettings().
+		*/
+		if ($escape_settings && is_scalar($replacement)
+			&& !pl_settings_template_raw($next_name))
+		{
+			$replacement = pl_html_escape($replacement);
+		}
+		
 		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $replacement, substr($str, $pos));
 	}
 	
@@ -6016,7 +6101,8 @@ function pl_template_sub($str, $template_data)
 	}
 	
 	// now proceed to next template field in $str
-	return substr($str, 0, $pos) . pl_template_sub($newstr, $template_data);
+	return substr($str, 0, $pos)
+		. pl_template_sub($newstr, $template_data, $escape_settings);
 }
 
 
