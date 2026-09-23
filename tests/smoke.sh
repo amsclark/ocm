@@ -19011,18 +19011,26 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # are dropped along with the whitespace, which is the only order that claim
 # is made in. Agreement over a corpus is not completeness: the shapes the
 # fixtures disagree on are the ones that were looked for, not all there
-# are. Three were found, and each keeps text PHP does not run rather than
-# dropping text it does. A bare <? is always read as an opening tag, which
-# is what PHP does where short_open_tag is on, how it was set in the PHP
-# 8.2 container these comparisons were run in; where it is off, it makes
-# the sweep below read such a block as code rather than skip it. A comment
-# written on a heredoc's closing line is kept, because that line is printed
-# without being scanned. Text after __halt_compiler() is kept, though PHP
-# stops reading code there. The direction was measured for each: the code
-# PHP does run is still present in this output. One that dropped code PHP
-# runs would be a defect in this filter and not a note here, which is what
-# reading <?phpx as <?php followed by an x was, until the keyword test
-# above was made to require whitespace after it.
+# are. Two remain. A bare <? is always read as an opening tag, which is
+# what PHP does where short_open_tag is on, how it was set in the PHP 8.2
+# container these comparisons were run in. Where it is off PHP reads such
+# a block as text, and then this filter can lose code PHP runs: measured
+# with the setting off, a block comment left unclosed inside such a block
+# takes the rest of the file with it, and in the string-emptied mode an
+# unterminated string does the same. Row five counts the tags either shape
+# needs, and there are none. Text after __halt_compiler() is kept, though
+# PHP stops reading code there. That one retains text rather than dropping
+# it, and that on its own does not establish the disagreement is harmless
+# to a row below: retained text can supply an occurrence row two counts,
+# and can hold an assignment row four saves and then reads as an escape.
+#
+# A divergence that drops code PHP runs is a defect in this filter, not a
+# note here. Two were found that way and both are fixed: reading <?phpx as
+# <?php followed by an x, until the keyword test above was made to require
+# an accepted byte after the keyword, and printing a heredoc's closing
+# line without scanning it, which let a block comment opened on that line
+# be read as code, so a close tag written inside that comment discarded
+# later real PHP.
 sm107_code_only()
 {
 	awk -v keepstr="${2:-1}" '
@@ -19050,6 +19058,7 @@ sm107_code_only()
 		{
 			line = $0
 			out = ""
+			hdstart = 0
 			if (st == 4)
 			{
 				if (match(line, "^[ \t]*[A-Za-z_][A-Za-z0-9_]*"))
@@ -19059,15 +19068,23 @@ sm107_code_only()
 					if (w == hid)
 					{
 						st = 0
-						print substr(line, RSTART + RLENGTH - length(w))
-						next
+						hdpre = w
+						hdstart = RSTART + RLENGTH
 					}
 				}
-				print ""
-				next
+				if (hdstart == 0)
+				{
+					print ""
+					next
+				}
 			}
 			n = length(line)
 			i = 1
+			if (hdstart > 0)
+			{
+				out = hdpre
+				i = hdstart
+			}
 			while (i <= n)
 			{
 				c = substr(line, i, 1)
@@ -19385,7 +19402,7 @@ if [ "$sm107_sha_have" = "$sm107_sha_want" ] && [ "$sm107_close" -eq 2 ] \
 	&& [ "$sm107_open" -eq 2 ]; then
 	ok "the SMS handler's hashed view and tag counts are unmoved"
 else
-	bad "the SMS handler's code moved (${sm107_sha_have}, ${sm107_close} close tags, ${sm107_open} open tags); if the hash moved and the change is intended, record that hash here; a tag count that moved is a different failure and replacing the hash does not answer it"
+	bad "the SMS handler's filtered code or raw tag totals changed (${sm107_sha_have}, ${sm107_close} close tags, ${sm107_open} open tags; expected ${sm107_sha_want}, 2 and 2); if the hash moved and the change is intended, record that hash here; a tag count that moved is a different failure and replacing the hash does not answer it"
 fi
 
 # ROW FOUR -- the class, tree-wide: a value DB::escapeString() produced
@@ -19403,9 +19420,10 @@ fi
 # own '=' up to the next ';', so a second statement on the line is not
 # misread as part of the first, and a comparison earlier on the line does
 # not displace it. The match takes in the first character of the right-hand
-# side and the scan resumes after it, so an assignment written immediately
-# after another, as in $a = $b = ..., is not matched in its own right. The
-# name test ends at a character that
+# side and the scan resumes after it. Without whitespace after the first
+# '=', that character is the next variable's '$', so in $a=$b=... the
+# second assignment is not matched separately; with whitespace there, as
+# in $a = $b = ..., both can match. The name test ends at a character that
 # cannot continue an ASCII name, so $value does not read as a mention of
 # $val. Only an ASCII letter, digit or underscore continues a name there,
 # so a name spelled with a high byte, which PHP allows, reads as a mention
@@ -19491,6 +19509,32 @@ if [ "$sm107_sliced" -eq 0 ]; then
 	ok "no PHP file matches the escape-then-slice pattern this scan looks for"
 else
 	bad "${sm107_sliced} site(s) match the escape-then-slice pattern this scan looks for"
+fi
+
+# ROW FIVE -- the precondition the four rows above rest on. Where
+# short_open_tag is off, a bare short open tag can make the filter lose
+# code PHP runs, as the paragraph above the filter records. Neither shape
+# can arise while no file holds such a tag, so that is counted here rather
+# than assumed: without it, row four's sweep could skip a file's later code
+# and still report nothing. The keyword is excluded without regard to case,
+# as the filter matches it, so <?PHP is an opening tag here too. This is a
+# raw substring count over the unfiltered file, so a <? written inside a
+# string or a comment is counted as well; such a report is answered by
+# reading the file named, not by relaxing the count.
+sm107_bare=0
+for sm107_f in $(grep -rl '<?' cms/ --include='*.php' 2>/dev/null)
+do
+	sm107_n="$(grep -oE '<\?[A-Za-z=]*' "$sm107_f" \
+		| grep -viE '^<\?(php|=|xml)$' | grep -c '')"
+	if [ "${sm107_n:-0}" -gt 0 ]; then
+		sm107_bare=$((sm107_bare + sm107_n))
+		printf '    %s: %s\n' "$sm107_f" "$sm107_n"
+	fi
+done
+if [ "$sm107_bare" -eq 0 ]; then
+	ok "no PHP file under cms/ holds a bare short open tag"
+else
+	bad "${sm107_bare} bare short open tag(s) under cms/, so how this filter reads '<?' is not settled by the container's setting"
 fi
 echo
 echo "smoke: $pass passed, $fail failed"
