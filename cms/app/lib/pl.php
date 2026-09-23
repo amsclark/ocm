@@ -4599,11 +4599,16 @@ if (!function_exists('pl_settings_template_raw'))
 	
 		The template layer escapes every other setting it resolves, because
 		the values named here are the ones that are not rendered as HTML
-		text. base_url is written into a CSS url() at
-		templates/default.html lines 126, 139 and 144, and into a style
-		attribute at line 231. A CSS url() does not decode HTML entities, so
-		an escaped ampersand there would be read as the six characters it is
-		spelled with and the rule would point at a path that does not exist.
+		text. base_url is written into a CSS url() inside the style element
+		of templates/default.html at lines 126, 139 and 144. CSS in style
+		text is not HTML text and entities there are not decoded, so an
+		escaped ampersand would be read as the six characters it is spelled
+		with and the rule would point at a path that does not exist.
+		
+		Line 231 of the same template writes it into a quoted style
+		attribute, and that one would survive escaping: an attribute value
+		IS HTML text and its entities are decoded before the CSS is parsed.
+		It is the style element that decides the answer here.
 		
 		What keeps the list short is where the value comes from, not where it
 		goes. base_url is set in cms-custom/config/settings.php, which is PHP
@@ -4621,9 +4626,10 @@ if (!function_exists('pl_settings_template_raw'))
 		if (null === $set)
 		{
 			$set = array_flip(array(
-				// Config-file only, and read inside a CSS url() by the stock
-				// templates. 467 of the 479 setting tags in the tree are this
-				// one, nearly all of them quoted href, src and action values.
+				// Config-file only, and read inside a CSS url() in the style
+				// text of the stock layout. Nearly every other place it is
+				// read is a quoted href, src or action value, which escaping
+				// would not have broken.
 				'base_url',
 			));
 		}
@@ -5401,6 +5407,42 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 		$template_data['csrf_field'] = pl_csrf_hidden_input();
 	}
 	
+	/*	Whether a setting this template resolves has to be escaped.
+		
+		pl_template_sub() falls back to the application settings for a tag
+		the caller's data does not name, and substituted the value as it
+		stood. Most of what this function renders is HTML, and there
+		admin_email on templates/default.html lines 257 and 285 put a stored
+		value into a mailto href on every signed-in page.
+		
+		Five templates are not HTML, though, and the same fallback fills
+		them: templates/exchange_appt.txt becomes an .EML file, the ical.txt
+		under each zone in subtemplates/ical is served as text/Calendar,
+		templates/vcal.txt as text/calendar, and app/scripts holds a launchd
+		plist and a PHP script an operator runs from cron. time_zone is a
+		setting and a tag in the calendar templates, so escaping everything
+		would put an HTML entity in a calendar feed.
+		
+		So the name decides, and anything that is not HTML keeps the old
+		behaviour. A new template of a new format is raw without being listed
+		anywhere, which is the safe way round for the formats: it cannot be
+		corrupted by a change nobody remembered to make here.
+		
+		It is the name the CALLER asked for, read here before the custom
+		template path is resolved below, and not the file that is opened in
+		the end. What the output is read as is the caller's business:
+		index.php asks for templates/default.html and serves HTML, and
+		services/calendar.php asks for an ical.txt and sends text/Calendar.
+		The resolution below can change the name in both directions -- a
+		custom template_path() hook returns whatever name it likes, and
+		realpath() follows a symlink -- and neither of those tells the caller
+		to do anything different with what it gets back.
+	*/
+	$template_ext = is_string($template_file)
+		? strtolower((string) pathinfo($template_file, PATHINFO_EXTENSION))
+		: '';
+	$escape_settings = ('html' === $template_ext || 'htm' === $template_ext);
+	
 	// Handle custom templates.
 	// First, use the custom template path search algorithm if one is installed.
 	if (file_exists(pl_custom_directory() . "/extensions/template_path/template_path.php"))
@@ -5433,31 +5475,6 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 		trigger_error("Invalid template file " . (is_string($template_file) ? $template_file : gettype($template_file)));
 		return '';
 	}
-	
-	/*	Whether a setting this template resolves has to be escaped, decided
-		from the file that was really opened.
-		
-		pl_template_sub() falls back to the application settings for a tag
-		the caller's data does not name, and substituted the value as it
-		stood. Most of what this function renders is HTML, and there
-		admin_email on templates/default.html lines 257 and 285 put a stored
-		value into a mailto href on every signed-in page.
-		
-		Five templates are not HTML, though, and the same fallback fills
-		them: templates/exchange_appt.txt becomes an .EML file, the ical.txt
-		under each zone in subtemplates/ical is served as text/Calendar,
-		templates/vcal.txt as text/calendar, and app/scripts holds a launchd
-		plist and a PHP script an operator runs from cron. time_zone is a
-		setting and a tag in the calendar templates, so escaping everything
-		would put an HTML entity in a calendar feed.
-		
-		So the extension decides, and anything that is not HTML keeps the old
-		behaviour. A new template that is not HTML is raw without being
-		listed anywhere, which is the safe way round for the formats: it
-		cannot be corrupted by a change nobody remembered to make here.
-	*/
-	$template_ext = strtolower((string) pathinfo($template_real, PATHINFO_EXTENSION));
-	$escape_settings = ('html' === $template_ext || 'htm' === $template_ext);
 	
 	$file = fopen($template_real, 'r');
 

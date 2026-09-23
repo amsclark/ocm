@@ -21782,11 +21782,24 @@ fi
 # substituted the value as it stood, so an org name holding markup was served
 # as markup to a visitor with no session.
 #
+# The copy is still raw. loadSettings() records which names it took from the
+# settings and draw() escapes those names, and only those, where it puts the
+# value into the page. Escaping the copy instead escapes twice for a tag with
+# a directive, because several plugins escape their own output.
+#
 # Three more sites never go through that copy. pika_cms.php sets org_name and
 # admin_email as page data, which the isset() in loadSettings() skips;
 # pika-danio.php substitutes the org name into the served buffer after the
 # template has been drawn; and system-audit.php interpolates it into its own
 # nav HTML. Each one is escaped at its own site now.
+#
+# The other engine, pl_template(), falls back to the same settings for a tag
+# the caller's data does not name, and five of its call sites render something
+# that is not HTML -- a calendar feed, an .EML file, a launchd plist and an
+# installer script -- with time_zone a setting and a tag in them. So it
+# decides from the format of the name the CALLER asked for, read before the
+# custom template path is resolved, and anything that is not HTML is left as
+# it was stored.
 #
 # This section writes a payload into both settings, fetches the four pages
 # that render them, and for each asserts the escaped spelling is present and
@@ -21797,8 +21810,14 @@ fi
 # What it does not settle: the home page renders the org name twice, once
 # from the template tag and once from the buffer marker, and one escaped
 # match satisfies the row, so it does not pin which of the two sites escaped.
-# The three rows after the database part are presence checks over the source:
-# they say the escape is written, not that it ran.
+# The four rows after the database part are presence checks over the source:
+# they say the escape is written, not that it ran, and a review reproduced
+# four deliberately broken trees that all four of them still passed. The
+# container rows catch three of those four -- a gate forced to skip HTML, a
+# settings copy that stops escaping, and a site that escapes twice -- because
+# they assert the whole rendered value. The fourth, dropping the flag from
+# pl_template_sub()'s own recursion, is caught by neither: every fixture here
+# holds one tag and no nested template.
 echo
 echo "109. settings values reach HTML escaped"
 
@@ -21808,6 +21827,12 @@ if [ "$HAVE_DB" = 1 ]; then
 	# so a match for one cannot be a match for the other.
 	SM109_PAY='ZZ109<img src=x onerror="zz109()">'
 	SM109_APAY='ZZ109A<img src=x onerror="zz109a()">'
+
+	# The whole escaped spelling, not a prefix. A row that asked only for
+	# ZZ109&lt;img would pass on a fix that escaped the angle brackets and
+	# left the double quote, which is the half that matters in an attribute.
+	SM109_ESC='ZZ109&lt;img src=x onerror=&quot;zz109()&quot;&gt;'
+	SM109_AESC='ZZ109A&lt;img src=x onerror=&quot;zz109a()&quot;&gt;'
 
 	# CONCAT puts a byte in front of the value, so a successful read of an
 	# empty value is still a non-empty answer. adb discards stderr and a
@@ -21835,9 +21860,11 @@ if [ "$HAVE_DB" = 1 ]; then
 	fi
 
 	if [ "$sm109_ready" = 1 ]; then
-		# The restore runs from the trap as well, so a suite killed between
-		# the write and the restore still puts the two values back. The rm
-		# the trap already carried is kept.
+		# The restore runs from the trap as well, so a suite interrupted
+		# between the write and the restore still puts the two values back,
+		# for the exits where a trap runs at all: a SIGKILL or a power loss
+		# leaves the payload stored, and then the next run's row one reads it
+		# as the value to restore. The rm the trap already carried is kept.
 		trap 'sm109_set owner_name "$sm109_own_old"; sm109_set admin_email "$sm109_adm_old"; rm -f "$COOKIES" "$BODY"' EXIT
 
 		sm109_set owner_name "$SM109_PAY"
@@ -21869,13 +21896,13 @@ if [ "$HAVE_DB" = 1 ]; then
 		# ROW TWO -- the desktop sign-in page, with no session at all. This
 		# is the site that mattered most: it is reachable by anybody.
 		sm109_fetch "$OCM_URL/index.php"
-		sm109_check "the desktop sign-in page" 'ZZ109<img' 'ZZ109&lt;img'
+		sm109_check "the desktop sign-in page" "$SM109_PAY" "$SM109_ESC"
 
 		# ROW THREE -- the mobile sign-in page, also with no session. The
 		# user agent is what picks the mobile template.
 		sm109_fetch -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' \
 			"$OCM_URL/m/index.php"
-		sm109_check "the mobile sign-in page" 'ZZ109<img' 'ZZ109&lt;img'
+		sm109_check "the mobile sign-in page" "$SM109_PAY" "$SM109_ESC"
 
 		# ROW FOUR -- a session, checked rather than assumed. Without this
 		# the two rows below would pass on a sign-in page, which renders
@@ -21909,61 +21936,158 @@ if [ "$HAVE_DB" = 1 ]; then
 				&& ! grep -qi 'logout' "$BODY"; then
 				bad "the home page fetched with the jar came back without a sign-out link, so the org name and admin address rows would not have been reading a signed-in page"
 			else
-				sm109_check "the signed-in home page org name" 'ZZ109<img' 'ZZ109&lt;img'
+				sm109_check "the signed-in home page org name" "$SM109_PAY" "$SM109_ESC"
 			fi
 
 			# ROW SIX -- the same body's admin address, which the layout
 			# writes into a mailto href.
-			sm109_check "the signed-in home page admin address" 'ZZ109A<img' 'ZZ109A&lt;img'
+			sm109_check "the signed-in home page admin address" "$SM109_APAY" "$SM109_AESC"
 
 			# ROW SEVEN -- system-audit.php, which builds its nav HTML by
-			# interpolation rather than through a template.
+			# interpolation rather than through a template. Its own page title
+			# is checked first: the fetch follows redirects, and an expired
+			# session lands on the sign-in page, which escapes owner_name for
+			# its own reasons and would pass the row without the audit page
+			# having been read at all.
 			sm109_fetch -L -b "$COOKIES" "$OCM_URL/system-audit.php"
-			sm109_check "the audit page branding" 'ZZ109<img' 'ZZ109&lt;img'
+			if [ "$sm109_crc" -eq 0 ] && [ "$sm109_code" = 200 ] \
+				&& ! grep -qF 'Audit Log' "$BODY"; then
+				bad "the audit page came back without its own title, so its branding was never read"
+			else
+				sm109_check "the audit page branding" "$SM109_PAY" "$SM109_ESC"
+			fi
 		fi
 
-		# ROW EIGHT -- the other template engine, both ways round, in the
-		# container. pl_template() renders about 140 call sites and decides
-		# from the file extension whether a setting it resolves is escaped,
-		# so one fixture of each extension settles both halves at once. The
-		# fixtures are written under /tmp inside the container, not under
-		# cms/, so a killed run leaves nothing in the docroot.
+		# ROW EIGHT -- the other engine, in the container, over five fixtures
+		# in one run. pl_template() renders about 140 call sites and decides
+		# from the name the CALLER asked for whether a setting it resolves is
+		# escaped, so one fixture of each extension settles both halves, and a
+		# pair of symlinks settles that the answer follows the asked-for name
+		# and not the file that is opened in the end. A fifth fixture names the
+		# setting with a directive, which is the shape that would be escaped
+		# twice if the settings copy held escaped values.
+		#
+		# The pl_template() fixtures go under /tmp inside the container, so a
+		# killed run leaves nothing in the checkout. The pikaTempLib fixture
+		# cannot go there: that class refuses a template outside its own
+		# directories. It goes in the custom directory, which is a named volume
+		# and also not the checkout.
+		#
+		# The directory name carries the shell's pid and a random number, so
+		# two suites running at the same time do not write over each other, and
+		# both directories are removed from a shutdown function, so a snippet
+		# that dies part way through still takes its fixtures with it.
+		sm109_dir="/tmp/zz109tpl.$$.${RANDOM}"
 		SM109_PHP="$(docker compose "${COMPOSE_ARGS[@]}" exec -T \
+			-e ZZ109DIR="$sm109_dir" \
 			-w /var/www/html/cms app php -r '
 			define("PL_DISABLE_SECURITY", true);
 			require_once("pika-danio.php");
 			pika_init();
-			$d = "/tmp/zz109tpl";
+			require_once("app/lib/pikaTempLib.php");
+			$d = getenv("ZZ109DIR");
+			$c = pl_custom_directory() . "/" . basename($d);
+			register_shutdown_function(function () use ($d, $c) {
+				foreach (array("/real.html", "/real.txt", "/ask.txt",
+					"/ask.html") as $f)
+				{
+					@unlink($d . $f);
+				}
+				@rmdir($d);
+				@unlink($c . "/ta.html");
+				@rmdir($c);
+			});
 			@mkdir($d);
-			file_put_contents($d . "/t.html", "A%%[owner_name]%%B");
-			file_put_contents($d . "/t.txt", "A%%[owner_name]%%B");
-			echo "HTML:[", pl_template($d . "/t.html", array()), "]\n";
-			echo "TXT:[", pl_template($d . "/t.txt", array()), "]\n";
-			@unlink($d . "/t.html");
-			@unlink($d . "/t.txt");
-			@rmdir($d);
+			@mkdir($c);
+			file_put_contents($d . "/real.html", "A%%[owner_name]%%B");
+			file_put_contents($d . "/real.txt", "A%%[owner_name]%%B");
+			@symlink($d . "/real.html", $d . "/ask.txt");
+			@symlink($d . "/real.txt", $d . "/ask.html");
+			file_put_contents($c . "/ta.html", "A%%[owner_name,input_textarea]%%B");
+			echo "HTML:[", pl_template($d . "/real.html", array()), "]\n";
+			echo "TXT:[", pl_template($d . "/real.txt", array()), "]\n";
+			echo "LNTXT:[", pl_template($d . "/ask.txt", array()), "]\n";
+			echo "LNHTML:[", pl_template($d . "/ask.html", array()), "]\n";
+			$t = new pikaTempLib($c . "/ta.html");
+			echo "TA:[", $t->draw(), "]\n";
+			echo "DONE109\n";
 			' </dev/null 2>/dev/null)"
+		sm109_prc=$?
 
-		if printf '%s' "$SM109_PHP" | grep -qF 'HTML:[AZZ109&lt;img' \
-			&& ! printf '%s' "$SM109_PHP" | grep -qF 'HTML:[AZZ109<img'; then
-			ok "the other engine escapes the setting when the template it opened is HTML"
+		# The command's own status is read on the line after it, and the
+		# closing marker is read as well. A snippet that died part way through
+		# still prints what it had already echoed, so a row that only looked
+		# for its own prefix would pass on that truncated output, and a docker
+		# exec that failed outright would leave the rows below judging an empty
+		# string.
+		if [ "$sm109_prc" -eq 0 ] \
+			&& printf '%s' "$SM109_PHP" | grep -qF 'DONE109'; then
+			sm109_php_ok=1
+			ok "the other engine rendered all five fixtures in the container and ran to the end"
 		else
-			bad "the other engine did not escape the setting for an HTML template: ${SM109_PHP}"
+			sm109_php_ok=0
+			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the five rows below are not run: ${SM109_PHP}"
 		fi
 
-		# ROW NINE -- the same fixture with a .txt name has to come back as
-		# it was stored. time_zone is a setting and a tag in the iCalendar
-		# templates, and templates/vcal.txt, templates/exchange_appt.txt and
-		# the two files in app/scripts are read the same way, so an entity
-		# put into one of those is a corrupt feed or a corrupt script.
-		if printf '%s' "$SM109_PHP" | grep -qF 'TXT:[AZZ109<img' \
-			&& ! printf '%s' "$SM109_PHP" | grep -qF 'TXT:[AZZ109&lt;img'; then
-			ok "the other engine leaves the setting as it was stored when the template is not HTML"
-		else
-			bad "the other engine changed the setting for a template that is not HTML: ${SM109_PHP}"
-		fi
+		# Each row below asks for the whole rendered value, opening bracket to
+		# closing bracket. The payload holds a double quote as well as angle
+		# brackets, so a half fix that escaped only < and > fails, and the
+		# closing ] proves the render was not cut short.
+		sm109_php_row() {
+			if [ "$sm109_php_ok" != 1 ]; then
+				return
+			fi
+			if printf '%s' "$SM109_PHP" | grep -qF "$2" \
+				&& ! printf '%s' "$SM109_PHP" | grep -qF "$3"; then
+				ok "$1"
+			else
+				bad "not true: $1 -- fixture output was ${SM109_PHP}"
+			fi
+		}
 
-		# ROW TEN -- the restore, and a read that proves it landed. The
+		# ROW NINE -- an HTML template, escaped.
+		sm109_php_row \
+			"the other engine escapes the setting when the caller asked for an HTML template" \
+			"HTML:[A${SM109_ESC}B]" "HTML:[A${SM109_PAY}B]"
+
+		# ROW TEN -- a template that is not HTML, as it was stored. time_zone
+		# is a setting and a tag in the iCalendar templates, and
+		# templates/vcal.txt, templates/exchange_appt.txt and the two files in
+		# app/scripts are read the same way, so an entity put into one of those
+		# is a corrupt feed or a corrupt script.
+		sm109_php_row \
+			"the other engine leaves the setting as it was stored when the caller asked for a template that is not HTML" \
+			"TXT:[A${SM109_PAY}B]" "TXT:[A${SM109_ESC}B]"
+
+		# ROW ELEVEN -- asked for .txt, opened an .html file. A custom
+		# template_path() hook returns whatever name it likes and realpath()
+		# follows symlinks, so the file that is opened can carry either
+		# extension. What the caller does with the output is decided by what
+		# the caller asked for, so this one has to come back raw: it is a
+		# calendar feed whose deployment keeps its templates in HTML files.
+		sm109_php_row \
+			"the other engine follows the name the caller asked for when the file it opened is HTML" \
+			"LNTXT:[A${SM109_PAY}B]" "LNTXT:[A${SM109_ESC}B]"
+
+		# ROW TWELVE -- the other way round, and the one that matters for
+		# security: asked for .html, opened a file named .txt. Reading the
+		# opened name here would skip the escape on a page served as HTML.
+		sm109_php_row \
+			"the other engine escapes for an HTML request even when the file it opened is not named HTML" \
+			"LNHTML:[A${SM109_ESC}B]" "LNHTML:[A${SM109_PAY}B]"
+
+		# ROW THIRTEEN -- pikaTempLib's directive path, escaped once. This is
+		# the only fixture of the five that goes through that class.
+		# template_plugins/input_textarea.php escapes its own output, and
+		# template_plugins/menu.php escapes a selected value it does not
+		# recognise, so a settings copy holding escaped values spells an
+		# ampersand twice over here and stops a menu matching its own
+		# selection. &amp;lt; is what that looks like.
+		sm109_php_row \
+			"the template class's directive path escapes the setting once, not twice" \
+			"${SM109_ESC}</textarea>" 'ZZ109&amp;lt;img'
+
+		# ROW FOURTEEN -- the restore, and a read that proves it landed. The
 		# trap runs the same two statements again at exit, which is harmless
 		# and is what covers a suite that dies before this point.
 		sm109_set owner_name "$sm109_own_old"
@@ -21981,19 +22105,23 @@ else
 	printf '  skip settings escaping requests (needs a running docker compose stack)\n'
 fi
 
-# ROW ELEVEN -- the central escape. Presence over the source, so a refactor
-# that drops it is caught even with no stack. The grep drops comment lines so
-# the call quoted in the block comment above it does not pass this row.
-if grep -F 'pl_html_escape($plSettings[$setting])' cms/app/lib/pikaTempLib.php \
-	| grep -qvF '//'; then
-	ok "the template settings copy is written to escape the value it copies"
+# ROW FIFTEEN -- the first engine's two halves, over the source, so a refactor
+# that drops either is caught even with no stack. The copy records which names
+# came from the settings, and direct replacement escapes those and only those.
+sm109_first=0
+grep -qF '$this->_settings_escape[$setting] = true;' cms/app/lib/pikaTempLib.php \
+	&& sm109_first=$((sm109_first+1))
+grep -qF 'if (isset($this->_settings_escape[$tag]))' cms/app/lib/pikaTempLib.php \
+	&& sm109_first=$((sm109_first+1))
+if [ "$sm109_first" -eq 2 ]; then
+	ok "the template settings copy still records its names and direct replacement still escapes them"
 else
-	bad "the template settings copy no longer escapes the value it copies"
+	bad "only ${sm109_first} of the 2 halves of the template settings escape are still written"
 fi
 
-# ROW TWELVE -- the raw list, and that base_url is on it. base_url is read
-# inside a CSS url(), which does not decode HTML entities, so escaping it
-# would point the rule at a path that does not exist.
+# ROW SIXTEEN -- the raw list, and that base_url is on it. base_url is read
+# inside a CSS url() in CSS text, which does not decode HTML entities, so
+# escaping it would point the rule at a path that does not exist.
 if grep -q 'function pl_settings_template_raw' cms/app/lib/pl.php \
 	&& grep -qF "'base_url'," cms/app/lib/pl.php; then
 	ok "the not-HTML settings list exists and still names base_url"
@@ -22001,9 +22129,9 @@ else
 	bad "the not-HTML settings list is gone or no longer names base_url"
 fi
 
-# ROW THIRTEEN -- the three sites that do not go through the settings copy.
-# Each has to still wrap its read. The count is three so a change that
-# escapes two of them and drops the third fails this row.
+# ROW SEVENTEEN -- the four reads that do not go through the settings copy,
+# across three files. Each has to still wrap its read. The count is four so a
+# change that escapes three of them and drops the fourth fails this row.
 sm109_sites=0
 grep -q "pl_html_escape(pl_settings_get('owner_name'))" cms/pika_cms.php \
 	&& sm109_sites=$((sm109_sites+1))
@@ -22019,22 +22147,22 @@ else
 	bad "only ${sm109_sites} of the 4 reads outside the settings copy are written escaped"
 fi
 
-# ROW FOURTEEN -- the gate itself, over the source. Row eight and row nine
-# only run with a stack, and a change that escaped every template or none of
-# them would otherwise be caught nowhere on a machine with no containers. The
-# three parts are the extension test, the escape that reads its answer, and
-# the parameter the answer travels on.
+# ROW EIGHTEEN -- the second engine's gate, over the source. The rows above
+# that run it need a stack, and a change that escaped every template or none
+# of them would otherwise be caught nowhere on a machine with no containers.
+# The three parts are the format test over the name the caller asked for, the
+# escape that reads its answer, and the parameter the answer travels on.
 sm109_gate=0
-grep -qF 'pathinfo($template_real, PATHINFO_EXTENSION)' cms/app/lib/pl.php \
+grep -qF 'pathinfo($template_file, PATHINFO_EXTENSION)' cms/app/lib/pl.php \
 	&& sm109_gate=$((sm109_gate+1))
 grep -qF 'if ($escape_settings && is_scalar($replacement)' cms/app/lib/pl.php \
 	&& sm109_gate=$((sm109_gate+1))
 grep -qF 'function pl_template_sub($str, $template_data, $escape_settings' \
 	cms/app/lib/pl.php && sm109_gate=$((sm109_gate+1))
 if [ "$sm109_gate" -eq 3 ]; then
-	ok "the other engine still decides from the template extension whether to escape a setting"
+	ok "the other engine still decides from the name the caller asked for whether to escape a setting"
 else
-	bad "only ${sm109_gate} of the 3 parts of the template extension gate are still written"
+	bad "only ${sm109_gate} of the 3 parts of the template format gate are still written"
 fi
 
 echo

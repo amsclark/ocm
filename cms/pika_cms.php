@@ -330,9 +330,11 @@ $plTemplate["timestamp"] = date('g:i A * M j, Y');
 	renders it as text.
 	
 	Escaped here because these two are page data. The settings copy in
-	pikaTempLib::loadSettings() escapes what it copies, but it skips a name
-	the page has already set, and these two are set under different names
-	anyway.
+	pikaTempLib::loadSettings() is what draw() escapes, and that copy skips
+	a name the page has already set -- and these two are set under names of
+	their own in any case: the settings labels are owner_name and
+	admin_email, and the tags here are org_name and admin_email, so only the
+	second one is even a name the copy could have supplied.
 */
 $plTemplate["org_name"] = pl_html_escape(pl_settings_get('owner_name'));
 $plTemplate["admin_email"] = pl_html_escape(pl_settings_get('admin_email'));

@@ -28,6 +28,10 @@ class pikaTempLib {
 	
 	private $_file_name;
 	private $_data;
+	// Keys in _data that loadSettings() took from the application settings
+	// and that direct replacement has to escape. See the long comment on
+	// loadSettings().
+	private $_settings_escape = array();
 	private $_menus = array();
 	private $_args = array();
 	private $_template_string;
@@ -437,6 +441,21 @@ class pikaTempLib {
 						{
 							$matched_value = $this->_data[$tag];
 						} 
+						
+						/*	A value loadSettings() took from the application
+							settings goes into the page here with nothing in
+							between, so it is escaped here. Only the names
+							that loop recorded are escaped: a value the page
+							supplied itself is never one of them, and neither
+							is a setting this class was built in string mode
+							to render, nor one pl_settings_template_raw()
+							names.
+						*/
+						if (isset($this->_settings_escape[$tag]))
+						{
+							$matched_value = pl_html_escape($matched_value);
+						}
+						
 						$temp_str = str_replace($this->_template_prefix . $tag . $this->_template_suffix, $matched_value, $temp_str);
 						$tag_output_offset = strlen($matched_value);
 					
@@ -657,6 +676,18 @@ class pikaTempLib {
 			escaped because they are not read as HTML text. A value that is not a
 			scalar is copied as it was: pl_html_escape() answers '' for an array,
 			and dropping a value is a change this fix has no reason to make.
+			
+			What the loop stores is the value as it was, and the name goes in
+			_settings_escape for draw() to escape at the point of substitution.
+			Storing the escaped value here instead would escape it twice for a
+			template that names a setting with a directive: a plugin gets the
+			value out of _data and several of them escape their own output --
+			template_plugins/input_textarea.php and template_plugins/menu.php
+			both do -- so an ampersand in the org name came out spelled twice
+			over, and a menu whose keys are stored raw stopped matching its own
+			selected value. Direct replacement is the one place that puts the
+			value into the page with nothing in between, so that is where the
+			escape belongs.
 		*/
 		$escape_settings = !is_null($this->_file_name);
 		
@@ -664,14 +695,12 @@ class pikaTempLib {
 		{	
 			if(!pl_settings_template_blocked($setting) && !isset($this->_data[$setting]))
 			{
+				$this->_data[$setting] = $plSettings[$setting];
+				
 				if ($escape_settings && is_scalar($plSettings[$setting])
 					&& !pl_settings_template_raw($setting))
 				{
-					$this->_data[$setting] = pl_html_escape($plSettings[$setting]);
-				}
-				else
-				{
-					$this->_data[$setting] = $plSettings[$setting];
+					$this->_settings_escape[$setting] = true;
 				}
 			}
 		}
