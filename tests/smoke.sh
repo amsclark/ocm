@@ -20723,7 +20723,7 @@ do
 	fi
 	if [ "$sm108_loc" -ne "$((sm108_strip * 3))" ]
 	then
-		sm108_row1_msg="${sm108_row1_msg} \$mask_${sm108_k} appears ${sm108_loc} time(s) where $((sm108_strip * 3)) were expected, one strip one condition and one join per site, so the mentions of it moved: a statement reads or writes it somewhere else, or one of the three this row expects is gone;"
+		sm108_row1_msg="${sm108_row1_msg} \$mask_${sm108_k} appears ${sm108_loc} time(s) where $((sm108_strip * 3)) were expected, one strip one condition and one join per site, so the mentions of it moved: a statement reads or writes it somewhere else, one of the three this row expects is gone, or an ordinary string spells it;"
 	fi
 	if [ "$sm108_men" -ne "$sm108_strip" ]
 	then
@@ -20746,7 +20746,7 @@ then
 	bad "the masked SSN and phone condition and join counts did not come back as numbers (${sm108_ssn_asg}, ${sm108_ph_asg}, ${sm108_ssn_cnd}, ${sm108_ph_cnd})"
 elif [ -n "$sm108_row1_msg" ]
 then
-	bad "the masked SSN and phone counts this row reads no longer agree with each other:${sm108_row1_msg}"
+	bad "the masked SSN and phone counts this row reads differ from the counts and the ratios it expects:${sm108_row1_msg}"
 elif [ "$sm108_ssn_cnd" -ne 4 ] || [ "$sm108_ph_cnd" -ne 2 ]
 then
 	bad "the masked SSN and phone conditions are no longer written as the row reads them: ${sm108_ssn_cnd} ssn and ${sm108_ph_cnd} phone condition(s) matched character for character where 4 and 2 were expected, so a condition is no longer written the way this row spells it: a different test, or the same test written differently"
@@ -21146,12 +21146,15 @@ else
 
 	cleanup_sm108()
 	{
-		# Only ids this run recorded, in each table by that table's own id.
-		# The ids the page wrote were read back above a bound taken before
-		# the POST that wrote them; the seeded case, user and group were
-		# recorded from their own INSERT plus a readback under this run's own
-		# name. Either way there is no discovery left at cleanup time and no
-		# query here that could pick up a row this run never recorded.
+		# Contacts, aliases, conflicts and cases go by ids this run recorded,
+		# in each table by that table's own id. The ids the page wrote were
+		# read back above a bound taken before the POST that wrote them; the
+		# seeded case, user and group were recorded from their own INSERT
+		# plus a readback under this run's own name. For those four tables
+		# there is no discovery left at cleanup time. The session rows are
+		# the exception review 63f names: the session ids are read here, the
+		# csrf rows then go by those session ids and the sessions by the
+		# user id.
 		# Review 63d is why the child rows are not deleted by a parent id: a
 		# row already pointing at the contact id or the case id this run was
 		# handed would go with them.
@@ -21335,9 +21338,11 @@ else
 
 	# The highest id in each of the four tables cleanup deletes from, read
 	# before a POST. Anything above one of them afterwards was written after
-	# this call; which writer wrote it is a separate question, and for the
-	# contact the exactly-one check below is what answers it. A read that
-	# fails leaves its bound empty, and an empty bound stops the POST rather
+	# this call; which writer wrote it is a separate question, and the
+	# exactly-one check below does not answer it either -- one matching row
+	# settles that the result is unique and not who wrote it, so the
+	# concurrent-writer exclusion above still stands. A read that fails
+	# leaves its bound empty, and an empty bound stops the POST rather
 	# than letting it run unowned.
 	sm108_bound()
 	{
@@ -21560,7 +21565,7 @@ else
 			bad "the clean masked SSN POST did not go through, so the stored value is untested"
 		elif [ -z "$sm108_cid" ]
 		then
-			bad "the clean masked SSN POST recorded no contact of its own name above the bound -- it created none, the readback failed, or more than one matched -- so the stored value is untested"
+			bad "the clean masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
 		else
 			sm108_q "SELECT ssn FROM contacts WHERE contact_id = ${sm108_cid}"
 			sm108_clean="$sm108_qv"
@@ -21595,7 +21600,7 @@ else
 			bad "the markup masked SSN POST did not go through, so the stored value is untested"
 		elif [ -z "$sm108_cid" ]
 		then
-			bad "the markup masked SSN POST recorded no contact of its own name above the bound -- it created none, the readback failed, or more than one matched -- so the stored value is untested"
+			bad "the markup masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
 		else
 			sm108_q "SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid}"
 			sm108_dirty_n="$sm108_qv"
@@ -21635,7 +21640,7 @@ else
 			bad "the all-markup masked SSN POST did not go through, so the stored value is untested"
 		elif [ -z "$sm108_cid" ]
 		then
-			bad "the all-markup masked SSN POST recorded no contact of its own name above the bound -- it created none, the readback failed, or more than one matched -- so the stored value is untested"
+			bad "the all-markup masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
 		else
 			sm108_empty_rc=0
 			sm108_empty_msg=''
@@ -21690,10 +21695,10 @@ else
 			bad "the clean masked phone POST did not go through, so the stored value is untested"
 		elif [ -z "$sm108_cid" ]
 		then
-			bad "the clean masked phone POST recorded no contact of its own name above the bound -- it created none, the readback failed, or more than one matched -- so the stored value is untested"
+			bad "the clean masked phone POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
 		elif [ -z "$sm108_ncase" ] || [ "$sm108_ncase" = "$sm108_case" ]
 		then
-			bad "the clean masked phone POST recorded no case above the bound: it named '${sm108_ncase}' where a case id other than the seeded ${sm108_case} was expected, so either the POST created none or the read failed"
+			bad "the clean masked phone POST recorded no case above the bound: it named '${sm108_ncase}' where a case id other than the seeded ${sm108_case} was expected, so no case matching this contact and bound came back, or the read failed; a case written with another client_id would be missed here too"
 		else
 			sm108_q "SELECT phone FROM contacts WHERE contact_id = ${sm108_cid}"
 			sm108_phclean="$sm108_qv"
@@ -21726,7 +21731,7 @@ else
 			bad "the markup masked phone POST did not go through, so the stored value is untested"
 		elif [ -z "$sm108_cid" ]
 		then
-			bad "the markup masked phone POST recorded no contact of its own name above the bound -- it created none, the readback failed, or more than one matched -- so the stored value is untested"
+			bad "the markup masked phone POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
 		else
 			sm108_q "SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid}"
 			sm108_phn="$sm108_qv"
@@ -21756,12 +21761,12 @@ else
 		bad "${sm108_bound_fail} masked-field POST(s) were not sent because the contact, case, alias and conflict bounds they need in order to be cleaned up could not be read"
 	elif [ "$sm108_cfail" -ne 0 ]
 	then
-		bad "${sm108_cfail} of the masked-field cleanup statements or the reads they depend on failed, so fixture rows may be left behind:${sm108_cfail_msg}"
+		bad "${sm108_cfail} of the masked-field cleanup checks did not pass -- a failed statement, a failed read, a read that matched more than one row, a missing bound or a session id of the wrong shape -- so fixture rows may be left behind:${sm108_cfail_msg}"
 	elif [ -n "$sm108_left" ]
 	then
-		bad "the masked-field cleanup reported no failures but fixture rows are still there:${sm108_left}"
+		bad "the masked-field cleanup reported no failures but the searches after it did not come back empty -- rows are still there, or a count query failed and what is left is unknown:${sm108_left}"
 	else
-		ok "the masked-field fixtures are deleted by the ids this run recorded, each table by its own id, every delete and every read cleanup depends on reported success, and the tag and recorded-id searches that follow found no contact, alias, case, conflict row, session, user or group of this run's left"
+		ok "the masked-field fixtures this run recorded are deleted, contacts aliases conflicts and cases by their own ids and the session rows by the session and user ids read at cleanup time, every delete and every read cleanup depends on reported success, and the tag and recorded-id searches that follow found no contact, alias, case, conflict row, session, user or group of this run's left"
 	fi
 	trap 'rm -f "$COOKIES" "$BODY"' EXIT
 fi
