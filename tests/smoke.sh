@@ -21807,17 +21807,39 @@ fi
 # the section refuses to write unless it read them back, so a restore is
 # always possible.
 #
-# What it does not settle: the home page renders the org name twice, once
-# from the template tag and once from the buffer marker, and one escaped
-# match satisfies the row, so it does not pin which of the two sites escaped.
 # The four rows after the database part are presence checks over the source:
 # they say the escape is written, not that it ran, and a review reproduced
-# four deliberately broken trees that all four of them still passed. The
-# container rows catch three of those four -- a gate forced to skip HTML, a
-# settings copy that stops escaping, and a site that escapes twice -- because
-# they assert the whole rendered value. The fourth, dropping the flag from
-# pl_template_sub()'s own recursion, is caught by neither: every fixture here
-# holds one tag and no nested template.
+# four deliberately broken trees that all four of them still passed. The rows
+# that fetch pages and the rows that render fixtures in the container cover
+# all four between them, because those assert the whole rendered value.
+#
+#   * a format gate forced to skip HTML fails the two direct fixture rows and
+#     both home page rows.
+#   * a settings copy that stops recording the names it took fails the two
+#     sign-in page rows, which are the only rows that read the template class
+#     on a template of its own; no fixture here covers it.
+#   * escaping twice on the directive path fails the fixture row that renders
+#     the setting through a plugin.
+#   * dropping the flag where pl_template_sub() passes it to itself fails the
+#     signed-in home page admin address row. That engine replaces one tag name
+#     per frame and hands the rest of the template to the next frame, so every
+#     tag after the first is already inside the recursion, and the default
+#     template reaches the administrator address well after its first tag. No
+#     nested template is needed for this.
+#
+# What none of it pins is a double escape confined to one site that no row
+# reads separately. system-audit.php builds its own nav HTML, and the page
+# header on that same response still carries a correct owner name from
+# pika_exit(), so the audit row can match the escaped spelling from the header
+# while the nav holds the doubled one. The legacy reads in pika_cms.php have
+# no fixture of their own either.
+#
+# The fixtures are removed from a shutdown function registered before either
+# directory is made, so a fatal error or an uncaught exception still clears
+# them, and an exit before that point has nothing to clear. A kill signal
+# leaves the temporary directory, its two files and its two symbolic links,
+# and the one template under the custom directory; every removal there ignores
+# its own errors, so a failure to clean up cannot fail the section.
 echo
 echo "109. settings values reach HTML escaped"
 
@@ -22004,8 +22026,8 @@ if [ "$HAVE_DB" = 1 ]; then
 			@symlink($d . "/real.html", $d . "/ask.txt");
 			@symlink($d . "/real.txt", $d . "/ask.html");
 			file_put_contents($c . "/ta.html", "A%%[owner_name,input_textarea]%%B");
-			echo "HTML:[", pl_template($d . "/real.html", array()), "]\n";
-			echo "TXT:[", pl_template($d . "/real.txt", array()), "]\n";
+			echo "DIRHTML:[", pl_template($d . "/real.html", array()), "]\n";
+			echo "DIRTXT:[", pl_template($d . "/real.txt", array()), "]\n";
 			echo "LNTXT:[", pl_template($d . "/ask.txt", array()), "]\n";
 			echo "LNHTML:[", pl_template($d . "/ask.html", array()), "]\n";
 			$t = new pikaTempLib($c . "/ta.html");
@@ -22033,11 +22055,24 @@ if [ "$HAVE_DB" = 1 ]; then
 		# closing bracket. The payload holds a double quote as well as angle
 		# brackets, so a half fix that escaped only < and > fails, and the
 		# closing ] proves the render was not cut short.
+		#
+		# The label of every needle names one line of the output and is not a
+		# substring of any other line, which is why the two direct renders are
+		# DIRHTML and DIRTXT: HTML:[ and TXT:[ would have matched inside
+		# LNHTML:[ and LNTXT:[, and then a missing direct render could have
+		# passed on the symlinked one's output.
+		#
+		# A row whose whole value is too long to spell out passes a second
+		# must-appear needle as a fourth argument, so that it can pin the start
+		# of the line and the closing bracket without writing what is between
+		# them. A row that gives no fourth argument checks its one needle twice,
+		# which is harmless.
 		sm109_php_row() {
 			if [ "$sm109_php_ok" != 1 ]; then
 				return
 			fi
 			if printf '%s' "$SM109_PHP" | grep -qF "$2" \
+				&& printf '%s' "$SM109_PHP" | grep -qF "${4:-$2}" \
 				&& ! printf '%s' "$SM109_PHP" | grep -qF "$3"; then
 				ok "$1"
 			else
@@ -22048,7 +22083,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		# ROW NINE -- an HTML template, escaped.
 		sm109_php_row \
 			"the other engine escapes the setting when the caller asked for an HTML template" \
-			"HTML:[A${SM109_ESC}B]" "HTML:[A${SM109_PAY}B]"
+			"DIRHTML:[A${SM109_ESC}B]" "DIRHTML:[A${SM109_PAY}B]"
 
 		# ROW TEN -- a template that is not HTML, as it was stored. time_zone
 		# is a setting and a tag in the iCalendar templates, and
@@ -22057,7 +22092,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		# is a corrupt feed or a corrupt script.
 		sm109_php_row \
 			"the other engine leaves the setting as it was stored when the caller asked for a template that is not HTML" \
-			"TXT:[A${SM109_PAY}B]" "TXT:[A${SM109_ESC}B]"
+			"DIRTXT:[A${SM109_PAY}B]" "DIRTXT:[A${SM109_ESC}B]"
 
 		# ROW ELEVEN -- asked for .txt, opened an .html file. A custom
 		# template_path() hook returns whatever name it likes and realpath()
@@ -22085,7 +22120,7 @@ if [ "$HAVE_DB" = 1 ]; then
 		# selection. &amp;lt; is what that looks like.
 		sm109_php_row \
 			"the template class's directive path escapes the setting once, not twice" \
-			"${SM109_ESC}</textarea>" 'ZZ109&amp;lt;img'
+			"${SM109_ESC}</textarea>B]" 'ZZ109&amp;lt;img' 'TA:[A<textarea '
 
 		# ROW FOURTEEN -- the restore, and a read that proves it landed. The
 		# trap runs the same two statements again at exit, which is harmless

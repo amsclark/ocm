@@ -644,7 +644,7 @@ class pikaTempLib {
 			system-settings.php still shows the database host and the base
 			directory.
 		*/
-		/*	The copy is escaped for HTML, in file mode only.
+		/*	The copy is escaped for HTML at substitution, in file mode only.
 			
 			These values are typed into system-settings.php and stored as they
 			were typed. Four of the tags that resolve from this copy sit in HTML
@@ -654,11 +654,23 @@ class pikaTempLib {
 			Direct replacement in draw() substitutes the value as it stands, so
 			an org name holding markup was served as markup on the sign-in page.
 			
-			Escaped here rather than in draw(): direct replacement is also how a
-			page hands already-built HTML to its layout template, so draw() has
-			no way to tell a setting from a page fragment and escaping there
-			would escape the page. This loop does know -- everything it copies is
-			a setting.
+			This loop stores the value as it was and records the name in
+			_settings_escape; draw() escapes at the point of direct replacement,
+			for the names recorded here and no others. The escape cannot simply
+			cover everything draw() replaces, because direct replacement is also
+			how a page hands already-built HTML to its layout template, and
+			draw() has no way of its own to tell a setting from a page fragment.
+			This loop does know -- everything it copies is a setting -- so it
+			records the names and draw() escapes only those.
+			
+			Nor can the escape go here, on the copy. A template that names a
+			setting with a directive hands the value to a plugin, and several
+			plugins escape their own output: template_plugins/input_textarea.php
+			and template_plugins/menu.php both do. An escaped copy came out with
+			the ampersand spelled twice over, and a menu whose keys are stored
+			raw stopped matching its own selected value. Direct replacement is
+			the one place that puts the value into the page with nothing in
+			between, so that is where the escape belongs.
 			
 			File mode only, because string mode is document assembly. docgen.php
 			passes the body of an uploaded form template in as the template
@@ -668,26 +680,17 @@ class pikaTempLib {
 			string mode, so the mode is already settled by the time this runs.
 			
 			A tag the page supplies itself is not touched, because the isset()
-			below skips it. That is what keeps pika_cms.php's org_name and
-			admin_email from being escaped twice, and it is also how a page that
-			needs a setting raw can still have it.
+			below skips it, and so it is never recorded either. That is what
+			keeps pika_cms.php's org_name and admin_email from being escaped
+			twice, and it is also how a page that needs a setting raw can still
+			have it. A null the page stored does not count as supplied: isset()
+			is false for it, so the setting fills the tag and is recorded.
 			
 			pl_settings_template_raw() holds the settings that must not be
 			escaped because they are not read as HTML text. A value that is not a
-			scalar is copied as it was: pl_html_escape() answers '' for an array,
-			and dropping a value is a change this fix has no reason to make.
-			
-			What the loop stores is the value as it was, and the name goes in
-			_settings_escape for draw() to escape at the point of substitution.
-			Storing the escaped value here instead would escape it twice for a
-			template that names a setting with a directive: a plugin gets the
-			value out of _data and several of them escape their own output --
-			template_plugins/input_textarea.php and template_plugins/menu.php
-			both do -- so an ampersand in the org name came out spelled twice
-			over, and a menu whose keys are stored raw stopped matching its own
-			selected value. Direct replacement is the one place that puts the
-			value into the page with nothing in between, so that is where the
-			escape belongs.
+			scalar is copied as it was and not recorded: pl_html_escape() answers
+			'' for an array, and dropping a value is a change this fix has no
+			reason to make.
 		*/
 		$escape_settings = !is_null($this->_file_name);
 		
