@@ -4820,11 +4820,25 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 	# reported later can say the lockout was not ruled out rather than blame the
 	# code the account sent.
 	mfa_rl_failed=0
+	mfa_rl_cleared=1
+	# mfa_rl_failed is sticky: it records that a clear did not complete on its first
+	# attempt anywhere in this run, and section 25d reports that. mfa_rl_cleared is
+	# the last attempt only, including the retry below, and is what a later section
+	# asks before reading anything into a refusal. Returning non-zero matters as
+	# well: two call sites are written with a || fallback, and while this function
+	# returned zero whatever happened, neither fallback could ever have run.
 	mfa_rl_clear() {
-		if ! docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		mfa_rl_cleared=1
+		if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
 			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1; then
-			mfa_rl_failed=1
+			return 0
 		fi
+		mfa_rl_failed=1
+		if dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1; then
+			return 0
+		fi
+		mfa_rl_cleared=0
+		return 1
 	}
 
 	cleanup_mfa() {
@@ -5606,7 +5620,7 @@ MFAPY
 			elif [ "$mfa_pair_nobound" = 1 ]; then
 				bad "the code was refused and the replay bound could not be read on any try, so a refusal this run caused itself cannot be told from a wrong one - neither check was decided"
 			elif [ "$mfa_rl_failed" = 1 ]; then
-				bad "a valid password and a valid code were refused, and clearing the login rate limit did not run at least once in this section - a lockout left by this section's own deliberate failures was not ruled out"
+				bad "a valid password and a valid code were refused, and clearing the login rate limit did not complete on its first attempt at least once in this section - a lockout left by this section's own deliberate failures was not ruled out"
 			else
 				bad "a valid password and a valid code were refused"
 			fi
@@ -6012,11 +6026,19 @@ SSOCFG
 		fi
 
 		# 26f. The password form will not take this account.
-		mfa_rl_clear 2>/dev/null || dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+		mfa_rl_clear
 		: > "$SSO_JAR"
 		curl -sL --max-time 30 -c "$SSO_JAR" -b "$SSO_JAR" -o "$BODY" \
 			-d "login_user=${SSO_USER}&login_pass=${SSO_PASS}&auth_id=1" "$OCM_URL/" >/dev/null
-		if grep -q 'login_pass' "$BODY"; then
+		# A lockout page carries the login form as well, so if the rate-limit counter
+		# was not actually cleared then this reads as a refusal whatever the account's
+		# method is, and would pass on a lockout left by this section's own deliberate
+		# failures. Both assertions below say so rather than claim a result.
+		sso_rl_ok=1
+		if [ "$mfa_rl_cleared" != 1 ]; then
+			sso_rl_ok=0
+			bad "the login rate limit could not be cleared, so refusing this SSO account's password proves nothing - a lockout reads the same way"
+		elif grep -q 'login_pass' "$BODY"; then
 			ok "the password form refuses an account whose method is SSO"
 		else
 			bad "the password form signed in an account whose method is SSO - a second way in"
@@ -6027,11 +6049,17 @@ SSOCFG
 		# has been moved to single sign-on.
 		SSO_REFUSAL="$(smoke_temp)"
 		sed -E 's/[0-9a-f]{64}//g' "$BODY" > "$SSO_REFUSAL"
-		mfa_rl_clear 2>/dev/null || dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1 || true
+		mfa_rl_clear
+		[ "$mfa_rl_cleared" = 1 ] || sso_rl_ok=0
 		: > "$SSO_JAR"
 		curl -sL --max-time 30 -c "$SSO_JAR" -b "$SSO_JAR" -o "$BODY" \
 			-d "login_user=zz_no_such_account&login_pass=${SSO_PASS}&auth_id=1" "$OCM_URL/" >/dev/null
-		if sed -E 's/[0-9a-f]{64}//g' "$BODY" | diff -q - "$SSO_REFUSAL" >/dev/null; then
+		# Two lockout pages are the same page, so this comparison passes on a pair of
+		# them. It only says anything about enumeration when both requests were made
+		# against a cleared counter.
+		if [ "$sso_rl_ok" != 1 ]; then
+			bad "the login rate limit could not be cleared, so comparing the two refusal pages proves nothing - two lockouts are identical"
+		elif sed -E 's/[0-9a-f]{64}//g' "$BODY" | diff -q - "$SSO_REFUSAL" >/dev/null; then
 			ok "the refusal is the same page an unknown username gets"
 		else
 			bad "the SSO account's refusal page differs from an unknown username's - that is an enumeration oracle"
@@ -20783,6 +20811,12 @@ sv_arr_try "an array where the year belongs" 'Invalid date parameter' \
 # passes when its own output is missing is not a check: "no line starting with BAD"
 # is also satisfied by a parser that crashed before it printed anything, by a
 # --selftest that silently does nothing, and by an empty file.
+#
+# What these cases settle is the scan, and only the scan. They are the parser's own
+# inputs and outputs; none of them opens the page or clicks the control. A review
+# made selectDate() in cms/js/date_selector.js return immediately, so no date could
+# be chosen at all, and every check over the reply here still passed. Whether the
+# control works in a browser is not asserted anywhere in this file.
 echo
 echo "103. the reply-shape scan agrees with its own cases"
 
@@ -20883,10 +20917,16 @@ fi
 # that a long name may be abbreviated to any unambiguous prefix, and that -- ends
 # option parsing. An option outside that table is not assumed harmless and not
 # assumed harmful. It is REPORTED, and this section fails until someone adds it to
-# the table or rewrites the call. The letters are GNU grep's, which is the grep this
-# suite runs under: the CI job is ubuntu-latest, and a non-interactive shell here
-# resolves grep to /usr/bin/grep whatever an interactive shell may have wrapped it
-# with.
+# the table or rewrites the call. The letters are GNU grep's, and GNU grep is what
+# this suite is written for: the CI job is ubuntu-latest. That is the expectation, not
+# a guarantee, and an earlier version of this comment overstated it. A noninteractive
+# shell does not pin grep to /usr/bin/grep: PATH lookup still applies, and an exported
+# shell function named grep is inherited and takes precedence over any file on PATH.
+# The suite does not enforce which grep it gets, and cannot, because the house rule
+# for this file is plain grep, and a commit gate fails if this file ever reaches it
+# through the shell's command builtin instead.
+# What follows from that is only that a hostile or eccentric grep on PATH is outside
+# what this section checks.
 #
 # What the check decides is whether an expansion stands in PATTERN position. An
 # expansion in FILE position has the same underlying problem, because grep reads a
@@ -20900,10 +20940,20 @@ fi
 #
 # What is still not covered, stated rather than left to be found: a pattern built by
 # concatenation rather than a bare expansion, since only a word that begins with an
-# expansion is treated as one; a pattern that reaches grep through a variable
-# assigned from another; and a shell that has no python3, in which case this section
-# prints a skip and asserts nothing at all. The CI job that runs this suite installs
-# python dependencies, so it has python3.
+# expansion is treated as one; a pattern that arrives as a whole word list, as in
+# grep "${args[@]}", which is REPORTED even when the array itself supplies -e, because
+# the check cannot read the array's contents; a grep reached through an alias, or
+# through a variable holding the command name, neither of which is resolved; and a
+# shell that has no python3, in which case this section prints a skip and asserts
+# nothing at all. The CI job that runs this suite installs python dependencies, so it
+# has python3.
+#
+# What the check does not claim is that it knows where a pattern's value came from. An
+# expansion in pattern position is reported whatever assigned it, including a variable
+# copied from another variable: the check cannot tell a value that can never begin
+# with a dash from one that can, so it reports both and the call is rewritten either
+# way. An earlier version of this comment listed the copied variable among the things
+# the check misses. That was wrong in the safe direction, but it was wrong.
 #
 # The check reads code and not prose, to the extent that a logical line beginning
 # with a hash is skipped. It has to skip them: the items above quote unguarded calls
@@ -20917,11 +20967,19 @@ echo "104. every grep pattern that comes from a variable is passed with -e"
 if ! command -v python3 >/dev/null 2>&1; then
 	printf '  skip the grep pattern check (needs python3)\n'
 else
-	GP_PY="$(smoke_temp)"
+	# In a directory of its own, and not straight into the shared temporary
+	# directory, for the reason section 8d's parser gives at length: running python3
+	# on a FILE puts that file's own directory first on the import path, so a re.py
+	# or a sys.py left in the shared directory by any local user is imported in place
+	# of the real one. A review of this section reproduced that here, with a sibling
+	# re.py printing shadow instead of the scan running. mktemp -d makes a directory
+	# its owner alone can read or write.
+	GP_DIR="$(smoke_tempdir)"
 	GP_RC=$?
-	if [ "$GP_RC" -ne 0 ] || [ -z "$GP_PY" ]; then
-		bad "no temporary file to write the grep pattern check into"
+	if [ "$GP_RC" -ne 0 ] || [ -z "$GP_DIR" ] || [ ! -d "$GP_DIR" ]; then
+		bad "no private temporary directory to write the grep pattern check into"
 	else
+		GP_PY="$GP_DIR/gp_pattern.py"
 		cat > "$GP_PY" <<'GPPY'
 import re
 import sys
@@ -20933,8 +20991,8 @@ import sys
 # REPORT the call rather than guess. Guessing the other way is what the two versions
 # before this one did, and each time the guess was wrong a broken call passed.
 # The letters are GNU grep's, the grep this suite runs under: the CI job is
-# ubuntu-latest, and a non-interactive shell here resolves grep to /usr/bin/grep
-# rather than to any wrapper an interactive shell may install. A letter in neither
+# ubuntu-latest. Which grep actually runs is not pinned by anything here; see the
+# section comment above. A letter in neither
 # list is not guessed at in either direction; it is reported. -X is in ARG because
 # it was measured: grep -Xgrep takes grep as a matcher name and accepts it.
 SHORT_ARG = 'ABCDXdefm'
@@ -20955,11 +21013,43 @@ LONG_ALL = LONG_ARG + LONG_OPTIONAL + LONG_FLAG
 # so neither /bin/grep nor fgrep slips past. The lookbehind refuses a name that merely
 # ends in grep, such as pgrep or a variable called mygrep.
 CALL = re.compile(r'(?<![A-Za-z0-9_.-])[ef]?grep(?![A-Za-z0-9_.-])')
-# A word whose first character is an expansion, with an optional opening quote. A
-# pattern built by concatenation is not this and is not reported; see the section
-# comment for why that limit is stated rather than closed.
-EXPANSION = re.compile(r'"?\$')
-BREAK = ';|&()<>'
+# What ends a command. A redirection does not, and is handled separately, because
+# cutting the word list at a > hides every operand written after one.
+BREAK = ';|&()'
+
+
+def bare(word):
+	"""A word as grep receives it, and whether it begins with an expansion.
+
+	Quoting is removed because grep never sees it: "-qF" reaches grep as -qF and is an
+	option, and a check that read the leading quote as an ordinary character took it
+	for a pattern. Single quotes suppress expansion, so '$P' is a literal and is not
+	reported, while "$P" and $P are.
+	"""
+	out = ''
+	lit = ''
+	i = 0
+	n = len(word)
+	while i < n:
+		c = word[i]
+		if c in '"\'':
+			end = word.find(c, i + 1)
+			body = word[i + 1:end] if end >= 0 else word[i + 1:]
+			out += body
+			lit += ('1' if c == "'" else '0') * len(body)
+			i = (end + 1) if end >= 0 else n
+			continue
+		if c == '\\' and i + 1 < n:
+			# A backslash makes the next character literal, so a backslashed dash
+			# is a pattern character and not the start of an option.
+			out += word[i + 1]
+			lit += '1'
+			i += 2
+			continue
+		out += c
+		lit += '0'
+		i += 1
+	return out, (out[:1] == '$' and lit[:1] == '0')
 
 
 def resolve(name):
@@ -20971,7 +21061,10 @@ def resolve(name):
 		if len(near) != 1:
 			return None
 		hit = near[0]
-	if hit == 'regexp':
+	if hit in ('regexp', 'file'):
+		# --file names a file of patterns, so by the time grep reads the next
+		# operand it already has its patterns and that operand is a file name.
+		# Nothing is left standing in pattern position, which is what this asks.
 		return 'regexp'
 	if hit in LONG_ARG:
 		return 'arg'
@@ -21023,6 +21116,26 @@ def words_after(text, i):
 				cur = ''
 			i += 1
 			continue
+		if c in '<>':
+			# A redirection: step over the operator run and the word it names. The
+			# target is not an operand grep sees, and a digits-only word already in
+			# hand is the file descriptor, not a pattern, so it is dropped.
+			if cur.isdigit():
+				cur = ''
+			elif cur:
+				words.append(cur)
+				cur = ''
+			while i < n and text[i] in '<>&':
+				i += 1
+			while i < n and text[i] in ' \t':
+				i += 1
+			while i < n and text[i] not in ' \t' and text[i] not in BREAK:
+				if text[i] in '"\'':
+					end = text.find(text[i], i + 1)
+					i = (end + 1) if end >= 0 else n
+					continue
+				i += 1
+			continue
 		if c in BREAK:
 			break
 		cur += c
@@ -21036,7 +21149,7 @@ def verdict(words):
 	"""safe, report, or unknown, for one grep call's words."""
 	i = 0
 	while i < len(words):
-		w = words[i]
+		w, expanded = bare(words[i])
 		if w == '--':
 			# Option parsing has ended, so a dash-leading value after this is a
 			# literal pattern and not an option. That is the shape this whole
@@ -21054,10 +21167,12 @@ def verdict(words):
 		if w.startswith('-') and len(w) > 1:
 			rest = w[1:]
 			for j, ch in enumerate(rest):
-				if ch == 'e':
+				if ch in 'ef':
 					# Either the pattern is the rest of this word, or it is the
 					# next word; either way it was handed over with -e, and no
-					# expansion is left standing in pattern position.
+					# expansion is left standing in pattern position. -f is the
+					# same case: it names a file of patterns, so grep has its
+					# patterns already and no operand is read as one.
 					return 'safe'
 				if ch in SHORT_ARG:
 					# The rest of this word is its argument; if the word ends
@@ -21070,7 +21185,7 @@ def verdict(words):
 			i += 1
 			continue
 		# The first word that is not an option is the pattern.
-		return 'report' if EXPANSION.match(w) else 'safe'
+		return 'report' if expanded else 'safe'
 	return 'safe'
 
 
@@ -21090,6 +21205,13 @@ buf = ''
 with open(sys.argv[1], encoding='utf-8') as fh:
 	for n, line in enumerate(fh, 1):
 		line = line.rstrip('\n')
+		if buf == '' and line.lstrip().startswith('#'):
+			# Comment-ness is decided on the PHYSICAL line, before continuations are
+			# joined. A comment ending in a backslash does not comment out the line
+			# below it in bash, so a call written there still runs and still has to
+			# be read; joining first and testing the join hid it.
+			start = None
+			continue
 		if start is None:
 			start = n
 		if line.rstrip('\t ').endswith('\\'):
@@ -21097,13 +21219,18 @@ with open(sys.argv[1], encoding='utf-8') as fh:
 			continue
 		text = buf + line
 		buf = ''
-		if not text.lstrip().startswith('#'):
-			for m in CALL.finditer(text):
-				got = verdict(words_after(text, m.end()))
-				if got == 'report':
-					hits.append(start)
-				elif got == 'unknown':
-					unknown.append(start)
+		for m in CALL.finditer(text):
+			# A quoted command name, "grep" or 'grep', leaves a closing quote between
+			# the name and its first argument. Stepping over it keeps that quote from
+			# swallowing the words after it.
+			k = m.end()
+			while k < len(text) and text[k] in '"\'':
+				k += 1
+			got = verdict(words_after(text, k))
+			if got == 'report':
+				hits.append(start)
+			elif got == 'unknown':
+				unknown.append(start)
 		start = None
 out = 'pattern: %d unguarded' % len(hits)
 if hits:
