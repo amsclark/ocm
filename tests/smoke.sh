@@ -18976,7 +18976,19 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # after any indentation, is the opening label. PHP counts a letter, a
 # digit, an underscore and every byte from 0x80 up as a label byte, so
 # TXT_2, and TXT followed by a byte above 0x7f, are each a label of
-# their own and neither ends a heredoc opened on TXT. Text outside
+# their own and neither ends a heredoc opened on TXT. The run test
+# reads a NUL as a label byte, which PHP does not; row six requires no
+# php file under cms/ to hold a NUL, so that difference cannot be
+# reached here. Two shapes this line model does not follow PHP on
+# remain, and rows six and seven keep the tree clear of both. A body
+# line whose label run is the label ends the block here even where PHP
+# is still inside a quoted string opened by a braced interpolation on
+# an earlier line, so a review's file closed its heredoc early, opened
+# a block comment that never closed, and hid an escape and a slice
+# written after it. And a lone carriage return ends a line for PHP's
+# heredoc boundaries while this filter reads records split on newlines
+# only, so a heredoc opened and closed inside one such record takes the
+# rest of that record with it. Text outside
 # <?php ?> is dropped, and a close tag stands in for a semicolon. The
 # opening keyword is matched without regard to case, and only where a
 # space, a tab, a carriage return or the end of the line follows it, which
@@ -19014,9 +19026,17 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # token_get_all(), character for character once whitespace is removed, in
 # both of the first two modes; with 2 the same holds once the marker bytes
 # are dropped along with the whitespace, which is the only order that claim
-# is made in. Agreement over a corpus is not completeness: the shapes the
+# is made in. Removing the whitespace is part of that claim and not a
+# convenience: a review's own reference stripper matched 307 of the 308
+# raw, the one difference being the file that ends in a close tag, a
+# carriage return and a newline, where this filter writes a semicolon
+# and a newline and that reference kept the carriage return. Both
+# comparisons drop heredoc bodies whole, so agreement over them says
+# nothing about code PHP would run inside one.
+#
+# Agreement over a corpus is not completeness: the shapes the
 # fixtures disagree on are the ones that were looked for, not all there
-# are. Two remain. A bare <? is always read as an opening tag, which is
+# are. Four remain. A bare <? is always read as an opening tag, which is
 # what PHP does where short_open_tag is on, how it was set in the PHP 8.2
 # container these comparisons were run in. Where it is off PHP reads such
 # a block as text, and then this filter can lose code PHP runs: measured
@@ -19029,6 +19049,19 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # it, and that on its own does not establish the disagreement is harmless
 # to a row below: retained text can supply an occurrence row two counts,
 # and can hold an assignment row four saves and then reads as an escape.
+#
+# The third is a body line inside a heredoc whose label run equals the
+# label, where PHP is still inside a quoted string opened by a braced
+# interpolation on an earlier line: this filter ends the heredoc there
+# and PHP does not, so a review closed a heredoc early, opened a block
+# comment that never closed, and hid an escape and a slice behind it.
+# The fourth is a lone carriage return, which ends a line for PHP and
+# not for this filter, so a heredoc opened and closed after one sits
+# inside a single record here and takes the rest of that record with it.
+# Row six requires no php file under cms/ to hold either a NUL or an
+# unpaired carriage return, and row seven pins every heredoc and nowdoc
+# body in the tree, so neither shape can be reached without failing a
+# row first.
 #
 # A divergence that drops code PHP runs is a defect in this filter, not a
 # note here. Three were found that way and all are fixed: reading <?phpx as
@@ -19062,6 +19095,10 @@ sm107_code_only()
 			{
 				lbl[substr(lbls, lbi, 1)] = 1
 			}
+			# 1 to 127 and not 0 to 127: awk cannot hold a NUL in a
+			# string, so a NUL falls outside this table and reads as a
+			# label byte, which PHP does not do. Row six requires no php
+			# file under cms/ to hold one, so that cannot be reached.
 			for (lbi = 1; lbi <= 127; lbi++)
 			{
 				asc[sprintf("%c", lbi)] = 1
@@ -19891,6 +19928,308 @@ else
 	else
 		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned, and no <? in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope beyond the counts the seven named files are allowed"
 	fi
+fi
+# Row six is the filter's line model, stated as a property of the tree.
+# The filter reads a file as records split on newlines, and rows one to
+# four rest on that. PHP does not: it also ends a line at a lone carriage
+# return, so a heredoc opened and closed after one stands inside a single
+# record here. A review used exactly that to hide an escape and a slice
+# from every mode while row five, which scans raw bytes and asks a
+# different question, still passed. The same review showed the label run
+# reading a NUL as a label byte where PHP reads it as a bad character.
+#
+# So this row requires every php file under cms/ to hold no NUL at all,
+# and no carriage return that is not the first byte of a CRLF pair. One
+# file is written with CRLF throughout, cms/reports/missing_outcomes/
+# index.php, and its 45 carriage returns are allowed by name and by
+# count; every other file must hold none. The pair test is the count of
+# carriage returns against the count of lines whose last byte is one,
+# which are equal only where every carriage return is followed by a
+# newline. The file's own last byte is counted separately, because a
+# final line with no newline to end it would otherwise read as a pair.
+#
+# What this row does not do is make the filter read a carriage return as
+# PHP does. It fails the moment a file arrives that would need that, and
+# until then the difference cannot be reached. The cost is that a php
+# file written with CRLF line endings fails this row until it is either
+# converted or allowed here by name and by count.
+#
+# Row seven pins the heredoc and nowdoc bodies. The filter drops a body
+# whole, so an expression PHP would run inside one is in no mode's
+# output: {$obj->{run_live()}} written in a body calls run_live(). A
+# review also wrote a body line that ends the heredoc for this filter
+# but not for PHP, inside a quoted string opened by a braced
+# interpolation on an earlier line. Neither can be answered by reading
+# one file, so this row reads every heredoc and nowdoc under cms/ and
+# pins the set: six openers in three files, each closed in the file that
+# opened it, and the extracted text hashed. Those six bodies stood in
+# the corpus the filter was compared with PHP's own tokenizer over, and
+# hold no escape, no slice and no call.
+#
+# The inventory is read in the list's sorted order, one run of a second,
+# smaller reader per file. That reader is not the filter and shares no
+# code with it, so where a heredoc ends is settled twice by two readers
+# rather than once. It tests every position on a line that begins an
+# opener's first three bytes, and not the first such position alone: a
+# subagent asked this row for a file whose opener line began with those
+# three bytes inside a block comment, followed by a digit, and an earlier
+# shape of this reader read that one position, found it was no label, and
+# abandoned the whole line. The reader then wrote nothing for the file,
+# its name was dropped from the view below, the counts and the hash did
+# not move, and a body holding a live call passed. Reading on to the next
+# position answers that, and answers the same shape written with the
+# three bytes inside a string or with no label after them at all.
+#
+# The reader is given raw lines and is told nothing about where PHP code
+# stands, so it reports an opener's spelling inside a comment or a string
+# as an opener. That direction is safe: a reported opener either matches
+# what PHP reads, or opens a block the reader never closes and leaves a
+# count or the hash moved. Either way the row fails and someone reads the
+# file. It is the other direction, a real opener the reader passes over,
+# that lets a body through, and testing every position removes it.
+#
+# The name of a file holding no heredoc is dropped
+# from the hashed view, so adding a php file that opens none does not
+# move the hash. Adding, moving or editing a heredoc anywhere under cms/
+# does, and that is the point: the row fails until someone reads the new
+# body against PHP and replaces the hash here.
+#
+# The two rows share one list and one read of the tree. A list the first
+# of them could not trust fails both.
+sm107_cr_prog='
+{
+	s = $0
+	i = index(s, "\r")
+	while (i > 0) {
+		crs = crs + 1
+		s = substr(s, i + 1)
+		i = index(s, "\r")
+	}
+	if (substr($0, length($0), 1) == "\r") {
+		pairs = pairs + 1
+	}
+}
+END {
+	printf "%d %d\n", crs + 0, pairs + 0
+}'
+sm107_hd_prog='
+BEGIN {
+	hd = sprintf("%c%c%c", 60, 60, 60)
+}
+function sm107_hd_label(ch) {
+	if (ch == "") {
+		return 0
+	}
+	if (ch ~ /^[0-9A-Za-z_]$/) {
+		return 1
+	}
+	if (ch ~ /^[\001-\177]$/) {
+		return 0
+	}
+	return 1
+}
+function sm107_hd_run(s, p,    q) {
+	q = p
+	while (sm107_hd_label(substr(s, q, 1)) == 1) {
+		q = q + 1
+	}
+	return q - p
+}
+{
+	if (st == 0) {
+		p = 1
+		while (1) {
+			i = index(substr($0, p), hd)
+			if (i == 0) {
+				break
+			}
+			i = p + i - 1
+			j = i + 3
+			while (substr($0, j, 1) == " " || substr($0, j, 1) == "\t") {
+				j = j + 1
+			}
+			q = substr($0, j, 1)
+			if (q == "\047" || q == "\"") {
+				j = j + 1
+			} else {
+				q = ""
+			}
+			n = sm107_hd_run($0, j)
+			if (n > 0 && substr($0, j, 1) !~ /^[0-9]$/ &&
+				(q == "" || substr($0, j + n, 1) == q)) {
+				id = substr($0, j, n)
+				st = 1
+				printf "LABEL %s\n", id
+				break
+			}
+			p = i + 1
+		}
+		next
+	}
+	k = 1
+	while (substr($0, k, 1) == " " || substr($0, k, 1) == "\t") {
+		k = k + 1
+	}
+	n = sm107_hd_run($0, k)
+	if (n > 0 && substr($0, k, n) == id) {
+		st = 0
+		printf "END %s\n", id
+		next
+	}
+	printf "BODY %s\n", $0
+}
+END {
+	if (st == 1) {
+		printf "UNCLOSED %s\n", id
+	}
+}'
+sm107_hd_view='
+/^FILE / {
+	f = $0
+	next
+}
+{
+	if (f != "") {
+		print f
+		f = ""
+	}
+	print
+}'
+sm107_pre_tmp="$(mktemp 2>/dev/null)"
+sm107_pre_tmp_rc=$?
+sm107_pre_acc="$(mktemp 2>/dev/null)"
+sm107_pre_acc_rc=$?
+sm107_pre_ready=no
+sm107_pre_rc=1
+sm107_pre_bytes=''
+sm107_pre_entries=''
+sm107_pre_tail=''
+sm107_pre_files=0
+sm107_pre_bad=0
+sm107_pre_known=0
+sm107_pre_hd_bad=0
+sm107_hd_files=''
+sm107_hd_open=''
+sm107_hd_close=''
+sm107_hd_unclosed=''
+sm107_hd_sha=''
+if [ "$sm107_pre_tmp_rc" -eq 0 ] && [ -n "$sm107_pre_tmp" ] \
+	&& [ -w "$sm107_pre_tmp" ] && [ "$sm107_pre_acc_rc" -eq 0 ] \
+	&& [ -n "$sm107_pre_acc" ] && [ -w "$sm107_pre_acc" ]
+then
+	sm107_pre_ready=yes
+	find cms/ -type f -name '*.php' -print0 2>/dev/null \
+		| LC_ALL=C sort -z > "$sm107_pre_tmp"
+	sm107_pre_rc=$?
+	sm107_pre_bytes="$(wc -c < "$sm107_pre_tmp" | tr -d ' \n')"
+	sm107_pre_entries="$(tr -dc '\0' < "$sm107_pre_tmp" | wc -c | tr -d ' \n')"
+	sm107_pre_tail="$(tail -c 1 "$sm107_pre_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_pre_files=$((sm107_pre_files + 1))
+		sm107_pre_want=0
+		case "$sm107_f" in
+		cms/reports/missing_outcomes/index.php)
+			sm107_pre_want=45
+			;;
+		esac
+		if [ "$sm107_pre_want" != 0 ]
+		then
+			sm107_pre_known=$((sm107_pre_known + 1))
+		fi
+		sm107_pre_out="$(awk "$sm107_cr_prog" < "$sm107_f" 2>/dev/null)"
+		sm107_pre_awk_rc=$?
+		sm107_pre_nul="$(tr -dc '\0' < "$sm107_f" | wc -c | tr -d ' \n')"
+		sm107_pre_last="$(tail -c 1 "$sm107_f" | tr -dc '\r' | wc -c \
+			| tr -d ' \n')"
+		if [ "$sm107_pre_awk_rc" -ne 0 ] \
+			|| [ "$sm107_pre_out" != "$sm107_pre_want $sm107_pre_want" ] \
+			|| [ "$sm107_pre_nul" != 0 ] || [ "$sm107_pre_last" != 0 ]
+		then
+			sm107_pre_bad=$((sm107_pre_bad + 1))
+			printf '    %s: carriage returns and line-ending pairs "%s" where "%s" is allowed, %s nul byte(s), %s carriage return(s) at its end, and the count exited %s\n' \
+				"$sm107_f" "$sm107_pre_out" \
+				"$sm107_pre_want $sm107_pre_want" "$sm107_pre_nul" \
+				"$sm107_pre_last" "$sm107_pre_awk_rc"
+		fi
+		printf 'FILE %s\n' "$sm107_f" >> "$sm107_pre_acc"
+		awk "$sm107_hd_prog" < "$sm107_f" >> "$sm107_pre_acc"
+		sm107_pre_hd_rc=$?
+		if [ "$sm107_pre_hd_rc" -ne 0 ]
+		then
+			sm107_pre_hd_bad=$((sm107_pre_hd_bad + 1))
+		fi
+	done < "$sm107_pre_tmp"
+	sm107_hd_files="$(grep -c '^FILE ' "$sm107_pre_acc")"
+	sm107_hd_open="$(grep -c '^LABEL ' "$sm107_pre_acc")"
+	sm107_hd_close="$(grep -c '^END ' "$sm107_pre_acc")"
+	sm107_hd_unclosed="$(grep -c '^UNCLOSED ' "$sm107_pre_acc")"
+	sm107_hd_sha="$(awk "$sm107_hd_view" "$sm107_pre_acc" | sha256sum \
+		| cut -d' ' -f1)"
+	rm -f "$sm107_pre_tmp" "$sm107_pre_acc"
+fi
+sm107_pre_counted=yes
+case "$sm107_pre_bytes" in '' | *[!0-9]* | ??????????*) sm107_pre_counted=no ;; esac
+case "$sm107_pre_entries" in '' | *[!0-9]* | ??????????*) sm107_pre_counted=no ;; esac
+case "$sm107_pre_tail" in '' | *[!0-9]* | ??*) sm107_pre_counted=no ;; esac
+sm107_hd_counted=yes
+case "$sm107_hd_files" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_open" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_close" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_unclosed" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+if [ "$sm107_pre_ready" != yes ]
+then
+	bad "the line model row has no temporary file it can write to: mktemp exited ${sm107_pre_tmp_rc} and named '${sm107_pre_tmp}', then exited ${sm107_pre_acc_rc} and named '${sm107_pre_acc}'"
+elif [ "$sm107_pre_rc" -ne 0 ]
+then
+	bad "the line model row could not list and sort the php files under cms/: find, the sort, or the write of its output, exited ${sm107_pre_rc}"
+elif [ "$sm107_pre_counted" != yes ]
+then
+	bad "the line model row could not count what it was about to read: ${sm107_pre_bytes} byte(s), '${sm107_pre_entries}' entries and '${sm107_pre_tail}' list terminators"
+elif [ "$sm107_pre_bytes" != 0 ] && [ "$sm107_pre_tail" != 1 ]
+then
+	bad "the line model row was handed a list holding ${sm107_pre_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+elif [ "$sm107_pre_entries" = 0 ]
+then
+	bad "the line model row was given no file to read, so it read nothing"
+elif [ "$sm107_pre_files" != "$sm107_pre_entries" ]
+then
+	bad "the line model row read ${sm107_pre_files} of the ${sm107_pre_entries} file(s) its own list held"
+elif [ "$sm107_pre_known" != 1 ]
+then
+	bad "the line model row allows CRLF line endings in one named php file and found ${sm107_pre_known} of them, so an allowance it still carries is no longer measured"
+elif [ "$sm107_pre_bad" != 0 ]
+then
+	bad "${sm107_pre_bad} of the ${sm107_pre_files} php file(s) under cms/ hold a nul byte, or a carriage return this row does not allow, either of which the filter's line model reads differently from PHP"
+else
+	ok "no nul byte, and no carriage return outside the 45 CRLF pairs of the one file allowed them, in any of the ${sm107_pre_files} php file(s) under cms/, so the filter's records are the lines PHP reads"
+fi
+if [ "$sm107_pre_ready" != yes ] || [ "$sm107_pre_rc" -ne 0 ] \
+	|| [ "$sm107_pre_counted" != yes ] || [ "$sm107_pre_entries" = 0 ] \
+	|| [ "$sm107_pre_files" != "$sm107_pre_entries" ]
+then
+	bad "the heredoc inventory row has no list of php files it can trust: the row above it did not get one"
+elif [ "$sm107_hd_counted" != yes ]
+then
+	bad "the heredoc inventory row could not count what it read: '${sm107_hd_files}' file name(s), '${sm107_hd_open}' opener(s), '${sm107_hd_close}' closer(s) and '${sm107_hd_unclosed}' opener(s) left unclosed"
+elif [ "$sm107_pre_hd_bad" != 0 ]
+then
+	bad "the reader of heredoc bodies exited non-zero on ${sm107_pre_hd_bad} of the ${sm107_pre_files} php file(s) under cms/"
+elif [ "$sm107_hd_files" != "$sm107_pre_files" ]
+then
+	bad "the heredoc inventory names ${sm107_hd_files} file(s) where ${sm107_pre_files} were read, so a name was lost between the read and the inventory"
+elif [ "$sm107_hd_unclosed" != 0 ]
+then
+	bad "${sm107_hd_unclosed} heredoc or nowdoc under cms/ is opened in a file that ends before closing it, which this filter reads as a body running to the end of that file"
+elif [ "$sm107_hd_open" != 6 ] || [ "$sm107_hd_close" != 6 ]
+then
+	bad "the heredoc and nowdoc inventory under cms/ holds ${sm107_hd_open} opener(s) and ${sm107_hd_close} closer(s) where the six of each read against PHP were expected"
+elif [ "$sm107_hd_sha" != b9d81d46f81dfbc738921f86a0b0ce6c5c255ec500d97d85ce01854ffb4b86d1 ]
+then
+	bad "the heredoc and nowdoc text under cms/ hashes to ${sm107_hd_sha}, not to the b9d81d46 the six bodies read against PHP hash to, so a body was added, moved or changed and must be read against PHP before this hash is replaced"
+else
+	ok "the heredoc and nowdoc inventory under cms/ is the six openers in three files whose bodies were read against PHP, each closed in the file that opened it, and its text hashes to b9d81d46"
 fi
 echo
 echo "smoke: $pass passed, $fail failed"
