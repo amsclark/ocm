@@ -20581,5 +20581,1198 @@ else
 	ok "cms-custom/, the one directory outside cms/ the application reads, is the four files in three directories read when this row was written, one of them php and that one cms-custom/config/default_prefs.php, none of them holding a heredoc, and their manifest hashes to da75728c"
 fi
 echo
+echo "108. the masked SSN and phone parts are filtered before they are joined"
+
+# 108. cms/dataops.php built a contact's masked SSN and phone by joining
+# request parts straight into the value it stores. Three parts make an SSN
+# and two make a phone. pl_grab_vars() cleans the table columns it knows
+# about a few lines earlier, but these are separate field names it never
+# reads, so six live sites held twelve raw ssn interpolations and four raw
+# phone ones.
+#
+# The fix reduces each part to ASCII digits before the join, which is the
+# format these legacy part fields are meant to carry. Nothing in the tree
+# enforces that on the way in: cms/template_plugins/input_ssn.php only sets a
+# maximum length and cms/js/ssn-mask.js only inserts the dashes, so neither is
+# a rule about characters. The filter is the first place the format is
+# applied, not a repeat of a client-side check.
+#
+# Three behaviour changes come with it, all of them visible only for a part
+# that was never a valid part. PHP reads the string "0" as false, so a part
+# such as 0x filters to 0 and, when every other part in that join is false
+# too, takes the empty branch. On that branch three of the four arms keep a
+# whole ssn or phone field that pl_grab_vars() already supplied, so a dirty
+# part now exposes that fallback instead of overriding it, while the
+# deprecated arm still writes empty. And a part sent as an array now warns on
+# both paths: it warned before only when the condition was true, and an empty
+# array with every other part false used to skip the join without a cast.
+#
+# Row one reads the one file. Row two reads every php file under cms/. Rows
+# three and four drive the real page and read the stored column back out of
+# the database.
+#
+# What the two reading rows can and cannot settle. Row one counts text. It
+# establishes that the file still spells its filters, its conditions and its
+# joins the way it did when this row was written, and that each masked local
+# and each request part key is mentioned exactly as often as those spellings
+# account for in the copy it counts, so a second mention there has to move one
+# of the counts. Two things sit outside it. It does not read the data flow: a
+# spelling this row never names, a variable variable, an extract() or a
+# compact() would move a value without moving a count. And the copy it counts
+# is the one section 107's stripper hands back with strings kept, which still
+# drops a heredoc body, so a mention inside a heredoc is invisible to every
+# count here. Rows three and four are the behaviour evidence, and they cover
+# two of the six sites.
+
+if ! type sm107_code_only > /dev/null 2>&1
+then
+	bad "the comment stripper section 107 defines is gone, so section 108 cannot run"
+else
+
+sm108_file=cms/dataops.php
+sm108_flat="$(sm107_code_only "$sm108_file" 1 | tr '\t\n' '  ' | tr -s ' ') "
+
+# An exact-text count over the flattened copy.
+sm108_fixed()
+{
+	printf '%s\n' "$sm108_flat" | awk -v needle="$1" '
+		{
+			n = 0
+			s = $0
+			while ((p = index(s, needle)) > 0)
+			{
+				n = n + 1
+				s = substr(s, p + length(needle))
+			}
+			printf "%d\n", n + 0
+		}
+	'
+}
+
+# A regexp count over the same copy. The patterns below use [$] and a
+# character class for the quote rather than a backslash, because awk
+# processes escapes in a -v assignment and a backslash would not survive it.
+sm108_re()
+{
+	printf '%s\n' "$sm108_flat" | awk -v re="$1" '{ print gsub(re, "&") }'
+}
+
+# ROW ONE -- the six sites, counted, each filter tied to its own key.
+#
+# For each of the five part names three counts have to agree with each other.
+# S is the number of strip lines the name is expected to have, four for an
+# ssn part and two for a phone part.
+#
+#   the whole strip line, matched character for character          == S
+#   every mention of the masked local, whatever follows it         == 3 * S
+#   every quoted mention of the request key, either quote style    == S
+#
+# Three times S is the whole budget for the local: the strip line assigns it,
+# the condition reads it, and the join reads it, once each per site. One for S
+# is the whole budget for the key: only the strip line names it. So an extra
+# appearance of either name, anywhere the counted copy still shows it and with
+# any operator, puts a count over its budget. Codex review 63 measured an
+# earlier version passing
+# two regressions, and review 63b a third: writing the request back over a
+# local, restoring the conditions to read the request, and appending the
+# request to a local with .= and a double-quoted key. The third is why the
+# counts no longer read an operator or a quote style.
+#
+# A budget on its own is not enough, because a statement can replace one of
+# the three occurrences rather than add a fourth. Codex review 63c measured
+# exactly that: a condition rewritten to
+#
+#   if (($mask_ssn0 = $_POST["ssn" . "0"]) || $mask_ssn1 || $mask_ssn2)
+#
+# assigns the raw part over the filtered one, still mentions the local once,
+# and never spells the whole key in one pair of quotes. All three counts stay
+# where the row wants them. So the row also counts the two condition
+# spellings and the two join spellings character for character. Between them
+# the five exact counts name every occurrence the budget allows: S strips, S
+# conditions and S joins. A fourth statement pushes the budget over, as long
+# as the counted copy still shows it; rewriting one of the three drops that
+# statement's own exact count.
+#
+# What this row is and is not: five text counts over one file, not a data
+# flow. A raw read that spells neither the local nor the quoted key -- a
+# variable variable, extract(), compact(), or a constant assembled some other
+# way -- is outside it. Two of the six sites are covered behaviourally by
+# rows three and four instead. Measured against eight copies of the file: the
+# patched file passes, and six regressions fail, including review 63c's
+# condition write.
+sm108_row1_msg=''
+for sm108_spec in ssn0:4 ssn1:4 ssn2:4 phone_a:2 phone_b:2
+do
+	sm108_k="${sm108_spec%%:*}"
+	sm108_want="${sm108_spec##*:}"
+	sm108_strip="$(sm108_fixed "\$mask_${sm108_k} = preg_replace('/[^0-9]/', '', (string) (\$_POST['${sm108_k}'] ?? ''));")"
+	sm108_loc="$(sm108_re "[\$]mask_${sm108_k}[^A-Za-z0-9_]")"
+	sm108_men="$(sm108_re "[\"']${sm108_k}[\"']")"
+	for sm108_n in "$sm108_strip" "$sm108_loc" "$sm108_men"
+	do
+		case "$sm108_n" in
+		'' | *[!0-9]* | ??????????*)
+			sm108_row1_msg="${sm108_row1_msg} a count for ${sm108_k} came back as '${sm108_n}' and not as a number;"
+			continue 2
+			;;
+		esac
+	done
+	if [ "$sm108_strip" -ne "$sm108_want" ]
+	then
+		sm108_row1_msg="${sm108_row1_msg} ${sm108_k} has ${sm108_strip} strip line(s) where ${sm108_want} were expected;"
+	fi
+	if [ "$sm108_loc" -ne "$((sm108_strip * 3))" ]
+	then
+		sm108_row1_msg="${sm108_row1_msg} \$mask_${sm108_k} appears ${sm108_loc} time(s) where $((sm108_strip * 3)) were expected, one strip one condition and one join per site, so the mentions of it moved: a statement reads or writes it somewhere else, one of the three this row expects is gone, or an ordinary string spells it;"
+	fi
+	if [ "$sm108_men" -ne "$sm108_strip" ]
+	then
+		sm108_row1_msg="${sm108_row1_msg} the key ${sm108_k} is named ${sm108_men} time(s) in quotes where ${sm108_strip} were expected, so the quoted mentions of it moved: something other than the strip names that request part, a strip stopped naming it, or an ordinary string spells it;"
+	fi
+done
+
+sm108_ssn_asg="$(sm108_fixed "['ssn'] = \"{\$mask_ssn0}-{\$mask_ssn1}-{\$mask_ssn2}\";")"
+sm108_ph_asg="$(sm108_fixed "[\"phone\"] = \"{\$mask_phone_a}-{\$mask_phone_b}\";")"
+sm108_ssn_cnd="$(sm108_fixed "if (\$mask_ssn0 || \$mask_ssn1 || \$mask_ssn2)")"
+sm108_ph_cnd="$(sm108_fixed "if (\$mask_phone_a || \$mask_phone_b)")"
+sm108_row1=yes
+for sm108_n in "$sm108_ssn_asg" "$sm108_ph_asg" "$sm108_ssn_cnd" \
+	"$sm108_ph_cnd"
+do
+	case "$sm108_n" in '' | *[!0-9]* | ??????????*) sm108_row1=no ;; esac
+done
+if [ "$sm108_row1" != yes ]
+then
+	bad "the masked SSN and phone condition and join counts did not come back as numbers (${sm108_ssn_asg}, ${sm108_ph_asg}, ${sm108_ssn_cnd}, ${sm108_ph_cnd})"
+elif [ -n "$sm108_row1_msg" ]
+then
+	bad "the masked SSN and phone counts this row reads differ from the counts and the ratios it expects:${sm108_row1_msg}"
+elif [ "$sm108_ssn_cnd" -ne 4 ] || [ "$sm108_ph_cnd" -ne 2 ]
+then
+	bad "the masked SSN and phone conditions are no longer written as the row reads them: ${sm108_ssn_cnd} ssn and ${sm108_ph_cnd} phone condition(s) matched character for character where 4 and 2 were expected, so a condition is no longer written the way this row spells it: a different test, or the same test written differently"
+elif [ "$sm108_ssn_asg" -eq 4 ] && [ "$sm108_ph_asg" -eq 2 ]
+then
+	ok "in ${sm108_file} the filters, conditions and joins for the masked SSN and phone parts are still spelled as this row reads them: sixteen strip lines, four ssn and two phone conditions and four ssn and two phone joins all matched character for character, and in the copy this row counts no masked local or request key is named more often than those account for"
+else
+	bad "the masked SSN and phone joins moved: ${sm108_ssn_asg} ssn and ${sm108_ph_asg} phone join(s) where 4 and 2 were expected"
+fi
+
+# ROW TWO -- the class, over every php file under cms/. A request value named
+# inside an interpolating string, which is the shape a raw request byte
+# travels on when it goes into a value the code stores or emits. The row
+# reports the shape and not the use: it does not follow what the resulting
+# string is then used for, and a request value read only to pick something
+# out of an array is reported as well.
+#
+# Two earlier versions of this row read the file as text and both were wrong.
+# A regexp anchored to the assignment operator missed a concatenation, a
+# string cast and a second pair of parentheses (codex review 63b). A hand
+# written byte-by-byte quote tracker then missed a string nested inside
+# another string's braced expression, reported two shapes that interpolate
+# nothing at all, and could carry a wrong state forward and hide a real read
+# on a later line (codex review 63c, four fixtures, all four reproduced).
+#
+# Reading PHP as text is the mistake. This row asks PHP instead. It hands the
+# file list to php inside the app container, which runs token_get_all() and
+# walks the token stream keeping a stack of the string, heredoc, backtick and
+# brace contexts it is inside. A superglobal variable token found anywhere
+# inside an interpolating context is a hit. PHP only emits a quote as its own
+# token when the string really does interpolate, so a string that holds no
+# interpolation cannot produce one, and a nested string is nested on the
+# stack rather than mistaken for the end of the outer one.
+#
+# What that buys over the text versions: comments and the commented-out dead
+# copy under cms/ops/ are skipped by the tokenizer itself rather than by a
+# stripper, heredoc and nowdoc bodies are read instead of being invisible,
+# and a file that does not parse is reported as a failed scan rather than
+# passing quietly. The tokenizer is asked with TOKEN_PARSE for that last
+# part: review 63d measured that without it an unfinished string and a stray
+# closing brace both still tokenize, and such a file passed quietly.
+#
+# Measured on the unpatched tree this row reports the six sites in
+# cms/dataops.php and nothing else. Against the fixtures: all thirteen
+# interpolating one-line shapes, which covers the three the old regexp missed,
+# an escaped quote before the interpolation, a single quote inside the string,
+# a space before the subscript, the ${_POST[...]} brace spelling, a backtick
+# string, and $_SERVER and $_FILES as well as $_POST; a multi-line
+# interpolating string; and both of review 63c's missed reads. None of the
+# eleven shapes that do not interpolate a request value, and neither of review
+# 63c's two false positives.
+#
+# $_SERVER, $_FILES and $_COOKIE are counted although the fix is about named
+# part fields, because the shape and the risk are the same and the tree holds
+# none of them.
+#
+# What it still does not see: a request value reached through a local or a
+# variable variable rather than named in the string. A request value used as
+# a subscript inside an interpolation is counted, because it steers the
+# lookup whose result is interpolated.
+#
+# One shape is deliberately not a hit. A static property may be named _POST,
+# and reading it is a read of that class and not of the request. Review 63d
+# reported both of its spellings as false positives, so a variable token
+# whose previous significant token is :: is skipped -- unless a ( follows it,
+# because there the variable names the static method to call and its value
+# really is read from the request. Review 63e measured that second spelling
+# being skipped along with the property. The row needs the stack and the
+# token stream, because the tokenizer it rests on is php's.
+if [ "${HAVE_COMPOSE:-0}" != 1 ]
+then
+	printf '  skip the request-interpolation class row (needs a running docker compose stack for php)\n'
+else
+	sm108_tmp="$(mktemp 2>/dev/null)"
+	sm108_tmp_rc=$?
+	sm108_hits="$(mktemp 2>/dev/null)"
+	sm108_hits_rc=$?
+	if [ "$sm108_tmp_rc" -ne 0 ] || [ -z "$sm108_tmp" ] || [ ! -w "$sm108_tmp" ] \
+		|| [ "$sm108_hits_rc" -ne 0 ] || [ -z "$sm108_hits" ] \
+		|| [ ! -w "$sm108_hits" ]
+	then
+		bad "the request-interpolation class row has no temporary file it can write to: mktemp exited ${sm108_tmp_rc} and named '${sm108_tmp}', then exited ${sm108_hits_rc} and named '${sm108_hits}'"
+	else
+		find cms/ -type f -name '*.php' -print0 2>/dev/null \
+			| LC_ALL=C sort -z > "$sm108_tmp"
+		sm108_find_rc=$?
+		# The shell counts the list itself, so that a list php only partly
+		# read cannot pass as a clean tree.
+		sm108_listed=0
+		while IFS= read -r -d '' sm108_f
+		do
+			sm108_listed=$((sm108_listed + 1))
+		done < "$sm108_tmp"
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+			$req = array("_POST", "_GET", "_REQUEST", "_COOKIE", "_SERVER", "_FILES");
+			$files = 0;
+			$bad = 0;
+			foreach (explode("\0", stream_get_contents(STDIN)) as $f)
+			{
+				if ($f === "") { continue; }
+				$files = $files + 1;
+				$src = @file_get_contents($f);
+				if ($src === false)
+				{
+					$bad = $bad + 1;
+					echo "SCANFAIL\t" . $f . "\tcould not be read\n";
+					continue;
+				}
+				try
+				{
+					$toks = token_get_all($src, TOKEN_PARSE);
+				}
+				catch (Throwable $e)
+				{
+					$toks = false;
+				}
+				if (!is_array($toks) || count($toks) < 1)
+				{
+					$bad = $bad + 1;
+					echo "SCANFAIL\t" . $f
+						. "\tthrew on parsing, or holds no tokens at all\n";
+					continue;
+				}
+				$stack = array();
+				$prev = 0;
+				$n = count($toks);
+				for ($i = 0; $i < $n; $i = $i + 1)
+				{
+					$t = $toks[$i];
+					if (!is_array($t))
+					{
+						if ($t === "\"")
+						{
+							if (end($stack) === "dq") { array_pop($stack); }
+							else { $stack[] = "dq"; }
+						}
+						else if ($t === "`")
+						{
+							if (end($stack) === "bt") { array_pop($stack); }
+							else { $stack[] = "bt"; }
+						}
+						else if ($t === "{") { $stack[] = "brace"; }
+						else if ($t === "}" && count($stack) > 0) { array_pop($stack); }
+						$prev = $t;
+						continue;
+					}
+					if ($t[0] === T_START_HEREDOC)
+					{
+						$stack[] = (strpos($t[1], chr(39)) === false) ? "hd" : "nd";
+						continue;
+					}
+					if ($t[0] === T_END_HEREDOC)
+					{
+						if (count($stack) > 0) { array_pop($stack); }
+						continue;
+					}
+					if ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES)
+					{
+						$stack[] = "curly";
+						continue;
+					}
+					if ($t[0] !== T_VARIABLE && $t[0] !== T_STRING_VARNAME)
+					{
+						if ($t[0] !== T_WHITESPACE && $t[0] !== T_COMMENT
+							&& $t[0] !== T_DOC_COMMENT)
+						{
+							$prev = $t[0];
+						}
+						continue;
+					}
+					$was = $prev;
+					$prev = $t[0];
+					if ($was === T_DOUBLE_COLON)
+					{
+						$j = $i + 1;
+						while ($j < $n && is_array($toks[$j])
+							&& ($toks[$j][0] === T_WHITESPACE
+								|| $toks[$j][0] === T_COMMENT
+								|| $toks[$j][0] === T_DOC_COMMENT))
+						{
+							$j = $j + 1;
+						}
+						if ($j >= $n || $toks[$j] !== "(")
+						{
+							continue;
+						}
+					}
+					$name = ltrim($t[1], "$");
+					if (!in_array($name, $req, true)) { continue; }
+					if (in_array("dq", $stack, true) || in_array("hd", $stack, true)
+						|| in_array("bt", $stack, true))
+					{
+						echo "HIT\t" . $f . "\t" . $t[2] . "\t" . $name . "\n";
+					}
+				}
+				if (count($stack) > 0)
+				{
+					$bad = $bad + 1;
+					echo "SCANFAIL\t" . $f . "\tended inside a string or a block\n";
+				}
+			}
+			echo "FILES\t" . $files . "\n";
+			echo "SCANFAILS\t" . $bad . "\n";
+' < "$sm108_tmp" > "$sm108_hits" 2>/dev/null
+		sm108_scan_rc=$?
+		sm108_files="$(sed -n -e 's/^FILES.//p' "$sm108_hits")"
+		sm108_scanfail="$(sed -n -e 's/^SCANFAILS.//p' "$sm108_hits")"
+		sm108_hit_n="$(grep -c '^HIT' "$sm108_hits")"
+		sm108_row2=yes
+		for sm108_n in "$sm108_files" "$sm108_scanfail" "$sm108_hit_n"
+		do
+			case "$sm108_n" in '' | *[!0-9]* | ??????????*) sm108_row2=no ;; esac
+		done
+		if [ "$sm108_find_rc" -ne 0 ]
+		then
+			bad "listing the php files under cms/ for the request-interpolation class row exited ${sm108_find_rc}"
+		elif [ "$sm108_scan_rc" -ne 0 ] || [ "$sm108_row2" != yes ]
+		then
+			bad "the request-interpolation scan exited ${sm108_scan_rc} and reported '${sm108_files}' file(s), '${sm108_scanfail}' failure(s) and '${sm108_hit_n}' hit(s), which is not a reading"
+		elif [ "$sm108_listed" -lt 300 ]
+		then
+			bad "the request-interpolation class row listed only ${sm108_listed} php file(s) under cms/, so the listing it rests on is not the tree"
+		elif [ "$sm108_files" -ne "$sm108_listed" ]
+		then
+			bad "php tokenized ${sm108_files} of the ${sm108_listed} php files the shell listed, so part of the tree was not read"
+		elif [ "$sm108_scanfail" -ne 0 ]
+		then
+			bad "${sm108_scanfail} of the ${sm108_files} php files could not be read, threw on parsing, or held no tokens at all, so they were not really scanned"
+			grep '^SCANFAIL' "$sm108_hits" | sed -n -e '1,20p' \
+				| while IFS= read -r sm108_line
+			do
+				printf '    %s\n' "$sm108_line"
+			done
+		elif [ "$sm108_hit_n" -eq 0 ]
+		then
+			ok "in none of the ${sm108_files} php files under cms/ does an interpolating string, heredoc or backtick name one of the request values this row looks for, read from php's own token stream, and every file came back with tokens"
+		else
+			bad "${sm108_hit_n} request value(s) are named inside an interpolating string, heredoc or backtick in the ${sm108_files} php files under cms/"
+			grep '^HIT' "$sm108_hits" | sed -n -e '1,20p' \
+				| while IFS= read -r sm108_line
+			do
+				printf '    %s\n' "$sm108_line"
+			done
+		fi
+		rm -f "$sm108_tmp" "$sm108_hits"
+	fi
+fi
+
+# ROW THREE -- the live path, for ssn. Rows one and two read the file; this
+# row drives the page and reads the column back. Of the four handler arms
+# that hold a live join, add_case_contact is the one that requires a
+# case_id, so cms/dataops.php runs pika_authorize('edit_case') on it and a
+# throwaway user who handles the fixture case is let through. The arm joins
+# the three ssn parts at the site row one counts, hands the array to
+# pikaCms::newContact(), and that writes the value into contacts.ssn and
+# mirrors it into aliases.ssn.
+#
+# Three POSTs. The first sends digits and asserts the record holds them, so
+# a strip that emptied every part would fail the row rather than pass it.
+# The second sends a part that mixes a digit with markup, 1<2, and asserts
+# the stored value is exactly 12-45-6789 in contacts and in the mirrored
+# alias both. Mixing matters: codex review 63b measured that a part of pure
+# markup cannot tell the intended filter apart from one that threw away any
+# part it found a bad byte in. The third sends parts that are all markup and
+# asserts nothing was stored, which is the branch the fix newly reaches: with
+# every part reduced to empty the condition is false, so an already supplied
+# whole ssn field would be kept and, with none supplied, an empty value is
+# written.
+#
+# The dirty part is three bytes so that the unpatched value, 1<2-45-6789, is
+# exactly eleven characters: contacts.ssn is varchar(11), and a longer part
+# would be cut by the column instead of by the fix, which would let the row
+# pass for the wrong reason.
+#
+# Reading nothing back is not the same as reading an empty column, and the
+# batch client prints an SQL NULL as the four letters NULL, which a stored
+# value could also be. Wrapping the column in a sentinel only moves that
+# collision to the sentinel, which review 63c pointed out, so the empty
+# assertion asks for counts instead: the contact row and its alias each have
+# to exist, and each has to satisfy ssn IS NULL OR ssn = ''. Four numbers,
+# nothing to spell. Every value read and every count read keeps the query's
+# exit status and is checked before it is compared, because a failed read
+# returns the empty string. The reads are keyed on the contact_id this run
+# recorded, not on the name, so an older contact of the same name cannot
+# answer for the row the POST was supposed to create.
+#
+# Ownership, which is what lets cleanup delete by id. It is two rules rather
+# than one, and codex reviews 63c and 63d are why.
+#
+# The three seeded rows, the group and the user and the case, are recorded
+# only when the INSERT reported success and the row also reads back by id
+# under this run's own name. A readback on its own proves that a row exists
+# and not which writer made it. The fixture names carry the process id and a
+# random number, and group_id is char(12), which is what bounds the tag to
+# six digits.
+#
+# The rows the page writes are recorded from a bound: the highest id in each
+# table is read just before the POST, and only ids above it are taken,
+# because nothing already there can be above a bound taken after it was
+# written. A bound settles timing and not authorship: it rules out a row that
+# was already there, and it does not say who wrote a row that was not. So the
+# contact read also requires exactly one row of this run's own name above it.
+# Two or more is a result that is not unique, whatever the cause, and that is
+# a named cleanup failure with nothing recorded rather than an adoption.
+#
+# Four tables take a bound, one per table cleanup deletes from. Review 63c
+# showed why a case needs its own: cases.client_id carries no foreign key in
+# the checked-in schema, so an older case can already name an id no contact
+# has yet, and collecting cases by client_id alone would adopt and delete it
+# once this run was given that id. Review 63d showed that aliases.contact_id
+# and conflict.contact_id are the same shape, so alias and conflict rows are
+# recorded by alias_id and conflict_id above their own bounds and deleted by
+# those ids. Deleting them by the parent id instead would delete an older
+# child row that was already pointing at the id this run was handed.
+#
+# What is left outside: a second writer that wins the same numeric id and
+# spells the same six-digit tag in the same run, or one that adds a child row
+# to this run's own contact or case while the row is running. Nothing here
+# rules those out; one database per run is what would. A failed bound read
+# stops the POST instead of guessing, and a failed readback counts as a
+# cleanup failure rather than passing quietly. After cleanup the row looks
+# for anything left behind, by the tag and by the ids it recorded, and fails
+# if it finds any. The login audit record is left: audit retention is
+# deliberate, and section 105 already covers it.
+#
+# The row needs the stack. Without it the POSTs cannot run, and rows one and
+# two are all that is left.
+if [ "${HAVE_DB:-0}" != 1 ]
+then
+	printf '  skip the stored masked SSN and phone checks (needs a running docker compose stack)\n'
+else
+	sm108_tag="$$${RANDOM}"
+	sm108_tag="${sm108_tag: -6}"
+	sm108_group="zzs108${sm108_tag}"
+	sm108_user="zzs108u${sm108_tag}"
+	sm108_pass='zz-s108-Passw0rd'
+	sm108_name="ZZS108${sm108_tag}"
+	sm108_jar="$(mktemp 2>/dev/null)"
+	sm108_jar_rc=$?
+	if [ "$sm108_jar_rc" -ne 0 ] || [ -z "$sm108_jar" ] || [ ! -w "$sm108_jar" ]
+	then
+		bad "the stored masked SSN and phone rows have no cookie jar they can write to: mktemp exited ${sm108_jar_rc} and named '${sm108_jar}'"
+		sm108_jar=''
+	fi
+	sm108_cids=''
+	sm108_caseids=''
+	sm108_aliasids=''
+	sm108_confids=''
+	sm108_max=''
+	sm108_casemax=''
+	sm108_amax=''
+	sm108_xmax=''
+	sm108_uid=''
+	sm108_case=''
+	sm108_own_group=0
+	sm108_own_user=0
+	sm108_cfail=0
+	sm108_cfail_msg=''
+	sm108_bound_fail=0
+	sm108_left=''
+
+	# A comma-separated list for an IN clause, or the empty string.
+	sm108_list()
+	{
+		printf '%s' "$1" | tr -s ' ' '\n' | grep -E '^[0-9]+$' \
+			| sort -un | tr '\n' ',' | sed -e 's/,$//'
+	}
+
+	# One value, with the query's exit status kept.
+	sm108_q()
+	{
+		sm108_qv="$(adb "$1")"
+		sm108_qrc=$?
+	}
+
+	sm108_del()
+	{
+		adb "$1" > /dev/null
+		if [ "$?" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} [${1}];"
+		fi
+	}
+
+	# A read cleanup depends on. A failure here would silently skip the
+	# deletes that follow it, so it is counted like a failed delete.
+	sm108_cq()
+	{
+		sm108_q "$1"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} read failed [${1}];"
+		fi
+	}
+
+	cleanup_sm108()
+	{
+		# Contacts, aliases, conflicts and cases go by ids this run recorded,
+		# in each table by that table's own id. The ids the page wrote were
+		# read back above a bound taken before the POST that wrote them; the
+		# seeded case, user and group were recorded from their own INSERT
+		# plus a readback under this run's own name. For those four tables
+		# there is no discovery left at cleanup time. The session rows are
+		# the exception review 63f names: the session ids are read here, the
+		# csrf rows then go by those session ids and the sessions by the
+		# user id.
+		# Review 63d is why the child rows are not deleted by a parent id: a
+		# row already pointing at the contact id or the case id this run was
+		# handed would go with them.
+		sm108_x="$(sm108_list "$sm108_confids")"
+		if [ -n "$sm108_x" ]
+		then
+			sm108_del "DELETE FROM conflict WHERE conflict_id IN (${sm108_x})"
+		fi
+		sm108_a="$(sm108_list "$sm108_aliasids")"
+		if [ -n "$sm108_a" ]
+		then
+			sm108_del "DELETE FROM aliases WHERE alias_id IN (${sm108_a})"
+		fi
+		sm108_c="$(sm108_list "$sm108_cids")"
+		if [ -n "$sm108_c" ]
+		then
+			sm108_del "DELETE FROM contacts WHERE contact_id IN (${sm108_c})"
+		fi
+		sm108_k="$(sm108_list "$sm108_caseids")"
+		if [ -n "$sm108_k" ]
+		then
+			sm108_del "DELETE FROM cases WHERE case_id IN (${sm108_k})"
+		fi
+		if [ "$sm108_own_user" -eq 1 ] && [ -n "$sm108_uid" ]
+		then
+			# csrf_tokens.session_id and user_sessions.session_id do not
+			# share a collation here, so comparing the two columns is an
+			# error and not a match. The ids are read out first and deleted
+			# one at a time by literal value, which compares against one
+			# column and so takes that column's own collation. The case
+			# guard is what makes the value safe to put in the statement.
+			sm108_cq "SELECT session_id FROM user_sessions WHERE user_id = ${sm108_uid}"
+			for sm108_sid in $sm108_qv
+			do
+				# session_create_id() can emit , and - as well, so they belong
+				# in the class. Anything else is not a shape this row will put
+				# in a statement, and skipping it silently would leave the
+				# token behind without saying so.
+				case "$sm108_sid" in
+				'' | *[!0-9A-Za-z,-]*)
+					sm108_cfail=$((sm108_cfail + 1))
+					sm108_cfail_msg="${sm108_cfail_msg} a session id was not a shape this row can put in a statement, so its csrf token was left;"
+					continue
+					;;
+				esac
+				sm108_del "DELETE FROM csrf_tokens WHERE session_id = '${sm108_sid}'"
+			done
+			sm108_del "DELETE FROM user_sessions WHERE user_id = ${sm108_uid}"
+			sm108_del "DELETE FROM users WHERE user_id = ${sm108_uid}"
+		fi
+		if [ "$sm108_own_group" -eq 1 ]
+		then
+			sm108_del "DELETE FROM \`groups\` WHERE group_id = '${sm108_group}'"
+		fi
+		if [ -n "$sm108_jar" ]
+		then
+			rm -f "$sm108_jar"
+		fi
+	}
+
+	# Whatever still carries this run's tag, or still carries one of the ids
+	# this run recorded, after cleanup has run. The csrf_tokens rows are
+	# reachable only through user_sessions, which is counted here, and the
+	# read that lists their session ids before the sessions go is already
+	# counted as a cleanup failure if it fails.
+	sm108_leftovers()
+	{
+		sm108_left=''
+		sm108_lc="$(sm108_list "$sm108_cids")"
+		sm108_lk="$(sm108_list "$sm108_caseids")"
+		for sm108_pair in \
+			"contacts:SELECT COUNT(*) FROM contacts WHERE last_name LIKE '${sm108_name}%'" \
+			"aliases:SELECT COUNT(*) FROM aliases WHERE last_name LIKE '${sm108_name}%'" \
+			"users:SELECT COUNT(*) FROM users WHERE username = '${sm108_user}'" \
+			"groups:SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${sm108_group}'" \
+			"the seeded case:SELECT COUNT(*) FROM cases WHERE number = 'ZZ${sm108_tag}'" \
+			"${sm108_lc:+contacts by id:SELECT COUNT(*) FROM contacts WHERE contact_id IN (${sm108_lc})}" \
+			"${sm108_lc:+alias rows by contact:SELECT COUNT(*) FROM aliases WHERE contact_id IN (${sm108_lc})}" \
+			"${sm108_lc:+conflict rows by contact:SELECT COUNT(*) FROM conflict WHERE contact_id IN (${sm108_lc})}" \
+			"${sm108_lc:+cases by client:SELECT COUNT(*) FROM cases WHERE client_id IN (${sm108_lc})}" \
+			"${sm108_lk:+cases by id:SELECT COUNT(*) FROM cases WHERE case_id IN (${sm108_lk})}" \
+			"${sm108_lk:+conflict rows by case:SELECT COUNT(*) FROM conflict WHERE case_id IN (${sm108_lk})}" \
+			"${sm108_uid:+sessions:SELECT COUNT(*) FROM user_sessions WHERE user_id = ${sm108_uid}}"
+		do
+			if [ -z "$sm108_pair" ]
+			then
+				continue
+			fi
+			sm108_q "${sm108_pair#*:}"
+			if [ "$sm108_qrc" -ne 0 ]
+			then
+				sm108_left="${sm108_left} ${sm108_pair%%:*} could not be counted;"
+			elif [ "$sm108_qv" != 0 ]
+			then
+				sm108_left="${sm108_left} ${sm108_qv} row(s) left in ${sm108_pair%%:*};"
+			fi
+		done
+	}
+
+	trap 'rm -f "$COOKIES" "$BODY"; cleanup_sm108' EXIT
+
+	# Non-zero if there is no jar to keep the session in, if curl failed, if
+	# the answer still holds a password field, or if grep could not read the
+	# answer at all. Review 63e measured that last one passing as a login:
+	# grep answers 1 for no match and 2 for an error, so negating its exit
+	# status cannot tell the two apart. Only 1 is taken as a signed-in page.
+	sm108_login()
+	{
+		if [ -z "$sm108_jar" ]
+		then
+			return 1
+		fi
+		: > "$sm108_jar"
+		curl -sL --max-time 30 -c "$sm108_jar" -b "$sm108_jar" -o "$BODY" \
+			-X POST -d "login_user=$1&login_pass=$2&auth_id=1" \
+			"$OCM_URL/" > /dev/null
+		sm108_login_rc=$?
+		if [ "$sm108_login_rc" -ne 0 ]
+		then
+			return 1
+		fi
+		grep -q 'login_pass' "$BODY"
+		sm108_body_rc=$?
+		if [ "$sm108_body_rc" -ne 1 ]
+		then
+			return 1
+		fi
+		return 0
+	}
+
+	sm108_token()
+	{
+		curl -sL --max-time 30 -c "$sm108_jar" -b "$sm108_jar" \
+			"$OCM_URL/password.php" \
+			| grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
+	}
+
+	# A fresh token, then the POST. Non-zero if either step failed, and
+	# non-zero without sending anything unless all four bounds were read.
+	# The bounds do not say who wrote a row. They rule out the rows that
+	# were already there, which is what cleanup needs before it deletes.
+	sm108_post()
+	{
+		if [ -z "${sm108_max:-}" ] || [ -z "${sm108_casemax:-}" ] \
+			|| [ -z "${sm108_amax:-}" ] || [ -z "${sm108_xmax:-}" ]
+		then
+			sm108_bound_fail=$((sm108_bound_fail + 1))
+			return 1
+		fi
+		# The pipeline's status, not only the length: the suite runs with
+		# pipefail, so a curl that never reached the page is visible here.
+		sm108_tok="$(sm108_token)"
+		sm108_tok_rc=$?
+		if [ "$sm108_tok_rc" -ne 0 ] || [ "${#sm108_tok}" -ne 64 ]
+		then
+			return 1
+		fi
+		curl -s --max-time 30 -c "$sm108_jar" -b "$sm108_jar" -o "$BODY" \
+			-X POST "$@" -d "_csrf=${sm108_tok}" \
+			"$OCM_URL/dataops.php" > /dev/null
+	}
+
+	# One bound. Empty unless the read succeeded and answered in digits,
+	# because a failed read answers with the empty string.
+	sm108_bound_one()
+	{
+		sm108_bv=''
+		sm108_q "$1"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			return
+		fi
+		case "${sm108_qv}" in
+		'' | *[!0-9]*)
+			return
+			;;
+		esac
+		sm108_bv="$sm108_qv"
+	}
+
+	# The highest id in each of the four tables cleanup deletes from, read
+	# before a POST. Anything above one of them afterwards was written after
+	# this call; which writer wrote it is a separate question, and the
+	# exactly-one check below does not answer it either -- one matching row
+	# settles that the result is unique and not who wrote it, so the
+	# concurrent-writer exclusion above still stands. A read that fails
+	# leaves its bound empty, and an empty bound stops the POST rather
+	# than letting it run unowned.
+	sm108_bound()
+	{
+		sm108_bound_one "SELECT COALESCE(MAX(contact_id), 0) FROM contacts"
+		sm108_max="$sm108_bv"
+		sm108_bound_one "SELECT COALESCE(MAX(case_id), 0) FROM cases"
+		sm108_casemax="$sm108_bv"
+		sm108_bound_one "SELECT COALESCE(MAX(alias_id), 0) FROM aliases"
+		sm108_amax="$sm108_bv"
+		sm108_bound_one "SELECT COALESCE(MAX(conflict_id), 0) FROM conflict"
+		sm108_xmax="$sm108_bv"
+	}
+
+	# Record what a POST created: the contact, the case that contact owns,
+	# and the alias and conflict rows written for that contact. Called
+	# whether or not the POST reported success, because a request can commit
+	# its writes and then time out. A read that fails here would silently
+	# leave a row for cleanup to miss, so it counts as a cleanup failure.
+	#
+	# Each of the five POSTs sends a last name of its own, so exactly one
+	# contact is expected above the bound. Two or more only means the result
+	# is not unique: another writer may have used the name, or this run's own
+	# request may have written twice. Either way which row the POST wrote is
+	# not settled, so none of them goes on the cleanup list and none of their
+	# child rows is looked for. The tag sweep after cleanup still counts them.
+	sm108_note()
+	{
+		sm108_cid=''
+		sm108_ncase=''
+		if [ -z "${sm108_max:-}" ] || [ -z "${sm108_casemax:-}" ] \
+			|| [ -z "${sm108_amax:-}" ] || [ -z "${sm108_xmax:-}" ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} no bound was recorded before the POST for ${1};"
+			return
+		fi
+		sm108_q "SELECT contact_id FROM contacts WHERE last_name = '$1' AND contact_id > ${sm108_max}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the contact for ${1} failed;"
+			return
+		fi
+		# Counted first, recorded afterwards. Review 63e measured the other
+		# order deleting a contact this run did not create: the loop put
+		# every match on the cleanup list before the count was known, and
+		# clearing the scalar afterwards did not take them off that list.
+		sm108_seen=0
+		sm108_cand=''
+		for sm108_one in $sm108_qv
+		do
+			case "$sm108_one" in
+			'' | *[!0-9]*)
+				continue
+				;;
+			esac
+			sm108_seen=$((sm108_seen + 1))
+			sm108_cand="$sm108_one"
+		done
+		if [ "$sm108_seen" -gt 1 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} ${sm108_seen} contacts named ${1} are above the bound, so which of them this POST wrote is not settled and none of them is recorded for deletion;"
+			return
+		fi
+		if [ "$sm108_seen" -ne 1 ]
+		then
+			return
+		fi
+		sm108_cid="$sm108_cand"
+		sm108_cids="${sm108_cids} ${sm108_cand}"
+		# This contact's alias and conflict rows, by their own ids and above
+		# their own bounds, because neither column is a foreign key and an
+		# older row can already point at the id this run was handed.
+		sm108_q "SELECT alias_id FROM aliases WHERE contact_id = ${sm108_cid} AND alias_id > ${sm108_amax}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the alias rows for ${1} failed;"
+		else
+			for sm108_one in $sm108_qv
+			do
+				case "$sm108_one" in
+				'' | *[!0-9]*)
+					continue
+					;;
+				esac
+				sm108_aliasids="${sm108_aliasids} ${sm108_one}"
+			done
+		fi
+		sm108_q "SELECT conflict_id FROM conflict WHERE contact_id = ${sm108_cid} AND conflict_id > ${sm108_xmax}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the conflict rows for ${1} failed;"
+		else
+			for sm108_one in $sm108_qv
+			do
+				case "$sm108_one" in
+				'' | *[!0-9]*)
+					continue
+					;;
+				esac
+				sm108_confids="${sm108_confids} ${sm108_one}"
+			done
+		fi
+		# This contact's case, and above the case bound, so an older case
+		# that already named this id is not taken for a new one.
+		sm108_q "SELECT case_id FROM cases WHERE client_id = ${sm108_cid} AND case_id > ${sm108_casemax}"
+		if [ "$sm108_qrc" -ne 0 ]
+		then
+			sm108_cfail=$((sm108_cfail + 1))
+			sm108_cfail_msg="${sm108_cfail_msg} reading back the case for ${1} failed;"
+			return
+		fi
+		for sm108_one in $sm108_qv
+		do
+			case "$sm108_one" in
+			'' | *[!0-9]*)
+				continue
+				;;
+			esac
+			sm108_ncase="$sm108_one"
+			sm108_caseids="${sm108_caseids} ${sm108_one}"
+		done
+	}
+
+	# A group that may edit every case, so the fixture case is editable. The
+	# seed is only recorded for deletion once the row has been read back
+	# under this run's own name, so a collision cannot make cleanup delete
+	# a group that was already there.
+	sm108_q "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${sm108_group}'"
+	sm108_pre_group="$sm108_qv"
+	if [ "$sm108_qrc" -ne 0 ] || [ "$sm108_pre_group" != 0 ]
+	then
+		bad "the masked-field fixture group name ${sm108_group} is already taken or could not be read ('${sm108_pre_group}'), so the fixtures were not seeded"
+	else
+		adb "INSERT INTO \`groups\` (group_id, read_office, read_all, edit_office, edit_all, users, pba, motd, intake, reports)
+			VALUES ('${sm108_group}', NULL, 1, NULL, 1, 0, 0, 0, 1, NULL)" > /dev/null
+		sm108_ins_rc=$?
+		sm108_q "SELECT COUNT(*) FROM \`groups\` WHERE group_id = '${sm108_group}'"
+		if [ "$sm108_ins_rc" -eq 0 ] && [ "$sm108_qrc" -eq 0 ] \
+			&& [ "$sm108_qv" = 1 ]
+		then
+			sm108_own_group=1
+		fi
+	fi
+
+	sm108_hash="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+		php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' \
+		"$sm108_pass" < /dev/null 2>/dev/null)"
+	sm108_hash_rc=$?
+	if [ "$sm108_hash_rc" -ne 0 ]
+	then
+		# A container call that failed could still have printed something,
+		# and a half-written hash would seed a user who cannot log in.
+		sm108_hash=''
+	fi
+	if [ "$sm108_own_group" -eq 1 ] && [ -n "$sm108_hash" ]
+	then
+		sm108_bound_one "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users"
+		sm108_uid="$sm108_bv"
+	fi
+	if [ -n "$sm108_uid" ]
+	then
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id, password_expire)
+			VALUES (${sm108_uid}, '${sm108_user}', '${sm108_hash}', 1, '${sm108_group}', 0)" > /dev/null
+		sm108_ins_rc=$?
+		# The INSERT has to have succeeded AND the row has to read back by id
+		# and by name. A readback alone proves a row exists, not who wrote
+		# it, so the id would not be ours to delete.
+		sm108_q "SELECT COUNT(*) FROM users WHERE user_id = ${sm108_uid} AND username = '${sm108_user}'"
+		if [ "$sm108_ins_rc" -eq 0 ] && [ "$sm108_qrc" -eq 0 ] \
+			&& [ "$sm108_qv" = 1 ]
+		then
+			sm108_own_user=1
+		else
+			sm108_uid=''
+		fi
+	fi
+	if [ "$sm108_own_user" -eq 1 ]
+	then
+		sm108_bound_one "SELECT COALESCE(MAX(case_id), 0) + 1 FROM cases"
+		sm108_case="$sm108_bv"
+	fi
+	if [ -n "$sm108_case" ]
+	then
+		adb "INSERT INTO cases (case_id, number, user_id, office, status)
+			VALUES (${sm108_case}, 'ZZ${sm108_tag}', ${sm108_uid}, 'ZZOFF', '1')" > /dev/null
+		sm108_ins_rc=$?
+		sm108_q "SELECT COUNT(*) FROM cases WHERE case_id = ${sm108_case} AND number = 'ZZ${sm108_tag}'"
+		if [ "$sm108_ins_rc" -eq 0 ] && [ "$sm108_qrc" -eq 0 ] \
+			&& [ "$sm108_qv" = 1 ]
+		then
+			sm108_caseids="${sm108_caseids} ${sm108_case}"
+		else
+			sm108_case=''
+		fi
+	fi
+
+	if [ "$sm108_own_group" -ne 1 ] || [ "$sm108_own_user" -ne 1 ] \
+		|| [ -z "$sm108_case" ]
+	then
+		bad "could not seed the masked-field fixtures and read them back (group ${sm108_own_group}, user ${sm108_own_user}, case '${sm108_case}'), so the stored value is untested"
+	elif ! sm108_login "$sm108_user" "$sm108_pass"
+	then
+		bad "the throwaway masked-field user could not log in, so the stored value is untested"
+	else
+		ok "the throwaway masked-field user can log in"
+
+		# Digits, unchanged: the strip must not empty a good part.
+		sm108_bound
+		sm108_post \
+			-d "action=add_case_contact&case_id=${sm108_case}&relation_code=7" \
+			-d "last_name=${sm108_name}A&ssn0=123&ssn1=45&ssn2=6789"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}A"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the clean masked SSN POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the clean masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_q "SELECT ssn FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_clean="$sm108_qv"
+			sm108_clean_rc=$sm108_qrc
+			sm108_q "SELECT ssn FROM aliases WHERE contact_id = ${sm108_cid}"
+			sm108_alias="$sm108_qv"
+			sm108_alias_rc=$sm108_qrc
+			if [ "$sm108_clean_rc" -ne 0 ] || [ "$sm108_alias_rc" -ne 0 ]
+			then
+				bad "reading the clean masked SSN back exited ${sm108_clean_rc} for the contact and ${sm108_alias_rc} for the alias, so nothing was compared"
+			elif [ "$sm108_clean" = '123-45-6789' ] \
+				&& [ "$sm108_alias" = '123-45-6789' ]
+			then
+				ok "a masked SSN of digits is stored whole, in contacts and in the mirrored alias"
+			else
+				bad "a masked SSN of digits did not survive the strip: contacts holds '${sm108_clean}' and the alias holds '${sm108_alias}' where 123-45-6789 was expected"
+			fi
+		fi
+
+		# A part that mixes a digit with markup. The digit is the point: it
+		# has to survive while the markup does not, which a part of pure
+		# markup could not tell apart from a filter that dropped the whole
+		# part.
+		sm108_bound
+		sm108_post \
+			-d "action=add_case_contact&case_id=${sm108_case}&relation_code=7" \
+			-d "last_name=${sm108_name}B&ssn0=1<2&ssn1=45&ssn2=6789"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}B"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the markup masked SSN POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the markup masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_q "SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid}"
+			sm108_dirty_n="$sm108_qv"
+			sm108_dirty_n_rc=$sm108_qrc
+			sm108_q "SELECT ssn FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_stored="$sm108_qv"
+			sm108_stored_rc=$sm108_qrc
+			sm108_q "SELECT ssn FROM aliases WHERE contact_id = ${sm108_cid}"
+			sm108_dalias="$sm108_qv"
+			sm108_dalias_rc=$sm108_qrc
+			if [ "$sm108_dirty_n_rc" -ne 0 ] || [ "$sm108_dirty_n" != 1 ]
+			then
+				bad "counting the markup SSN contact's mirrored alias exited ${sm108_dirty_n_rc} and returned '${sm108_dirty_n}' where one row was expected, so nothing was read back"
+			elif [ "$sm108_stored_rc" -ne 0 ] || [ "$sm108_dalias_rc" -ne 0 ]
+			then
+				bad "reading the markup masked SSN back exited ${sm108_stored_rc} for the contact and ${sm108_dalias_rc} for the alias, so nothing was compared"
+			elif [ "$sm108_stored" = '12-45-6789' ] \
+				&& [ "$sm108_dalias" = '12-45-6789' ]
+			then
+				ok "a masked SSN part that mixes a digit with markup keeps the digit and drops the markup, in contacts and in the mirrored alias"
+			else
+				bad "a masked SSN part mixing a digit with markup was not reduced to its digits: contacts holds '${sm108_stored}' and the alias holds '${sm108_dalias}' where 12-45-6789 was expected"
+			fi
+		fi
+
+		# Every part markup: the condition goes false and nothing is stored.
+		# Read as four counts, so that no spelling of the stored value can
+		# answer for an absent row and no sentinel can be mistaken for one.
+		sm108_bound
+		sm108_post \
+			-d "action=add_case_contact&case_id=${sm108_case}&relation_code=7" \
+			-d "last_name=${sm108_name}C&ssn0=a<b&ssn1=c&ssn2=d"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}C"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the all-markup masked SSN POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the all-markup masked SSN POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_empty_rc=0
+			sm108_empty_msg=''
+			for sm108_pair in \
+				"the contact row:SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid}" \
+				"its mirrored alias:SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid}" \
+				"the contact's empty ssn:SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid} AND (ssn IS NULL OR ssn = '')" \
+				"the alias's empty ssn:SELECT COUNT(*) FROM aliases WHERE contact_id = ${sm108_cid} AND (ssn IS NULL OR ssn = '')"
+			do
+				sm108_q "${sm108_pair#*:}"
+				if [ "$sm108_qrc" -ne 0 ]
+				then
+					sm108_empty_rc=1
+					sm108_empty_msg="${sm108_empty_msg} counting ${sm108_pair%%:*} exited ${sm108_qrc};"
+				elif [ "$sm108_qv" != 1 ]
+				then
+					sm108_empty_msg="${sm108_empty_msg} ${sm108_pair%%:*} counted ${sm108_qv} where 1 was expected;"
+				fi
+			done
+			if [ "$sm108_empty_rc" -ne 0 ]
+			then
+				bad "reading the all-markup masked SSN back failed, so nothing was compared:${sm108_empty_msg}"
+			elif [ -n "$sm108_empty_msg" ]
+			then
+				bad "a masked SSN whose every part is markup did not leave one contact and one alias, each holding nothing:${sm108_empty_msg}"
+			else
+				ok "a masked SSN whose every part is markup leaves one contact and its one mirrored alias, and the ssn column of each is null or empty"
+			fi
+		fi
+
+		# ROW FOUR -- the live path, for phone. Both live phone joins sit in
+		# arms that take no case_id, so neither reaches the authorize call in
+		# cms/dataops.php; new_case is the one of those two that a form in
+		# the tree actually posts to. It creates a contact, then a case whose
+		# client_id it sets to that contact, then the link row. So the row
+		# uses the case this run recorded: this contact's, and above the case
+		# bound taken before the POST, which is what tells a case this POST
+		# inserted from an older one that already named the same client_id.
+		# The link is counted separately. Counting the link alone would not
+		# do: the checked-in schema puts no foreign key on conflict, so a
+		# link can name a case that is not there. That those arms run with no
+		# pika_authorize() call on the path is a separate finding, and is not
+		# what this row measures.
+		sm108_bound
+		sm108_post \
+			-d "action=new_case&last_name=${sm108_name}D" \
+			-d "phone_a=555&phone_b=1234"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}D"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the clean masked phone POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the clean masked phone POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		elif [ -z "$sm108_ncase" ] || [ "$sm108_ncase" = "$sm108_case" ]
+		then
+			bad "the clean masked phone POST recorded no case above the bound: it named '${sm108_ncase}' where a case id other than the seeded ${sm108_case} was expected, so no case matching this contact and bound came back, or the read failed; a case written with another client_id would be missed here too"
+		else
+			sm108_q "SELECT phone FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_phclean="$sm108_qv"
+			sm108_phclean_rc=$sm108_qrc
+			sm108_q "SELECT COUNT(*) FROM conflict WHERE contact_id = ${sm108_cid} AND case_id = '${sm108_ncase}'"
+			sm108_link_n="$sm108_qv"
+			sm108_link_n_rc=$sm108_qrc
+			if [ "$sm108_phclean_rc" -ne 0 ] || [ "$sm108_link_n_rc" -ne 0 ]
+			then
+				bad "reading the clean masked phone back exited ${sm108_phclean_rc} for the column and ${sm108_link_n_rc} for the link, so nothing was compared"
+			elif [ "$sm108_link_n" != 1 ]
+			then
+				bad "the clean masked phone POST left '${sm108_link_n}' link(s) between its contact and its own case ${sm108_ncase} where one was expected, so the arm did not finish"
+			elif [ "$sm108_phclean" = '555-1234' ]
+			then
+				ok "a masked phone of digits is stored whole, and the arm creates a case of its own above this run's bound and links its contact to that case"
+			else
+				bad "a masked phone of digits did not survive the strip: contacts.phone holds '${sm108_phclean}' where 555-1234 was expected"
+			fi
+		fi
+
+		sm108_bound
+		sm108_post \
+			-d "action=new_case&last_name=${sm108_name}E" \
+			-d "phone_a=555&phone_b=1x2"
+		sm108_post_rc=$?
+		sm108_note "${sm108_name}E"
+		if [ "$sm108_post_rc" -ne 0 ]
+		then
+			bad "the markup masked phone POST did not go through, so the stored value is untested"
+		elif [ -z "$sm108_cid" ]
+		then
+			bad "the markup masked phone POST recorded no contact of its own name above the bound -- no row matched its name and bound, the read failed, or more than one matched -- so the stored value is untested"
+		else
+			sm108_q "SELECT COUNT(*) FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_phn="$sm108_qv"
+			sm108_phn_rc=$sm108_qrc
+			sm108_q "SELECT phone FROM contacts WHERE contact_id = ${sm108_cid}"
+			sm108_phstored="$sm108_qv"
+			sm108_phstored_rc=$sm108_qrc
+			if [ "$sm108_phn_rc" -ne 0 ] || [ "$sm108_phn" != 1 ]
+			then
+				bad "counting the markup phone contact exited ${sm108_phn_rc} and returned '${sm108_phn}' where one row was expected, so nothing was read back"
+			elif [ "$sm108_phstored_rc" -ne 0 ]
+			then
+				bad "reading the markup masked phone back exited ${sm108_phstored_rc}, so nothing was compared"
+			elif [ "$sm108_phstored" = '555-12' ]
+			then
+				ok "a masked phone part carrying a letter keeps only its digits"
+			else
+				bad "a masked phone part carrying a letter was not reduced to its digits: contacts.phone holds '${sm108_phstored}' where 555-12 was expected"
+			fi
+		fi
+	fi
+
+	cleanup_sm108
+	sm108_leftovers
+	if [ "$sm108_bound_fail" -ne 0 ]
+	then
+		bad "${sm108_bound_fail} masked-field POST(s) were not sent because the contact, case, alias and conflict bounds they need in order to be cleaned up could not be read"
+	elif [ "$sm108_cfail" -ne 0 ]
+	then
+		bad "${sm108_cfail} of the masked-field cleanup checks did not pass -- a failed statement, a failed read, a read that matched more than one row, a missing bound or a session id of the wrong shape -- so fixture rows may be left behind:${sm108_cfail_msg}"
+	elif [ -n "$sm108_left" ]
+	then
+		bad "the masked-field cleanup reported no failures but the searches after it did not come back empty -- rows are still there, or a count query failed and what is left is unknown:${sm108_left}"
+	else
+		ok "the masked-field fixtures this run recorded are deleted, contacts aliases conflicts and cases by their own ids and the session rows by the session and user ids read at cleanup time, every delete and every read cleanup depends on reported success, and the tag and recorded-id searches that follow found no contact, alias, case, conflict row, session, user or group of this run's left"
+	fi
+	trap 'rm -f "$COOKIES" "$BODY"' EXIT
+fi
+
+fi
+
+echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
