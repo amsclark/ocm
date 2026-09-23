@@ -233,9 +233,44 @@ $body = isset($_POST['Body']) ? (string) $_POST['Body'] : '';
 
 $case_id = '';
 
-$clean_number = DB::escapeString($number);
-$phone = substr($clean_number, 5, 3) . '-' . substr($clean_number, 8);
-$area_code = substr($clean_number, 2, 3);
+/*    The slicing comes after the stripping, not after the escaping. Escaping
+	doubles a backslash and puts one in front of a quote, so a substr()
+	boundary can land between a backslash and the character it protects.
+	There are three offsets below. The area code's slice ends at index 4 of
+	the escaped string, which is index 4 of the raw number only while
+	nothing before it has been expanded, so a number whose first quote sits
+	there left $area_code holding a lone backslash at its end. MariaDB then
+	read the closing quote of that value as ordinary text and joined it to
+	the next string literal in the query, and the phone comparison
+	disappeared. Other placements left a backslash elsewhere and made the
+	query unparseable, so the message was dropped instead of saved. Whether
+	any placement can be made to widen the result set instead was not
+	established either way.
+
+	Removing every character that is not a digit or a plus first means a
+	slice can no longer end on an escape character, because the escaper is
+	left with nothing to escape. The offsets are unchanged, so a sender made
+	only of digits and a plus derives the area code and phone it derived
+	before, well formed or not. A sender written with spaces, dashes, dots
+	or parentheses can derive different values than before, because removing
+	a character shifts every later one to the left, and some of those did
+	match before: "  2025550123" derived 202 and 555-0123 and now derives
+	255 and 501-23. Twilio is documented to send the number in E.164, which
+	carries none of those characters, but nothing here checks that, so it is
+	the stripping and not the sender that makes the offsets predictable.
+
+	The offsets themselves assume the number opens with "+1", a United
+	States country code. They were wrong for any other country before this
+	change and are still wrong after it: "+442079460958" derives 420 and
+	794-60958 either way. That is a separate defect and is not fixed here.
+
+	The escaping stays even though it now has nothing to do, because all
+	three slices feed two values that are interpolated into a query below,
+	and the call is what says so. */
+$safe_number = preg_replace('/[^0-9+]/', '', $number);
+$phone = DB::escapeString(substr($safe_number, 5, 3) . '-'
+	. substr($safe_number, 8));
+$area_code = DB::escapeString(substr($safe_number, 2, 3));
 
 $response_message = "If you are getting this message, an error has occurred.";
 

@@ -183,25 +183,6 @@ class pikaSettings
 	
 	public function save()
 	{
-		/*
-		if(!is_null($this->array_variable_name) && strlen($this->array_variable_name))
-		{ // do the variable method (only for hard coded variables)
-			$contents = "<?php\n\${$this->array_variable_name} = ";
-		}
-		else
-		{ // do the return method (to avoid namespace problems)
-			$contents = "<?php\nreturn ";
-		}
-		$contents .= $this->array2Php($this->values);
-		$contents .= ";";
-		
-		if (!file_put_contents($this->file_location,$contents))
-		{
-			trigger_error("Error: An error occured while saving ({$this->file_location})");
-		}
-		
-		return true;
-		*/
 		pl_settings_save();
 	}
 	
