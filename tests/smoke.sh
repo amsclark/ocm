@@ -19637,7 +19637,26 @@ fi
 # <?PHP opens one, and <?php0, <?php_ and <?php! do not: with
 # short_open_tag on PHP reads those three as a bare <? followed by code,
 # and with it off as inline text. This row counts every occurrence of a
-# spelling PHP does not open a block on, wherever it stands.
+# spelling PHP does not open a block on, wherever it stands. It counts
+# <?= separately and requires that count to be zero too. The tree holds
+# none today, and <?= is the one spelling that turning short_open_tag off
+# does not disarm, so a file that grew one would read PHP's setting
+# differently from every sentence above. An earlier shape of this row said
+# in its own pass message that no spelling PHP may read as a bare tag
+# stood anywhere while passing over every <?=; the count answers that.
+#
+# The scan of the files outside that scope is asked one question about
+# itself before it is trusted: given a file holding one <? with a nul byte
+# before it, it must answer one. An awk that ended its record at a nul
+# would answer none, and would go on reading no <? that stands after a
+# nul in any file here. mawk answers one, and so does busybox awk, which
+# starts a new record at the nul and counts the <? in that second record.
+# Such an awk is already caught in one other place, but only by accident:
+# four of the seven allowed names are images, and a fifth an icon, and
+# they hold nul bytes before the <? they are allowed, so their counts
+# would fall short. That is an accident of what those files happen to
+# hold, and it would go with the allowance. The self-test states the
+# property instead of resting on it.
 #
 # The scan reads the file's own bytes because the filter cannot be asked
 # instead. No one of the filter's three outputs answers the question this
@@ -19686,8 +19705,15 @@ fi
 # through one, fails the row. What these checks settle is that the list did
 # not stop before a NUL it should have ended with, and that the loop and the
 # count agree about how many records it holds. They cannot settle that no
-# record was lost before the count was taken: a find that silently left a
-# file out would be counted and looped over consistently. Each file's scan must exit zero and must
+# record was lost before the count was taken by find alone: a find that
+# silently left a file out would be counted and looped over consistently.
+# So the php files under cms/ are enumerated a second time, by the shell's
+# own recursive glob rather than by find, and the two counts must agree. A
+# producer that quietly drops a name is then counted by something that did
+# not produce the list. The second enumeration takes the same view of the
+# tree as the first on purpose -- a regular file, no symlink followed --
+# and the shell's recursive glob does not descend a symlinked directory
+# either. Each file's scan must exit zero and must
 # print 0 and nothing else: the scan prints that byte and a newline, and
 # the shell drops trailing newlines from what it captures, so the value
 # tested is the single character 0. What the row tests is that captured
@@ -19734,7 +19760,14 @@ fi
 # a download by cms/system-mac_download.php and the four images are
 # backgrounds in cms/css/screen.css.php. So none of them is read as PHP.
 # The row also fails if one of the seven is no longer there, so an
-# allowance it still carries cannot quietly stop being measured.
+# allowance it still carries cannot quietly stop being measured, and each
+# of the seven is pinned by the sha256 of its bytes as well as by its
+# count. The count alone was not enough: a subagent replaced the whole of
+# cms/favicon.ico with php source whose only <? was the <?php that opened
+# it, which is the one occurrence the allowance blesses, and every row
+# here passed. The seven are a property list, an icon, an xml template and
+# four images, none of them edited in this repository's history, so
+# pinning their bytes costs nothing until one is deliberately replaced.
 #
 # A file added later under a name that does not end .php fails this row as
 # soon as it holds a <? at all, and one of the seven whose count moves
@@ -19753,7 +19786,9 @@ sm107_bare_prog='
 		k = tolower(substr(rest, 1, 3))
 		b = substr(rest, 4, 1)
 		if (c == "=") {
-			n = n + 0
+			e = e + 1
+			out = out sep FNR ": " $0
+			sep = "\n"
 		}
 		else if (k == "php" && (length(rest) == 3 || b == " " || b == "\t" || b == "\r")) {
 			n = n + 0
@@ -19768,7 +19803,7 @@ sm107_bare_prog='
 	}
 }
 END {
-	printf "%d", n + 0
+	printf "%d %d", n + 0, e + 0
 	if (out != "") {
 		printf "\n%s", out
 	}
@@ -19795,6 +19830,21 @@ sm107_bare_special_rc=$?
 sm107_bare_odd="$(find cms/ \( -type f -o -type l \) -name '*.php*' ! -name '*.php' \
 	-print0 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' \n')"
 sm107_bare_odd_rc=$?
+sm107_glob_files=0
+sm107_glob_rc=1
+sm107_glob_shopt="$(shopt -p globstar nullglob 2>/dev/null)"
+if shopt -s globstar nullglob 2>/dev/null
+then
+	sm107_glob_rc=0
+	for sm107_g in cms/**/*.php
+	do
+		if [ -f "$sm107_g" ] && [ ! -L "$sm107_g" ]
+		then
+			sm107_glob_files=$((sm107_glob_files + 1))
+		fi
+	done
+fi
+eval "$sm107_glob_shopt" 2>/dev/null
 sm107_bare_rc=1
 sm107_bare_bytes=''
 sm107_bare_entries=''
@@ -19808,6 +19858,9 @@ sm107_bare_other_tail=''
 sm107_bare_other_files=0
 sm107_bare_other_bad=0
 sm107_bare_other_known=0
+sm107_bare_counted=no
+sm107_bare_nulscan=''
+sm107_bare_nulscan_rc=1
 sm107_bare_ready=no
 if [ "$sm107_bare_tmp_rc" -eq 0 ] && [ -n "$sm107_bare_tmp" ] && [ -w "$sm107_bare_tmp" ]
 then
@@ -19816,14 +19869,14 @@ then
 	sm107_bare_rc=$?
 	sm107_bare_bytes="$(wc -c < "$sm107_bare_tmp" | tr -d ' \n')"
 	sm107_bare_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c | tr -d ' \n')"
-	sm107_bare_tail="$(tail -c 1 "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
+	sm107_bare_tail="$(tail -c 1 -- "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
 		| tr -d ' \n')"
 	while IFS= read -r -d '' sm107_f
 	do
 		sm107_bare_files=$((sm107_bare_files + 1))
 		sm107_bare_out="$(awk "$sm107_bare_prog" < "$sm107_f" 2>/dev/null)"
 		sm107_bare_awk_rc=$?
-		if [ "$sm107_bare_awk_rc" -ne 0 ] || [ "$sm107_bare_out" != "0" ]
+		if [ "$sm107_bare_awk_rc" -ne 0 ] || [ "$sm107_bare_out" != "0 0" ]
 		then
 			sm107_bare_bad=$((sm107_bare_bad + 1))
 			printf '    %s: the scan exited %s and said\n' \
@@ -19836,29 +19889,54 @@ then
 	sm107_bare_other_bytes="$(wc -c < "$sm107_bare_tmp" | tr -d ' \n')"
 	sm107_bare_other_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c \
 		| tr -d ' \n')"
-	sm107_bare_other_tail="$(tail -c 1 "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
+	sm107_bare_other_tail="$(tail -c 1 -- "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
 		| tr -d ' \n')"
 	while IFS= read -r -d '' sm107_f
 	do
 		sm107_bare_other_files=$((sm107_bare_other_files + 1))
 		sm107_bare_want=0
+		sm107_bare_wsha=''
 		case "$sm107_f" in
 		cms/app/scripts/com.pikasoftware.cms-csv-download.plist)
 			sm107_bare_want=1
+			sm107_bare_wsha=ca938f7485040a1edf248553d03bf2a127790438ee8928272b9aab6d55df90c0
 			;;
-		cms/favicon.ico | cms/templates/client-tpl.xml)
+		cms/favicon.ico)
 			sm107_bare_want=1
+			sm107_bare_wsha=9420b8a27df6851dc91d94fef504e01d115f3c3945eb18f1a5d67ce993605c25
 			;;
-		cms/images/4-gray-high.jpg | cms/images/drop-shadow.jpg)
-			sm107_bare_want=3
+		cms/templates/client-tpl.xml)
+			sm107_bare_want=1
+			sm107_bare_wsha=ca3e2df45ad3ed387afe9ccd8d4eca75759db24ac110dfcc094bcd0cf40a8d9b
 			;;
-		cms/images/tab_gradient.jpg | cms/images/th-gradient.jpg)
+		cms/images/4-gray-high.jpg)
 			sm107_bare_want=3
+			sm107_bare_wsha=9d26fdc64157f72960ce174812524788b12763e7961f57541318e102edd22612
+			;;
+		cms/images/drop-shadow.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=71af8a11bb3c724da758c5447d853011b268c46b31b2c00666e272a29a41c156
+			;;
+		cms/images/tab_gradient.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=354533b625808c78620c9a9e4c37c7a6db85b30b95efc9c2de3711c0dbb1f485
+			;;
+		cms/images/th-gradient.jpg)
+			sm107_bare_want=3
+			sm107_bare_wsha=643fdfbe5bbe5e894672ca4a26bd96b137b0e724c23a01fefea36396010c3bda
 			;;
 		esac
 		if [ "$sm107_bare_want" != 0 ]
 		then
 			sm107_bare_other_known=$((sm107_bare_other_known + 1))
+			sm107_bare_gsha="$(sha256sum < "$sm107_f" | cut -d' ' -f1)"
+			if [ "$sm107_bare_gsha" != "$sm107_bare_wsha" ]
+			then
+				sm107_bare_other_bad=$((sm107_bare_other_bad + 1))
+				printf '    %s: this file is allowed %s occurrence(s) of <? because of what it is, and its bytes hash to %s, not to the %s read when that allowance was written\n' \
+					"$sm107_f" "$sm107_bare_want" \
+					"$sm107_bare_gsha" "$sm107_bare_wsha"
+			fi
 		fi
 		sm107_bare_out="$(awk "$sm107_other_prog" < "$sm107_f" 2>/dev/null)"
 		sm107_bare_awk_rc=$?
@@ -19871,6 +19949,9 @@ then
 				"$sm107_bare_awk_rc"
 		fi
 	done < "$sm107_bare_tmp"
+	printf 'a\000<?php\n' > "$sm107_bare_tmp"
+	sm107_bare_nulscan="$(awk "$sm107_other_prog" < "$sm107_bare_tmp" 2>/dev/null)"
+	sm107_bare_nulscan_rc=$?
 	rm -f "$sm107_bare_tmp"
 fi
 if [ "$sm107_bare_ready" != yes ]
@@ -19916,18 +19997,32 @@ else
 	elif [ "$sm107_bare_special" != 0 ] || [ "$sm107_bare_odd" != 0 ]
 	then
 		bad "the short open tag row cannot reach every php file under cms/: ${sm107_bare_special} entr(y|ies) that are neither a directory nor a regular file, which find will not follow or read, and ${sm107_bare_odd} name(s) holding .php before their end"
+	elif [ "$sm107_glob_rc" -ne 0 ] \
+		|| [ "$sm107_glob_files" != "$sm107_bare_entries" ]
+	then
+		bad "the two enumerations of the php files under cms/ disagree: find named ${sm107_bare_entries} and the shell's own recursive glob named ${sm107_glob_files}, the glob exiting ${sm107_glob_rc}, so one of them left a file out and this row cannot say it read every php file under cms/"
 	elif [ "$sm107_bare_other_known" != 7 ]
 	then
 		bad "the short open tag row allows a <? in seven named files outside its scope and found ${sm107_bare_other_known} of them, so an allowance it still carries is no longer measured"
+	elif [ "$sm107_bare_nulscan_rc" -ne 0 ] || [ "$sm107_bare_nulscan" != 1 ]
+	then
+		bad "the scan of the files outside this row's scope answered '${sm107_bare_nulscan}' and exited ${sm107_bare_nulscan_rc} for a file holding one <? with a nul byte before it, where 1 was expected, so the awk in use here ends its record at a nul and a <? standing after one in such a file would not be counted"
 	elif [ "$sm107_bare_other_bad" != 0 ]
 	then
 		bad "${sm107_bare_other_bad} of the ${sm107_bare_other_files} file(s) under cms/ whose name does not end .php hold a count of <? this row does not allow, so php source may stand outside this row's scope: either the name should end .php, or the count must be allowed here by name once it is settled the file is not read as php"
 	elif [ "$sm107_bare_bad" != 0 ]
 	then
-		bad "${sm107_bare_bad} of the ${sm107_bare_files} php file(s) under cms/ hold a spelling PHP may read as a bare short open tag, or could not be scanned"
+		bad "${sm107_bare_bad} of the ${sm107_bare_files} php file(s) under cms/ hold a spelling PHP may read as a bare short open tag, or hold a <?=, or could not be scanned"
 	else
-		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned, and no <? in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope beyond the counts the seven named files are allowed"
+		ok "every <? in the ${sm107_bare_files} php file(s) under cms/ is <?php followed by a space, a tab, a carriage return or the end of its line, none is spelled <?=, which PHP opens a block on whatever short_open_tag is set to, every one of those files was scanned, both enumerations of them agreed, and no <? stands in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope beyond the counts and the bytes the seven named files are allowed"
 	fi
+fi
+sm107_tree_ok=yes
+if [ "$sm107_bare_counted" != yes ] || [ "$sm107_bare_special" != 0 ] \
+	|| [ "$sm107_bare_odd" != 0 ] || [ "$sm107_glob_rc" -ne 0 ] \
+	|| [ "$sm107_glob_files" != "$sm107_bare_entries" ]
+then
+	sm107_tree_ok=no
 fi
 # Row six is the filter's line model, stated as a property of the tree.
 # The filter reads a file as records split on newlines, and rows one to
@@ -19947,6 +20042,17 @@ fi
 # which are equal only where every carriage return is followed by a
 # newline. The file's own last byte is counted separately, because a
 # final line with no newline to end it would otherwise read as a pair.
+# Both parts were checked together over every byte string up to eight
+# bytes long built from A, carriage return and newline: of those 9840
+# strings, 8160 hold a carriage return that is not followed by a newline,
+# and this row raises all 8160 and none of the rest, under both awks on
+# this box. The nul ban is what keeps that true. An awk may start a new
+# record at a nul byte -- busybox awk does, mawk does not -- and there a
+# carriage return standing before a nul becomes the last byte of its own
+# record and reads as a pair: on the four bytes A, carriage return, nul,
+# newline, mawk raises this row and busybox awk does not. With nuls
+# banned, both awks read the same records, so which one runs the suite
+# cannot change this row's answer.
 #
 # What this row does not do is make the filter read a carriage return as
 # PHP does. It fails the moment a file arrives that would need that, and
@@ -19995,7 +20101,15 @@ fi
 # body against PHP and replaces the hash here.
 #
 # The two rows share one list and one read of the tree. A list the first
-# of them could not trust fails both.
+# of them could not trust fails both, and so does a tree row five could
+# not account for: neither of these two rows takes its own stock of the
+# entries under cms/ that are neither a directory nor a regular file, or
+# of the names holding .php before their end, so both refuse to report
+# until row five's stock-take has come out clean and its two enumerations
+# have agreed. A subagent put in the tree a symlink named cms/zz_out.php,
+# and then a file named cms/zz_upper.PHP, each holding a seventh heredoc,
+# a nul byte and a lone carriage return; find reached neither, and both of
+# these rows said ok on a measurement they had not made.
 sm107_cr_prog='
 {
 	s = $0
@@ -20123,7 +20237,7 @@ then
 	sm107_pre_rc=$?
 	sm107_pre_bytes="$(wc -c < "$sm107_pre_tmp" | tr -d ' \n')"
 	sm107_pre_entries="$(tr -dc '\0' < "$sm107_pre_tmp" | wc -c | tr -d ' \n')"
-	sm107_pre_tail="$(tail -c 1 "$sm107_pre_tmp" | tr -dc '\0' | wc -c \
+	sm107_pre_tail="$(tail -c 1 -- "$sm107_pre_tmp" | tr -dc '\0' | wc -c \
 		| tr -d ' \n')"
 	while IFS= read -r -d '' sm107_f
 	do
@@ -20141,7 +20255,7 @@ then
 		sm107_pre_out="$(awk "$sm107_cr_prog" < "$sm107_f" 2>/dev/null)"
 		sm107_pre_awk_rc=$?
 		sm107_pre_nul="$(tr -dc '\0' < "$sm107_f" | wc -c | tr -d ' \n')"
-		sm107_pre_last="$(tail -c 1 "$sm107_f" | tr -dc '\r' | wc -c \
+		sm107_pre_last="$(tail -c 1 -- "$sm107_f" | tr -dc '\r' | wc -c \
 			| tr -d ' \n')"
 		if [ "$sm107_pre_awk_rc" -ne 0 ] \
 			|| [ "$sm107_pre_out" != "$sm107_pre_want $sm107_pre_want" ] \
@@ -20196,6 +20310,9 @@ then
 elif [ "$sm107_pre_files" != "$sm107_pre_entries" ]
 then
 	bad "the line model row read ${sm107_pre_files} of the ${sm107_pre_entries} file(s) its own list held"
+elif [ "$sm107_tree_ok" != yes ]
+then
+	bad "the line model row cannot say what stands under cms/: the row above it counted '${sm107_bare_special}' entr(y|ies) that are neither a directory nor a regular file and '${sm107_bare_odd}' name(s) holding .php before their end, and its two enumerations named '${sm107_bare_entries}' and '${sm107_glob_files}' php file(s), so a php file this row never read may stand there"
 elif [ "$sm107_pre_known" != 1 ]
 then
 	bad "the line model row allows CRLF line endings in one named php file and found ${sm107_pre_known} of them, so an allowance it still carries is no longer measured"
@@ -20207,9 +20324,11 @@ else
 fi
 if [ "$sm107_pre_ready" != yes ] || [ "$sm107_pre_rc" -ne 0 ] \
 	|| [ "$sm107_pre_counted" != yes ] || [ "$sm107_pre_entries" = 0 ] \
-	|| [ "$sm107_pre_files" != "$sm107_pre_entries" ]
+	|| [ "$sm107_pre_files" != "$sm107_pre_entries" ] \
+	|| [ "$sm107_tree_ok" != yes ] \
+	|| { [ "$sm107_pre_bytes" != 0 ] && [ "$sm107_pre_tail" != 1 ]; }
 then
-	bad "the heredoc inventory row has no list of php files it can trust: the row above it did not get one"
+	bad "the heredoc inventory row has no list of php files it can trust, or no tree it can trust: the row above it did not get one"
 elif [ "$sm107_hd_counted" != yes ]
 then
 	bad "the heredoc inventory row could not count what it read: '${sm107_hd_files}' file name(s), '${sm107_hd_open}' opener(s), '${sm107_hd_close}' closer(s) and '${sm107_hd_unclosed}' opener(s) left unclosed"
@@ -20230,6 +20349,139 @@ then
 	bad "the heredoc and nowdoc text under cms/ hashes to ${sm107_hd_sha}, not to the b9d81d46 the six bodies read against PHP hash to, so a body was added, moved or changed and must be read against PHP before this hash is replaced"
 else
 	ok "the heredoc and nowdoc inventory under cms/ is the six openers in three files whose bodies were read against PHP, each closed in the file that opened it, and its text hashes to b9d81d46"
+fi
+# ROW EIGHT -- the one directory outside cms/ that the application reads.
+# Every row above takes cms/ as the tree. cms-custom/ is read on nearly
+# every request: cms-custom/config/default_prefs.php is included by the
+# bootstrap, and the two files under cms-custom/subtemplates/ are
+# rendered as templates. So php there is php no row above has read, and
+# a subagent found the tree itself working around that. The generator at
+# cms/app/lib/pikaFileArray.php writes the open tag of the file it
+# generates in two pieces, with a comment saying the section needs the
+# tree to hold none of that spelling -- and writes that generated file
+# into cms-custom/, where row five cannot see it either way.
+#
+# Widening the rows above into cms-custom/ would move every pin they
+# carry, and would fail row five at once on
+# cms-custom/config/settings.php.example, a name holding .php before its
+# end. This row pins the directory whole instead: four regular files,
+# three directories, no entry that is neither, exactly one name ending
+# .php and that one cms-custom/config/default_prefs.php, no line holding
+# the first three bytes of a heredoc opener, and a sha256 over a manifest
+# of each file's own sha256 and path in sorted order. A pinned manifest
+# is stronger here than any scan and much shorter to write: it fails on a
+# new file, a deleted one, a rename, and any change of content, whatever
+# that content is, so it does not have to know what to look for.
+#
+# The cost is that nothing in cms-custom/ can change without someone
+# reading the change and replacing the hash. That is the point, and it is
+# cheap: these four files have not been edited in this repository's
+# history. A local install that writes cms-custom/config/settings.php
+# fails this row too, which is correct -- that file would be read on
+# every request and no row here reads it.
+#
+# The repository's other php files stand outside cms/ and outside
+# cms-custom/: .semgrep/ocm-sinks.php and three fixtures under
+# tests/fixtures/. None is served or included by the application, and
+# none is pinned here.
+sm107_cst_tmp="$(mktemp 2>/dev/null)"
+sm107_cst_tmp_rc=$?
+sm107_cst_acc="$(mktemp 2>/dev/null)"
+sm107_cst_acc_rc=$?
+sm107_cst_dirs="$(find cms-custom/ -type d 2>/dev/null | wc -l | tr -d ' \n')"
+sm107_cst_dirs_rc=$?
+sm107_cst_special="$(find cms-custom/ ! -type d ! -type f -print0 2>/dev/null \
+	| tr -dc '\0' | wc -c | tr -d ' \n')"
+sm107_cst_special_rc=$?
+sm107_cst_ready=no
+sm107_cst_rc=1
+sm107_cst_bytes=''
+sm107_cst_entries=''
+sm107_cst_tail=''
+sm107_cst_files=0
+sm107_cst_php=0
+sm107_cst_hd=0
+sm107_cst_hd_bad=0
+sm107_cst_at=''
+sm107_cst_sha=''
+if [ "$sm107_cst_tmp_rc" -eq 0 ] && [ -n "$sm107_cst_tmp" ] \
+	&& [ -w "$sm107_cst_tmp" ] && [ "$sm107_cst_acc_rc" -eq 0 ] \
+	&& [ -n "$sm107_cst_acc" ] && [ -w "$sm107_cst_acc" ]
+then
+	sm107_cst_ready=yes
+	find cms-custom/ -type f -print0 2>/dev/null \
+		| LC_ALL=C sort -z > "$sm107_cst_tmp"
+	sm107_cst_rc=$?
+	sm107_cst_bytes="$(wc -c < "$sm107_cst_tmp" | tr -d ' \n')"
+	sm107_cst_entries="$(tr -dc '\0' < "$sm107_cst_tmp" | wc -c | tr -d ' \n')"
+	sm107_cst_tail="$(tail -c 1 -- "$sm107_cst_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_cst_files=$((sm107_cst_files + 1))
+		case "$sm107_f" in
+		*.php)
+			sm107_cst_php=$((sm107_cst_php + 1))
+			sm107_cst_at="$sm107_f"
+			;;
+		esac
+		sm107_cst_hdn="$(grep -c '<<<' "$sm107_f" 2>/dev/null)"
+		case "$sm107_cst_hdn" in '' | *[!0-9]* | ??????????*)
+			sm107_cst_hdn=0
+			sm107_cst_hd_bad=$((sm107_cst_hd_bad + 1))
+			;;
+		esac
+		sm107_cst_hd=$((sm107_cst_hd + sm107_cst_hdn))
+		printf '%s %s\n' "$(sha256sum < "$sm107_f" | cut -d' ' -f1)" \
+			"$sm107_f" >> "$sm107_cst_acc"
+	done < "$sm107_cst_tmp"
+	sm107_cst_sha="$(sha256sum < "$sm107_cst_acc" | cut -d' ' -f1)"
+	rm -f "$sm107_cst_tmp" "$sm107_cst_acc"
+fi
+sm107_cst_counted=yes
+case "$sm107_cst_bytes" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_entries" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_tail" in '' | *[!0-9]* | ??*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_dirs" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+case "$sm107_cst_special" in '' | *[!0-9]* | ??????????*) sm107_cst_counted=no ;; esac
+if [ "$sm107_cst_ready" != yes ]
+then
+	bad "the cms-custom row has no temporary file it can write to: mktemp exited ${sm107_cst_tmp_rc} and named '${sm107_cst_tmp}', then exited ${sm107_cst_acc_rc} and named '${sm107_cst_acc}'"
+elif [ "$sm107_cst_rc" -ne 0 ] || [ "$sm107_cst_dirs_rc" -ne 0 ] \
+	|| [ "$sm107_cst_special_rc" -ne 0 ]
+then
+	bad "the cms-custom row could not take stock of cms-custom/: the list of its files exited ${sm107_cst_rc}, the count of its directories ${sm107_cst_dirs_rc}, and the count of entries that are neither a directory nor a regular file ${sm107_cst_special_rc}"
+elif [ "$sm107_cst_counted" != yes ]
+then
+	bad "the cms-custom row could not count what it was about to read: ${sm107_cst_bytes} byte(s), '${sm107_cst_entries}' entries, '${sm107_cst_tail}' list terminators, '${sm107_cst_dirs}' director(y|ies) and '${sm107_cst_special}' entr(y|ies) that are neither"
+elif [ "$sm107_cst_bytes" != 0 ] && [ "$sm107_cst_tail" != 1 ]
+then
+	bad "the cms-custom row was handed a list holding ${sm107_cst_bytes} byte(s) and no terminator at its end, so its last name may be a fragment of a longer one"
+elif [ "$sm107_cst_entries" = 0 ]
+then
+	bad "the cms-custom row was given no file to read, so it read nothing"
+elif [ "$sm107_cst_files" != "$sm107_cst_entries" ]
+then
+	bad "the cms-custom row read ${sm107_cst_files} of the ${sm107_cst_entries} file(s) its own list held"
+elif [ "$sm107_cst_hd_bad" != 0 ]
+then
+	bad "the cms-custom row could not count the lines holding the first three bytes of a heredoc opener in ${sm107_cst_hd_bad} of the ${sm107_cst_files} file(s) it read"
+elif [ "$sm107_cst_entries" != 4 ] || [ "$sm107_cst_dirs" != 3 ] \
+	|| [ "$sm107_cst_special" != 0 ]
+then
+	bad "cms-custom/ holds ${sm107_cst_entries} regular file(s), ${sm107_cst_dirs} director(y|ies) and ${sm107_cst_special} entr(y|ies) that are neither, where four, three and none were read when this row was written"
+elif [ "$sm107_cst_php" != 1 ] \
+	|| [ "$sm107_cst_at" != cms-custom/config/default_prefs.php ]
+then
+	bad "cms-custom/ holds ${sm107_cst_php} name(s) ending .php, the last of them '${sm107_cst_at}', where the one at cms-custom/config/default_prefs.php was read when this row was written: php outside cms/ is read by no other row in this section"
+elif [ "$sm107_cst_hd" != 0 ]
+then
+	bad "${sm107_cst_hd} line(s) under cms-custom/ hold the first three bytes of a heredoc opener, where none did when this row was written, and a heredoc there is read by no row in this section"
+elif [ "$sm107_cst_sha" != da75728c684745efb094027e39ce7c0f5924eee4d62e54a95d137768710774fa ]
+then
+	bad "the manifest of cms-custom/, each file's own sha256 and its path in sorted order, hashes to ${sm107_cst_sha} and not to the da75728c read when this row was written, so a file there was added, renamed, deleted or changed and must be read before this hash is replaced"
+else
+	ok "cms-custom/, the one directory outside cms/ the application reads, is the four files in three directories read when this row was written, one of them php and that one cms-custom/config/default_prefs.php, none of them holding a heredoc, and their manifest hashes to da75728c"
 fi
 echo
 echo "smoke: $pass passed, $fail failed"
