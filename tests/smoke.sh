@@ -20824,6 +20824,13 @@ fi
 # js-[A-Za-z0-9_-]+ and so cannot begin with a dash today. All 47 now pass the
 # pattern with -e.
 #
+# The check below then earned its place before this work was even merged. Bringing
+# master in brought five more such calls with it, in a section written after that
+# pass ran: two in sm109_check and three in sm109_php_row, all taking the needle
+# from a positional parameter. The check reported all five and they are fixed, so
+# this pass converted 52 calls. The file holds 57 that hand an expansion over with
+# -e; the other five were already written that way.
+#
 # Fixing 47 calls does not stop a 48th being written, and three earlier rounds
 # in this area learnt that naming the places one at a time does not close a
 # class. So this check is the part that makes a new one visible: it reads this
@@ -20844,12 +20851,17 @@ fi
 #
 # - a call split across lines with a trailing backslash. Neither line holds both
 #   grep and the pattern, so a scan of physical lines saw nothing. The scan joins
-#   continuations first. Three of the 47 calls, at 3472, 5047 and 11537, sit inside
-#   a statement continued that way; their patterns are on the same physical line as
-#   their grep, so only their reported line numbers moved. An earlier version of
-#   this comment offered a count of 134 as evidence here. That is a count of lines
-#   that contain grep and end in a backslash, which is not the same thing as a call
-#   split before its pattern, and it is not evidence for this item.
+#   continuations first. Five of the calls sit inside a statement continued that
+#   way; their patterns are on the same physical line as their grep, so only their
+#   reported line numbers moved. This item cited those five by line number until a
+#   merge showed why it should not: every number was already 39 lines out of date
+#   when it was written, because the lines above them had moved and nothing brought
+#   the comment along. A count can be recomputed from the file; a line number in a
+#   comment cannot be checked by anything and rots silently, so it is not given
+#   here. An earlier version of this comment offered a count of 134 as evidence
+#   instead. That is a count of lines that contain grep and end in a backslash,
+#   which is not the same thing as a call split before its pattern, and it is not
+#   evidence for this item either.
 # - an option carrying its argument attached to the letter, where the argument
 #   contains an e: -dread, -qDread, -Xgrep. The first rule took any cluster
 #   containing an e as proof that -e was passed.
