@@ -172,13 +172,20 @@ class pikaFileArray implements ArrayAccess, Iterator
 	public function save()
 	{
 		
+		/*	The open tag of the generated file is written in two pieces so
+			that no line here holds a less than byte followed straight away
+			by a question mark. PHP reads those bytes as string content
+			either way and the generated file is the same, but a raw scan of
+			the tree cannot tell them from a real short open tag, and smoke
+			section 107 needs the tree to hold none.
+		*/
 		if(!is_null($this->array_variable_name) && strlen($this->array_variable_name))
 		{ // do the variable method (only for hard coded variables)
-			$contents = "<?php\n\${$this->array_variable_name} = ";
+			$contents = "<" . "?php\n\${$this->array_variable_name} = ";
 		}
 		else
 		{ // do the return method (to avoid namespace problems)
-			$contents = "<?php\nreturn ";
+			$contents = "<" . "?php\nreturn ";
 		}
 		$contents .= $this->array2Php($this->values);
 		$contents .= ";";

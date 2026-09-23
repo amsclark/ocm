@@ -19017,8 +19017,8 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # a block as text, and then this filter can lose code PHP runs: measured
 # with the setting off, a block comment left unclosed inside such a block
 # takes the rest of the file with it, and in the string-emptied mode an
-# unterminated string does the same. Row five counts the tags either shape
-# needs; the four it finds were read by hand and are inert. Text after
+# unterminated string does the same. Row five requires the tree to hold no
+# tag either shape needs. Text after
 # __halt_compiler() is kept, though
 # PHP stops reading code there. That one retains text rather than dropping
 # it, and that on its own does not establish the disagreement is harmless
@@ -19512,54 +19512,70 @@ else
 	bad "${sm107_sliced} site(s) match the escape-then-slice pattern this scan looks for"
 fi
 
-# ROW FIVE -- the precondition the four rows above rest on. Where
-# short_open_tag is off, a bare short open tag can make the filter lose
-# code PHP runs, as the paragraph above the filter records. Both shapes
-# need such a tag, so this row counts them rather than the section
-# assuming there are none: without it, row four's sweep could skip a
-# file's later code and still report nothing.
+# ROW FIVE -- the short open tag precondition rows one to four rest
+# on. Where
+# short_open_tag is off PHP reads a bare short open tag as text, and then
+# the filter above can lose code PHP runs, as the paragraph there records.
+# Both of the shapes that lose code need such a tag, so this row requires
+# every PHP file under cms/ to hold none: with one present, row four's
+# sweep could skip a file's later code and still report nothing.
 #
-# What counts as a tag is PHP's own rule, measured against php -l and
-# against a run: <?php opens a block only where the keyword is followed
-# by a space, a tab, a carriage return, a newline or the end of the file,
-# and the keyword is matched without regard to case. So <?PHP opens one,
-# and <?php0, <?php_ and <?php! do not -- PHP reads those three as a bare
-# <? followed by code, which is the disagreement being counted, and an
-# earlier spelling of this row passed over all three. <?= is passed over
-# because PHP opens it whatever the setting is, so no setting changes how
-# that one is read; the filter consumes all three of its bytes, as PHP
-# does. An XML declaration written as <?xml is counted, not passed over,
-# for the same reason as <?php0.
+# What counts as a tag here is PHP's own rule, measured in the container
+# the suite runs against. <?= always opens a block. <?php opens one where
+# the keyword is followed by a space, a tab, a carriage return, a newline
+# or the end of the file, the keyword itself being case insensitive. So
+# <?PHP opens one, and <?php0, <?php_ and <?php! do not: with
+# short_open_tag on PHP reads those three as a bare <? followed by code,
+# and with it off as inline text. This row counts every occurrence of a
+# spelling PHP does not open a block on, wherever it stands.
 #
-# What this row proves is a set of counts and line texts, not that a
-# candidate is inert. The scan is raw, so it cannot tell a tag PHP would
-# read as code from the same bytes written inside a string or a comment,
-# and the comment filter cannot be asked instead: it consumes exactly the
-# tags it reads, so a live tag is absent from its output for the same
-# reason an inert one is. Four sites in the tree were read by hand and
-# are inert: cms/app/lib/pikaFileArray.php builds "<?php\n" inside two
-# double-quoted strings, and cms/app/lib/pikaSettings.php holds two more
-# inside a commented-out block. The row pins those two files at two sites
-# each, and pins the text of the lines holding them with whitespace
-# removed, so a live spelling written over one of those lines fails it.
-# What it cannot see is a change around an unchanged line: deleting the
-# comment opener above pikaSettings.php's pair would leave both lines and
-# both counts as they are, so a pass does not prove the four are still
-# inert. Every other file must report nothing, which is the part that
-# catches a new tag anywhere else in the tree. A report is answered by
-# reading the file named, not by relaxing the count, and the cost is that
-# changing either pinned file's count or those lines fails this row until
-# the new value is reviewed.
+# The scan reads the file's own bytes because the filter cannot be asked
+# instead. In code position -- the position that matters, because that is
+# where PHP runs what follows the tag -- no mode shows such a spelling:
+# the filter removes the opening tags it recognises, so those bytes are
+# gone from mode 1 and mode 2 whether PHP would open a block on them or
+# not, and mode 0 empties string bodies as well. Measured on fixtures
+# holding <?php0 echo 1; in code position, inside a comment and inside a
+# heredoc body: every mode reported none of them. Inside a quoted string
+# the modes disagree -- mode 0 empties the body, while modes 1 and 2 keep
+# the spelling and do report it -- so the filter is not blind to these
+# bytes in one consistent way, and no one of its outputs answers the
+# question this row asks. That is a limit of these three outputs and not
+# of every filter that could be written: an instrumented filter, or PHP's
+# own tokenizer, can report an opening tag directly.
 #
-# The scan must not pass by failing either. The file list is read
-# NUL-separated, so a name holding a space or a newline is read whole,
-# and an enumeration that errors, an empty list, an awk that exits
-# nonzero and a count that is not a number each fail the row rather than
-# leaving a counter at zero.
+# Four such spellings used to stand in the tree, inside a string in
+# cms/app/lib/pikaFileArray.php and inside a dead comment in
+# cms/app/lib/pikaSettings.php, and an earlier shape of this row allowed
+# them by name. The allowance is gone and so are they: the first file now
+# writes the open tag of the file it generates in two pieces, and the dead
+# copy in the second was deleted. Allowing a site by name could only pin
+# the count and the text of the line holding it, which a review showed was
+# not enough: a file that kept both allowed lines unchanged and opened a
+# block comment between them hid live code from the filter and passed.
+#
+# A report is answered by reading the file named. Bytes PHP may read as a
+# bare tag fail this row even inside a string or a comment, because a raw
+# scan cannot tell those from code; write such a tag in two pieces, as
+# pikaFileArray.php does.
+#
+# The scan must not pass by failing either. The list of files comes from
+# find, is NUL separated, and holds every regular file under cms/ whose
+# name ends .php, so a name holding a space or a newline is read whole.
+# The entries in the list are counted before the loop and the loop's own
+# count must match, so a truncated list, or a read that stops part way
+# through one, fails the row. Each file's scan must exit zero and must
+# print one byte, 0. No value the scan prints reaches shell arithmetic: a
+# string of digits can still be an arithmetic error -- 08 is not octal --
+# and a review used exactly that to stop an earlier loop early and have it
+# report a pass anyway. A temporary file that cannot be made, a find that
+# exits non-zero, an empty list, a symlink anywhere under cms/, and a name
+# holding .php before its end each fail the row as well: find does not
+# follow a symlink, and the name test would not match such a name, so
+# either one would leave a file unscanned.
 sm107_bare_prog='
 {
 	s = $0
-	hit = 0
 	i = index(s, "<?")
 	while (i > 0) {
 		rest = substr(s, i + 2)
@@ -19574,86 +19590,81 @@ sm107_bare_prog='
 		}
 		else {
 			n = n + 1
-			hit = 1
+			out = out sep FNR ": " $0
+			sep = "\n"
 		}
 		s = rest
 		i = index(s, "<?")
 	}
-	if (hit) {
-		t = $0
-		gsub(/[ \t\r]/, "", t)
-		out = out sep t
-		sep = "|"
-	}
 }
-END { printf "%d %s\n", n + 0, out }'
-sm107_bare_pin='$contents="<?php\n\${$this->array_variable_name}=";|$contents="<?php\nreturn";'
-sm107_bare_list="$(mktemp)"
-grep -rlZ '<?' cms/ --include='*.php' > "$sm107_bare_list" 2>/dev/null
-sm107_bare_rc=$?
-sm107_bare=0
-sm107_bare_other=0
-sm107_bare_fa=0
-sm107_bare_st=0
-sm107_bare_fa_text=''
-sm107_bare_st_text=''
-sm107_bare_unread=0
+END {
+	printf "%d", n + 0
+	if (out != "") {
+		printf "\n%s", out
+	}
+	printf "\n"
+}'
+sm107_bare_tmp="$(mktemp 2>/dev/null)"
+sm107_bare_tmp_rc=$?
+sm107_bare_links="$(find cms/ -type l -print0 2>/dev/null | tr -dc '\0' | wc -c \
+	| tr -cd '0-9')"
+sm107_bare_odd="$(find cms/ \( -type f -o -type l \) -name '*.php*' ! -name '*.php' \
+	-print0 2>/dev/null | tr -dc '\0' | wc -c | tr -cd '0-9')"
+sm107_bare_rc=1
+sm107_bare_entries=''
 sm107_bare_files=0
-while IFS= read -r -d '' sm107_f
-do
-	sm107_bare_files=$((sm107_bare_files + 1))
-	sm107_out="$(awk "$sm107_bare_prog" < "$sm107_f" 2>/dev/null)"
-	sm107_awk_rc=$?
-	sm107_n="${sm107_out%% *}"
-	sm107_t="${sm107_out#* }"
-	if [ "$sm107_awk_rc" -ne 0 ]; then
-		printf '    %s: the scan exited %s\n' "$sm107_f" "$sm107_awk_rc"
-		sm107_bare_unread=$((sm107_bare_unread + 1))
-		continue
-	fi
-	case "$sm107_n" in
-	'' | *[!0-9]*)
-		printf '    %s: the scan did not report a number\n' "$sm107_f"
-		sm107_bare_unread=$((sm107_bare_unread + 1))
-		continue
-		;;
-	esac
-	if [ "$sm107_n" -eq 0 ]; then
-		continue
-	fi
-	sm107_bare=$((sm107_bare + sm107_n))
-	printf '    %s: %s\n' "$sm107_f" "$sm107_n"
-	case "$sm107_f" in
-	cms/app/lib/pikaFileArray.php)
-		sm107_bare_fa=$sm107_n
-		sm107_bare_fa_text=$sm107_t
-		;;
-	cms/app/lib/pikaSettings.php)
-		sm107_bare_st=$sm107_n
-		sm107_bare_st_text=$sm107_t
-		;;
-	*)
-		sm107_bare_other=$((sm107_bare_other + sm107_n))
-		;;
-	esac
-done < "$sm107_bare_list"
-rm -f "$sm107_bare_list"
-if [ "$sm107_bare_rc" -ne 0 ]
+sm107_bare_bad=0
+sm107_bare_ready=no
+if [ "$sm107_bare_tmp_rc" -eq 0 ] && [ -n "$sm107_bare_tmp" ] && [ -w "$sm107_bare_tmp" ]
 then
-	bad "the short open tag scan could not list the php files under cms/: the search exited ${sm107_bare_rc}"
-elif [ "$sm107_bare_files" -eq 0 ]
+	sm107_bare_ready=yes
+	find cms/ -type f -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
+	sm107_bare_rc=$?
+	sm107_bare_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c | tr -cd '0-9')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_bare_files=$((sm107_bare_files + 1))
+		sm107_bare_out="$(awk "$sm107_bare_prog" < "$sm107_f" 2>/dev/null)"
+		sm107_bare_awk_rc=$?
+		if [ "$sm107_bare_awk_rc" -ne 0 ] || [ "$sm107_bare_out" != "0" ]
+		then
+			sm107_bare_bad=$((sm107_bare_bad + 1))
+			printf '    %s: the scan exited %s and said\n' \
+				"$sm107_f" "$sm107_bare_awk_rc"
+			printf '%s\n' "$sm107_bare_out" | sed 's/^/      /'
+		fi
+	done < "$sm107_bare_tmp"
+	rm -f "$sm107_bare_tmp"
+fi
+if [ "$sm107_bare_ready" != yes ]
 then
-	bad "the short open tag scan was given no file to read, so it checked nothing"
-elif [ "$sm107_bare_unread" -ne 0 ] || [ "$sm107_bare_other" -ne 0 ] \
-	|| [ "$sm107_bare_fa" -ne 2 ] || [ "$sm107_bare_st" -ne 2 ]
+	bad "the short open tag row has no temporary file it can write its list of php files to: mktemp exited ${sm107_bare_tmp_rc} and named '${sm107_bare_tmp}'"
+elif [ "$sm107_bare_rc" -ne 0 ]
 then
-	bad "short open tag counts under cms/ are not the four pinned sites: ${sm107_bare_other} in other files, ${sm107_bare_fa} in pikaFileArray.php, ${sm107_bare_st} in pikaSettings.php, ${sm107_bare_unread} file(s) the scan could not read, over ${sm107_bare_files} file(s) listed"
-elif [ "$sm107_bare_fa_text" != "$sm107_bare_pin" ] \
-	|| [ "$sm107_bare_st_text" != "$sm107_bare_pin" ]
-then
-	bad "a pinned short open tag line changed: pikaFileArray.php holds ${sm107_bare_fa_text} and pikaSettings.php holds ${sm107_bare_st_text}"
+	bad "the short open tag row could not list the php files under cms/: find, or the write of its output, exited ${sm107_bare_rc}"
 else
-	ok "the ${sm107_bare} short open tags under cms/ are the four pinned lines, unchanged, over ${sm107_bare_files} file(s) listed"
+	sm107_bare_counted=yes
+	case "$sm107_bare_entries" in '' | *[!0-9]*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_links" in '' | *[!0-9]*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_odd" in '' | *[!0-9]*) sm107_bare_counted=no ;; esac
+	if [ "$sm107_bare_counted" != yes ]
+	then
+		bad "the short open tag row could not count what it was about to read: entries '${sm107_bare_entries}', symlinks '${sm107_bare_links}', names past .php '${sm107_bare_odd}'"
+	elif [ "$sm107_bare_entries" -eq 0 ]
+	then
+		bad "the short open tag row was given no file to read, so it scanned nothing"
+	elif [ "$sm107_bare_files" -ne "$sm107_bare_entries" ]
+	then
+		bad "the short open tag row scanned ${sm107_bare_files} of the ${sm107_bare_entries} file(s) its own list held"
+	elif [ "$sm107_bare_links" -ne 0 ] || [ "$sm107_bare_odd" -ne 0 ]
+	then
+		bad "the short open tag row cannot reach every php file under cms/: ${sm107_bare_links} symlink(s) find will not follow and ${sm107_bare_odd} name(s) holding .php before their end"
+	elif [ "$sm107_bare_bad" -ne 0 ]
+	then
+		bad "${sm107_bare_bad} of the ${sm107_bare_files} php file(s) under cms/ hold a spelling PHP may read as a bare short open tag, or could not be scanned"
+	else
+		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned"
+	fi
 fi
 echo
 echo "smoke: $pass passed, $fail failed"
