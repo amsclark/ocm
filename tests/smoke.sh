@@ -19514,35 +19514,93 @@ fi
 # ROW FIVE -- the precondition the four rows above rest on. Where
 # short_open_tag is off, a bare short open tag can make the filter lose
 # code PHP runs, as the paragraph above the filter records. Neither shape
-# can arise while no file holds such a tag, so that is counted here rather
-# than assumed: without it, row four's sweep could skip a file's later code
-# and still report nothing. The keyword is excluded without regard to case,
-# as the filter matches it, so <?PHP is an opening tag here too. This is a
-# raw substring count over the unfiltered file, so a <? written inside a
-# string or a comment is counted as well; such a report is answered by
-# reading the file named, not by relaxing the count. The one other
-# spelling passed over is <?=, which PHP opens whatever the setting is,
-# so no setting changes how that one is read. The two do not agree byte
-# for byte even so: the filter keeps the '=' that PHP takes as part of
-# the tag, one byte more than PHP runs rather than any byte less, and no
-# file in the tree holds one today. An XML declaration written as <?xml
-# is counted, not passed over: PHP reads it as a short open tag where
-# the setting is on and as text where it is off, which is the
-# disagreement being counted.
+# can arise while no file holds such a tag where PHP would read it as
+# code, so that is counted here rather than assumed: without it, row
+# four's sweep could skip a file's later code and still report nothing.
+#
+# What counts as a tag is PHP's own rule, measured against php -l and
+# against a run: <?php opens a block only where the keyword is followed
+# by a space, a tab, a carriage return, a newline or the end of the file,
+# and the keyword is matched without regard to case. So <?PHP opens one,
+# and <?php0, <?php_ and <?php! do not -- PHP reads those three as a bare
+# <? followed by code, which is the disagreement being counted, and an
+# earlier spelling of this row passed over all three. <?= is passed over
+# because PHP opens it whatever the setting is, so no setting changes how
+# that one is read; the filter consumes all three of its bytes, as PHP
+# does. An XML declaration written as <?xml is counted, not passed over,
+# for the same reason as <?php0.
+#
+# The count is a raw scan over the unfiltered file, so it cannot tell a
+# tag PHP would read as code from the same bytes written inside a string
+# or a comment. Four sites in the tree are of the second kind, and they
+# are pinned by file rather than the row requiring a bare zero
+# everywhere: cms/app/lib/pikaFileArray.php builds "<?php\n" inside two
+# double-quoted strings, and cms/app/lib/pikaSettings.php holds two more
+# inside a commented-out block. Both files were read to confirm that.
+# Every other file must report nothing, which is the part that catches a
+# live tag anywhere in the tree; the two pinned counts fail this row if
+# either file gains or loses a site, and that report is answered by
+# reading the file named, not by relaxing the count. A file the scan
+# cannot read fails the row as well, rather than counting as zero.
+sm107_bare_prog='
+{
+	s = $0
+	i = index(s, "<?")
+	while (i > 0) {
+		rest = substr(s, i + 2)
+		c = substr(rest, 1, 1)
+		k = tolower(substr(rest, 1, 3))
+		b = substr(rest, 4, 1)
+		if (c == "=") {
+			n = n + 0
+		}
+		else if (k == "php" && (length(rest) == 3 || b == " " || b == "\t" || b == "\r")) {
+			n = n + 0
+		}
+		else {
+			n = n + 1
+		}
+		s = rest
+		i = index(s, "<?")
+	}
+}
+END { printf "%d\n", n + 0 }'
 sm107_bare=0
-for sm107_f in $(grep -rl '<?' cms/ --include='*.php' 2>/dev/null)
+sm107_bare_other=0
+sm107_bare_fa=0
+sm107_bare_st=0
+sm107_bare_unread=0
+while IFS= read -r sm107_f
 do
-	sm107_n="$(grep -oE '<\?[A-Za-z=]*' "$sm107_f" \
-		| grep -viE '^<\?(php|=)$' | grep -c '')"
-	if [ "${sm107_n:-0}" -gt 0 ]; then
-		sm107_bare=$((sm107_bare + sm107_n))
-		printf '    %s: %s\n' "$sm107_f" "$sm107_n"
+	sm107_n="$(awk "$sm107_bare_prog" < "$sm107_f" 2>/dev/null)"
+	if [ -z "$sm107_n" ]; then
+		printf '    %s: could not be read\n' "$sm107_f"
+		sm107_bare_unread=$((sm107_bare_unread + 1))
+		continue
 	fi
-done
-if [ "$sm107_bare" -eq 0 ]; then
-	ok "no PHP file under cms/ holds a bare short open tag"
+	if [ "$sm107_n" -eq 0 ]; then
+		continue
+	fi
+	sm107_bare=$((sm107_bare + sm107_n))
+	printf '    %s: %s\n' "$sm107_f" "$sm107_n"
+	case "$sm107_f" in
+	cms/app/lib/pikaFileArray.php)
+		sm107_bare_fa=$sm107_n
+		;;
+	cms/app/lib/pikaSettings.php)
+		sm107_bare_st=$sm107_n
+		;;
+	*)
+		sm107_bare_other=$((sm107_bare_other + sm107_n))
+		;;
+	esac
+done < <(grep -rl '<?' cms/ --include='*.php' 2>/dev/null)
+if [ "$sm107_bare_unread" -eq 0 ] && [ "$sm107_bare_other" -eq 0 ] \
+	&& [ "$sm107_bare_fa" -eq 2 ] && [ "$sm107_bare_st" -eq 2 ]
+then
+	ok "the only short open tags under cms/ are the four written inside a string or a comment"
 else
-	bad "${sm107_bare} bare short open tag(s) under cms/, so how this filter reads '<?' is not settled by the container's setting"
+	bad "short open tags under cms/ are not the four pinned sites: ${sm107_bare_other} in other files, ${sm107_bare_fa} in pikaFileArray.php, ${sm107_bare_st} in pikaSettings.php, ${sm107_bare_unread} file(s) unreadable"
 fi
 echo
 echo "smoke: $pass passed, $fail failed"
