@@ -18971,7 +18971,12 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # its braces balance again, so a quote written inside an interpolation does
 # not end the string holding it, and an interpolation can hold a string
 # that holds another interpolation. Heredoc and nowdoc bodies are dropped,
-# so PHP-looking text inside one is not read as code. Text outside
+# so PHP-looking text inside one is not read as code. A body line ends
+# the block only where the whole run of label bytes it starts with,
+# after any indentation, is the opening label. PHP counts a letter, a
+# digit, an underscore and every byte from 0x80 up as a label byte, so
+# TXT_2, and TXT followed by a byte above 0x7f, are each a label of
+# their own and neither ends a heredoc opened on TXT. Text outside
 # <?php ?> is dropped, and a close tag stands in for a semicolon. The
 # opening keyword is matched without regard to case, and only where a
 # space, a tab, a carriage return or the end of the line follows it, which
@@ -19026,12 +19031,17 @@ echo "107. the inbound SMS number is stripped before it is sliced"
 # and can hold an assignment row four saves and then reads as an escape.
 #
 # A divergence that drops code PHP runs is a defect in this filter, not a
-# note here. Two were found that way and both are fixed: reading <?phpx as
+# note here. Three were found that way and all are fixed: reading <?phpx as
 # <?php followed by an x, until the keyword test above was made to require
 # an accepted byte after the keyword, and printing a heredoc's closing
 # line without scanning it, which let a block comment opened on that line
 # be read as code, so a close tag written inside that comment discarded
-# later real PHP.
+# later real PHP. The third was matching a heredoc closing label with an
+# ASCII-only pattern, which ended the block on a body line holding the
+# label followed by a byte above 0x7f and then read that line as code: a
+# review wrote a file whose heredoc body line was the label, such a byte
+# and a block comment opener, and every mode dropped the live code after
+# it while the tree held no bare short open tag at all.
 sm107_code_only()
 {
 	awk -v keepstr="${2:-1}" '
@@ -19045,6 +19055,42 @@ sm107_code_only()
 			wsm[" "] = sprintf("%c", 1)
 			wsm["\t"] = sprintf("%c", 3)
 			wsm["\r"] = sprintf("%c", 4)
+			lbls = "0123456789_"
+			lbls = lbls "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+			lbls = lbls "abcdefghijklmnopqrstuvwxyz"
+			for (lbi = 1; lbi <= length(lbls); lbi++)
+			{
+				lbl[substr(lbls, lbi, 1)] = 1
+			}
+			for (lbi = 1; lbi <= 127; lbi++)
+			{
+				asc[sprintf("%c", lbi)] = 1
+			}
+		}
+		function sm107_label(ch)
+		{
+			if (ch == "")
+			{
+				return 0
+			}
+			if (ch in lbl)
+			{
+				return 1
+			}
+			if (ch in asc)
+			{
+				return 0
+			}
+			return 1
+		}
+		function sm107_labelrun(s, p,    q)
+		{
+			q = p
+			while (sm107_label(substr(s, q, 1)) == 1)
+			{
+				q = q + 1
+			}
+			return q - p
 		}
 		function sm107_tail(s,    t, r)
 		{
@@ -19062,16 +19108,17 @@ sm107_code_only()
 			hdstart = 0
 			if (st == 4)
 			{
-				if (match(line, "^[ \t]*[A-Za-z_][A-Za-z0-9_]*"))
+				hdj = 1
+				while (substr(line, hdj, 1) == " " || substr(line, hdj, 1) == "\t")
 				{
-					w = substr(line, RSTART, RLENGTH)
-					sub("^[ \t]+", "", w)
-					if (w == hid)
-					{
-						st = 0
-						hdpre = w
-						hdstart = RSTART + RLENGTH
-					}
+					hdj = hdj + 1
+				}
+				hdlen = sm107_labelrun(line, hdj)
+				if (hdlen > 0 && substr(line, hdj, hdlen) == hid)
+				{
+					st = 0
+					hdpre = substr(line, 1, hdj - 1) hid
+					hdstart = hdj + hdlen
 				}
 				if (hdstart == 0)
 				{
@@ -19270,11 +19317,33 @@ sm107_code_only()
 				}
 				if (c == "<" && d == "<" && substr(line, i + 2, 1) == "<")
 				{
-					rest = substr(line, i + 3)
-					if (match(rest, "^[ \t]*(\047[A-Za-z_][A-Za-z0-9_]*\047|\"[A-Za-z_][A-Za-z0-9_]*\"|[A-Za-z_][A-Za-z0-9_]*)"))
+					hdj = i + 3
+					while (substr(line, hdj, 1) == " " || substr(line, hdj, 1) == "\t")
 					{
-						hid = substr(rest, RSTART, RLENGTH)
-						gsub("^[ \t]+|\047|\"", "", hid)
+						hdj = hdj + 1
+					}
+					hdq = substr(line, hdj, 1)
+					if (hdq == "\047" || hdq == "\"")
+					{
+						hdj = hdj + 1
+					}
+					else
+					{
+						hdq = ""
+					}
+					hdlen = sm107_labelrun(line, hdj)
+					hdok = 0
+					if (hdlen > 0 && index("0123456789", substr(line, hdj, 1)) == 0)
+					{
+						hdok = 1
+						if (hdq != "" && substr(line, hdj + hdlen, 1) != hdq)
+						{
+							hdok = 0
+						}
+					}
+					if (hdok == 1)
+					{
+						hid = substr(line, hdj, hdlen)
 						st = 4
 						if (em)
 						{
