@@ -20081,10 +20081,16 @@ fi
 # body as though it were code. None of the six closing markers under cms/
 # is followed by anything but a semicolon, so reading on changes nothing
 # that is counted today; it is the shape a seventh heredoc would need. The
-# resumed scan can also be wrong in the other direction: a <<< written
-# inside a string on a closing line is read as an opener and raises the
-# count. That way round only fails the row and asks for a reader, which is
-# the direction to be wrong in.
+# resumed scan can also be wrong in the other direction, and codex showed
+# that direction is not safe on its own. A false opener does not only raise
+# the count; it can take the place of a real one. On the line
+# A; $s='<<<B'; $b=<<<C the reader takes B from inside the string, closes it
+# at the later B;, and never reads C, which is the opener PHP takes and whose
+# body holds that same B; line. Both readings report one opener and one
+# closer, so no count moves and the hash is whatever the wrong reading
+# produced. So the row below also counts how many times those three bytes
+# occur under cms/ at all, and fails unless every one of them became a
+# reported opener.
 #
 # smaller reader per file. That reader is not the filter and shares no
 # code with it, so where a heredoc ends is settled twice by two readers
@@ -20101,11 +20107,19 @@ fi
 #
 # The reader is given raw lines and is told nothing about where PHP code
 # stands, so it reports an opener's spelling inside a comment or a string
-# as an opener. That direction is safe: a reported opener either matches
-# what PHP reads, or opens a block the reader never closes and leaves a
-# count or the hash moved. Either way the row fails and someone reads the
-# file. It is the other direction, a real opener the reader passes over,
-# that lets a body through, and testing every position removes it.
+# as an opener. That direction is not safe by itself. Most of the time such
+# an opener is never closed and the unclosed count moves, but where the same
+# line also carries the opener PHP reads, the false one swallows it and both
+# readings report one opener and one closer. Counting the three bytes
+# themselves answers that: the reader accepts at most one opener for each
+# occurrence, so the row fails unless the occurrences and the reported
+# openers are the same number. That count is stricter than the reader needs.
+# A spelling with no label after it is rejected and is harmless, and it
+# still fails the row; so does one written inside a heredoc body, which the
+# reader does not scan. Neither is in the tree today, and no shorter test
+# separates a rejected spelling from one that hid a real opener beside it.
+# The other direction, a real opener the reader passes over, is removed by
+# testing every position on the line.
 #
 # The name of a file holding no heredoc is dropped
 # from the hashed view, so adding a php file that opens none does not
@@ -20225,6 +20239,24 @@ sm107_hd_view='
 	}
 	print
 }'
+sm107_hd_tri_prog='
+BEGIN {
+	hd = sprintf("%c%c%c", 60, 60, 60)
+}
+{
+	p = 1
+	while (1) {
+		i = index(substr($0, p), hd)
+		if (i == 0) {
+			break
+		}
+		n = n + 1
+		p = p + i
+	}
+}
+END {
+	printf "%d\n", n + 0
+}'
 sm107_pre_tmp="$(mktemp 2>/dev/null)"
 sm107_pre_tmp_rc=$?
 sm107_pre_acc="$(mktemp 2>/dev/null)"
@@ -20238,6 +20270,8 @@ sm107_pre_files=0
 sm107_pre_bad=0
 sm107_pre_known=0
 sm107_pre_hd_bad=0
+sm107_hd_tri=0
+sm107_hd_tri_bad=0
 sm107_hd_files=''
 sm107_hd_open=''
 sm107_hd_close=''
@@ -20290,6 +20324,20 @@ then
 		then
 			sm107_pre_hd_bad=$((sm107_pre_hd_bad + 1))
 		fi
+		sm107_pre_tri="$(awk "$sm107_hd_tri_prog" < "$sm107_f" \
+			2>/dev/null)"
+		sm107_pre_tri_rc=$?
+		case "$sm107_pre_tri" in
+		'' | *[!0-9]* | ??????????*)
+			sm107_pre_tri=0
+			sm107_pre_tri_rc=1
+			;;
+		esac
+		if [ "$sm107_pre_tri_rc" -ne 0 ]
+		then
+			sm107_hd_tri_bad=$((sm107_hd_tri_bad + 1))
+		fi
+		sm107_hd_tri=$((sm107_hd_tri + sm107_pre_tri))
 	done < "$sm107_pre_tmp"
 	sm107_hd_files="$(grep -c '^FILE ' "$sm107_pre_acc")"
 	sm107_hd_open="$(grep -c '^LABEL ' "$sm107_pre_acc")"
@@ -20308,6 +20356,7 @@ case "$sm107_hd_files" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; es
 case "$sm107_hd_open" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
 case "$sm107_hd_close" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
 case "$sm107_hd_unclosed" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
+case "$sm107_hd_tri" in '' | *[!0-9]* | ??????????*) sm107_hd_counted=no ;; esac
 if [ "$sm107_pre_ready" != yes ]
 then
 	bad "the line model row has no temporary file it can write to: mktemp exited ${sm107_pre_tmp_rc} and named '${sm107_pre_tmp}', then exited ${sm107_pre_acc_rc} and named '${sm107_pre_acc}'"
@@ -20357,14 +20406,21 @@ then
 elif [ "$sm107_hd_unclosed" != 0 ]
 then
 	bad "${sm107_hd_unclosed} heredoc or nowdoc under cms/ is opened in a file that ends before closing it, which this filter reads as a body running to the end of that file"
-elif [ "$sm107_hd_open" != 6 ] || [ "$sm107_hd_close" != 6 ]
+elif [ "$sm107_hd_tri_bad" != 0 ]
 then
-	bad "the heredoc and nowdoc inventory under cms/ holds ${sm107_hd_open} opener(s) and ${sm107_hd_close} closer(s) where the six of each read against PHP were expected"
+	bad "the count of heredoc opener spellings did not answer with a number, or exited non-zero, on ${sm107_hd_tri_bad} of the ${sm107_pre_files} php file(s) under cms/"
+elif [ "$sm107_hd_tri" != "$sm107_hd_open" ]
+then
+	bad "the first three bytes of a heredoc opener occur ${sm107_hd_tri} time(s) in the php files under cms/ and ${sm107_hd_open} of them were read as an opener, so one of them stands where this reader does not look; a spelling inside a string or a comment can stand in for the opener PHP reads later on the same line, and that substitution moves no count"
+elif [ "$sm107_hd_open" != 6 ] || [ "$sm107_hd_close" != 6 ] \
+	|| [ "$sm107_hd_tri" != 6 ]
+then
+	bad "the heredoc and nowdoc inventory under cms/ holds ${sm107_hd_open} opener(s), ${sm107_hd_close} closer(s) and ${sm107_hd_tri} occurrence(s) of an opener's first three bytes where the six of each read against PHP were expected"
 elif [ "$sm107_hd_sha" != b9d81d46f81dfbc738921f86a0b0ce6c5c255ec500d97d85ce01854ffb4b86d1 ]
 then
 	bad "the heredoc and nowdoc text under cms/ hashes to ${sm107_hd_sha}, not to the b9d81d46 the six bodies read against PHP hash to, so a body was added, moved or changed and must be read against PHP before this hash is replaced"
 else
-	ok "the heredoc and nowdoc inventory under cms/ is the six openers in three files whose bodies were read against PHP, each closed in the file that opened it, and its text hashes to b9d81d46"
+	ok "the heredoc and nowdoc inventory under cms/ is the six openers in three files whose bodies were read against PHP, each closed in the file that opened it, its text hashes to b9d81d46, and those six are every occurrence of an opener's first three bytes in those files"
 fi
 # ROW EIGHT -- the one directory outside cms/ that the application reads.
 # Every row above takes cms/ as the tree. cms-custom/ is read on nearly
