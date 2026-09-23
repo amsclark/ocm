@@ -685,9 +685,12 @@ class pikaTempLib {
 			a page that needs a setting raw can still have it. The org name read in
 			that same file is safe for another reason: org_name is not a settings
 			label, so it is never a candidate here at all. A null the page stored
-			does not count as supplied: isset() is false for it, so the setting
-			fills the tag, and it is recorded if the three conditions below also
-			hold -- file mode, a scalar value and neither exclusion.
+			does not count as supplied: isset() is false for it, so an unblocked
+			setting fills the tag, and it is recorded if the three conditions
+			below also hold -- file mode, a scalar value and not on the raw list.
+			pl_settings_template_blocked() is read before the copy, not just
+			before the recording, so a blocked name is neither filled in nor
+			recorded.
 			
 			pl_settings_template_raw() holds the settings that must not be
 			escaped because they are not read as HTML text. A value that is not a

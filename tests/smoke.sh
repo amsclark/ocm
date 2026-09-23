@@ -21808,11 +21808,12 @@ fi
 # always possible.
 #
 # The four rows after the database part are presence checks over the source:
-# they say the escape is written, not that it ran. A review reproduced four
-# deliberately broken trees that all four of those rows still passed, and
-# named a fifth, which was measured against a copy of the template class. The
-# rows that fetch pages and the rows that render fixtures in the container
-# cover all five between them, because those assert the whole rendered value.
+# they say the escape is written, not that it ran. Reviews reproduced six
+# deliberately broken trees that all four of those rows still passed. Two of
+# the six were measured against a copy of the tree rather than read off the
+# code. The rows that fetch pages and the rows that render fixtures in the
+# container cover all six between them, because those assert the whole
+# rendered value, and the list below says which row answers which break.
 #
 #   * a format gate forced to skip HTML fails the two fixture rows that ask
 #     for an HTML name, DIRHTML and LNHTML, and the signed-in home page
@@ -21820,10 +21821,13 @@ fi
 #     not HTML and the home page org name row both still pass, because
 #     neither of those wants an escape from that gate.
 #   * a settings copy that stops recording the names it took fails the two
-#     sign-in page rows, the audit page row and the two fixture rows that
-#     render through the template class. system-audit.php draws
-#     templates/default.html through that class as well, so the sign-in pages
-#     are not its only readers.
+#     sign-in page rows and the fixture row that renders the administrator
+#     address through the template class. It does not fail the audit page
+#     row: templates/default.html holds no owner_name tag at all, and
+#     system-audit.php escapes its own read, so that row never asks this
+#     copy for the org name. It does not fail the directive fixture row
+#     either, because the textarea plugin escapes its own output whatever
+#     the copy holds.
 #   * escaping twice on the directive path fails the fixture row that renders
 #     the setting through a plugin.
 #   * dropping the flag where pl_template_sub() passes it to itself fails the
@@ -21832,10 +21836,17 @@ fi
 #     tag after the first is already inside the recursion, and the default
 #     template reaches the administrator address well after its first tag. No
 #     nested template is needed for this.
-#   * dropping one settings name from the recording, rather than all of them,
-#     fails the fixture row that renders that name through the template class.
-#     There is one such row for the org name and one for the administrator
-#     address, so neither name can be dropped on its own.
+#   * dropping one settings name from the recording, rather than all of
+#     them, is caught by name. Dropping the org name fails the two sign-in
+#     page rows. Dropping the administrator address fails the fixture row
+#     that renders that address through the template class, and nothing
+#     else here, which is why that row exists.
+#   * dropping the answer where pl_template() renders one row of a section
+#     fails the section fixture row. The nested call resolves the setting
+#     inside the section body, so the pass over the whole template that
+#     follows sees a tag that has already been replaced and cannot escape
+#     it. No stock template uses a section, so a fixture is the only reader
+#     of that call.
 #
 # What none of it pins is a double escape confined to one site that no row
 # reads separately. system-audit.php builds its own nav HTML, and the page
@@ -21848,7 +21859,7 @@ fi
 # directory is made, so a fatal error or an uncaught exception still clears
 # them, and an exit before that point has nothing to clear. A kill signal
 # leaves both directories -- the temporary one and the subdirectory made under
-# the custom directory -- and the three files and two symbolic links inside
+# the custom directory -- and the five files and two symbolic links inside
 # them. Every removal there ignores its own errors, so the cleanup is
 # attempted rather than guaranteed, and a failure to clean up cannot fail the
 # section.
@@ -21993,17 +22004,22 @@ if [ "$HAVE_DB" = 1 ]; then
 			fi
 		fi
 
-		# ROW EIGHT -- the other engine, in the container, over six fixtures
+		# ROW EIGHT -- the other engine, in the container, over seven fixtures
 		# in one run. pl_template() renders about 140 call sites and decides
 		# from the name the CALLER asked for whether a setting it resolves is
 		# escaped, so one fixture of each extension settles both halves, and a
 		# pair of symlinks settles that the answer follows the asked-for name
-		# and not the file that is opened in the end. The last two fixtures go
-		# through the template class instead. One names the setting with a
-		# directive, which is the shape that would be escaped twice if the
-		# settings copy held escaped values. The other names the administrator
-		# address with no directive, so that dropping one name from the
-		# recording cannot pass while the org name still escapes.
+		# and not the file that is opened in the end. A fifth fixture puts the
+		# setting inside a section, which that engine resolves one row at a
+		# time in a nested call of its own, before the pass over the whole
+		# template, so the answer has to reach that call too.
+		#
+		# The last two fixtures go through the template class instead. One
+		# names the setting with a directive, which is the shape that would be
+		# escaped twice if the settings copy held escaped values. The other
+		# names the administrator address with no directive, so that dropping
+		# that one name from the recording cannot pass while the org name
+		# still escapes.
 		#
 		# The pl_template() fixtures go under /tmp inside the container, so a
 		# killed run leaves nothing in the checkout. The pikaTempLib fixtures
@@ -22014,11 +22030,14 @@ if [ "$HAVE_DB" = 1 ]; then
 		# The directory name carries the shell's pid and a random number, so
 		# two suites running at the same time do not write over each other, and
 		# both directories are removed from a shutdown function, so a snippet
-		# that dies part way through still takes its fixtures with it.
+		# that dies part way through still tries to take its fixtures with it.
+		# Every removal there ignores its own errors, so that is attempted
+		# rather than guaranteed.
 		sm109_dir="/tmp/zz109tpl.$$.${RANDOM}"
 		SM109_PHP="$(docker compose "${COMPOSE_ARGS[@]}" exec -T \
 			-e ZZ109DIR="$sm109_dir" \
 			-w /var/www/html/cms app php -r '
+			function zz109sec() { return array(array("zz" => "1")); }
 			define("PL_DISABLE_SECURITY", true);
 			require_once("pika-danio.php");
 			pika_init();
@@ -22027,7 +22046,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			$c = pl_custom_directory() . "/" . basename($d);
 			register_shutdown_function(function () use ($d, $c) {
 				foreach (array("/real.html", "/real.txt", "/ask.txt",
-					"/ask.html") as $f)
+					"/ask.html", "/sec.html") as $f)
 				{
 					@unlink($d . $f);
 				}
@@ -22042,12 +22061,16 @@ if [ "$HAVE_DB" = 1 ]; then
 			file_put_contents($d . "/real.txt", "A%%[owner_name]%%B");
 			@symlink($d . "/real.html", $d . "/ask.txt");
 			@symlink($d . "/real.txt", $d . "/ask.html");
+			file_put_contents($d . "/sec.html",
+				"%%[begin zz109sec]%%\nA%%[owner_name]%%B\n%%[end]%%\n");
 			file_put_contents($c . "/ta.html", "A%%[owner_name,input_textarea]%%B");
 			file_put_contents($c . "/ad.html", "A%%[admin_email]%%B");
 			echo "DIRHTML:[", pl_template($d . "/real.html", array()), "]\n";
 			echo "DIRTXT:[", pl_template($d . "/real.txt", array()), "]\n";
 			echo "LNTXT:[", pl_template($d . "/ask.txt", array()), "]\n";
 			echo "LNHTML:[", pl_template($d . "/ask.html", array()), "]\n";
+			echo "SEC:[", str_replace("\n", "",
+				pl_template($d . "/sec.html", array())), "]\n";
 			$t = new pikaTempLib($c . "/ta.html");
 			echo "TA:[", $t->draw(), "]\n";
 			$a = new pikaTempLib($c . "/ad.html");
@@ -22065,10 +22088,10 @@ if [ "$HAVE_DB" = 1 ]; then
 		if [ "$sm109_prc" -eq 0 ] \
 			&& printf '%s' "$SM109_PHP" | grep -qF 'DONE109'; then
 			sm109_php_ok=1
-			ok "the other engine rendered all six fixtures in the container and ran to the end"
+			ok "the other engine rendered all seven fixtures in the container and ran to the end"
 		else
 			sm109_php_ok=0
-			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the six rows below are not run: ${SM109_PHP}"
+			bad "the other engine fixtures did not run to the end (exit ${sm109_prc}), so the seven rows below are not run: ${SM109_PHP}"
 		fi
 
 		# Each row below asks for the whole rendered value, opening bracket to
@@ -22076,14 +22099,20 @@ if [ "$HAVE_DB" = 1 ]; then
 		# brackets, so a half fix that escaped only < and > fails, and the
 		# closing ] proves the render was not cut short.
 		#
-		# The label of every must-appear needle names one line of the output and
-		# is not a substring of any other line, which is why the two direct
-		# renders are DIRHTML and DIRTXT: HTML:[ and TXT:[ would have matched
-		# inside LNHTML:[ and LNTXT:[, and then a missing direct render could
-		# have passed on the symlinked one's output. One must-not-appear needle
-		# carries no label, the doubled ampersand the directive row refuses, so
-		# it would also match a doubled render on another line. That can only
-		# add a failure to that row, never let one pass.
+		# Most must-appear needles carry a label that names one line of the
+		# output and is not a substring of any other line, which is why the two
+		# direct renders are DIRHTML and DIRTXT: HTML:[ and TXT:[ would have
+		# matched inside LNHTML:[ and LNTXT:[, and then a missing direct render
+		# could have passed on the symlinked one's output.
+		#
+		# Two of the directive row's needles carry no label: its first
+		# must-appear needle is a suffix, and its must-not-appear needle is the
+		# doubled ampersand. Each needle is also its own grep, so a row with
+		# two must-appear needles does not settle that both matched the SAME
+		# line. Nothing else in this output ends in </textarea>B] or starts
+		# TA:[A<textarea, so both of that row's must-appear needles can only
+		# match its own line as the fixtures stand, and the unlabelled
+		# must-not-appear needle can only add a failure, never let one pass.
 		#
 		# A row whose whole value is too long to spell out passes a second
 		# must-appear needle as a fourth argument, so that it can pin the start
@@ -22147,16 +22176,30 @@ if [ "$HAVE_DB" = 1 ]; then
 
 		# ROW FOURTEEN -- the same class on a tag with no directive, so this
 		# row reads its direct replacement. It asks for the administrator
-		# address because every other row that reads this class reads the org
-		# name: the two sign-in pages, the audit page and row thirteen. A copy
-		# that stopped recording just admin_email would leave that address raw
-		# on every page this class draws, the audit layout among them, and
-		# every other row here would still pass.
+		# address because the other rows that read this class read the org
+		# name: the two sign-in pages and row thirteen. The audit page row is
+		# not one of them -- templates/default.html holds no owner_name tag, so
+		# that page's org name comes from its own escaped read in
+		# system-audit.php. A copy that stopped recording just admin_email
+		# would leave that address raw on every page this class draws, the
+		# audit layout among them, and every other row here would still pass.
 		sm109_php_row \
 			"the template class escapes a setting it replaced itself, not only one a plugin read" \
 			"CLSADM:[A${SM109_AESC}B]" "CLSADM:[A${SM109_APAY}B]"
 
-		# ROW FIFTEEN -- the restore, and a read that proves it landed. The
+		# ROW FIFTEEN -- a setting inside a section, which pl_template()
+		# resolves one row at a time in a nested call before the pass over the
+		# whole template. That nested call takes the answer as a third
+		# argument; without it the setting is already replaced by the time the
+		# outer pass runs, and no later pass can escape a tag that is gone. No
+		# stock template uses a section, so this fixture is the only reader of
+		# that call. Measured: with the answer dropped at that one call, and
+		# nothing else changed, the fixture renders the payload raw.
+		sm109_php_row \
+			"a setting inside a section row is escaped by the nested call, not left for the outer pass" \
+			"SEC:[A${SM109_ESC}B]" "SEC:[A${SM109_PAY}B]"
+
+		# ROW SIXTEEN -- the restore, and a read that proves it landed. The
 		# trap runs the same two statements again at exit, which is harmless
 		# and is what covers a suite that dies before this point.
 		sm109_set owner_name "$sm109_own_old"
@@ -22174,7 +22217,7 @@ else
 	printf '  skip settings escaping requests (needs a running docker compose stack)\n'
 fi
 
-# ROW SIXTEEN -- the first engine's two halves, over the source, so a refactor
+# ROW SEVENTEEN -- the first engine's two halves, over the source, so a refactor
 # that drops either is caught even with no stack. The copy records which names
 # came from the settings, and direct replacement escapes those and only those.
 sm109_first=0
@@ -22188,7 +22231,7 @@ else
 	bad "only ${sm109_first} of the 2 halves of the template settings escape are still written"
 fi
 
-# ROW SEVENTEEN -- the raw list, and that base_url is on it. base_url is read
+# ROW EIGHTEEN -- the raw list, and that base_url is on it. base_url is read
 # inside a CSS url() in CSS text, which does not decode HTML entities, so
 # escaping it would point the rule at a path that does not exist.
 if grep -q 'function pl_settings_template_raw' cms/app/lib/pl.php \
@@ -22198,7 +22241,7 @@ else
 	bad "the not-HTML settings list is gone or no longer names base_url"
 fi
 
-# ROW EIGHTEEN -- the four reads that do not go through the settings copy,
+# ROW NINETEEN -- the four reads that do not go through the settings copy,
 # across three files. Each has to still wrap its read. The count is four so a
 # change that escapes three of them and drops the fourth fails this row.
 sm109_sites=0
@@ -22216,7 +22259,7 @@ else
 	bad "only ${sm109_sites} of the 4 reads outside the settings copy are written escaped"
 fi
 
-# ROW NINETEEN -- the second engine's gate, over the source. The rows above
+# ROW TWENTY -- the second engine's gate, over the source. The rows above
 # that run it need a stack, and a change that escaped every template or none
 # of them would otherwise be caught nowhere on a machine with no containers.
 # The three parts are the format test over the name the caller asked for, the

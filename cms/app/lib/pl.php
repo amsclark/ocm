@@ -4602,7 +4602,7 @@ if (!function_exists('pl_settings_template_raw'))
 		text. base_url is written into a CSS url() inside the style element
 		of templates/default.html at lines 126, 139 and 144. CSS in style
 		text is not HTML text and entities there are not decoded, so an
-		escaped ampersand would be read as the six characters it is spelled
+		escaped ampersand would be read as the five characters it is spelled
 		with and the rule would point at a path that does not exist.
 		
 		Line 231 of the same template writes it into a quoted style
