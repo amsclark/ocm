@@ -20073,6 +20073,19 @@ fi
 # hold no escape, no slice and no call.
 #
 # The inventory is read in the list's sorted order, one run of a second,
+# A closing marker does not end the reader's work on that line. Since PHP
+# 7.3 the marker may be followed by more code, and that code may open a
+# second heredoc, so after printing a close this reader scans the rest of
+# the line for another opener. Codex found that gap in an earlier shape of
+# this row, which stopped at the marker and so read the second heredoc's
+# body as though it were code. None of the six closing markers under cms/
+# is followed by anything but a semicolon, so reading on changes nothing
+# that is counted today; it is the shape a seventh heredoc would need. The
+# resumed scan can also be wrong in the other direction: a <<< written
+# inside a string on a closing line is read as an opener and raises the
+# count. That way round only fails the row and asks for a reader, which is
+# the direction to be wrong in.
+#
 # smaller reader per file. That reader is not the filter and shares no
 # code with it, so where a heredoc ends is settled twice by two readers
 # rather than once. It tests every position on a line that begins an
@@ -20149,35 +20162,37 @@ function sm107_hd_run(s, p,    q) {
 	}
 	return q - p
 }
+function sm107_hd_scan(s, p,    i, j, q, n) {
+	while (1) {
+		i = index(substr(s, p), hd)
+		if (i == 0) {
+			return 0
+		}
+		i = p + i - 1
+		j = i + 3
+		while (substr(s, j, 1) == " " || substr(s, j, 1) == "\t") {
+			j = j + 1
+		}
+		q = substr(s, j, 1)
+		if (q == "\047" || q == "\"") {
+			j = j + 1
+		} else {
+			q = ""
+		}
+		n = sm107_hd_run(s, j)
+		if (n > 0 && substr(s, j, 1) !~ /^[0-9]$/ &&
+			(q == "" || substr(s, j + n, 1) == q)) {
+			id = substr(s, j, n)
+			st = 1
+			printf "LABEL %s\n", id
+			return j + n
+		}
+		p = i + 1
+	}
+}
 {
 	if (st == 0) {
-		p = 1
-		while (1) {
-			i = index(substr($0, p), hd)
-			if (i == 0) {
-				break
-			}
-			i = p + i - 1
-			j = i + 3
-			while (substr($0, j, 1) == " " || substr($0, j, 1) == "\t") {
-				j = j + 1
-			}
-			q = substr($0, j, 1)
-			if (q == "\047" || q == "\"") {
-				j = j + 1
-			} else {
-				q = ""
-			}
-			n = sm107_hd_run($0, j)
-			if (n > 0 && substr($0, j, 1) !~ /^[0-9]$/ &&
-				(q == "" || substr($0, j + n, 1) == q)) {
-				id = substr($0, j, n)
-				st = 1
-				printf "LABEL %s\n", id
-				break
-			}
-			p = i + 1
-		}
+		sm107_hd_scan($0, 1)
 		next
 	}
 	k = 1
@@ -20188,6 +20203,7 @@ function sm107_hd_run(s, p,    q) {
 	if (n > 0 && substr($0, k, n) == id) {
 		st = 0
 		printf "END %s\n", id
+		sm107_hd_scan($0, k + n)
 		next
 	}
 	printf "BODY %s\n", $0
