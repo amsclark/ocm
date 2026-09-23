@@ -19581,13 +19581,17 @@ else
 	bad "${sm107_sliced} site(s) match the escape-then-slice pattern this scan looks for"
 fi
 
-# ROW FIVE -- the short open tag precondition rows one to four rest
-# on. Where
-# short_open_tag is off PHP reads a bare short open tag as text, and then
-# the filter above can lose code PHP runs, as the paragraph there records.
-# Both of the shapes that lose code need such a tag, so this row requires
-# every PHP file under cms/ to hold none: with one present, row four's
-# sweep could skip a file's later code and still report nothing.
+# ROW FIVE -- one of the preconditions rows one to four rest on. It is not
+# the only one, and holding it does not on its own make those rows sound:
+# any other divergence between the filter above and PHP can hide code too,
+# and one did until it was fixed this round. What this row rules out is the
+# one shape of divergence that needs a tag PHP does not open a block on.
+# Where short_open_tag is off PHP reads a bare short open tag as text, and
+# then the filter above can lose code PHP runs, as the paragraph there
+# records.
+# Both of the shapes that lose code that way need such a tag, so this row
+# requires every PHP file under cms/ to hold none: with one present, row
+# four's sweep could skip a file's later code and still report nothing.
 #
 # What counts as a tag here is PHP's own rule, measured in the container
 # the suite runs against. <?= always opens a block. <?php opens one where
@@ -19599,19 +19603,18 @@ fi
 # spelling PHP does not open a block on, wherever it stands.
 #
 # The scan reads the file's own bytes because the filter cannot be asked
-# instead. In code position -- the position that matters, because that is
-# where PHP runs what follows the tag -- no mode shows such a spelling:
-# the filter removes the opening tags it recognises, so those bytes are
-# gone from mode 1 and mode 2 whether PHP would open a block on them or
-# not, and mode 0 empties string bodies as well. Measured on fixtures
-# holding <?php0 echo 1; in code position, inside a comment and inside a
-# heredoc body: every mode reported none of them. Inside a quoted string
-# the modes disagree -- mode 0 empties the body, while modes 1 and 2 keep
-# the spelling and do report it -- so the filter is not blind to these
-# bytes in one consistent way, and no one of its outputs answers the
-# question this row asks. That is a limit of these three outputs and not
-# of every filter that could be written: an instrumented filter, or PHP's
-# own tokenizer, can report an opening tag directly.
+# instead. No one of the filter's three outputs answers the question this
+# row asks. Where such a spelling stands outside PHP the filter reads it
+# as an opening tag and removes those bytes, so no mode shows it; the same
+# holds inside a comment, and inside a heredoc body, which the filter
+# drops. Inside a quoted string the modes disagree: mode 0 empties the
+# body, while modes 1 and 2 keep the spelling and do report it. Where it
+# stands inside a block PHP has already opened, all three modes keep it,
+# because there the filter is reading code and those bytes are code.
+# Measured on fixtures holding <?php0 echo 1; in each of those five
+# places. That is a limit of these three outputs and not of every filter
+# that could be written: an instrumented filter, or PHP's own tokenizer,
+# can report an opening tag directly.
 #
 # Four such spellings used to stand in the tree, inside a string in
 # cms/app/lib/pikaFileArray.php and inside a dead comment in
@@ -19631,17 +19634,49 @@ fi
 # The scan must not pass by failing either. The list of files comes from
 # find, is NUL separated, and holds every regular file under cms/ whose
 # name ends .php, so a name holding a space or a newline is read whole.
-# The entries in the list are counted before the loop and the loop's own
-# count must match, so a truncated list, or a read that stops part way
-# through one, fails the row. Each file's scan must exit zero and must
-# print one byte, 0. No value the scan prints reaches shell arithmetic: a
-# string of digits can still be an arithmetic error -- 08 is not octal --
-# and a review used exactly that to stop an earlier loop early and have it
-# report a pass anyway. A temporary file that cannot be made, a find that
-# exits non-zero, an empty list, a symlink anywhere under cms/, and a name
-# holding .php before its end each fail the row as well: find does not
-# follow a symlink, and the name test would not match such a name, so
-# either one would leave a file unscanned.
+# The list's last byte must be a NUL, or its last name may be a fragment
+# of a longer one: a list cut short in the middle of a name it had not
+# finished writing would otherwise be read as a shorter list that matched
+# its own count. The entries are counted before the loop and the loop's
+# own count must match, so a truncated list, or a read that stops part way
+# through one, fails the row. What these checks settle is that the list did
+# not stop before a NUL it should have ended with, and that the loop and the
+# count agree about how many records it holds. They cannot settle that no
+# record was lost before the count was taken: a find that silently left a
+# file out would be counted and looped over consistently. Each file's scan must exit zero and must
+# print 0 and nothing else: the scan prints that byte and a newline, and
+# the shell drops trailing newlines from what it captures, so the value
+# tested is the single character 0. What the row tests is that captured
+# value and not the scan's raw bytes. The shell drops every trailing
+# newline and every NUL, so a scan that printed 0 and a second newline, or
+# 0 and a NUL, is not told apart from one that printed 0 and a newline.
+# Byte identity of the scan's output is not what this row settles.
+#
+# No count reaches shell arithmetic. Each is compared as text, and a count
+# of ten digits or more fails validation: a string of digits can still be
+# an arithmetic error -- 08 is not octal, and a number past 64 bits wraps
+# -- and a review used exactly that to stop an earlier loop early and have
+# it report a pass anyway.
+#
+# A temporary file that cannot be made, a find that exits non-zero, an
+# empty list, an entry under cms/ that is neither a directory nor a
+# regular file, and a name holding .php before its end each fail the row
+# as well. The last two are a cautious answer rather than a necessary one:
+# find does not follow a symlink and the name test would not match such a
+# name, so either one could leave a php file unscanned, and the row fails
+# rather than work out whether the particular entry or name in front of it
+# does. The status of the find that took each of those two counts is
+# checked too, so a count that was never taken cannot read as zero.
+#
+# The scope is every regular file under cms/ whose name ends .php. PHP
+# source under another name would stand outside it, so a second scan reads
+# every other regular file under cms/ and the row fails if one of them
+# holds <?php or <?=. That measures the scope's claim rather than assuming
+# it: today none does, and a .inc, .phtml or .PHP file added later fails
+# this row until either its name ends .php or the scan is widened to reach
+# it. The two files under cms/ that hold a <? at all hold <?xml, which is
+# neither spelling. The same terminator, count and status checks apply to
+# that second list.
 sm107_bare_prog='
 {
 	s = $0
@@ -19673,23 +19708,55 @@ END {
 	}
 	printf "\n"
 }'
+sm107_other_prog='
+{
+	s = $0
+	i = index(s, "<?")
+	while (i > 0) {
+		r = substr(s, i + 2)
+		if (substr(r, 1, 1) == "=" || tolower(substr(r, 1, 3)) == "php") {
+			n = n + 1
+			out = out sep FNR ": " $0
+			sep = "\n"
+		}
+		s = r
+		i = index(s, "<?")
+	}
+}
+END {
+	printf "%d", n + 0
+	if (out != "") {
+		printf "\n%s", out
+	}
+	printf "\n"
+}'
 sm107_bare_tmp="$(mktemp 2>/dev/null)"
 sm107_bare_tmp_rc=$?
-sm107_bare_links="$(find cms/ -type l -print0 2>/dev/null | tr -dc '\0' | wc -c \
-	| tr -cd '0-9')"
+sm107_bare_special="$(find cms/ ! -type d ! -type f -print0 2>/dev/null \
+	| tr -dc '\0' | wc -c | tr -d ' \n')"
+sm107_bare_special_rc=$?
 sm107_bare_odd="$(find cms/ \( -type f -o -type l \) -name '*.php*' ! -name '*.php' \
-	-print0 2>/dev/null | tr -dc '\0' | wc -c | tr -cd '0-9')"
+	-print0 2>/dev/null | tr -dc '\0' | wc -c | tr -d ' \n')"
+sm107_bare_odd_rc=$?
 sm107_bare_rc=1
 sm107_bare_entries=''
+sm107_bare_tail=''
 sm107_bare_files=0
 sm107_bare_bad=0
+sm107_bare_other_rc=1
+sm107_bare_other_entries=''
+sm107_bare_other_tail=''
+sm107_bare_other_files=0
+sm107_bare_other_bad=0
 sm107_bare_ready=no
 if [ "$sm107_bare_tmp_rc" -eq 0 ] && [ -n "$sm107_bare_tmp" ] && [ -w "$sm107_bare_tmp" ]
 then
 	sm107_bare_ready=yes
 	find cms/ -type f -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
 	sm107_bare_rc=$?
-	sm107_bare_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c | tr -cd '0-9')"
+	sm107_bare_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c | tr -d ' \n')"
+	sm107_bare_tail="$(tail -c 1 "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
 	while IFS= read -r -d '' sm107_f
 	do
 		sm107_bare_files=$((sm107_bare_files + 1))
@@ -19703,6 +19770,25 @@ then
 			printf '%s\n' "$sm107_bare_out" | sed 's/^/      /'
 		fi
 	done < "$sm107_bare_tmp"
+	find cms/ -type f ! -name '*.php' -print0 > "$sm107_bare_tmp" 2>/dev/null
+	sm107_bare_other_rc=$?
+	sm107_bare_other_entries="$(tr -dc '\0' < "$sm107_bare_tmp" | wc -c \
+		| tr -d ' \n')"
+	sm107_bare_other_tail="$(tail -c 1 "$sm107_bare_tmp" | tr -dc '\0' | wc -c \
+		| tr -d ' \n')"
+	while IFS= read -r -d '' sm107_f
+	do
+		sm107_bare_other_files=$((sm107_bare_other_files + 1))
+		sm107_bare_out="$(awk "$sm107_other_prog" < "$sm107_f" 2>/dev/null)"
+		sm107_bare_awk_rc=$?
+		if [ "$sm107_bare_awk_rc" -ne 0 ] || [ "$sm107_bare_out" != "0" ]
+		then
+			sm107_bare_other_bad=$((sm107_bare_other_bad + 1))
+			printf '    %s: the scan for a php open tag exited %s and said\n' \
+				"$sm107_f" "$sm107_bare_awk_rc"
+			printf '%s\n' "$sm107_bare_out" | sed 's/^/      /'
+		fi
+	done < "$sm107_bare_tmp"
 	rm -f "$sm107_bare_tmp"
 fi
 if [ "$sm107_bare_ready" != yes ]
@@ -19711,28 +19797,49 @@ then
 elif [ "$sm107_bare_rc" -ne 0 ]
 then
 	bad "the short open tag row could not list the php files under cms/: find, or the write of its output, exited ${sm107_bare_rc}"
+elif [ "$sm107_bare_other_rc" -ne 0 ]
+then
+	bad "the short open tag row could not list the files under cms/ outside its own scope: find, or the write of its output, exited ${sm107_bare_other_rc}"
+elif [ "$sm107_bare_special_rc" -ne 0 ] || [ "$sm107_bare_odd_rc" -ne 0 ]
+then
+	bad "the short open tag row could not take stock of what stands under cms/: the count of entries that are neither a directory nor a regular file exited ${sm107_bare_special_rc} and the count of names holding .php before their end exited ${sm107_bare_odd_rc}"
 else
 	sm107_bare_counted=yes
-	case "$sm107_bare_entries" in '' | *[!0-9]*) sm107_bare_counted=no ;; esac
-	case "$sm107_bare_links" in '' | *[!0-9]*) sm107_bare_counted=no ;; esac
-	case "$sm107_bare_odd" in '' | *[!0-9]*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_entries" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_other_entries" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_special" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_odd" in '' | *[!0-9]* | ??????????*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_tail" in '' | *[!0-9]* | ??*) sm107_bare_counted=no ;; esac
+	case "$sm107_bare_other_tail" in '' | *[!0-9]* | ??*) sm107_bare_counted=no ;; esac
 	if [ "$sm107_bare_counted" != yes ]
 	then
-		bad "the short open tag row could not count what it was about to read: entries '${sm107_bare_entries}', symlinks '${sm107_bare_links}', names past .php '${sm107_bare_odd}'"
-	elif [ "$sm107_bare_entries" -eq 0 ]
+		bad "the short open tag row could not count what it was about to read: entries '${sm107_bare_entries}', entries outside its scope '${sm107_bare_other_entries}', entries that are neither a directory nor a regular file '${sm107_bare_special}', names past .php '${sm107_bare_odd}', and list terminators '${sm107_bare_tail}' and '${sm107_bare_other_tail}'"
+	elif [ "$sm107_bare_entries" = 0 ]
 	then
 		bad "the short open tag row was given no file to read, so it scanned nothing"
-	elif [ "$sm107_bare_files" -ne "$sm107_bare_entries" ]
+	elif [ "$sm107_bare_tail" != 1 ]
+	then
+		bad "the short open tag row was handed a list of php files whose last entry is not terminated, so its last name may be a fragment of a longer one"
+	elif [ "$sm107_bare_other_entries" != 0 ] && [ "$sm107_bare_other_tail" != 1 ]
+	then
+		bad "the short open tag row was handed a list of the files outside its scope whose last entry is not terminated, so its last name may be a fragment of a longer one"
+	elif [ "$sm107_bare_files" != "$sm107_bare_entries" ]
 	then
 		bad "the short open tag row scanned ${sm107_bare_files} of the ${sm107_bare_entries} file(s) its own list held"
-	elif [ "$sm107_bare_links" -ne 0 ] || [ "$sm107_bare_odd" -ne 0 ]
+	elif [ "$sm107_bare_other_files" != "$sm107_bare_other_entries" ]
 	then
-		bad "the short open tag row cannot reach every php file under cms/: ${sm107_bare_links} symlink(s) find will not follow and ${sm107_bare_odd} name(s) holding .php before their end"
-	elif [ "$sm107_bare_bad" -ne 0 ]
+		bad "the short open tag row read ${sm107_bare_other_files} of the ${sm107_bare_other_entries} file(s) outside its scope its own list held"
+	elif [ "$sm107_bare_special" != 0 ] || [ "$sm107_bare_odd" != 0 ]
+	then
+		bad "the short open tag row cannot reach every php file under cms/: ${sm107_bare_special} entr(y|ies) that are neither a directory nor a regular file, which find will not follow or read, and ${sm107_bare_odd} name(s) holding .php before their end"
+	elif [ "$sm107_bare_other_bad" != 0 ]
+	then
+		bad "${sm107_bare_other_bad} of the ${sm107_bare_other_files} file(s) under cms/ whose name does not end .php hold a php open tag, so php source may stand outside this row's scope: either the name should end .php or this scan must be widened to reach it"
+	elif [ "$sm107_bare_bad" != 0 ]
 	then
 		bad "${sm107_bare_bad} of the ${sm107_bare_files} php file(s) under cms/ hold a spelling PHP may read as a bare short open tag, or could not be scanned"
 	else
-		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned"
+		ok "no short open tag spelling PHP may read as a bare tag in any of the ${sm107_bare_files} php file(s) under cms/, every one of which was scanned, and no php open tag in any of the ${sm107_bare_other_files} file(s) under cms/ outside that scope"
 	fi
 fi
 echo
