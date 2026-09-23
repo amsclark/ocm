@@ -19520,12 +19520,20 @@ fi
 # as the filter matches it, so <?PHP is an opening tag here too. This is a
 # raw substring count over the unfiltered file, so a <? written inside a
 # string or a comment is counted as well; such a report is answered by
-# reading the file named, not by relaxing the count.
+# reading the file named, not by relaxing the count. The one other
+# spelling passed over is <?=, which PHP opens whatever the setting is,
+# so no setting changes how that one is read. The two do not agree byte
+# for byte even so: the filter keeps the '=' that PHP takes as part of
+# the tag, one byte more than PHP runs rather than any byte less, and no
+# file in the tree holds one today. An XML declaration written as <?xml
+# is counted, not passed over: PHP reads it as a short open tag where
+# the setting is on and as text where it is off, which is the
+# disagreement being counted.
 sm107_bare=0
 for sm107_f in $(grep -rl '<?' cms/ --include='*.php' 2>/dev/null)
 do
 	sm107_n="$(grep -oE '<\?[A-Za-z=]*' "$sm107_f" \
-		| grep -viE '^<\?(php|=|xml)$' | grep -c '')"
+		| grep -viE '^<\?(php|=)$' | grep -c '')"
 	if [ "${sm107_n:-0}" -gt 0 ]; then
 		sm107_bare=$((sm107_bare + sm107_n))
 		printf '    %s: %s\n' "$sm107_f" "$sm107_n"
