@@ -20936,6 +20936,11 @@ fi
 # meanwhile is that a hostile or eccentric grep on PATH is outside what this section
 # checks.
 #
+# The line number reported is where the logical line begins, not where the call sits
+# inside it. A call written on the second physical line of a continuation is reported
+# at the first. That is the line to edit, so it is left as it is, but a reader
+# counting lines to find the call may need to read on a little.
+#
 # What the check decides is whether an expansion stands in PATTERN position. An
 # expansion in FILE position has the same underlying problem, because grep reads a
 # dash-leading file operand as an option too, and this check does not look at it.
@@ -21032,17 +21037,46 @@ BREAK = ';|&()'
 # What may follow a dollar and make it an expansion: a name, a brace, a substitution,
 # or one of the shell's special parameters. A dollar followed by anything else, or by
 # nothing, is a literal dollar, and grep -q "$" f is a valid call that an earlier
-# version of this check reported.
+# version of this check reported. The open bracket is here for $[expr], which bash
+# still expands although the form is long superseded by $((expr)); a review left
+# grep -q "$[-1]" f out of an earlier set and this check passed it.
 EXPAND_NEXT = ('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-	'0123456789_{(?#@*!$-')
+	'0123456789_{([?#@*!$-')
+
+
+def in_quote(text):
+	"""Whether text ends with a quote still open.
+
+	A hash inside a quoted string is an ordinary character, so a physical line that
+	begins with one is only a comment when the text above it left no quote open.
+	"""
+	q = ''
+	i = 0
+	n = len(text)
+	while i < n:
+		c = text[i]
+		if q != "'" and c == '\\' and i + 1 < n:
+			i += 2
+			continue
+		if q == '':
+			if c in '"\'':
+				q = c
+		elif c == q:
+			q = ''
+		i += 1
+	return q != ''
 
 
 def close_quote(text, i):
 	"""The index just past the quote that closes the one at i.
 
-	Inside double quotes a backslash escapes the next character, so the closing quote
-	is not simply the next one of its kind. Reading it as the next one ended a word
-	early and took part of a file name for a pattern.
+	Inside double quotes a backslash can escape the next character, so the closing
+	quote is not simply the next one of its kind. Reading it as the next one ended a
+	word early and took part of a file name for a pattern. Bash gives the backslash
+	that meaning only before a dollar, a backtick, a double quote, another backslash
+	or a newline, so a backslash written before a q keeps its backslash and stepping
+	is wider than the shell is. It still lands on the right closing quote, because a
+	character the backslash did not escape cannot close a quote either.
 	"""
 	q = text[i]
 	j = i + 1
@@ -21067,6 +21101,14 @@ def bare(word):
 	"""
 	out = ''
 	lit = ''
+	# Which stretch of the original word each surviving character came from. Removing
+	# the quoting can put two characters side by side that the shell kept apart, and
+	# then a dollar appears to introduce the name after it when it does not: "$"P is
+	# the two characters $P and $'ok' is the three characters ok. Both were reported
+	# as expansions. A dollar only starts one if the character after it came from the
+	# same stretch.
+	run = []
+	r = 0
 	i = 0
 	n = len(word)
 	while i < n:
@@ -21074,8 +21116,11 @@ def bare(word):
 		if c in '"\'':
 			e = close_quote(word, i)
 			body = word[i + 1:e - 1] if word[e - 1:e] == c else word[i + 1:e]
+			r += 1
 			out += body
 			lit += ('1' if c == "'" else '0') * len(body)
+			run += [r] * len(body)
+			r += 1
 			i = e
 			continue
 		if c == '\\' and i + 1 < n:
@@ -21084,15 +21129,19 @@ def bare(word):
 			# still read as an option. What the backslash does suppress is
 			# expansion, which is why the character is marked literal here: \$P is
 			# the two characters $P and not the value of P.
+			r += 1
 			out += word[i + 1]
 			lit += '1'
+			run.append(r)
+			r += 1
 			i += 2
 			continue
 		out += c
 		lit += '0'
+		run.append(r)
 		i += 1
-	expanded = (out[:1] == '$' and lit[:1] == '0'
-		and len(out) > 1 and out[1] in EXPAND_NEXT)
+	expanded = (out[:1] == '$' and lit[:1] == '0' and len(out) > 1
+		and out[1] in EXPAND_NEXT and run[1] == run[0])
 	return out, expanded
 
 
@@ -21268,7 +21317,8 @@ def scan(text, where):
 with open(sys.argv[1], encoding='utf-8') as fh:
 	for n, line in enumerate(fh, 1):
 		line = line.rstrip('\n')
-		if line.lstrip().startswith('#'):
+		if (line.lstrip().startswith('#') and not in_quote(buf)
+			and (buf == '' or buf[-1:] in ' \t')):
 			# Comment-ness is decided on the PHYSICAL line, before continuations are
 			# joined, because a comment runs to the end of its own line: a trailing
 			# backslash inside one does not continue it, and the line below starts a
@@ -21276,6 +21326,14 @@ with open(sys.argv[1], encoding='utf-8') as fh:
 			# it stands, and the next line starts fresh. Testing the join instead hid
 			# a call written below a comment; skipping the comment only when nothing
 			# was buffered still hid one written below ": \" and then "# x\".
+			#
+			# Two conditions decide whether the hash begins a comment at all. A hash
+			# inside an open quote is an ordinary character, and a hash on the line
+			# below a word that was continued is part of that word: both of
+			# grep --label "ok\ / # ok\ / " "$P" f and
+			# grep --label=ok\ / #ok "$P" f are real calls a plain hash test hid.
+			# A continued word leaves the buffer ending in a character other than a
+			# space, and that is the test used for the second case.
 			if buf:
 				scan(buf, start)
 			buf = ''
