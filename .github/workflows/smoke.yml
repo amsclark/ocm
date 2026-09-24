@@ -54,6 +54,16 @@ jobs:
           echo "the app never answered on port 8080"
           exit 1
 
+      # Section 8d reads the date selector's reply with html5lib, which builds
+      # the tree a browser builds. The runner's own python3 is externally
+      # managed, so pip cannot install into it; setup-python gives one pip owns.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the test dependencies
+        run: python3 -m pip install --require-hashes -r tests/requirements.txt
+
       - name: Smoke test
         env:
           OCM_URL: http://127.0.0.1:8080/cms
