@@ -28,10 +28,6 @@ class pikaTempLib {
 	
 	private $_file_name;
 	private $_data;
-	// Keys in _data that loadSettings() took from the application settings
-	// and that direct replacement has to escape. See the long comment on
-	// loadSettings().
-	private $_settings_escape = array();
 	private $_menus = array();
 	private $_args = array();
 	private $_template_string;
@@ -441,21 +437,6 @@ class pikaTempLib {
 						{
 							$matched_value = $this->_data[$tag];
 						} 
-						
-						/*	A value loadSettings() took from the application
-							settings goes into the page here with nothing in
-							between, so it is escaped here. Only the names
-							that loop recorded are escaped: a value the page
-							supplied itself is never one of them, and neither
-							is a setting this class was built in string mode
-							to render, nor one pl_settings_template_raw()
-							names.
-						*/
-						if (isset($this->_settings_escape[$tag]))
-						{
-							$matched_value = pl_html_escape($matched_value);
-						}
-						
 						$temp_str = str_replace($this->_template_prefix . $tag . $this->_template_suffix, $matched_value, $temp_str);
 						$tag_output_offset = strlen($matched_value);
 					
@@ -504,7 +485,7 @@ class pikaTempLib {
 			what a PHP function name can actually be; every real plugin
 			already matches.
 		*/
-		if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*\z/', (string) $op_name))
+		if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $op_name))
 		{
 			return false;
 		}
@@ -644,73 +625,11 @@ class pikaTempLib {
 			system-settings.php still shows the database host and the base
 			directory.
 		*/
-		/*	The copy is escaped for HTML at substitution, in file mode only.
-			
-			These values are typed into system-settings.php and stored as they
-			were typed. Four of the tags that resolve from this copy sit in HTML
-			text -- owner_name on templates/login-form.html, m/login-form.html,
-			templates/enroll-mfa.html and reports/compen_bill/compen_bill.html --
-			and the first two of those render before anybody has signed in.
-			Direct replacement in draw() substitutes the value as it stands, so
-			an org name holding markup was served as markup on the sign-in page.
-			
-			This loop stores the value as it was and records the name in
-			_settings_escape; draw() escapes at the point of direct replacement,
-			for the names recorded here and no others. The escape cannot simply
-			cover everything draw() replaces, because direct replacement is also
-			how a page hands already-built HTML to its layout template, and
-			draw() has no way of its own to tell a setting from a page fragment.
-			This loop does know -- everything it copies is a setting -- so it
-			records the names and draw() escapes only those.
-			
-			Nor can the escape go here, on the copy. A template that names a
-			setting with a directive hands the value to a plugin, and several
-			plugins escape their own output: template_plugins/input_textarea.php
-			and template_plugins/menu.php both do. An escaped copy came out with
-			the ampersand spelled twice over, and a menu whose keys are stored
-			raw stopped matching its own selected value. Direct replacement is
-			the one place that puts the value into the page with nothing in
-			between, so that is where the escape belongs.
-			
-			File mode only, because string mode is document assembly. docgen.php
-			passes the body of an uploaded form template in as the template
-			string and template_plugins/javascript.php passes the contents of a
-			.js file; an HTML entity in a document or in JavaScript is wrong. The
-			constructor above decides the mode and leaves _file_name null in
-			string mode, so the mode is already settled by the time this runs.
-			
-			A tag the page supplies itself is not touched, because the isset()
-			below skips it, and so it is never recorded either. That is what keeps
-			pika_cms.php's admin_email from being escaped twice, and it is also how
-			a page that needs a setting raw can still have it. The org name read in
-			that same file is safe for another reason: org_name is not a settings
-			label, so it is never a candidate here at all. A null the page stored
-			does not count as supplied: isset() is false for it, so an unblocked
-			setting fills the tag, and it is recorded if the three conditions
-			below also hold -- file mode, a scalar value and not on the raw list.
-			pl_settings_template_blocked() is read before the copy, not just
-			before the recording, so a blocked name is neither filled in nor
-			recorded.
-			
-			pl_settings_template_raw() holds the settings that must not be
-			escaped because they are not read as HTML text. A value that is not a
-			scalar is copied as it was and not recorded: pl_html_escape() answers
-			'' for an array, and dropping a value is a change this fix has no
-			reason to make.
-		*/
-		$escape_settings = !is_null($this->_file_name);
-		
 		foreach ($plSettings as $setting => $value)
 		{	
 			if(!pl_settings_template_blocked($setting) && !isset($this->_data[$setting]))
 			{
 				$this->_data[$setting] = $plSettings[$setting];
-				
-				if ($escape_settings && is_scalar($plSettings[$setting])
-					&& !pl_settings_template_raw($setting))
-				{
-					$this->_settings_escape[$setting] = true;
-				}
 			}
 		}
 		return true;
