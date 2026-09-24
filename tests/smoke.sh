@@ -21115,16 +21115,37 @@ fi
 # quote it was written inside, so the apostrophes of "${x:-'$(grep "$V")'}" read as a
 # quote of their own and the call between them was stepped over; a line continuation
 # between a redirection operator and the opening parenthesis of a process
-# substitution was not removed; a descriptor name may carry a subscript, so {a[0]}
-# and {a[i]} are consumed where {1fd}, {fd.x} and {} are not; and a digit outside
-# ASCII is not a descriptor, so a superscript two written before a redirection is
-# handed to grep as its pattern and is reported.
+# substitution was not removed; a descriptor name may carry one subscript, so {a[0]}
+# and {a[i]} are consumed where {1fd}, {fd.x}, {}, {a[]} and {a[0][1]} are not; and a
+# digit outside ASCII is not a descriptor, so a superscript two written before a
+# redirection is handed to grep as its own pattern, which leaves the word after it in
+# file position and removed a report of that word.
 #
-# A doubled parenthesis is left alone deliberately. ((1 << 1)) is arithmetic, but
-# ((printf o); (printf k)) is two subshells and runs, while ((printf ok)) is an
-# arithmetic error, and bash -n accepts all three: which of the two a doubled
-# parenthesis is cannot be decided here. The text inside one is therefore still read
-# as commands, and the single thing not done there is opening a here-document.
+# The ninth review supplied six findings, and four of them were the eighth round's
+# own fixes. An apostrophe does not mean the same thing in every parameter expansion,
+# which was then measured over all fourteen forms. In ${x:-WORD}, and in the seven
+# other forms that take a word, an apostrophe written inside double quotes is one
+# more character of that word and a substitution between two of them runs; in
+# ${x#PATTERN} and ${x/PATTERN/y} the same apostrophe is a quote mark of its own and
+# the substitution between two of them does not run. The eighth round had inherited
+# the double quote for every form alike, which fixed the first reading and broke the
+# second, so "${x#'"'}" ended the scan on a line bash accepts. A \U escape past
+# 0x7FFFFFFF writes nothing at all and does not split the word, so $'-\UFFFFFFFFq' is
+# the single word -q; standing it for one unknown character instead lost the q with
+# it, because that character was a NUL and a NUL escape truncates the text here, and
+# the -qe of $'-q\UFFFFFFFFe' then read as an option this scan cannot name.
+#
+# A doubled parenthesis no longer suppresses a here-document. Which of two things a
+# doubled parenthesis is still cannot be decided here: ((1 << 1)) is arithmetic,
+# ((printf o); (printf k)) is two subshells and runs, ((printf ok)) is an arithmetic
+# error, and bash -n accepts all three. The question is answered without deciding it,
+# by asking whether any line below the operator holds the delimiter, read with the
+# joining the body reader itself uses. ((1 << 1)) has no line 1 below it, so no body
+# opens and none runs to the end of the file, and ((cat <<EOF); (:)) does have its
+# EOF, so its body opens as it should. That answer took less code than the eighth
+# round's. One reading changed with it: a body whose delimiter never arrives is read
+# as ordinary commands rather than ending the scan, which is what bash does, because
+# bash only warns there and carries on.
 #
 # This is the last round that adds to what the lexer understands. Eight rounds in,
 # the largest group of findings in each of the last two was the previous round's own
@@ -21338,7 +21359,20 @@ def ansi_quote(src, k):
 					# character. Calling chr() on it ended the whole scan with a
 					# python traceback, and section 104 then failed on valid shell.
 					code = int(digits, 16)
-					out += chr(code) if code < 0x110000 else UNKNOWN
+					if code < 0x110000:
+						out += chr(code)
+					elif code < 0x80000000:
+						# Past the Unicode ceiling bash writes bytes
+						# anyway, with no validity check, and they are
+						# neither an option letter nor a digit, so one
+						# character stands for them. At 0x80000000 and
+						# above it writes nothing at all and does not
+						# split the word: measured, $'-\UFFFFFFFFq' is
+						# the one word -q. Marking both cases with a NUL
+						# lost the rest of the word, because a NUL escape
+						# truncates the text here, and grep -qe then read
+						# as an unrecognised option.
+						out += chr(0xfffd)
 					j = p
 					continue
 			if nxt in OCTAL or nxt == '0':
@@ -21404,7 +21438,13 @@ def fdname(word):
 	name = word[1:-1]
 	if name[-1:] == ']' and '[' in name:
 		name, _, sub = name[:-1].partition('[')
-		if not sub:
+		if not sub or '[' in sub or ']' in sub:
+			# One subscript, and no bracket inside it: measured, bash
+			# consumes {a[0]}, {a[i]} and {a[i+1]}, and leaves
+			# {a[0][1]}, {a[0]]}, {a[0]x]}, {a[[0]} and {a[]} to the
+			# command. A version that asked only that the subscript was
+			# not empty read the {a[0][1]} of grep {a[0][1]}>/dev/null
+			# "$V" as a descriptor, and the pattern after it as a file.
 			return False
 	return (bool(name) and name[0] not in DIGITS
 		and all(ch in NAME for ch in name))
@@ -21485,20 +21525,56 @@ def lex(src, base=1, faults=None):
 		nonlocal line
 		opened = line
 
+		def wordop(k):
+			"""Whether ${...} at src[k] takes a word, not a pattern.
+
+			The two answer the apostrophe differently, which was
+			measured over all fourteen forms. In ${x:-WORD} an
+			apostrophe written inside double quotes is one more
+			character of the word, and a substitution between two of
+			them runs; in ${x#PATTERN} and ${x/PATTERN/y} the same
+			apostrophe is a quote mark, and the substitution between
+			two of them does not run. Only the eight operators that
+			take a word are named here, so a form this cannot read
+			keeps the quote mark, which hides a call at worst and
+			reports nothing that is not there.
+			"""
+			if src[k:k + 1] in ('!', '#'):
+				k += 1
+			if src[k:k + 1] in SPECIAL:
+				k += 1
+			else:
+				while src[k:k + 1] and src[k] in NAME:
+					k += 1
+			if src[k:k + 1] == '[':
+				shut = src.find(']', k, k + 200)
+				if shut < 0:
+					return False
+				k = shut + 1
+			if src[k:k + 1] == ':':
+				k += 1
+			return src[k:k + 1] in ('-', '=', '?', '+')
+
 		def indq():
 			# Whether the text here is inside double quotes. The mark a scope
 			# opened is on the stack, and where the stack holds none the answer
-			# is the quoting the caller was already in. A version that asked
-			# only about the top of the stack read the apostrophes of
-			# "${x:-'$(grep "$V")'}" as a quote of their own, because the
-			# bracket sits on top there, and stepped over the call in them.
+			# is the quoting the caller was already in, except in a pattern:
+			# an apostrophe is a quote mark of its own there whatever it is
+			# written inside, so the caller's double quote is not inherited.
+			# A version that asked only about the top of the stack read the
+			# apostrophes of "${x:-'$(grep "$V")'}" as a quote of their own
+			# and stepped over the call in them; a version that then
+			# inherited for every operator alike read "${x#'"'}" as a quote
+			# left open, and failed the scan on a line bash accepts.
 			for mark in reversed(stack):
 				if mark in ('"', "'"):
 					return mark == '"'
-			return dquote
+			return dquote and wform
 
+		wform = True
 		if src[p] == '{':
 			stack = ['}']
+			wform = wordop(p + 1)
 			nest = False
 			j = p + 1
 		elif src[p] == '[':
@@ -21625,7 +21701,6 @@ def lex(src, base=1, faults=None):
 		pending = []
 		depth = 0
 		arms = 0
-		arith = None
 		q = ''
 		qline = line
 		i = start
@@ -21638,18 +21713,6 @@ def lex(src, base=1, faults=None):
 			# after it for the pattern and reported a correct call as a defect.
 			nonlocal bare
 			bare = False
-
-		def inarith():
-			# Whether this text is inside a doubled bracket the shell may be
-			# reading as arithmetic. It may also be two subshells: measured,
-			# ((printf o); (printf k)) runs and prints ok while ((printf ok))
-			# is an arithmetic syntax error, and bash -n accepts both, so which
-			# of the two a doubled bracket is cannot be told here. The text in
-			# one is therefore still read as commands, and the one thing not
-			# done there is opening a here-document: ((1 << 1)) is valid
-			# arithmetic, and reading its << as one left a body open to the end
-			# of the file and failed the whole scan on a valid line.
-			return arith is not None and depth > arith
 
 		def touch():
 			nonlocal started, wline
@@ -21724,6 +21787,31 @@ def lex(src, base=1, faults=None):
 			touch()
 			q = mark
 			qline = line
+
+		def hasterm(k, delim, strip, quoted):
+			"""Whether a line below src[k] is this delimiter.
+
+			Read with the joining the body reader below uses, so that
+			the two cannot disagree about where a body ends, and from
+			the first line below the operator, which is at or above
+			the line a body would start on: asking over more lines
+			than the body holds can only find the delimiter more
+			often, and finding it is what leaves the reading as it
+			was.
+			"""
+			stop = src.find('\n', k)
+			if stop < 0:
+				return False
+			held = ''
+			for one in src[stop + 1:].split('\n'):
+				if not quoted and (len(one) - len(one.rstrip('\\'))) % 2:
+					held += one[:-1]
+					continue
+				one = held + one
+				held = ''
+				if (one.lstrip('\t') if strip else one) == delim:
+					return True
+			return False
 
 		def heredocs(k):
 			"""Step over every pending here-document body, and lex each one.
@@ -22015,13 +22103,6 @@ def lex(src, base=1, faults=None):
 					else:
 						endword()
 					i = j
-					if inarith() and op in ('<<', '<<-'):
-						# Inside a doubled bracket this is a shift, not a here-document;
-						# see inarith above. The operator is kept as word text so that
-						# nothing written after it is dropped either.
-						for ch in op:
-							put(ch, False)
-						continue
 					if op in ('<<', '<<-'):
 						# A here-document. Its delimiter is the rest of this word;
 						# its body begins on the line below the whole command and is
@@ -22034,6 +22115,7 @@ def lex(src, base=1, faults=None):
 						strip = op == '<<-'
 						while i < n and src[i] in ' \t':
 							i += 1
+						dstart = i
 						# The delimiter is this word with its quoting removed, and
 						# the shell expands nothing in it. Four spellings of it were
 						# read wrongly, and each one left the body to be read as
@@ -22099,8 +22181,27 @@ def lex(src, base=1, faults=None):
 								continue
 							delim += src[i]
 							i += 1
-						if delim or quoted:
+						if not (delim or quoted):
+							continue
+						if hasterm(i, delim, strip, quoted):
 							pending.append((delim, strip, quoted))
+							continue
+						# No line below holds this delimiter, so the
+						# operator opened no body. That is how ((1 << 1))
+						# reads: the shell takes a doubled bracket for
+						# arithmetic where the text in it closes on two
+						# adjacent brackets and for two subshells
+						# otherwise, so ((cat <<EOF); (:)) does open a
+						# real body. Asking for the delimiter answers
+						# both without deciding which of the two a
+						# doubled bracket is. The operator and the
+						# delimiter are kept as word text so that
+						# nothing written after them is dropped. A body
+						# bash only warns about, because the file ends
+						# before its delimiter, is read as commands here
+						# rather than failing the whole scan.
+						for ch in op + src[dstart:i]:
+							put(ch, False)
 						continue
 					while i < n:
 						p, fold = unfold(i)
@@ -22151,10 +22252,6 @@ def lex(src, base=1, faults=None):
 				endcmd()
 				return i + 1
 			if c == '(':
-				if arith is None:
-					p, _fold = unfold(i + 1)
-					if src[p:p + 1] == '(':
-						arith = depth
 				endcmd()
 				depth += 1
 				i += 1
@@ -22163,8 +22260,6 @@ def lex(src, base=1, faults=None):
 				endcmd()
 				if depth:
 					depth -= 1
-				if arith is not None and depth <= arith:
-					arith = None
 				i += 1
 				continue
 			if c in ';|&':
@@ -22314,8 +22409,11 @@ GPPY
 		# The two reads above pick their answers out of whatever was printed, so a
 		# clean result and a clean result followed by anything else read the same.
 		# On success the scan prints exactly one pattern line and one count line, so
-		# that is what is required: a third line, a missing line, or the two in the
-		# wrong order is a failure rather than something to read a verdict out of.
+		# that is what is required: a third non-blank line, a missing line, or the
+		# two in the wrong order is a failure rather than something to read a verdict
+		# out of. A blank line after the second is the one thing this cannot see,
+		# because the substitution above removes the newlines at the end of what it
+		# captured before the count is taken.
 		gp_lines="$(printf '%s\n' "$gp_out" | wc -l | tr -cd '0-9')"
 		gp_shape=0
 		if [ "$gp_lines" = 2 ] \
