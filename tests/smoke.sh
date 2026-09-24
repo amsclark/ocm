@@ -4823,10 +4823,16 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 	mfa_rl_cleared=1
 	# mfa_rl_failed is sticky: it records that a clear did not complete on its first
 	# attempt anywhere in this run, and section 25d reports that. mfa_rl_cleared is
-	# the last attempt only, including the retry below, and is what a later section
-	# asks before reading anything into a refusal. Returning non-zero matters as
-	# well: two call sites are written with a || fallback, and while this function
-	# returned zero whatever happened, neither fallback could ever have run.
+	# the last attempt only, including the retry below, and is what section 26 asks
+	# before reading anything into a refusal. Returning non-zero matters as well:
+	# this used to return zero whatever happened, so two call sites written with a
+	# || fallback could never reach it. Those call sites now test the flag instead.
+	#
+	# The retry is a plain second attempt at the same call, for a compose invocation
+	# that failed while the daemon was busy. It is written out rather than sent
+	# through the dex helper because dex is defined further down this file than this
+	# function is first called, so a call to it here would fail with command not
+	# found and the redirection would hide that.
 	mfa_rl_clear() {
 		mfa_rl_cleared=1
 		if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
@@ -4834,7 +4840,8 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ] && command -v python3 >/dev/nul
 			return 0
 		fi
 		mfa_rl_failed=1
-		if dex rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1; then
+		if docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			rm -rf /tmp/ocm_auth_rl >/dev/null 2>&1; then
 			return 0
 		fi
 		mfa_rl_cleared=0
@@ -20922,11 +20929,12 @@ fi
 # a guarantee, and an earlier version of this comment overstated it. A noninteractive
 # shell does not pin grep to /usr/bin/grep: PATH lookup still applies, and an exported
 # shell function named grep is inherited and takes precedence over any file on PATH.
-# The suite does not enforce which grep it gets, and cannot, because the house rule
-# for this file is plain grep, and a commit gate fails if this file ever reaches it
-# through the shell's command builtin instead.
-# What follows from that is only that a hostile or eccentric grep on PATH is outside
-# what this section checks.
+# The suite does not enforce which grep it gets. It could -- unset -f grep, a fixed
+# PATH and hash -r would select /usr/bin/grep while every call stays plain grep, which
+# is what the house rule for this file requires -- so this is a choice not yet made and
+# not an impossibility; a previous version of this comment said cannot. What follows
+# meanwhile is that a hostile or eccentric grep on PATH is outside what this section
+# checks.
 #
 # What the check decides is whether an expansion stands in PATTERN position. An
 # expansion in FILE position has the same underlying problem, because grep reads a
@@ -20970,9 +20978,12 @@ else
 	# In a directory of its own, and not straight into the shared temporary
 	# directory, for the reason section 8d's parser gives at length: running python3
 	# on a FILE puts that file's own directory first on the import path, so a re.py
-	# or a sys.py left in the shared directory by any local user is imported in place
-	# of the real one. A review of this section reproduced that here, with a sibling
-	# re.py printing shadow instead of the scan running. mktemp -d makes a directory
+	# left in the shared directory by any local user is imported in place of the real
+	# one. A review of this section reproduced that here, with a sibling re.py
+	# printing shadow instead of the scan running. A sibling sys.py does not do it,
+	# because sys is built into the interpreter and never looked up on the path; an
+	# earlier version of this comment named it as well, and was wrong. mktemp -d
+	# makes a directory
 	# its owner alone can read or write.
 	GP_DIR="$(smoke_tempdir)"
 	GP_RC=$?
@@ -21018,6 +21029,34 @@ CALL = re.compile(r'(?<![A-Za-z0-9_.-])[ef]?grep(?![A-Za-z0-9_.-])')
 BREAK = ';|&()'
 
 
+# What may follow a dollar and make it an expansion: a name, a brace, a substitution,
+# or one of the shell's special parameters. A dollar followed by anything else, or by
+# nothing, is a literal dollar, and grep -q "$" f is a valid call that an earlier
+# version of this check reported.
+EXPAND_NEXT = ('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+	'0123456789_{(?#@*!$-')
+
+
+def close_quote(text, i):
+	"""The index just past the quote that closes the one at i.
+
+	Inside double quotes a backslash escapes the next character, so the closing quote
+	is not simply the next one of its kind. Reading it as the next one ended a word
+	early and took part of a file name for a pattern.
+	"""
+	q = text[i]
+	j = i + 1
+	n = len(text)
+	while j < n:
+		if q == '"' and text[j] == '\\' and j + 1 < n:
+			j += 2
+			continue
+		if text[j] == q:
+			return j + 1
+		j += 1
+	return n
+
+
 def bare(word):
 	"""A word as grep receives it, and whether it begins with an expansion.
 
@@ -21033,15 +21072,18 @@ def bare(word):
 	while i < n:
 		c = word[i]
 		if c in '"\'':
-			end = word.find(c, i + 1)
-			body = word[i + 1:end] if end >= 0 else word[i + 1:]
+			e = close_quote(word, i)
+			body = word[i + 1:e - 1] if word[e - 1:e] == c else word[i + 1:e]
 			out += body
 			lit += ('1' if c == "'" else '0') * len(body)
-			i = (end + 1) if end >= 0 else n
+			i = e
 			continue
 		if c == '\\' and i + 1 < n:
-			# A backslash makes the next character literal, so a backslashed dash
-			# is a pattern character and not the start of an option.
+			# The shell removes the backslash and passes the next character through
+			# as itself, so a backslashed dash still reaches grep as a dash and is
+			# still read as an option. What the backslash does suppress is
+			# expansion, which is why the character is marked literal here: \$P is
+			# the two characters $P and not the value of P.
 			out += word[i + 1]
 			lit += '1'
 			i += 2
@@ -21049,7 +21091,9 @@ def bare(word):
 		out += c
 		lit += '0'
 		i += 1
-	return out, (out[:1] == '$' and lit[:1] == '0')
+	expanded = (out[:1] == '$' and lit[:1] == '0'
+		and len(out) > 1 and out[1] in EXPAND_NEXT)
+	return out, expanded
 
 
 def resolve(name):
@@ -21085,12 +21129,9 @@ def words_after(text, i):
 	while i < n:
 		c = text[i]
 		if c in '"\'':
-			end = text.find(c, i + 1)
-			if end < 0:
-				cur += text[i:]
-				break
-			cur += text[i:end + 1]
-			i = end + 1
+			e = close_quote(text, i)
+			cur += text[i:e]
+			i = e
 			continue
 		if c == '\\' and i + 1 < n:
 			cur += text[i:i + 2]
@@ -21130,9 +21171,13 @@ def words_after(text, i):
 			while i < n and text[i] in ' \t':
 				i += 1
 			while i < n and text[i] not in ' \t' and text[i] not in BREAK:
+				if text[i] == '\\' and i + 1 < n:
+					# The shell removes this backslash, so an escaped space is part
+					# of the target's name and does not end it.
+					i += 2
+					continue
 				if text[i] in '"\'':
-					end = text.find(text[i], i + 1)
-					i = (end + 1) if end >= 0 else n
+					i = close_quote(text, i)
 					continue
 				i += 1
 			continue
@@ -21202,14 +21247,38 @@ hits = []
 unknown = []
 start = None
 buf = ''
+
+
+def scan(text, where):
+	"""Record every grep call in one logical line."""
+	for m in CALL.finditer(text):
+		# A quoted command name, "grep" or 'grep', leaves a closing quote between the
+		# name and its first argument. Stepping over it keeps that quote from
+		# swallowing the words after it.
+		k = m.end()
+		while k < len(text) and text[k] in '"\'':
+			k += 1
+		got = verdict(words_after(text, k))
+		if got == 'report':
+			hits.append(where)
+		elif got == 'unknown':
+			unknown.append(where)
+
+
 with open(sys.argv[1], encoding='utf-8') as fh:
 	for n, line in enumerate(fh, 1):
 		line = line.rstrip('\n')
-		if buf == '' and line.lstrip().startswith('#'):
+		if line.lstrip().startswith('#'):
 			# Comment-ness is decided on the PHYSICAL line, before continuations are
-			# joined. A comment ending in a backslash does not comment out the line
-			# below it in bash, so a call written there still runs and still has to
-			# be read; joining first and testing the join hid it.
+			# joined, because a comment runs to the end of its own line: a trailing
+			# backslash inside one does not continue it, and the line below starts a
+			# new command. So whatever was buffered above ends here and is scanned as
+			# it stands, and the next line starts fresh. Testing the join instead hid
+			# a call written below a comment; skipping the comment only when nothing
+			# was buffered still hid one written below ": \" and then "# x\".
+			if buf:
+				scan(buf, start)
+			buf = ''
 			start = None
 			continue
 		if start is None:
@@ -21217,20 +21286,8 @@ with open(sys.argv[1], encoding='utf-8') as fh:
 		if line.rstrip('\t ').endswith('\\'):
 			buf += line.rstrip()[:-1]
 			continue
-		text = buf + line
+		scan(buf + line, start)
 		buf = ''
-		for m in CALL.finditer(text):
-			# A quoted command name, "grep" or 'grep', leaves a closing quote between
-			# the name and its first argument. Stepping over it keeps that quote from
-			# swallowing the words after it.
-			k = m.end()
-			while k < len(text) and text[k] in '"\'':
-				k += 1
-			got = verdict(words_after(text, k))
-			if got == 'report':
-				hits.append(start)
-			elif got == 'unknown':
-				unknown.append(start)
 		start = None
 out = 'pattern: %d unguarded' % len(hits)
 if hits:
