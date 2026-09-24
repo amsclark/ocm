@@ -20891,18 +20891,17 @@ fi
 # showing that the call misses what the same call with -e finds:
 #
 # - a call split across lines with a trailing backslash. Neither line holds both
-#   grep and the pattern, so a scan of physical lines saw nothing. The scan joins
-#   continuations first. Five of the calls sit inside a statement continued that
-#   way; their patterns are on the same physical line as their grep, so only their
-#   reported line numbers moved. This item cited those five by line number until a
-#   merge showed why it should not: every number was already 39 lines out of date
-#   when it was written, because the lines above them had moved and nothing brought
-#   the comment along. A count can be recomputed from the file; a line number in a
-#   comment cannot be checked by anything and rots silently, so it is not given
-#   here. An earlier version of this comment offered a count of 134 as evidence
-#   instead. That is a count of lines that contain grep and end in a backslash,
-#   which is not the same thing as a call split before its pattern, and it is not
-#   evidence for this item either.
+#   grep and the pattern, so a scan of physical lines saw nothing. The scan does not
+#   work in lines at all now: it reads the file as one stream and a continuation is
+#   simply a backslash before a newline, like any other escape. This item cited the
+#   affected calls by line number until a merge showed why it should not: every
+#   number was already 39 lines out of date when it was written, because the lines
+#   above them had moved and nothing brought the comment along. A count can be
+#   recomputed from the file; a line number in a comment cannot be checked by
+#   anything and rots silently, so it is not given here. An earlier version of this
+#   comment offered a count of 134 as evidence instead. That is a count of lines
+#   that contain grep and end in a backslash, which is not the same thing as a call
+#   split before its pattern, and it is not evidence for this item either.
 # - an option carrying its argument attached to the letter, where the argument
 #   contains an e: -dread, -qDread, -Xgrep. The first rule took any cluster
 #   containing an e as proof that -e was passed.
@@ -20936,10 +20935,10 @@ fi
 # meanwhile is that a hostile or eccentric grep on PATH is outside what this section
 # checks.
 #
-# The line number reported is where the logical line begins, not where the call sits
-# inside it. A call written on the second physical line of a continuation is reported
-# at the first. That is the line to edit, so it is left as it is, but a reader
-# counting lines to find the call may need to read on a little.
+# The line number reported is the line the grep word itself is written on. Three
+# earlier versions reported the start of the buffer they had joined, so a call on the
+# second physical line of a continuation was reported at the first and a reader had to
+# count on to find it. Each word now carries the line it began on.
 #
 # What the check decides is whether an expansion stands in PATTERN position. An
 # expansion in FILE position has the same underlying problem, because grep reads a
@@ -20968,12 +20967,24 @@ fi
 # way. An earlier version of this comment listed the copied variable among the things
 # the check misses. That was wrong in the safe direction, but it was wrong.
 #
-# The check reads code and not prose, to the extent that a logical line beginning
-# with a hash is skipped. It has to skip them: the items above quote unguarded calls
-# as their examples, and the first version of this check reported those examples, on
-# these lines, as defects in the file. A hash after code on the same line is not
-# detected, so an inline comment is still read as code. That errs towards a false
-# report, which is the direction that gets looked at.
+# The check reads code and not prose. It has to: the items above quote unguarded
+# calls as their examples, and the first version of this check reported those
+# examples, on these lines, as defects in the file. A hash begins a comment exactly
+# where a word could begin and nowhere else, which is the shell's own rule and is
+# only available to something that knows where the word before it ended. Three
+# earlier versions decided it line by line and each got a different case wrong: a
+# hash below a word continued by a backslash is part of that word, one below a word
+# the shell had already ended with an unescaped space begins a comment, and a double
+# quote inside a comment is inert. An inline comment after code is now skipped
+# correctly, where earlier versions read it as code.
+#
+# Two limits come out of reading the file as shell rather than as lines. A
+# here-document body is lexed as shell text, which is right for the bodies here that
+# hold scripts and wrong for the ones that hold a python program or a configuration
+# file; those contribute words that are not commands, and a word there equal to grep
+# would be read as a call. And the scan reports how many calls it reached, which this
+# section asserts a floor on, because the coverage of a scan that finds nothing is
+# the whole of what its result is worth.
 echo
 echo "104. every grep pattern that comes from a variable is passed with -e"
 
@@ -20997,7 +21008,6 @@ else
 	else
 		GP_PY="$GP_DIR/gp_pattern.py"
 		cat > "$GP_PY" <<'GPPY'
-import re
 import sys
 
 # Whether a value lands in option position is decided by grep's own grammar, so the
@@ -21025,132 +21035,522 @@ LONG_FLAG = ('basic-regexp', 'extended-regexp', 'fixed-strings', 'perl-regexp',
 	'binary', 'recursive', 'dereference-recursive', 'help', 'version')
 LONG_ALL = LONG_ARG + LONG_OPTIONAL + LONG_FLAG
 
-# The command word: an optional directory prefix, and fgrep and egrep as well as grep,
-# so neither /bin/grep nor fgrep slips past. The lookbehind refuses a name that merely
-# ends in grep, such as pgrep or a variable called mygrep.
-CALL = re.compile(r'(?<![A-Za-z0-9_.-])[ef]?grep(?![A-Za-z0-9_.-])')
-# What ends a command. A redirection does not, and is handled separately, because
-# cutting the word list at a > hides every operand written after one.
-BREAK = ';|&()'
+# One character standing for a value this scan cannot know: what an expansion or a
+# command substitution will produce. It is not a character any option name or option
+# letter holds, so an option written with one in it is reported as unrecognised rather
+# than guessed at.
+UNKNOWN = '\x00'
+
+# A dollar begins an expansion when what follows it can start a parameter name, or is
+# one of the shell's special parameters. The bracket forms are handled separately.
+# A dollar followed by anything else, or by nothing, is an ordinary character, and
+# grep -q "$" f is a valid call that an earlier version of this check reported.
+NAME = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_'
+SPECIAL = '?#@*!$-'
+
+# The three bracket forms a dollar can open, and what closes each. The square bracket
+# is $[expr], which bash still expands although the form is long superseded by
+# $((expr)); a review left grep -q "$[-1]" f out of an earlier set and an earlier
+# version of this check passed it.
+CLOSER = {'(': ')', '{': '}', '[': ']'}
 
 
-# What may follow a dollar and make it an expansion: a name, a brace, a substitution,
-# or one of the shell's special parameters. A dollar followed by anything else, or by
-# nothing, is a literal dollar, and grep -q "$" f is a valid call that an earlier
-# version of this check reported. The open bracket is here for $[expr], which bash
-# still expands although the form is long superseded by $((expr)); a review left
-# grep -q "$[-1]" f out of an earlier set and this check passed it.
-EXPAND_NEXT = ('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-	'0123456789_{([?#@*!$-')
+def is_grep(text):
+	"""Whether a finished command word names grep.
 
-
-def in_quote(text):
-	"""Whether text ends with a quote still open.
-
-	A hash inside a quoted string is an ordinary character, so a physical line that
-	begins with one is only a comment when the text above it left no quote open.
+	The test is the whole word, not a match anywhere inside it. Searching for the
+	name let a quoted filename that reads like a call be scanned as another command,
+	so a single guarded call whose file operand reads like a second call was reported
+	as two. The example is below rather than here: this program is run from a
+	here-document whose body this scan reads as shell text, so prose in a docstring
+	is lexed as words while a hash comment is not.
 	"""
-	q = ''
-	i = 0
-	n = len(text)
-	while i < n:
-		c = text[i]
-		if q != "'" and c == '\\' and i + 1 < n:
-			i += 2
+	# grep -q -e ok 'grep "$V" f'
+	if text in ('grep', 'egrep', 'fgrep'):
+		return True
+	return text.endswith(('/grep', '/egrep', '/fgrep'))
+
+
+def group_open(src, i):
+	"""What the group at src[i] pushes, and where its body starts.
+
+	src[i] is a dollar that opens a group, or a bracket that opens one on its own.
+	Each entry names the character that closes the group and says whether a hash
+	inside it can begin a comment. Only command text has comments: inside ${#name}
+	the hash is the length operator, and reading it as a comment made an earlier
+	version of this scan discard the rest of that line, miss the closing brace, and
+	take the remainder of the file with it. Arithmetic holds no command text either.
+	"""
+	c = src[i]
+	if c == '$':
+		nxt = src[i + 1:i + 2]
+		if nxt == '(':
+			if src[i + 2:i + 3] == '(':
+				return [(')', False), (')', False)], i + 3
+			return [(')', True)], i + 2
+		if nxt == '{':
+			return [('}', False)], i + 2
+		if nxt == '[':
+			return [(']', False)], i + 2
+		return None, i
+	if c == '(':
+		return [(')', True)], i + 1
+	if c == '{':
+		return [('}', True)], i + 1
+	return None, i
+
+
+def skip_group(src, i):
+	"""The index just past the group opening at src[i], and the newlines crossed.
+
+	A command substitution holds shell text in its own right: quotes, comments,
+	newlines and further groups, each with its own scope. The closing character has
+	to be found through all of them. Reading it as the next close character hid a
+	call written below a hash inside a substitution, and testing the quote state of
+	the joined line instead took the substitution's opening quote for the outer
+	closing one.
+	"""
+	n = len(src)
+	nl = 0
+	stack, i = group_open(src, i)
+	bound = False
+	while i < n and stack:
+		c = src[i]
+		top, talk = stack[-1]
+		if c == '\n':
+			nl += 1
+			bound = True
+			i += 1
 			continue
-		if q == '':
-			if c in '"\'':
-				q = c
-		elif c == q:
-			q = ''
-		i += 1
-	return q != ''
-
-
-def close_quote(text, i):
-	"""The index just past the quote that closes the one at i.
-
-	Inside double quotes a backslash can escape the next character, so the closing
-	quote is not simply the next one of its kind. Reading it as the next one ended a
-	word early and took part of a file name for a pattern. Bash gives the backslash
-	that meaning only before a dollar, a backtick, a double quote, another backslash
-	or a newline, so a backslash written before a q keeps its backslash and stepping
-	is wider than the shell is. It still lands on the right closing quote, because a
-	character the backslash did not escape cannot close a quote either.
-	"""
-	q = text[i]
-	j = i + 1
-	n = len(text)
-	while j < n:
-		if q == '"' and text[j] == '\\' and j + 1 < n:
-			j += 2
-			continue
-		if text[j] == q:
-			return j + 1
-		j += 1
-	return n
-
-
-def bare(word):
-	"""A word as grep receives it, and whether it begins with an expansion.
-
-	Quoting is removed because grep never sees it: "-qF" reaches grep as -qF and is an
-	option, and a check that read the leading quote as an ordinary character took it
-	for a pattern. Single quotes suppress expansion, so '$P' is a literal and is not
-	reported, while "$P" and $P are.
-	"""
-	out = ''
-	lit = ''
-	# Which stretch of the original word each surviving character came from. Removing
-	# the quoting can put two characters side by side that the shell kept apart, and
-	# then a dollar appears to introduce the name after it when it does not: "$"P is
-	# the two characters $P and $'ok' is the three characters ok. Both were reported
-	# as expansions. A dollar only starts one if the character after it came from the
-	# same stretch.
-	run = []
-	r = 0
-	i = 0
-	n = len(word)
-	while i < n:
-		c = word[i]
-		if c in '"\'':
-			e = close_quote(word, i)
-			body = word[i + 1:e - 1] if word[e - 1:e] == c else word[i + 1:e]
-			r += 1
-			out += body
-			lit += ('1' if c == "'" else '0') * len(body)
-			run += [r] * len(body)
-			r += 1
-			i = e
+		if top == "'":
+			if c == "'":
+				stack.pop()
+			i += 1
 			continue
 		if c == '\\' and i + 1 < n:
-			# The shell removes the backslash and passes the next character through
-			# as itself, so a backslashed dash still reaches grep as a dash and is
-			# still read as an option. What the backslash does suppress is
-			# expansion, which is why the character is marked literal here: \$P is
-			# the two characters $P and not the value of P.
-			r += 1
-			out += word[i + 1]
-			lit += '1'
-			run.append(r)
-			r += 1
+			if src[i + 1] == '\n':
+				nl += 1
+			bound = False
 			i += 2
 			continue
-		out += c
-		lit += '0'
-		run.append(r)
+		if c == '"':
+			if top == '"':
+				stack.pop()
+			else:
+				stack.append(('"', False))
+			bound = False
+			i += 1
+			continue
+		if top == '"':
+			if c == '`':
+				stack.append(('`', True))
+				i += 1
+				continue
+			more, j = group_open(src, i) if c == '$' else (None, i)
+			if more:
+				stack.extend(more)
+				i = j
+				continue
+			i += 1
+			continue
+		if c == "'":
+			stack.append(("'", False))
+			bound = False
+			i += 1
+			continue
+		if c == '#' and bound and talk:
+			while i < n and src[i] != '\n':
+				i += 1
+			continue
+		if c == '`':
+			if top == '`':
+				stack.pop()
+			else:
+				stack.append(('`', True))
+			bound = False
+			i += 1
+			continue
+		if c == top:
+			stack.pop()
+			bound = False
+			i += 1
+			continue
+		more, j = group_open(src, i) if c in '$({' else (None, i)
+		if more:
+			stack.extend(more)
+			bound = False
+			i = j
+			continue
+		bound = c in ' \t;|&('
 		i += 1
-	expanded = (out[:1] == '$' and lit[:1] == '0' and len(out) > 1
-		and out[1] in EXPAND_NEXT and run[1] == run[0])
-	return out, expanded
+	return i, nl
+
+
+def skip_backtick(src, i):
+	"""The index just past the backtick substitution at src[i], and its newlines.
+
+	This form is a whole command substitution, so a word beginning with one begins
+	with a value this scan cannot know. An earlier version marked only a leading
+	dollar and let grep -q `printf ok` f pass.
+	"""
+	n = len(src)
+	nl = 0
+	i += 1
+	while i < n:
+		c = src[i]
+		if c == '\\' and i + 1 < n:
+			if src[i + 1] == '\n':
+				nl += 1
+			i += 2
+			continue
+		if c == '`':
+			return i + 1, nl
+		if c == '\n':
+			nl += 1
+		i += 1
+	return n, nl
+
+
+def ansi_quote(src, k):
+	"""The body of a $'...' quote, the index past it, and the newlines crossed.
+
+	Nothing expands inside this form, so its body is literal text. The escapes bash
+	resolves here are stepped over rather than resolved, because all this scan needs
+	from the body is that none of it is an expansion.
+	"""
+	n = len(src)
+	out = ''
+	nl = 0
+	j = k + 1
+	while j < n:
+		c = src[j]
+		if c == '\\' and j + 1 < n:
+			if src[j + 1] == '\n':
+				nl += 1
+			out += src[j + 1]
+			j += 2
+			continue
+		if c == "'":
+			return j + 1, out, nl
+		if c == '\n':
+			nl += 1
+		out += c
+		j += 1
+	return n, out, nl
+
+
+def lex(src, base=1):
+	"""Every command in the source as a list of words, each word with its own line.
+
+	One pass, left to right, carrying the current quote and stepping over
+	substitutions whole. Three questions decide what this section reports -- where a
+	word ends, where a command ends, and whether a hash begins a comment -- and each
+	answer depends on the other two. Three earlier versions answered them
+	separately, one physical line at a time, and each version got a different one of
+	the three wrong: a hash inside a comment's own quote hid a later call, a hash
+	below a continued word was read as a comment, and a quoted newline with no
+	backslash split a call in half.
+
+	Each word carries the text grep receives, with the quoting removed and each
+	value this scan cannot know standing as one UNKNOWN character; whether the
+	word's value begins with such a value; and the line the word starts on.
+	"""
+	cmds = []
+	words = []
+	text = ''
+	exp = None
+	started = False
+	wline = 0
+	drop = False
+	pending = []
+	line = base
+	n = len(src)
+	i = 0
+
+	def touch():
+		nonlocal started, wline
+		if not started:
+			started = True
+			wline = line
+
+	def put(ch, expansion):
+		nonlocal text, exp
+		touch()
+		if exp is None:
+			exp = expansion
+		text += ch
+
+	def endword():
+		nonlocal text, exp, started, drop
+		if started and not drop:
+			words.append((text, bool(exp), wline))
+		text = ''
+		exp = None
+		started = False
+		drop = False
+
+	def endcmd():
+		nonlocal words
+		endword()
+		if words:
+			cmds.append(words)
+			words = []
+
+	def heredocs(k, at):
+		"""Step over every pending here-document body, and lex each one.
+
+		A body is shell text in its own right when the here-document writes a
+		script, which this suite does often, so its calls are scanned too. A body
+		that holds something else, a python program or a configuration file, yields
+		words that are not commands and no word equal to a command name.
+		"""
+		nonlocal pending
+		for delim, strip in pending:
+			lines = []
+			while k < n:
+				stop = src.find('\n', k)
+				if stop < 0:
+					stop = n
+				one = src[k:stop]
+				k = stop + 1 if stop < n else n
+				at += 1
+				if (one.lstrip('\t') if strip else one) == delim:
+					break
+				lines.append(one)
+			if lines:
+				cmds.extend(lex('\n'.join(lines) + '\n', at - len(lines)))
+		pending = []
+		return k, at
+
+	def substitution(k):
+		"""Where the substitution at src[k] ends, having lexed the commands in it.
+
+		A command substitution holds commands in its own right, and this suite
+		writes many of its checks that way, assigning the count a call returns.
+		Stepping over the group without reading it left 75 calls unscanned, and a
+		check that removed a guard from one of them still reported nothing. The
+		example is below rather than here, for the reason is_grep gives.
+		"""
+		# sm109_raw="$(grep -cF -e "$2" "$BODY")"
+		if src[k] == '`':
+			end, nl = skip_backtick(src, k)
+			body = src[k + 1:end - 1] if end > k + 1 else ''
+		else:
+			end, nl = skip_group(src, k)
+			body = src[k + 2:end - 1] if end > k + 2 else ''
+		if body:
+			cmds.extend(lex(body + '\n', line))
+		return end, nl
+
+	def dollar(k):
+		"""Where the expansion at src[k] ends, or None when it is not one."""
+		nxt = src[k + 1:k + 2]
+		if nxt == '(' and src[k + 2:k + 3] != '(':
+			return substitution(k)
+		if nxt in CLOSER:
+			return skip_group(src, k)
+		if nxt and nxt in NAME:
+			j = k + 1
+			while j < n and src[j] in NAME:
+				j += 1
+			return j, 0
+		if nxt and nxt in SPECIAL:
+			return k + 2, 0
+		return None, 0
+
+	q = ''
+	while i < n:
+		c = src[i]
+		if q == "'":
+			if c == "'":
+				q = ''
+			else:
+				if c == '\n':
+					line += 1
+				put(c, False)
+			i += 1
+			continue
+		if q == '"':
+			if c == '"':
+				q = ''
+				i += 1
+				continue
+			if c == '\\' and i + 1 < n:
+				# Inside double quotes bash gives the backslash its escaping meaning
+				# only before a dollar, a backtick, a double quote, another
+				# backslash or a newline. Stepping over any pair is wider than that
+				# and lands in the same place: a character the backslash did not
+				# escape cannot close the quote either.
+				if src[i + 1] == '\n':
+					line += 1
+				else:
+					put(src[i + 1], False)
+				i += 2
+				continue
+			if c == '`':
+				j, nl = substitution(i)
+				put(UNKNOWN, True)
+				line += nl
+				i = j
+				continue
+			if c == '$':
+				j, nl = dollar(i)
+				if j is not None:
+					put(UNKNOWN, True)
+					line += nl
+					i = j
+					continue
+			if c == '\n':
+				line += 1
+			put(c, False)
+			i += 1
+			continue
+		if c == '\\' and i + 1 < n:
+			if src[i + 1] == '\n':
+				line += 1
+			else:
+				put(src[i + 1], False)
+			i += 2
+			continue
+		if c == "'":
+			touch()
+			q = "'"
+			i += 1
+			continue
+		if c == '"':
+			touch()
+			q = '"'
+			i += 1
+			continue
+		if c == '`':
+			j, nl = substitution(i)
+			put(UNKNOWN, True)
+			line += nl
+			i = j
+			continue
+		if c == '$':
+			nxt = src[i + 1:i + 2]
+			if nxt == "'":
+				j, body, nl = ansi_quote(src, i + 1)
+				touch()
+				for ch in body:
+					put(ch, False)
+				line += nl
+				i = j
+				continue
+			if nxt == '"':
+				# Locale quoting. Bash drops the dollar and the value is whatever
+				# the quotes hold, so the dollar itself produces nothing and the
+				# word can still begin with an expansion. An earlier version kept
+				# the dollar as an output character and let grep -q $"$V" f pass.
+				q = '"'
+				i += 2
+				continue
+			j, nl = dollar(i)
+			if j is not None:
+				put(UNKNOWN, True)
+				line += nl
+				i = j
+				continue
+			put(c, False)
+			i += 1
+			continue
+		if c == '\n':
+			endcmd()
+			line += 1
+			i += 1
+			if pending:
+				i, line = heredocs(i, line)
+			continue
+		if c in ' \t':
+			endword()
+			i += 1
+			continue
+		if c == '#' and not started:
+			# A hash begins a comment where a word could begin, and nowhere else.
+			# Only the lexer knows that here: a hash below a continued word is part
+			# of that word, and one below a word the shell ended with an unescaped
+			# space begins a comment although the line above it ran on. Both of
+			# grep --label=ok\ \ / #ok "$V" f and : ok\ / # x\ / grep "$V" f turn on
+			# that one difference, and earlier versions read each of them the wrong
+			# way round. A comment runs to the end of its own physical line: a
+			# backslash inside one does not continue it, so the line below starts a
+			# new command.
+			while i < n and src[i] != '\n':
+				i += 1
+			continue
+		if src.startswith('<<', i) and not src.startswith('<<<', i):
+			# A here-document. Its delimiter is the rest of this word; its body
+			# begins on the line below the whole command and is not shell words in
+			# this command at all. Reading the body as though it were is what an
+			# earlier version of this check did, and one apostrophe in an embedded
+			# python program then held a quote open for the rest of the file: the
+			# scan reached fifteen of the file's grep calls and reported nothing.
+			j = i + 2
+			strip = j < n and src[j] == '-'
+			if strip:
+				j += 1
+			while j < n and src[j] in ' \t':
+				j += 1
+			delim = ''
+			while j < n and src[j] not in ' \t\n;|&<>()':
+				if src[j] == '\\' and j + 1 < n:
+					delim += src[j + 1]
+					j += 2
+					continue
+				if src[j] in '"\'':
+					mark = src[j]
+					j += 1
+					while j < n and src[j] != mark:
+						delim += src[j]
+						j += 1
+					j += 1
+					continue
+				delim += src[j]
+				j += 1
+			if delim:
+				pending.append((delim, strip))
+			i = j
+			continue
+		if c in '<>':
+			# A redirection. Its target is not an operand grep reads, and a
+			# digits-only word already in hand is the file descriptor. The target is
+			# then read as an ordinary word and dropped, so a substitution written
+			# as the target is stepped over the same way as anywhere else; an
+			# earlier version scanned the target with a loop of its own, stopped
+			# that loop at the substitution's bracket, and took the bracket for the
+			# end of the command.
+			if started and text.isdigit():
+				text = ''
+				exp = None
+				started = False
+			else:
+				endword()
+			while i < n and src[i] in '<>&':
+				i += 1
+			while i < n and src[i] in ' \t':
+				i += 1
+			drop = True
+			continue
+		if c in ';|&()':
+			endcmd()
+			i += 1
+			continue
+		put(c, False)
+		i += 1
+	endcmd()
+	return cmds
 
 
 def resolve(name):
-	"""grep accepts any unambiguous prefix of a long option, so resolve one."""
-	if name in LONG_ALL:
-		hit = name
-	else:
-		near = [n for n in LONG_ALL if n.startswith(name)]
+	"""The kind of a long option, allowing the abbreviations grep allows.
+
+	grep accepts any unambiguous prefix of a long option, so --reg is --regexp and
+	a scan matching whole names only would read it as unrecognised.
+	"""
+	hit = name
+	if name not in LONG_ALL:
+		near = [c for c in LONG_ALL if c.startswith(name)]
 		if len(near) != 1:
 			return None
 		hit = near[0]
@@ -21166,91 +21566,18 @@ def resolve(name):
 	return 'flag'
 
 
-def words_after(text, i):
-	"""The command's words from i, stopping where the command does.
-
-	Quotes and command substitutions are tracked, because a ; or a | inside either
-	does not end anything, and a word list cut short there would hide the pattern.
-	"""
-	words = []
-	cur = ''
-	n = len(text)
-	while i < n:
-		c = text[i]
-		if c in '"\'':
-			e = close_quote(text, i)
-			cur += text[i:e]
-			i = e
-			continue
-		if c == '\\' and i + 1 < n:
-			cur += text[i:i + 2]
-			i += 2
-			continue
-		if c == '$' and text.startswith('$(', i):
-			depth = 0
-			j = i
-			while j < n:
-				if text[j] == '(':
-					depth += 1
-				elif text[j] == ')':
-					depth -= 1
-					if depth == 0:
-						break
-				j += 1
-			cur += text[i:j + 1]
-			i = j + 1
-			continue
-		if c in ' \t':
-			if cur:
-				words.append(cur)
-				cur = ''
-			i += 1
-			continue
-		if c in '<>':
-			# A redirection: step over the operator run and the word it names. The
-			# target is not an operand grep sees, and a digits-only word already in
-			# hand is the file descriptor, not a pattern, so it is dropped.
-			if cur.isdigit():
-				cur = ''
-			elif cur:
-				words.append(cur)
-				cur = ''
-			while i < n and text[i] in '<>&':
-				i += 1
-			while i < n and text[i] in ' \t':
-				i += 1
-			while i < n and text[i] not in ' \t' and text[i] not in BREAK:
-				if text[i] == '\\' and i + 1 < n:
-					# The shell removes this backslash, so an escaped space is part
-					# of the target's name and does not end it.
-					i += 2
-					continue
-				if text[i] in '"\'':
-					i = close_quote(text, i)
-					continue
-				i += 1
-			continue
-		if c in BREAK:
-			break
-		cur += c
-		i += 1
-	if cur:
-		words.append(cur)
-	return words
-
-
 def verdict(words):
-	"""safe, report, or unknown, for one grep call's words."""
+	"""safe, report, or unknown, for the words after one grep command word."""
 	i = 0
 	while i < len(words):
-		w, expanded = bare(words[i])
+		w, expanded, _at = words[i]
 		if w == '--':
 			# Option parsing has ended, so a dash-leading value after this is a
 			# literal pattern and not an option. That is the shape this whole
 			# section is about avoiding, so the call is safe.
 			return 'safe'
 		if w.startswith('--'):
-			name, eq, _ = w[2:].partition('=')
+			name, eq, _rest = w[2:].partition('=')
 			kind = resolve(name)
 			if kind is None:
 				return 'unknown'
@@ -21283,70 +21610,20 @@ def verdict(words):
 	return 'safe'
 
 
-# A physical line ending in a backslash continues onto the next, so the scan joins them
-# and works on logical lines: a call written that way puts the command on one line and
-# the pattern on another, and neither line on its own shows the defect.
-#
-# A logical line whose first character is a hash is prose. The comment above this
-# section quotes an unguarded call as its example of what to avoid, and the first
-# version of this check reported that example as a defect in the file. A hash after code
-# on the same line is not detected, so such a comment is still read as code; that errs
-# towards a false report, which is the safe direction.
 hits = []
 unknown = []
-start = None
-buf = ''
-
-
-def scan(text, where):
-	"""Record every grep call in one logical line."""
-	for m in CALL.finditer(text):
-		# A quoted command name, "grep" or 'grep', leaves a closing quote between the
-		# name and its first argument. Stepping over it keeps that quote from
-		# swallowing the words after it.
-		k = m.end()
-		while k < len(text) and text[k] in '"\'':
-			k += 1
-		got = verdict(words_after(text, k))
-		if got == 'report':
-			hits.append(where)
-		elif got == 'unknown':
-			unknown.append(where)
-
-
+calls = 0
 with open(sys.argv[1], encoding='utf-8') as fh:
-	for n, line in enumerate(fh, 1):
-		line = line.rstrip('\n')
-		if (line.lstrip().startswith('#') and not in_quote(buf)
-			and (buf == '' or buf[-1:] in ' \t')):
-			# Comment-ness is decided on the PHYSICAL line, before continuations are
-			# joined, because a comment runs to the end of its own line: a trailing
-			# backslash inside one does not continue it, and the line below starts a
-			# new command. So whatever was buffered above ends here and is scanned as
-			# it stands, and the next line starts fresh. Testing the join instead hid
-			# a call written below a comment; skipping the comment only when nothing
-			# was buffered still hid one written below ": \" and then "# x\".
-			#
-			# Two conditions decide whether the hash begins a comment at all. A hash
-			# inside an open quote is an ordinary character, and a hash on the line
-			# below a word that was continued is part of that word: both of
-			# grep --label "ok\ / # ok\ / " "$P" f and
-			# grep --label=ok\ / #ok "$P" f are real calls a plain hash test hid.
-			# A continued word leaves the buffer ending in a character other than a
-			# space, and that is the test used for the second case.
-			if buf:
-				scan(buf, start)
-			buf = ''
-			start = None
-			continue
-		if start is None:
-			start = n
-		if line.rstrip('\t ').endswith('\\'):
-			buf += line.rstrip()[:-1]
-			continue
-		scan(buf + line, start)
-		buf = ''
-		start = None
+	for cmd in lex(fh.read()):
+		for k in range(len(cmd)):
+			if not is_grep(cmd[k][0]):
+				continue
+			calls += 1
+			got = verdict(cmd[k + 1:])
+			if got == 'report':
+				hits.append(cmd[k][2])
+			elif got == 'unknown':
+				unknown.append(cmd[k][2])
 out = 'pattern: %d unguarded' % len(hits)
 if hits:
 	out += ' at line ' + ','.join(str(n) for n in hits)
@@ -21354,13 +21631,37 @@ if unknown:
 	out += '; %d with an option this scan does not recognise, at line %s' % (
 		len(unknown), ','.join(str(n) for n in unknown))
 sys.stdout.write(out + '\n')
+sys.stdout.write('calls: %d\n' % calls)
 GPPY
 		gp_out="$(python3 "$GP_PY" "${SMOKE_DIR}/smoke.sh" 2>&1)"
 		gp_rc=$?
+		# Two answers, and the second one decides whether the first means anything.
+		# The scan also reports how many grep calls it reached, because a clean
+		# result over almost none of them reads exactly like a clean result over all
+		# of them. That is not a hypothetical: the first build of the rewritten
+		# scanner printed no unguarded call while reaching 15 of this file's calls,
+		# having mistaken the hash in "${#CSRF_TOKEN}" for a comment and then run
+		# past the closing brace to the end of the file. Without this count that
+		# would have been read as a pass.
+		gp_found="$(printf '%s\n' "$gp_out" | sed -n 's/^pattern: //p')"
+		gp_calls="$(printf '%s\n' "$gp_out" | sed -n 's/^calls: //p')"
+		case "$gp_calls" in
+			'' | *[!0-9]*) gp_num=0 ;;
+			*) gp_num=1 ;;
+		esac
 		if [ "$gp_rc" != 0 ]; then
 			bad "the grep pattern check did not run (exit ${gp_rc}): $(printf '%s' "$gp_out" | tr '\n' ' ')"
-		elif [ "$gp_out" = 'pattern: 0 unguarded' ]; then
-			ok "no grep call takes a variable as its pattern without -e"
+		elif [ "$gp_num" != 1 ]; then
+			bad "the grep pattern check did not report how many calls it read, so a clean result settles nothing: $(printf '%s' "$gp_out" | tr '\n' ' ')"
+		elif [ "$gp_calls" -lt 600 ]; then
+			# The floor is well below the 931 measured when this was written, because
+			# the count moves with every call added or removed and a floor that has
+			# to be edited for ordinary work gets edited without being thought
+			# about. What it has to catch is the scan collapsing, which showed up as
+			# 15.
+			bad "the grep pattern check read only ${gp_calls} grep calls of the several hundred this file holds, so its clean result settles nothing (want 600 or more)"
+		elif [ "$gp_found" = '0 unguarded' ]; then
+			ok "no grep call takes a variable as its pattern without -e, over ${gp_calls} calls read"
 		else
 			bad "$(printf '%s' "$gp_out" | tr '\n' ' ')"
 		fi
