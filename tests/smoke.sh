@@ -21140,13 +21140,15 @@ fi
 # six for \U7FFFFFFF, and one unknown character now stands for each.
 #
 # A doubled parenthesis no longer suppresses a here-document, and which of two things
-# it is no longer has to be guessed. ((1 << 1)) is arithmetic, ((printf o); (printf
-# k)) is two subshells and runs, ((printf ok)) is an arithmetic error, and bash -n
-# accepts all three. Measured over forty-nine inputs: bash reads the text once, left
-# to right, with its quoting tracked and with no redirection read while it does,
-# counting parentheses from two, and it decides at the first parenthesis that takes
-# the count back to one, by whether the next character is the one that takes it to
-# zero. Nothing written later moves that answer. So ((1 << 1)) opens no body, and
+# it is is decided rather than guessed for every shape whose text this scan can read.
+# Where that text cannot be read, the doubled parenthesis is read as two of its own,
+# which is the reading that opens a real body. ((1 << 1)) is arithmetic, ((printf o);
+# (printf k)) is two subshells and runs, ((printf ok)) is an arithmetic error, and
+# bash -n accepts all three. Measured over forty-nine inputs: bash reads the text
+# once, left to right, with its quoting tracked and with no redirection read while it
+# does, counting parentheses from two, and it decides at the first parenthesis that
+# takes the count back to one, by whether the next character is the one that takes it
+# to zero. Nothing written later moves that answer. So ((1 << 1)) opens no body, and
 # ((cat <<EOF); (:)) opens a real one. The text inside a command run in place is read
 # on its own while that count is kept, because a parenthesis written inside quotes
 # there is one more character of a word and closes nothing.
@@ -21180,16 +21182,41 @@ fi
 # kept of its own, so a[(] is now read as bash reads it rather than answered with an
 # error.
 #
-# This is the last round that adds to what the lexer understands, and neither the
-# eleventh nor the twelfth added any: every repair in them replaces a mechanism an
-# earlier round already had, and the twelfth leaves two fewer than it found. Eight
-# rounds in,
-# the largest group of findings in each of the last two was the previous round's own
-# fixes, so further capability is buying further ways to be wrong. Two findings are
-# left open on purpose and are listed with the other limits above. The shell around
-# the scan now requires exactly one pattern line and one count line, because the two
-# reads below pick their answers out of whatever was printed and would answer a clean
-# result and a clean result followed by anything else the same way.
+# The twelfth review supplied two findings and two older misses, and all four share
+# one root: the reader of a command run in place counts brackets, parentheses and
+# quote marks, and none of those is a reading of command text. A hash that begins a
+# word there starts a comment that runs to the end of the line, so a backtick or a
+# bracket written in one is not syntax: that round opened a false scope at such a
+# backtick, closed it at a later one, read no call between them, and ended a subscript
+# at a bracket written in a comment. A ${...} is one unit the shell reads, so a
+# bracket or a brace inside one closes nothing outside it: that round had dropped the
+# count of parentheses which had incidentally protected those brackets, and a[${b:-]}]
+# then ended early, a[${b:-[}] ended in the next command, and one key ended on the
+# wrong operator, which reported a call bash does not make. Measured over thirteen
+# spellings, the closing brace is found the same way whichever operator follows it,
+# although whether an apostrophe inside is a quote mark does turn on that operator.
+# And the parenthesis that ends one pattern of a case statement closes nothing, so
+# reading it as a close ended the scan early and suppressed a here-document bash does
+# open: a case statement written inside a command run in place is now refused rather
+# than guessed at. Refusing is fail closed both ways, because a subscript holding one
+# says the file cannot be read and a doubled parenthesis holding one is read as two of
+# its own.
+#
+# The eighth round said it would be the last to add to what this scan understands, and
+# the thirteenth breaks that: a comment and a ${...} are both text it did not read
+# before, and a case statement is text it now refuses where it used to guess. Nine
+# rounds in, the largest group of findings in each of the last four was the previous
+# round's own fixes, so further capability keeps buying further ways to be wrong, and
+# each of the three changes here was measured against bash over named inputs before it
+# was written rather than reasoned about. What they are measured on is what is claimed
+# for them: the eleven inputs the twelfth review named, forty-eight more written for
+# this round, and the fixtures of the rounds before it. Several findings are left open
+# on purpose and are listed with the other limits above, including the one this round
+# adds: a case statement written inside a subscript now answers that the file cannot
+# be read, which would hide a real call in that one shape. The shell around the scan
+# requires exactly one pattern line and one count line, because the two reads below
+# pick their answers out of whatever was printed and would answer a clean result and a
+# clean result followed by anything else the same way.
 echo
 echo "104. every grep pattern that comes from a variable is marked as a pattern"
 
@@ -21550,31 +21577,21 @@ def lex(src, base=1, faults=None):
 			k += 2
 		return k, nl
 
-	def cmdsub(k):
-		"""The index past the command run in place that begins at src[k].
+	def braceskip(k):
+		"""The index past the ${...} whose brace is at src[k + 1].
 
-		Measured: the shell reads the text inside one on its own, so a
-		quote mark there does not answer a mark outside it, and a
-		bracket written inside quotes there is one more character of a
-		word. So "$(printf "%s" "((")" holds no open bracket to count,
-		and the older spelling `printf ]` holds no closing one. Two of
-		the scans the eleventh round added read such text with a single
-		mark and no nesting of their own, and both the count of
-		brackets and the end of a subscript then came out wrong.
+		Measured over thirteen spellings: the shell reads one of these
+		as a unit, so a bracket or a brace written inside it is one
+		more character of its text and closes nothing outside it.
+		a[${b:-]}] ends at the bracket after the brace, and so do
+		a[${b:-[}], a[(${b:-]})], and the pattern forms a[${b#']'}]
+		and a[${b#'}'}]: where the closing brace is found does not
+		turn on the operator, although whether an apostrophe inside is
+		a quote mark does. The twelfth round read none of these, and a
+		bracket written in one then ended a subscript early, ended it
+		late, or left the wrong operator to read the word after it.
 		Returns -1 where the text never ends.
 		"""
-		if src[k] == '`':
-			j = k + 1
-			while j < n:
-				if src[j] == '\\' and j + 1 < n:
-					j += 2
-					continue
-				if src[j] == '`':
-					return j + 1
-				j += 1
-			return -1
-		if src[k:k + 2] != '$(':
-			return -1
 		deep = 0
 		mark = ''
 		j = k + 1
@@ -21598,17 +21615,154 @@ def lex(src, base=1, faults=None):
 					return -1
 				j = e
 				continue
+			if c == '$' and src[j + 1:j + 2] == '{':
+				e = braceskip(j)
+				if e < 0:
+					return -1
+				j = e
+				continue
 			if not mark:
 				if c in '"\'':
 					mark = c
 					j += 1
 					continue
-				if c == '(':
+				if c == '{':
 					deep += 1
-				elif c == ')':
+				elif c == '}':
 					deep -= 1
 					if not deep:
 						return j + 1
+			j += 1
+		return -1
+
+	def cmdsub(k):
+		"""The index past the command run in place that begins at src[k].
+
+		Measured: the shell reads the text inside one on its own, so a
+		quote mark there does not answer a mark outside it, and a
+		bracket written inside quotes there is one more character of a
+		word. So "$(printf "%s" "((")" holds no open bracket to count,
+		and the older spelling `printf ]` holds no closing one. Two of
+		the scans the eleventh round added read such text with a single
+		mark and no nesting of their own, and both the count of
+		brackets and the end of a subscript then came out wrong.
+
+		What is inside is command text, not a run of characters to
+		count brackets in, so two more things there are read. A # that
+		begins a word starts a comment to the newline: the twelfth
+		round read the backtick in a comment there as one that
+		opens a command, then closed it at a backtick in a later
+		comment, and the call between them went unread. And a case
+		statement is refused outright rather than guessed at, because
+		the bracket that ends one of its patterns closes nothing and
+		reading it as a close ended the scan early.
+
+		Returns -1 where the text never ends, and where a case
+		statement is written inside. The two callers answer -1 without
+		guessing: a subscript says it cannot be read, and a doubled
+		bracket is read as two brackets of their own, which is what
+		the shell does with the one input measured here.
+		"""
+		if src[k] == '`':
+			j = k + 1
+			while j < n:
+				if src[j] == '\\' and j + 1 < n:
+					j += 2
+					continue
+				if src[j] == '`':
+					return j + 1
+				j += 1
+			return -1
+		if src[k:k + 2] != '$(':
+			return -1
+		deep = 0
+		mark = ''
+		# Whether a word has begun here, which is what decides a
+		# comment, and whether this is the place a command name is
+		# written, which is what decides the word case. Blank space
+		# begins a word without beginning a command, so that the
+		# argument in printf case is not read as the statement.
+		fresh = True
+		head = True
+		j = k + 1
+		while j < n:
+			c = src[j]
+			if mark == "'":
+				if c == "'":
+					mark = ''
+				j += 1
+				continue
+			if c == '\\' and j + 1 < n:
+				fresh = False
+				head = False
+				j += 2
+				continue
+			if mark and c == mark:
+				mark = ''
+				j += 1
+				continue
+			if not mark and c == '#' and fresh:
+				stop = src.find('\n', j)
+				if stop < 0:
+					return -1
+				j = stop
+				continue
+			if (not mark and head and src[j:j + 4] == 'case'
+					and src[j + 4:j + 5] in ' \t\n'):
+				return -1
+			if c == '`' or (c == '$' and src[j + 1:j + 2] == '('):
+				e = cmdsub(j)
+				if e < 0:
+					return -1
+				j = e
+				fresh = False
+				head = False
+				continue
+			if c == '$' and src[j + 1:j + 2] == '{':
+				e = braceskip(j)
+				if e < 0:
+					return -1
+				j = e
+				fresh = False
+				head = False
+				continue
+			if not mark:
+				if c in '"\'':
+					mark = c
+					fresh = False
+					head = False
+					j += 1
+					continue
+				if c == '(':
+					deep += 1
+					fresh = True
+					head = True
+					j += 1
+					continue
+				if c == ')':
+					deep -= 1
+					if not deep:
+						return j + 1
+					fresh = True
+					head = True
+					j += 1
+					continue
+				if c in ' \t':
+					fresh = True
+					j += 1
+					continue
+				if c in '\n;&|':
+					fresh = True
+					head = True
+					j += 1
+					continue
+				if c in '<>':
+					fresh = True
+					head = False
+					j += 1
+					continue
+			fresh = False
+			head = False
 			j += 1
 		return -1
 
@@ -21643,7 +21797,10 @@ def lex(src, base=1, faults=None):
 			# word after it, which hid a call bash does make. A later one
 			# counted the brackets of a command written in the older
 			# spelling: a[`printf ]`] then ended early and a[`printf [`]
-			# ran on into the next command, and each hid a call again.
+			# ran on into the next command, and each hid a call again. A
+			# bracket written inside ${...} is text of that expansion and
+			# closes nothing here, which the twelfth round stopped reading
+			# when it dropped its count of parentheses.
 			deep = 0
 			mark = ''
 			while k < n:
@@ -21662,6 +21819,12 @@ def lex(src, base=1, faults=None):
 					continue
 				if c == '`' or (c == '$' and src[k + 1:k + 2] == '('):
 					e = cmdsub(k)
+					if e < 0:
+						return -1
+					k = e
+					continue
+				if c == '$' and src[k + 1:k + 2] == '{':
+					e = braceskip(k)
 					if e < 0:
 						return -1
 					k = e
@@ -21972,7 +22135,9 @@ def lex(src, base=1, faults=None):
 			# body then answered for it and hid a call. The eleventh counted
 			# the brackets of a command run in place, and so answered wrongly
 			# in both directions: a bracket written inside quotes there was
-			# read as one of its own.
+			# read as one of its own. A bracket inside ${...} is text of
+			# that expansion: ((: <<EOF ${b:-)} ); (:)) opens a real body,
+			# exactly as the same line with a plain word there does.
 			deep = 2
 			mark = ''
 			j = k + 1
@@ -21992,6 +22157,12 @@ def lex(src, base=1, faults=None):
 					continue
 				if c == '`' or (c == '$' and src[j + 1:j + 2] == '('):
 					e = cmdsub(j)
+					if e < 0:
+						return False
+					j = e
+					continue
+				if c == '$' and src[j + 1:j + 2] == '{':
+					e = braceskip(j)
 					if e < 0:
 						return False
 					j = e
