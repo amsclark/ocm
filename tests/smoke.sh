@@ -20902,9 +20902,9 @@ fi
 #
 # That turns the dominant fault from a silent pass into a failure. It is still not a
 # proof that the shape cannot return, and a check is worth only what it can see, so
-# this one has been reviewed six times for ways to pass while the shape is present.
-# Each review found more than the last. The limits are listed below rather than left
-# to be discovered.
+# this one has been reviewed seven times for ways to pass while the shape is
+# present. Every one of those reviews found something. The limits are listed below
+# rather than left to be discovered.
 #
 # Each shape below was confirmed by running the check's own program against a planted
 # call, and each of the option shapes was confirmed against grep itself, by showing
@@ -21020,7 +21020,7 @@ fi
 # That number is what the floor further down is asserted on, because a clean result
 # over almost none of this file's calls reads exactly like a clean result over all of
 # them. It is an alarm for the scan collapsing and not a measure of coverage: the
-# fifth review supplied eight calls this scan missed while the number stayed at its
+# fifth review supplied seven calls this scan missed while the number stayed at its
 # full value. Only the scan can find a call; the floor can only refuse to read a
 # collapse as clean.
 #
@@ -21061,6 +21061,30 @@ fi
 # a parameter expansion inside double quotes a single quote is a literal character,
 # and the lexer had been opening a quote scope for it. Before the invariant that one
 # passed by luck, on a stack left open at end of file that nothing looked at.
+#
+# The seventh review supplied nine more of them, and two were its own: the sixth
+# round's single-quote fix reached into a parameter expansion, where bash does read
+# $'...' with its escapes, so the apostrophe of ${x:-$'\''} ended a quote that then
+# reopened at the real one; and reading a case arm's closing parenthesis before the
+# pending esac word had been stored left the arm counted as open. The other seven were
+# older. A backtick body is command text, so what it leaves open means the lexer lost
+# its place, and all three places that lexed one threw those faults away. case is the
+# keyword wherever a command may begin and not only as the first word stored, so then
+# case broke the arm count. A file descriptor bash allocates, written {fd} in front of
+# a redirection, was kept as an operand and called the pattern. A here-document body
+# folds its own line continuations before the delimiter is compared, the operator
+# itself can be split by one, and a double-quoted delimiter has the escapes bash
+# removes from it removed. Two valid calls were reported as defects as well: esac
+# immediately before the closing parenthesis of a command substitution, and a quoted
+# "2" in front of a redirection, which bash hands to grep as its pattern rather than
+# reading as a descriptor.
+#
+# Which words a redirection takes as a descriptor was measured rather than assumed:
+# only a bare unquoted digit run, or a bare {name} holding a valid identifier, and
+# only in front of an operator that begins with < or >. Measured on this shell,
+# grep 2&>file and grep {fd}&>file both hand that word to grep. The positions case
+# keeps its meaning in were measured too, and so was the one split delimiter that does
+# not rejoin: under <<- with a tab in front of the halves.
 echo
 echo "104. every grep pattern that comes from a variable is marked as a pattern"
 
@@ -21291,6 +21315,16 @@ def ansi_quote(src, k):
 	return n, out.split('\0')[0], nl, False
 
 
+# The words bash reads before a command, so a word after one of these is still in
+# command position. Only case and esac are looked up there, and reading one of those
+# as a keyword where it is an argument costs an arm count this file never uses.
+PRECEDE = frozenset(('!', 'then', 'else', 'elif', 'do', 'if', 'while', 'until',
+	'time', '{', 'coproc'))
+DIGITS = frozenset('0123456789')
+# The five characters a backslash escapes inside double quotes, and nowhere else.
+DQ_ESCAPED = frozenset(('$', '`', '"', '\\', '\n'))
+
+
 def lex(src, base=1, faults=None):
 	"""Every command in the source as a list of words, each word with its own line.
 
@@ -21423,7 +21457,8 @@ def lex(src, base=1, faults=None):
 						' closed' % line)
 				body = src[j + 1:end - 1] if end > j + 1 else ''
 				if body:
-					cmds.extend(lex(backtick_body(body, stack[-1] == '"') + '\n', line))
+					cmds.extend(lex(backtick_body(body, stack[-1] == '"') + '\n',
+						line, faults))
 				line += nl
 				j = end
 				continue
@@ -21431,6 +21466,20 @@ def lex(src, base=1, faults=None):
 				q, fold = unfold(j + 1)
 				line += fold
 				nxt = src[q:q + 1]
+				if nxt == "'" and stack[-1] != '"':
+					# An ANSI-C quote. An escape runs inside this one, so its end is
+					# not simply the next apostrophe: reading ${x:-$'\''} as an
+					# ordinary quote ended it at the escaped apostrophe, reopened at
+					# the real one, and read every command between that and the next
+					# apostrophe in the file as quoted text. Inside double quotes
+					# bash gives the dollar no such meaning, so the plain quote
+					# handling below is right there.
+					j, _body, nl, shut = ansi_quote(src, q)
+					if not shut:
+						faults.append('an ANSI-C quote opened on line %d was not'
+							' closed' % line)
+					line += nl
+					continue
 				if nxt == '(' and src[q + 1:q + 2] != '(':
 					j = walk(q + 1, ')')
 					continue
@@ -21474,12 +21523,22 @@ def lex(src, base=1, faults=None):
 		wline = 0
 		drop = False
 		dropword = False
+		bare = True
 		pending = []
 		depth = 0
 		arms = 0
 		q = ''
 		qline = line
 		i = start
+
+		def unbare():
+			# The word in hand holds a character that quoting or an escape put
+			# there, so it is no longer the bare literal a redirection reads as a
+			# file descriptor. grep "2">/dev/null "$V" passes the 2 to grep as its
+			# pattern, and a version that dropped the 2 anyway took the file name
+			# after it for the pattern and reported a correct call as a defect.
+			nonlocal bare
+			bare = False
 
 		def touch():
 			nonlocal started, wline
@@ -21503,20 +21562,26 @@ def lex(src, base=1, faults=None):
 			whitespace read the target of grep < \\ newline /dev/stdin "$V" as an
 			operand of grep, and then took the pattern after it for a file.
 			"""
-			nonlocal text, exp, started, drop, dropword, arms
+			nonlocal text, exp, started, drop, dropword, arms, bare
 			if started:
 				if not drop and not dropword:
 					words.append((text, bool(exp), wline))
-					if len(words) == 1:
+					if all(w in PRECEDE for w, _e, _a in words[:-1]):
 						# case and esac are read here because only a word in command
 						# position is either of them, and a case arm's closing
 						# parenthesis is not the end of anything this scanner opened.
+						# Command position is not the same as the first word of the
+						# command: the words bash reads before a command can come
+						# first, and a version that asked only for the first word
+						# read the arm bracket of if :; then case x in x) ... as the
+						# end of the substitution the whole statement was written in.
 						if text == 'case':
 							arms += 1
 						elif text == 'esac' and arms:
 							arms -= 1
 				drop = False
 			dropword = False
+			bare = True
 			text = ''
 			exp = None
 			started = False
@@ -21535,6 +21600,7 @@ def lex(src, base=1, faults=None):
 			named in the fault the caller reports.
 			"""
 			nonlocal q, qline
+			unbare()
 			touch()
 			q = mark
 			qline = line
@@ -21552,10 +21618,12 @@ def lex(src, base=1, faults=None):
 			body one line low.
 			"""
 			nonlocal pending, line
-			for delim, strip in pending:
+			for delim, strip, quoted in pending:
 				first = line
 				shut = False
 				body = []
+				held = ''
+				folded = 0
 				while k < n:
 					stop = src.find('\n', k)
 					if stop < 0:
@@ -21563,10 +21631,31 @@ def lex(src, base=1, faults=None):
 					one = src[k:stop]
 					k = stop + 1 if stop < n else n
 					line += 1
+					if (not quoted and not (strip and one[:1] == '\t')
+							and (len(one) - len(one.rstrip('\\'))) % 2):
+						# A tab before a split line stops the rejoining under the
+						# dash form: measured, <<-EOF ends at a delimiter split by a
+						# continuation only where no tab precedes the halves.
+						# Bash removes a line continuation inside a body whose
+						# delimiter was not quoted, so a delimiter written across two
+						# lines, as EO backslash and then F, does end the body. A
+						# version that compared physical lines read on past the real
+						# end, and the quoting in the commands below it then hid a
+						# call for the rest of the file.
+						held += one[:-1]
+						folded += 1
+						continue
+					one = held + one
+					held = ''
 					if (one.lstrip('\t') if strip else one) == delim:
 						shut = True
 						break
 					body.append(one)
+					# The physical lines a continuation joined are kept as blank
+					# ones, so that the joined text is reported on the line it
+					# began and every line below it keeps its own number.
+					body.extend([''] * folded)
+					folded = 0
 				if not shut:
 					faults.append('the here-document body that begins on line %d does'
 						' not end with its delimiter' % first)
@@ -21587,6 +21676,7 @@ def lex(src, base=1, faults=None):
 				if not shut:
 					faults.append('an ANSI-C quote opened on line %d was not closed'
 						% line)
+				unbare()
 				for ch in body:
 					put(ch, False)
 				line += nl
@@ -21663,7 +21753,8 @@ def lex(src, base=1, faults=None):
 					body = src[i + 1:end - 1] if end > i + 1 else ''
 					put(UNKNOWN, True)
 					if body:
-						cmds.extend(lex(backtick_body(body, True) + '\n', line))
+						cmds.extend(lex(backtick_body(body, True) + '\n', line,
+							faults))
 					line += nl
 					i = end
 					continue
@@ -21681,6 +21772,7 @@ def lex(src, base=1, faults=None):
 				if src[i + 1] == '\n':
 					line += 1
 				else:
+					unbare()
 					put(src[i + 1], False)
 				i += 2
 				continue
@@ -21700,7 +21792,7 @@ def lex(src, base=1, faults=None):
 				body = src[i + 1:end - 1] if end > i + 1 else ''
 				put(UNKNOWN, True)
 				if body:
-					cmds.extend(lex(backtick_body(body, False) + '\n', line))
+					cmds.extend(lex(backtick_body(body, False) + '\n', line, faults))
 				line += nl
 				i = end
 				continue
@@ -21736,134 +21828,178 @@ def lex(src, base=1, faults=None):
 				while i < n and src[i] != '\n':
 					i += 1
 				continue
-			if src.startswith('<<', i) and not src.startswith('<<<', i):
-				# A here-document. Its delimiter is the rest of this word; its body
-				# begins on the line below the whole command and is not shell words
-				# in this command at all. Reading the body as though it were is
-				# what an earlier version of this check did, and one apostrophe in
-				# an embedded python program then held a quote open for the rest of
-				# the file: the scan reached fifteen of the file's grep calls and
-				# reported nothing. A digits-only word in hand is the file
-				# descriptor the body is fed to, not an operand; a version that
-				# left it standing read the 0 of grep -q 0<<EOF as the pattern.
-				if started and text.isdigit():
-					text = ''
-					exp = None
-					started = False
-				j = i + 2
-				strip = j < n and src[j] == '-'
-				if strip:
-					j += 1
-				while j < n and src[j] in ' \t':
-					j += 1
-				# The delimiter is this word with its quoting removed, and the
-				# shell expands nothing in it. Three spellings of it were read
-				# wrongly, and each one left the body to be read as commands: the
-				# dollar of an ANSI-C quoted delimiter was kept as part of the
-				# name, a delimiter continued across a line kept the newline, and
-				# an empty delimiter written as two quote marks was treated as no
-				# delimiter at all, which is what tells a body from a script here.
-				delim = ''
-				quoted = False
-				while j < n and src[j] not in ' \t\n;|&<>()':
-					if src[j] == '\\' and j + 1 < n:
-						if src[j + 1] == '\n':
-							line += 1
-							j += 2
-							continue
-						delim += src[j + 1]
-						j += 2
-						continue
-					if src[j] == '$' and src[j + 1:j + 2] == "'":
-						quoted = True
-						j, body, nl, _shut = ansi_quote(src, j + 1)
-						delim += body
-						line += nl
-						continue
-					if src[j] == '$' and src[j + 1:j + 2] == '"':
-						j += 1
-						continue
-					if src[j] in '"\'':
-						quoted = True
-						mark = src[j]
-						j += 1
-						while j < n and src[j] != mark:
-							if src[j] == '\n':
-								line += 1
-							delim += src[j]
-							j += 1
-						j += 1
-						continue
-					delim += src[j]
-					j += 1
-				if delim or quoted:
-					pending.append((delim, strip))
-				i = j
-				continue
-			if c in '<>' or (c == '&' and src[i + 1:i + 2] == '>'):
-				# A redirection. Its target is not an operand grep reads, and a
-				# digits-only word already in hand is the file descriptor. The
-				# target is then read as an ordinary word and dropped, so a
-				# substitution written as the target is stepped over the same way
-				# as anywhere else; an earlier version scanned the target with a
-				# loop of its own, stopped that loop at the substitution's bracket,
-				# and took the bracket for the end of the command.
-				if started and text.isdigit():
-					text = ''
-					exp = None
-					started = False
-				else:
-					endword()
-				# The whole operator is read before anything else, because two
-				# of its spellings hold a character that ends a command elsewhere.
-				# A version that stopped at those read grep -q >| /dev/null "$V" as
-				# a pipeline and grep -q &>/dev/null "$V" as two commands, and in
-				# both the pattern was left in another command where nothing
-				# examined it.
+			if c in '<>&':
+				# A redirection may begin here. The whole operator is read first,
+				# with its line continuations removed, because bash removes them
+				# before it reads the operator at all: a version that tested the raw
+				# text for << never saw the here-document in < backslash newline
+				# <EOF, read the apostrophe bash treats as body data as a quote of
+				# its own, and held that quote open across the real call below it.
+				# Two spellings of the operator also hold a character that ends a
+				# command elsewhere, and a version that stopped at those read
+				# grep -q >| /dev/null "$V" as a pipeline and grep -q &>/dev/null
+				# "$V" as two commands.
+				held_line = line
 				op = ''
-				while i < n:
-					p, fold = unfold(i)
-					if p != i:
+				j = i
+				while j < n:
+					p, fold = unfold(j)
+					if p != j:
 						line += fold
-						i = p
+						j = p
 						continue
-					if src[i] in '<>&':
-						op += src[i]
-						i += 1
+					ch = src[j]
+					if ch in '<>':
+						op += ch
+						j += 1
 						continue
-					if src[i] == '|' and op.endswith('>'):
-						op += src[i]
-						i += 1
+					if ch == '&' and (not op or op[-1] in '<>'):
+						op += ch
+						j += 1
+						continue
+					if ch == '|' and op.endswith('>'):
+						op += ch
+						j += 1
+						continue
+					if ch == '-' and op == '<<':
+						op += ch
+						j += 1
 						continue
 					break
-				while i < n:
-					p, fold = unfold(i)
-					if p != i:
-						line += fold
-						i = p
+				if '<' not in op and '>' not in op:
+					# A lone ampersand, which ends a command rather than redirecting
+					# anything. It is left to the code below that reads one.
+					line = held_line
+				else:
+					# A word already in hand is the file descriptor this redirection
+					# uses, not an operand, and bash reads one only where it is a
+					# bare number, or a bare name in braces that it allocates a
+					# descriptor for. A version that asked only for digits kept the
+					# {fd} of grep {fd}>/dev/null "$V" as an operand and called that
+					# literal word the pattern; one that ignored quoting dropped the
+					# "2" of grep "2">/dev/null "$V" that bash hands to grep as its
+					# pattern, and read the file name after it as the pattern
+					# instead. The ampersand forms take no descriptor word at all:
+					# measured, grep 2&>file and grep {fd}&>file both hand that word
+					# to grep, so only an operator beginning with < or > reads one.
+					if started and bare and op[0] in '<>' and (text.isdigit() or (
+							len(text) > 2 and text[0] == '{' and text[-1] == '}'
+							and text[1] not in DIGITS
+							and all(ch in NAME for ch in text[1:-1]))):
+						text = ''
+						exp = None
+						started = False
+						bare = True
+					else:
+						endword()
+					i = j
+					if op in ('<<', '<<-'):
+						# A here-document. Its delimiter is the rest of this word;
+						# its body begins on the line below the whole command and is
+						# not shell words in this command at all. Reading the body as
+						# though it were is what an earlier version of this check
+						# did, and one apostrophe in an embedded python program then
+						# held a quote open for the rest of the file: the scan
+						# reached fifteen of the file's grep calls and reported
+						# nothing.
+						strip = op == '<<-'
+						while i < n and src[i] in ' \t':
+							i += 1
+						# The delimiter is this word with its quoting removed, and
+						# the shell expands nothing in it. Four spellings of it were
+						# read wrongly, and each one left the body to be read as
+						# commands: the dollar of an ANSI-C quoted delimiter was kept
+						# as part of the name, a delimiter continued across a line
+						# kept the newline, an empty delimiter written as two quote
+						# marks was treated as no delimiter at all, which is what
+						# tells a body from a script here, and a double-quoted
+						# delimiter kept the escapes bash removes from one.
+						delim = ''
+						quoted = False
+						while i < n and src[i] not in ' \t\n;|&<>()':
+							if src[i] == '\\' and i + 1 < n:
+								if src[i + 1] == '\n':
+									line += 1
+									i += 2
+									continue
+								delim += src[i + 1]
+								i += 2
+								continue
+							if src[i] == '$' and src[i + 1:i + 2] == "'":
+								quoted = True
+								i, body, nl, _shut = ansi_quote(src, i + 1)
+								delim += body
+								line += nl
+								continue
+							if src[i] == '$' and src[i + 1:i + 2] == '"':
+								i += 1
+								continue
+							if src[i] in '"\'':
+								quoted = True
+								mark = src[i]
+								i += 1
+								while i < n and src[i] != mark:
+									if (mark == '"' and src[i] == '\\'
+											and src[i + 1:i + 2] in DQ_ESCAPED):
+										# Inside double quotes bash removes the
+										# backslash before these five characters and
+										# nowhere else. A version that copied both
+										# characters of <<"E\\OF" looked for a
+										# delimiter the file does not hold, and read
+										# the commands below the real one as body.
+										if src[i + 1] == '\n':
+											line += 1
+										else:
+											delim += src[i + 1]
+										i += 2
+										continue
+									if src[i] == '\n':
+										line += 1
+									delim += src[i]
+									i += 1
+								i += 1
+								continue
+							delim += src[i]
+							i += 1
+						if delim or quoted:
+							pending.append((delim, strip, quoted))
 						continue
-					if src[i] in ' \t':
-						i += 1
+					while i < n:
+						p, fold = unfold(i)
+						if p != i:
+							line += fold
+							i = p
+							continue
+						if src[i] in ' \t':
+							i += 1
+							continue
+						break
+					if src[i:i + 1] in ('<', '>') and src[i + 1:i + 2] == '(':
+						# Process substitution. The whole target is this group, so it
+						# is consumed here and nothing after it is dropped; an
+						# earlier version let its bracket end the command and never
+						# attached the pattern written after it to the call.
+						i = walk(i + 2, ')')
+						touch()
+						dropword = True
 						continue
-					break
-				if src[i:i + 1] in ('<', '>') and src[i + 1:i + 2] == '(':
-					# Process substitution. The whole target is this group, so it
-					# is consumed here and nothing after it is dropped; an earlier
-					# version let its bracket end the command and never attached
-					# the pattern written after it to the call.
-					i = walk(i + 2, ')')
-					touch()
-					dropword = True
+					drop = True
 					continue
-				drop = True
-				continue
 			if c == ')' and arms and depth == 0:
-				# A case arm ends here. Reading it as the end of a command
-				# substitution ended that substitution at the first arm, and every
-				# call written after the arm was read as text inside a word.
-				endcmd()
-				i += 1
-				continue
+				# A case arm may end here, unless the word in hand is the esac that
+				# ends the whole statement. That word is ended first so that it is
+				# counted: a version that asked how many arms were open before
+				# ending it read the bracket of case x in x) grep -e "$V" f;; esac)
+				# as one more arm closer, lost its place in the text after the
+				# substitution, and reported a correct call as a defect.
+				endword()
+				if arms:
+					# Reading an arm bracket as the end of a command substitution
+					# ended that substitution at the first arm, and every call
+					# written after the arm was read as text inside a word.
+					endcmd()
+					i += 1
+					continue
 			if closer and c == closer and depth == 0:
 				endcmd()
 				return i + 1
