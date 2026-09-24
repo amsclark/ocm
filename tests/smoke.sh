@@ -21147,7 +21147,9 @@ fi
 # counting parentheses from two, and it decides at the first parenthesis that takes
 # the count back to one, by whether the next character is the one that takes it to
 # zero. Nothing written later moves that answer. So ((1 << 1)) opens no body, and
-# ((cat <<EOF); (:)) opens a real one.
+# ((cat <<EOF); (:)) opens a real one. The text inside a command run in place is read
+# on its own while that count is kept, because a parenthesis written inside quotes
+# there is one more character of a word and closes nothing.
 #
 # The tenth review supplied four findings, and three of them were the ninth round's
 # own fixes. Two came from one root: that round had asked instead whether any line
@@ -21166,9 +21168,22 @@ fi
 # counted with the forms that take a word: measured, an apostrophe there is a quote
 # mark, so a call written between two of them does not run and was being reported.
 #
-# This is the last round that adds to what the lexer understands, and the eleventh
-# added none: each of its four repairs replaces a mechanism an earlier round already
-# had. Eight rounds in,
+# The eleventh review supplied two findings, both of them that round's own fixes, and
+# both from one root: the two scans it added read the text of a command run in place
+# with a single quote mark and no nesting of their own. So "$(printf "%s" "((")"
+# counted two open parentheses that are quoted characters, which called a doubled
+# parenthesis arithmetic where bash runs subshells; and inside a subscript `printf ]`
+# ended it early while `printf [` carried it on into the next command. Each of the
+# three hid a call bash does make. One reader of such text now serves both scans, with
+# the quoting inside it held apart from the quoting outside it and from a further one
+# nested inside that, and it also replaces a count of parentheses the subscript scan
+# kept of its own, so a[(] is now read as bash reads it rather than answered with an
+# error.
+#
+# This is the last round that adds to what the lexer understands, and neither the
+# eleventh nor the twelfth added any: every repair in them replaces a mechanism an
+# earlier round already had, and the twelfth leaves two fewer than it found. Eight
+# rounds in,
 # the largest group of findings in each of the last two was the previous round's own
 # fixes, so further capability is buying further ways to be wrong. Two findings are
 # left open on purpose and are listed with the other limits above. The shell around
@@ -21535,6 +21550,68 @@ def lex(src, base=1, faults=None):
 			k += 2
 		return k, nl
 
+	def cmdsub(k):
+		"""The index past the command run in place that begins at src[k].
+
+		Measured: the shell reads the text inside one on its own, so a
+		quote mark there does not answer a mark outside it, and a
+		bracket written inside quotes there is one more character of a
+		word. So "$(printf "%s" "((")" holds no open bracket to count,
+		and the older spelling `printf ]` holds no closing one. Two of
+		the scans the eleventh round added read such text with a single
+		mark and no nesting of their own, and both the count of
+		brackets and the end of a subscript then came out wrong.
+		Returns -1 where the text never ends.
+		"""
+		if src[k] == '`':
+			j = k + 1
+			while j < n:
+				if src[j] == '\\' and j + 1 < n:
+					j += 2
+					continue
+				if src[j] == '`':
+					return j + 1
+				j += 1
+			return -1
+		if src[k:k + 2] != '$(':
+			return -1
+		deep = 0
+		mark = ''
+		j = k + 1
+		while j < n:
+			c = src[j]
+			if mark == "'":
+				if c == "'":
+					mark = ''
+				j += 1
+				continue
+			if c == '\\' and j + 1 < n:
+				j += 2
+				continue
+			if mark and c == mark:
+				mark = ''
+				j += 1
+				continue
+			if c == '`' or (c == '$' and src[j + 1:j + 2] == '('):
+				e = cmdsub(j)
+				if e < 0:
+					return -1
+				j = e
+				continue
+			if not mark:
+				if c in '"\'':
+					mark = c
+					j += 1
+					continue
+				if c == '(':
+					deep += 1
+				elif c == ')':
+					deep -= 1
+					if not deep:
+						return j + 1
+			j += 1
+		return -1
+
 	def expansion(p, dquote=False):
 		"""The index past the expansion whose bracket is at src[p].
 
@@ -21558,38 +21635,42 @@ def lex(src, base=1, faults=None):
 			# the shell scans the text of a subscript with its quoting and
 			# its brackets tracked, so the bracket of a[']'] closes nothing,
 			# nor does one written after a backslash, inside double quotes,
-			# or inside a substitution, and a bracket that opens another
-			# reference must close before the subscript does. Length decides
-			# nothing. A version that took the first bracket, and looked for
-			# it over two hundred characters at most, read no operator at all
-			# in a[']'] and so kept the quote mark of the word after it,
-			# which hid a call bash does make.
+			# or inside a command run in place, and a bracket that opens
+			# another reference must close before the subscript does. Length
+			# decides nothing. A version that took the first bracket, and
+			# looked for it over two hundred characters at most, read no
+			# operator at all in a[']'] and so kept the quote mark of the
+			# word after it, which hid a call bash does make. A later one
+			# counted the brackets of a command written in the older
+			# spelling: a[`printf ]`] then ended early and a[`printf [`]
+			# ran on into the next command, and each hid a call again.
 			deep = 0
 			mark = ''
-			curve = 0
 			while k < n:
 				c = src[k]
-				if mark:
-					if c == '\\' and mark == '"' and k + 1 < n:
-						k += 2
-						continue
-					if c == mark:
+				if mark == "'":
+					if c == "'":
 						mark = ''
 					k += 1
 					continue
 				if c == '\\' and k + 1 < n:
 					k += 2
 					continue
-				if c in '"\'':
-					mark = c
+				if mark and c == mark:
+					mark = ''
 					k += 1
 					continue
-				if c == '(':
-					curve += 1
-				elif c == ')':
-					if curve:
-						curve -= 1
-				elif not curve:
+				if c == '`' or (c == '$' and src[k + 1:k + 2] == '('):
+					e = cmdsub(k)
+					if e < 0:
+						return -1
+					k = e
+					continue
+				if not mark:
+					if c in '"\'':
+						mark = c
+						k += 1
+						continue
 					if c == '[':
 						deep += 1
 					elif c == ']':
@@ -21888,35 +21969,46 @@ def lex(src, base=1, faults=None):
 			# -n accepts all four. The eighth round read every doubled bracket
 			# as arithmetic, which lost those bodies; the tenth asked instead
 			# whether any line below held the delimiter, and a line of another
-			# body then answered for it and hid a call.
+			# body then answered for it and hid a call. The eleventh counted
+			# the brackets of a command run in place, and so answered wrongly
+			# in both directions: a bracket written inside quotes there was
+			# read as one of its own.
 			deep = 2
 			mark = ''
 			j = k + 1
 			while j < n:
 				c = src[j]
-				if mark:
-					if c == '\\' and mark == '"' and j + 1 < n:
-						j += 2
-						continue
-					if c == mark:
+				if mark == "'":
+					if c == "'":
 						mark = ''
 					j += 1
 					continue
 				if c == '\\' and j + 1 < n:
 					j += 2
 					continue
-				if c in '"\'':
-					mark = c
+				if mark and c == mark:
+					mark = ''
 					j += 1
 					continue
-				if c == '(':
-					deep += 1
-				elif c == ')':
-					deep -= 1
-					if deep == 1:
-						return src[j + 1:j + 2] == ')'
-					if deep < 1:
+				if c == '`' or (c == '$' and src[j + 1:j + 2] == '('):
+					e = cmdsub(j)
+					if e < 0:
 						return False
+					j = e
+					continue
+				if not mark:
+					if c in '"\'':
+						mark = c
+						j += 1
+						continue
+					if c == '(':
+						deep += 1
+					elif c == ')':
+						deep -= 1
+						if deep == 1:
+							return src[j + 1:j + 2] == ')'
+						if deep < 1:
+							return False
 				j += 1
 			return False
 
