@@ -20856,8 +20856,9 @@ fi
 #
 # Section 15 looks for the stack's real database password in a response body.
 # DB_PASSWORD=-i is a valid password, and with the pattern given as a bare
-# operand grep read the -i as an option: the intended pattern became the file
-# operand, no file operand was left, so grep read stdin and found nothing. The
+# operand grep read the -i as an option: the file operand became the pattern,
+# no file operand was left, so grep read stdin and found nothing. An earlier
+# version of this sentence had those two the other way round. The
 # section then reported the body clean while the body carried the password.
 # Measured on the version before this change: PASS, with the password in the
 # body. The same shape held for MFA_KEY, which is read from a file in the
@@ -21289,12 +21290,25 @@ fi
 # no pipeline, no shell option moved from its default, no interactive shell, one version
 # of bash, neither of the two arm terminators that fall through to the next pattern, and
 # no subscript of an indexed array, whose text bash reads as arithmetic instead. Which
-# words may stand where that one name goes was measured for this round, over forty-two
-# of them: a plainly written case, if, while, until, for, select, brace, parenthesis,
-# doubled parenthesis or doubled bracket opens the compound command and takes no name; a
-# plainly written exclamation mark, function, do, or coproc itself, is a syntax
-# error there; and every other word is the one name if such an opener follows it, and
-# the command name itself if none does. The word time is not the reserved word there.
+# words may stand where that one name goes was measured over forty-two of them for the
+# sixteenth round and re-measured over the reserved words and the control operators for
+# this one, because the sixteenth round's answer was too broad. Written plainly, ten
+# forms open the compound command and take no name: case, if, while, until, for,
+# select, a brace, a parenthesis, a doubled parenthesis and a doubled bracket. Fifteen
+# are a syntax error there, and the sixteenth round named only four of them: the
+# exclamation mark, coproc itself, do, done, elif, else, esac, fi, function, in, then,
+# a closing brace, a doubled closing bracket, a doubled closing parenthesis and a
+# closing parenthesis. Every other plainly written word is the one name if an opener of
+# the first group follows it, and the command name itself if none does. The word time is
+# not the reserved word there. Quoting changes the answer for the second group: coproc
+# fi with a brace group after it is refused, and coproc "fi" with the same group after
+# it is accepted and names the coprocess fi, so one quote mark makes a reserved word an
+# ordinary one here. Ten of the fifteen are shaped like names and become names that
+# way; the remaining five are not, so quoting them is read and then refused when the
+# coprocess is made. This reader weighs six of the ten openers as words, which is every
+# one it can meet as a word: a brace leaves the word after it in command position
+# whichever way it is read, and the parentheses and the bracket pair are read as
+# operators before a word is weighed at all.
 # What is still not read there is a name followed by an ordinary command rather than a
 # compound one, because seeing that needs a look past the name this reader does not
 # take.
@@ -21307,10 +21321,42 @@ fi
 # plainly written case there became the name and its esac ended a statement that had
 # never begun. A doubled parenthesis written with a line continuation between its two
 # halves was sent to the reader of a command run in place, which then reported valid
-# shell as text that does not end. And the ANSI-C quote the shared opener had just
-# learned to name was named by no call site, so the same spelling failed in two more
-# readers. The fifth finding was older than that round: the reader that reports a call
-# still kept one count of case arms for the whole text. All five are repaired here.
+# shell as text that does not end. And the ANSI-C quote was named by no call site, so
+# the same spelling failed in two more readers. The shared opener did not name that
+# quote before the sixteenth round either, though an earlier version of this comment
+# said it had just learned to: it returned a brace or a parenthesis and nothing else,
+# and naming the quote is part of that round's repair rather than the state it began
+# from. The fifth finding was older than that round: the reader that reports a call
+# still kept one count of case arms for the whole text.
+#
+# Four of those five are repaired and stayed repaired. The fifth, the doubled
+# parenthesis written with a continuation between its halves, was only half repaired:
+# the sixteenth round named the form correctly and then began reading two characters
+# past the first parenthesis, which is the backslash, so the second parenthesis was
+# counted twice and valid shell was reported as a text that does not end. The
+# seventeenth round reads it from the right character. Where that fault is raised
+# inside the body of a here-document it is discarded with the rest of that scan, so
+# what it cost was a call read as none and nothing printed.
+#
+# The sixteenth review supplied five findings of its own. One is the half repair above.
+# One is older than both rounds: the reader of an ANSI-C quote resolved the control
+# escape while it was still looking for the end of the quote, took three characters for
+# it, and so stepped over the apostrophe that ends $'\c\''. Bash answers that question
+# in two passes that do not agree, and this round reads it in two as well: the end is
+# found by one rule only, a backslash takes the one character after it, and the escapes
+# are resolved afterwards over the text between the marks. The same measurement, over
+# eighty-seven characters, corrected the value the control escape produces: it is the
+# upper case of the one character after it with every bit above the low five dropped,
+# and a question mark is the single exception. Turning the bit at hex 40 instead, which
+# every round up to the sixteenth did, gives a printable character where bash gives a
+# null; a null ends the word, so gr$'ep\c f' calls grep and was read as a call of
+# something else, and its pattern went unexamined. The other three findings
+# were wrong statements in comments rather than faults in the scan: a list of the words
+# a coproc refuses that named four of fifteen, a count of the faults the fifteenth
+# review found in a dollar and a claim about what the opener already did, and the two
+# operands of the example this section opens with, written the wrong way round. All
+# three are corrected above and in the scan below, and the example in four comments
+# that called $'\c'' a longer quote is corrected as well: bash refuses that file.
 #
 # Each of the review's eight inputs was run against bash and against both readers before
 # any of this was written, and every one behaved as the review said it did. The repaired
@@ -21475,10 +21521,13 @@ def backtick_body(body, dquote):
 	return out
 
 
-def ansi_quote(src, k):
-	"""The index past the $'...' quote at src[k], its value, and its newlines.
+def ansi_value(body):
+	"""What the text written between the marks of $'...' becomes.
 
-	Nothing expands inside this form, so its body is literal text, but the escapes
+	This is the second of the two passes, and it reads text whose ends are already
+	found, so an apostrophe left in it is one character of that text and not a mark.
+
+	Nothing expands inside this form, so the body is literal text, but the escapes
 	bash resolves here are resolved rather than stepped over: an escape can produce
 	a dash, and then the word is an option and not the pattern.
 
@@ -21487,95 +21536,139 @@ def ansi_quote(src, k):
 	version that kept the null and the text after it read gr$'ep\\0x' as a command
 	whose name was not grep, and the call was not examined at all.
 	"""
-	n = len(src)
 	out = ''
-	nl = 0
+	m = len(body)
+	i = 0
+	while i < m:
+		c = body[i]
+		if c != '\\' or i + 1 >= m:
+			out += c
+			i += 1
+			continue
+		nxt = body[i + 1]
+		if nxt in ANSI:
+			out += ANSI[nxt]
+			i += 2
+			continue
+		if nxt == 'x':
+			digits = ''
+			p = i + 2
+			while p < m and len(digits) < 2 and body[p] in HEX:
+				digits += body[p]
+				p += 1
+			if digits:
+				out += chr(int(digits, 16))
+				i = p
+				continue
+		if nxt in ('u', 'U'):
+			width = 4 if nxt == 'u' else 8
+			digits = ''
+			p = i + 2
+			while p < m and len(digits) < width and body[p] in HEX:
+				digits += body[p]
+				p += 1
+			if digits:
+				# Bash never refuses one of these. Measured: $'\\UFFFFFFFF' becomes
+				# the empty string and $'\\U00110000' is encoded anyway, so a
+				# value python has no character for stands as as many unknown
+				# characters as bash writes bytes there. Calling chr() on it
+				# ended the whole scan with a python traceback, and section 104
+				# then failed on valid shell.
+				code = int(digits, 16)
+				if code < 0x110000:
+					out += chr(code)
+				elif code < 0x80000000:
+					# Past the Unicode ceiling bash writes the bytes
+					# of the older encoding anyway, with no validity
+					# check: measured, \\U00110000 is four bytes and
+					# \\U7FFFFFFF is six. None of them is an option
+					# letter or a digit, so one unknown character
+					# stands for each, which keeps the length of the
+					# word right. At 0x80000000 and above bash writes
+					# nothing at all and does not split the word:
+					# measured, $'-\\UFFFFFFFFq' is the one word -q.
+					# Marking both cases with a NUL lost the rest of
+					# the word, because a NUL escape truncates the
+					# text here: $'-q\\UFFFFFFFFe' came out as -q, and
+					# the variable written after it was then reported
+					# as an unguarded pattern.
+					out += chr(0xfffd) * (4 if code < 0x200000
+						else 5 if code < 0x4000000 else 6)
+				i = p
+				continue
+		if nxt in OCTAL or nxt == '0':
+			digits = ''
+			p = i + 1
+			while p < m and len(digits) < 3 and body[p] in OCTAL:
+				digits += body[p]
+				p += 1
+			out += chr(int(digits, 8) & 0xff)
+			i = p
+			continue
+		if nxt == 'c':
+			# Control-X. Measured over eighty-seven characters: the value is the
+			# upper case of the one character after the c with every bit above
+			# the low five dropped, and a question mark is the single exception,
+			# at hex 7f. Where that escape is the last of the body nothing is
+			# resolved and its two characters stand as themselves. Where the one
+			# character after it is a backslash and another backslash follows
+			# that, both are taken; a lone backslash there is taken as the
+			# character itself, and whatever follows it stands as text, which is
+			# why the body backslash apostrophe gives two bytes and not one.
+			#
+			# The sixteenth round turned the bit at hex 40 instead of dropping
+			# the high bits. The two agree for a letter and for a question mark,
+			# and not below hex 40: a space and a backtick each make a null
+			# there, and a null ends the word, so the length of a word holding
+			# one was wrong.
+			if i + 2 >= m:
+				out += '\\c'
+				i = m
+				continue
+			x = body[i + 2]
+			step = 4 if x == '\\' and body[i + 3:i + 4] == '\\' else 3
+			out += '\x7f' if x == '?' else chr(ord(x.upper()) & 0x1f)
+			i += step
+			continue
+		out += nxt
+		i += 2
+	return out.split('\0')[0]
+
+
+def ansi_quote(src, k):
+	"""The index past the $'...' quote at src[k], its value, and its newlines.
+
+	Two questions are answered about one of these, and bash does not answer them
+	with one rule: where the quote ends, and what its text becomes. The end is
+	found first, and only one thing matters there -- a backslash takes the one
+	character written after it, whatever that character is. The escapes are
+	resolved afterwards, by ansi_value(), over the text between the marks.
+
+	Measured: $'\\c\\'' is one word of two bytes and the line holding it runs,
+	while $'\\c'' makes bash refuse the whole file for a quote that does not end.
+	Reading the control escape while looking for the end takes three characters
+	for it, steps over the apostrophe that ends the first of those, and then
+	reports valid shell as a text that does not end. Every round up to the
+	sixteenth did that, and the sixteenth wrote the opposite of the measurement
+	into a comment as well. Where such a fault is raised inside the body of a
+	here-document the whole scan of that body is discarded, so the calls in it go
+	unread without anything being printed.
+	"""
+	n = len(src)
 	j = k + 1
 	while j < n:
 		c = src[j]
-		if c == '\\' and j + 1 < n:
-			nxt = src[j + 1]
-			if nxt == '\n':
-				nl += 1
-				out += nxt
-				j += 2
-				continue
-			if nxt in ANSI:
-				out += ANSI[nxt]
-				j += 2
-				continue
-			if nxt == 'x':
-				digits = ''
-				p = j + 2
-				while p < n and len(digits) < 2 and src[p] in HEX:
-					digits += src[p]
-					p += 1
-				if digits:
-					out += chr(int(digits, 16))
-					j = p
-					continue
-			if nxt in ('u', 'U'):
-				width = 4 if nxt == 'u' else 8
-				digits = ''
-				p = j + 2
-				while p < n and len(digits) < width and src[p] in HEX:
-					digits += src[p]
-					p += 1
-				if digits:
-					# Bash never refuses one of these. Measured: $'\UFFFFFFFF' becomes
-					# the empty string and $'\U00110000' is encoded anyway, so a
-					# value python has no character for stands as as many unknown
-					# characters as bash writes bytes there. Calling chr() on it
-					# ended the whole scan with a python traceback, and section 104
-					# then failed on valid shell.
-					code = int(digits, 16)
-					if code < 0x110000:
-						out += chr(code)
-					elif code < 0x80000000:
-						# Past the Unicode ceiling bash writes the bytes
-						# of the older encoding anyway, with no validity
-						# check: measured, \U00110000 is four bytes and
-						# \U7FFFFFFF is six. None of them is an option
-						# letter or a digit, so one unknown character
-						# stands for each, which keeps the length of the
-						# word right. At 0x80000000 and above bash writes
-						# nothing at all and does not split the word:
-						# measured, $'-\UFFFFFFFFq' is the one word -q.
-						# Marking both cases with a NUL lost the rest of
-						# the word, because a NUL escape truncates the
-						# text here: $'-q\UFFFFFFFFe' came out as -q, and
-						# the variable written after it was then reported
-						# as an unguarded pattern.
-						out += chr(0xfffd) * (4 if code < 0x200000
-							else 5 if code < 0x4000000 else 6)
-					j = p
-					continue
-			if nxt in OCTAL or nxt == '0':
-				digits = ''
-				p = j + 1
-				while p < n and len(digits) < 3 and src[p] in OCTAL:
-					digits += src[p]
-					p += 1
-				out += chr(int(digits, 8) & 0xff)
-				j = p
-				continue
-			if nxt == 'c' and j + 2 < n:
-				# Control-X. Only the dash it can produce matters here, and the
-				# shape of the word around it, so the value is computed the way
-				# bash computes it and not looked up.
-				out += chr(ord(src[j + 2].upper()) ^ 0x40)
-				j = j + 3
-				continue
-			out += nxt
+		if c == '\\':
+			if j + 1 >= n:
+				break
 			j += 2
 			continue
 		if c == "'":
-			return j + 1, out.split('\0')[0], nl, True
-		if c == '\n':
-			nl += 1
-		out += c
+			body = src[k + 1:j]
+			return j + 1, ansi_value(body), body.count('\n'), True
 		j += 1
-	return n, out.split('\0')[0], nl, False
+	body = src[k + 1:n]
+	return n, ansi_value(body), body.count('\n'), False
 
 
 # The words bash reads before a command, so a word after one of these is still in
@@ -21583,9 +21676,15 @@ def ansi_quote(src, k):
 # as a keyword where it is an argument costs an arm count this file never uses.
 PRECEDE = frozenset(('!', 'then', 'else', 'elif', 'do', 'if', 'while', 'until',
 	'time', '{', 'coproc'))
-# The words that begin a compound command where coproc takes its one name, measured
-# on bash 5.2: each of these opens the command itself and no name is taken, so
-# coproc case esac in *) ... is a case statement whose subject word is esac.
+# The words that begin a compound command where coproc takes its one name, so that
+# no name is taken: measured on bash 5.2, coproc case esac in *) ... is a case
+# statement whose subject word is esac. Ten written forms do that, and the other
+# four are a brace, a parenthesis, a doubled parenthesis and a doubled bracket,
+# which this reader never weighs here as words: a brace is named by PRECEDE below
+# and leaves the word after it in command position either way, and the other three
+# are read as operators before any of this. Fifteen written forms are a syntax
+# error there instead, and are listed in the comment above the scan rather than
+# here, because a file holding one is a file bash refuses to read at all.
 COPROC_OPENERS = frozenset(('case', 'if', 'while', 'until', 'for', 'select'))
 DIGITS = frozenset('0123456789')
 # The five characters a backslash escapes inside double quotes, and nowhere else.
@@ -21714,9 +21813,13 @@ def lex(src, base=1, faults=None):
 	from four, braceskip(), cmdsub(), the subscript reader inside expansion() and
 	arithshape() -- and from neither walk() nor expansion(), each of which reads a
 	dollar with code of its own because each has more to do with one than step
-	over it. So three of the four faults the fifteenth review found in a dollar had
+	over it. So both of the two faults the fifteenth review found in a dollar had
 	to be repaired in more than one place, and a reader added later must be checked
-	against all six sites rather than against the shared names alone.
+	against all six sites rather than against the shared names alone. The sixteenth
+	review then found one of those two repaired in the classification alone: the
+	doubled parenthesis written with a continuation between its halves was named
+	correctly and read from the wrong character, so naming a form and reading it
+	are two repairs and not one.
 
 	Each word carries the text grep receives, with the quoting removed and each
 	value this scan cannot know standing as one UNKNOWN character; whether the
@@ -21867,7 +21970,9 @@ def lex(src, base=1, faults=None):
 					# An ANSI-C quote. Its escapes decide where it ends, so a
 					# reader that looks for the next apostrophe stops inside
 					# one: $'\\'' holds an apostrophe and does not end there,
-					# and $'\\c'' ends one character later still. Inside any
+					# and $'\\c'' ends at the second apostrophe, which leaves the
+					# third to open a quote that never closes, so bash refuses the
+					# whole file. Inside any
 					# quote already open the dollar has no such meaning, which
 					# is why this asks for none.
 					e, _b, _nl, shut = ansi_quote(src, at2)
@@ -22030,7 +22135,9 @@ def lex(src, base=1, faults=None):
 					# An ANSI-C quote. Its escapes decide where it ends, so a
 					# reader that looks for the next apostrophe stops inside
 					# one: $'\\'' holds an apostrophe and does not end there,
-					# and $'\\c'' ends one character later still. Inside any
+					# and $'\\c'' ends at the second apostrophe, which leaves the
+					# third to open a quote that never closes, so bash refuses the
+					# whole file. Inside any
 					# quote already open the dollar has no such meaning, which
 					# is why this asks for none.
 					e, _b, _nl, shut = ansi_quote(src, at2)
@@ -22179,7 +22286,9 @@ def lex(src, base=1, faults=None):
 						# An ANSI-C quote. Its escapes decide where it ends, so a
 						# reader that looks for the next apostrophe stops inside
 						# one: $'\\'' holds an apostrophe and does not end there,
-						# and $'\\c'' ends one character later still. Inside any
+						# and $'\\c'' ends at the second apostrophe, which leaves the
+						# third to open a quote that never closes, so bash refuses the
+						# whole file. Inside any
 						# quote already open the dollar has no such meaning, which
 						# is why this asks for none.
 						e, _b, _nl, shut = ansi_quote(src, at2)
@@ -22270,7 +22379,18 @@ def lex(src, base=1, faults=None):
 		else:
 			stack = [')', ')']
 			nest = True
-			j = p + 2
+			# The second parenthesis is looked for past a continuation, because a
+			# backslash and a newline written between the two are removed before
+			# the shell decides this is arithmetic. The sixteenth round decided
+			# that correctly and then began reading two characters past the first
+			# parenthesis, which is the backslash: the second parenthesis was
+			# then counted a second time, the count never came back to nothing,
+			# and valid shell was reported as a text that does not end. Where the
+			# fault is raised inside the body of a here-document it is discarded
+			# with the rest of that scan, so the miss is silent.
+			q, fold = unfold(p + 1)
+			line += fold
+			j = q + 1
 		while j < n and stack:
 			c = src[j]
 			if stack[-1] == "'":
@@ -22566,7 +22686,9 @@ def lex(src, base=1, faults=None):
 						# An ANSI-C quote. Its escapes decide where it ends, so a
 						# reader that looks for the next apostrophe stops inside
 						# one: $'\\'' holds an apostrophe and does not end there,
-						# and $'\\c'' ends one character later still. Inside any
+						# and $'\\c'' ends at the second apostrophe, which leaves the
+						# third to open a quote that never closes, so bash refuses the
+						# whole file. Inside any
 						# quote already open the dollar has no such meaning, which
 						# is why this asks for none.
 						e, _b, _nl, shut = ansi_quote(src, at2)
