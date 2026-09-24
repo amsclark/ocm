@@ -4276,106 +4276,48 @@ if (!function_exists('pl_safe_redirect_path'))
 	 * is "///evil.example". A browser resolves that to http://evil.example/:
 	 * the URL parser skips the extra slashes before it reads the authority.
 	 *
-	 * So this returns a local path -- a name, optionally a path below it,
-	 * optionally a query string and a fragment -- and nothing else. What the
-	 * pattern below does not recognise is refused outright and comes back as
-	 * '', which leaves the caller emitting "{base_url}/": the site root.
+	 * So this returns a path fragment with no leading slash or backslash, and
+	 * returns '' for anything it will not vouch for, which leaves the caller
+	 * emitting "{base_url}/" -- the site root.
 	 *
-	 * What comes back is a path shape, and only that. "no-such-page.php" and
-	 * "images/logo.png" both pass it. This function does not ask whether a page
-	 * of that name exists, what it does, or whether the staff member is allowed
-	 * to open it. It answers one question -- can this value resolve anywhere
-	 * other than inside the directory the application is served from -- and the
-	 * page it reaches still does its own authorisation, as it did before.
+	 * Every ASCII control character is stripped, not just CR and LF.
 	 *
-	 * The list of what is allowed is the whole control, and that is deliberate.
-	 * Two attempts to write this as a list of what is forbidden both got out,
-	 * and both were live open redirects on this application. Section 23 of
-	 * tests/smoke.sh carries both shapes as payloads, and each one fails
-	 * against the version of this guard that let it through:
-	 *
-	 *   - A scheme test that ran before the leading slashes were stripped.
-	 *     "/http://evil.example/steal" does not start with a letter, so the test
-	 *     did not match it; the strip then removed the slash and handed the
-	 *     caller the absolute URL it had just been shown.
-	 *
-	 *   - The same test with the strip moved in front of it. Stripping the slash
-	 *     off "/ http://evil.example/steal" exposes a space, a pattern anchored
-	 *     at the first character does not match a string that starts with one,
-	 *     and a browser reading a Location header ignores leading whitespace and
-	 *     read the scheme behind it.
-	 *
-	 * A pattern that says what a return path may contain answers that whole
-	 * class at once, including the shapes nobody has thought of yet. A colon
-	 * cannot appear in the first segment, so no value can carry a scheme, and
-	 * nothing can begin with a slash, a backslash or whitespace, so no value can
-	 * be read as the start of a host name.
-	 *
-	 * Every ASCII control character is stripped before the pattern runs. CR and
-	 * LF are the header-splitting pair -- PHP's own header() already refuses a
+	 * CR and LF are the header-splitting pair: PHP's own header() refuses a
 	 * value holding one, so a request cannot add headers of its own through
-	 * here, but it refuses by raising a warning and dropping the header, which
-	 * leaves the save done and the browser sitting on the handler with no
-	 * redirect at all. A tab is the one that gets past a scheme test: the URL
-	 * parser a browser uses deletes every tab and newline from the input before
-	 * it reads anything, so "ht<TAB>tps://evil.example" is parsed as
-	 * "https://evil.example" while a literal test sees a relative path.
+	 * here, but refusing means a fatal error on a page that was working, and
+	 * this field never needs a newline.
 	 *
-	 * The strip takes every control, not only those three, which is more than a
-	 * browser deletes. That is deliberate, and it is not a claim that the two
-	 * read the same bytes. It means no control character can sit inside a value
-	 * this function accepts, so none can sit inside what the caller emits.
+	 * A tab is the one that gets past a scheme test. The URL parser a browser
+	 * uses deletes every tab and newline from the input before it reads
+	 * anything, so "ht<TAB>tps://evil.example" is parsed as
+	 * "https://evil.example" -- but the scheme pattern below does not match
+	 * it, because the character after "ht" is a tab rather than a colon or a
+	 * scheme character. header() allows a lone tab through. So the value
+	 * arrived here looking like a relative path, was emitted as one, and the
+	 * browser left the site. Stripping the controls first means the scheme
+	 * test reads the same string the browser will.
 	 *
-	 * ".." is refused in the path, which is where a caller that prepends
-	 * base_url could be walked above the directory the application is served
-	 * from. The pattern already refuses a "." or ".." segment on its own,
-	 * because a segment has to start with a letter or a digit; this refuses it
-	 * inside a longer name as well. The query string and the fragment are not
-	 * searched. They are data for the page, "case.php?q=a..b" is not a
-	 * traversal, and no URL parser reads either of them as path.
+	 * The rest of the C0 range and DEL go too. They have no meaning in this
+	 * field, and each one is another chance for something downstream to read
+	 * a string this function did not.
 	 *
-	 * The shapes this field carries in practice are "cal_day.php",
-	 * "case_list.php" and "case.php?case_id=12&screen=act" -- activity.php and
-	 * modules/case-act.php are where they are built. A value starting at the
-	 * site root, such as "/cms/case.php?case_id=1", is refused rather than
-	 * reduced: the callers resolve what comes back against the application
-	 * directory, so dropping the leading slash made "/cms/cms/case.php" and
-	 * reached no page at all.
-	 *
-	 * @return string - a local path, or '' meaning the site root
+	 * @return string - a relative path, or '' meaning the site root
 	 * @param $url string - the return path as the request supplied it
 	 */
 	function pl_safe_redirect_path($url)
 	{
 		$url = trim(preg_replace('/[\x00-\x1F\x7F]/', '', (string) $url));
 		
-		/*	A name, then any further segments below it, then optionally a query
-			string and a fragment.
-			
-			The segments are narrower than RFC 3986 on purpose: a page in this
-			application does not need more than a letter or a digit to start,
-			and letters, digits, underscore, dot and dash after it.
-			
-			The query and the fragment allow the ASCII characters a URL parser
-			reads as query or fragment data and never as a scheme, an authority
-			or a path. That set is close to the one RFC 3986 gives those two
-			parts, but it is not the same one: this does not require a percent
-			sign to be followed by two hex digits, it leaves the apostrophe
-			out, and it keeps "?" out of the query.
+		/*	A scheme cannot reach another host from inside a path, but it has no
+			business in this field either, and letting one through would put a
+			whole URL in the middle of one.
 		*/
-		if (!preg_match('#^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*(?:\?[A-Za-z0-9_.\-~%!$&()*+,;=:@/\[\]]*)?(?:\#[A-Za-z0-9_.\-~%!$&()*+,;=:@/?\[\]]*)?$#', $url))
+		if (preg_match('#^[A-Za-z][A-Za-z0-9+.-]*:#', $url))
 		{
 			return '';
 		}
 		
-		$path = preg_replace('/[?#].*$/s', '', $url);
-		
-		if (false !== strpos($path, '..'))
-		{
-			return '';
-		}
-		
-		return $url;
+		return ltrim($url, "/\\");
 	}
 }
 
@@ -4585,52 +4527,6 @@ if (!function_exists('pl_settings_template_blocked'))
 				// into this installation, because the signature is the only
 				// thing that says a packet came from the peer.
 				'peer_transfer_shared_secret',
-			));
-		}
-		
-		return is_string($label) && isset($set[$label]);
-	}
-}
-
-
-if (!function_exists('pl_settings_template_raw'))
-{
-	/*	Settings whose value must reach a template unescaped.
-	
-		The template layer escapes every other setting it resolves, because
-		the values named here are the ones that are not rendered as HTML
-		text. base_url is written into a CSS url() inside the style element
-		of templates/default.html at lines 126, 139 and 144. CSS in style
-		text is not HTML text and entities there are not decoded, so an
-		escaped ampersand would be read as the five characters it is spelled
-		with and the rule would point at a path that does not exist.
-		
-		Line 231 of the same template writes it into a quoted style
-		attribute, and that one would survive escaping: an attribute value
-		IS HTML text and its entities are decoded before the CSS is parsed.
-		It is the style element that decides the answer here.
-		
-		What keeps the list short is where the value comes from, not where it
-		goes. base_url is set in cms-custom/config/settings.php, which is PHP
-		the server already executes, and no form writes it --
-		subtemplates/system-settings.html renders it as a disabled input
-		named dont_use_base_url so that a POST cannot reach it. A setting an
-		admin types into a form does not belong here: escape it, and give the
-		one template that needs it raw its own data array instead, which the
-		isset() in pikaTempLib::loadSettings() leaves alone.
-	*/
-	function pl_settings_template_raw($label)
-	{
-		static $set = null;
-		
-		if (null === $set)
-		{
-			$set = array_flip(array(
-				// Config-file only, and read inside a CSS url() in the style
-				// text of the stock layout. Nearly every other place it is
-				// read is a quoted href, src or action value, which escaping
-				// would not have broken.
-				'base_url',
 			));
 		}
 		
@@ -5407,42 +5303,6 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 		$template_data['csrf_field'] = pl_csrf_hidden_input();
 	}
 	
-	/*	Whether a setting this template resolves has to be escaped.
-		
-		pl_template_sub() falls back to the application settings for a tag
-		the caller's data does not name, and substituted the value as it
-		stood. Most of what this function renders is HTML, and there
-		admin_email on templates/default.html lines 257 and 285 put a stored
-		value into a mailto href on every signed-in page.
-		
-		Five templates are not HTML, though, and the same fallback fills
-		them: templates/exchange_appt.txt becomes an .EML file, the ical.txt
-		under each zone in subtemplates/ical is served as text/Calendar,
-		templates/vcal.txt as text/calendar, and app/scripts holds a launchd
-		plist and a PHP script an operator runs from cron. time_zone is a
-		setting and a tag in the calendar templates, so escaping everything
-		would put an HTML entity in a calendar feed.
-		
-		So the name decides, and anything that is not HTML keeps the old
-		behaviour. A new template of a new format is raw without being listed
-		anywhere, which is the safe way round for the formats: it cannot be
-		corrupted by a change nobody remembered to make here.
-		
-		It is the name the CALLER asked for, read here before the custom
-		template path is resolved below, and not the file that is opened in
-		the end. What the output is read as is the caller's business:
-		index.php asks for templates/default.html and serves HTML, and
-		services/calendar.php asks for an ical.txt and sends text/Calendar.
-		The resolution below can change the name in both directions -- a
-		custom template_path() hook returns whatever name it likes, and
-		realpath() follows a symlink -- and neither of those tells the caller
-		to do anything different with what it gets back.
-	*/
-	$template_ext = is_string($template_file)
-		? strtolower((string) pathinfo($template_file, PATHINFO_EXTENSION))
-		: '';
-	$escape_settings = ('html' === $template_ext || 'htm' === $template_ext);
-	
 	// Handle custom templates.
 	// First, use the custom template path search algorithm if one is installed.
 	if (file_exists(pl_custom_directory() . "/extensions/template_path/template_path.php"))
@@ -5543,8 +5403,7 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 					{
 						foreach ($section_data as $val)
 						{
-							$out .= pl_template_sub($section_text, $val,
-								$escape_settings);
+							$out .= pl_template_sub($section_text, $val);
 						}
 					}
 
@@ -5635,7 +5494,7 @@ function pl_template($template_file, $template_data = array(), $subtpl_label = n
 
 	fclose($file);
 
-	$out = pl_template_sub($out, $template_data, $escape_settings);
+	$out = pl_template_sub($out, $template_data);
 	
 	if (defined('PL_TEMPLATE_HTML_COMMENTS'))
 	{
@@ -5653,13 +5512,7 @@ determine it's value,
 replace all instances of that tag,
 repeat until no more tags are present
 */
-/*	$escape_settings is what pl_template() worked out from the template name
-	the CALLER asked for: true when that name is HTML. The file that is opened
-	in the end can carry another extension and does not decide this. It
-	defaults to false so a call that does not say stays as it was, and the
-	recursive call below passes it on unchanged.
-*/
-function pl_template_sub($str, $template_data, $escape_settings = false)
+function pl_template_sub($str, $template_data)
 {
 	static $app_settings = null;
 	// this value is flipped later if a menu is specified
@@ -6089,20 +5942,6 @@ function pl_template_sub($str, $template_data, $escape_settings = false)
 	{
 		// we have the name, now replace the first and any additional fields
 		$replacement = is_null($app_settings[$next_name]) ? '' : $app_settings[$next_name];
-		
-		/*	A setting is stored as an administrator typed it, so in HTML it
-			has to be escaped. pl_settings_template_raw() holds the ones that
-			are not read as HTML text even on an HTML page -- base_url, which
-			the stock templates read inside a CSS url(). A value that is not a
-			scalar is left as it was, the same as in
-			pikaTempLib::loadSettings().
-		*/
-		if ($escape_settings && is_scalar($replacement)
-			&& !pl_settings_template_raw($next_name))
-		{
-			$replacement = pl_html_escape($replacement);
-		}
-		
 		$newstr = str_replace($tpl_prefix . $next_name . $tpl_suffix, $replacement, substr($str, $pos));
 	}
 	
@@ -6119,8 +5958,7 @@ function pl_template_sub($str, $template_data, $escape_settings = false)
 	}
 	
 	// now proceed to next template field in $str
-	return substr($str, 0, $pos)
-		. pl_template_sub($newstr, $template_data, $escape_settings);
+	return substr($str, 0, $pos) . pl_template_sub($newstr, $template_data);
 }
 
 
