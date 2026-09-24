@@ -21021,8 +21021,15 @@ fi
 # is examined as though it were one. So the number the scan reports is words naming
 # grep that it examined, not calls made, and it is over-inclusive on purpose:
 # examining a word that is only data costs at worst a false report, which is the
-# direction that gets looked at. This file's own count includes two such words,
-# inside the string literals of the scanner below.
+# direction that gets looked at. This file's own count includes three such words,
+# two in the string literals of the scanner below and one in a comment inside it. That
+# part of the count was measured this round, because the number fell by one when only
+# the scanner was changed. The word that left is prose, not a call, and it left because
+# one added line of the scanner writes an apostrophe inside double quotes: read as shell
+# text the apostrophe closes a quote the scanner's own program text had left open, and
+# the line of prose below it reads as quoted from then on. So a change to the scanner
+# can move this number by one without any call in the file changing, in either
+# direction, and the floor is set far below it for that reason.
 #
 # That number is what the floor further down is asserted on, because a clean result
 # over almost none of this file's calls reads exactly like a clean result over all of
@@ -21040,9 +21047,14 @@ fi
 # stepped over a substitution nested in an expansion, which hid the calls inside that
 # substitution rather than the ones after it. There are three readers now, not one:
 # the file itself, the text of a command run in place, and the group forms that hold no
-# command text. The three share one list of the words the shell reads before a command
-# name, one rule for what such a word leaves behind, and one reader of what a dollar
-# opens, so a repair to any of those reaches all three. The other three were
+# command text. What they share is less than the fifteenth round claimed for them. The
+# list of the words the shell reads before a command name is read wherever a name is
+# weighed. The rule for what such a word leaves behind is called from two of the three.
+# The reader of what a dollar opens is called from four places, and the reader that
+# reports a call is not one of them, because it has more to do with a dollar than step
+# over it. So a repair to one of those does not reach the others, and each of the
+# fifteenth review's faults in a dollar had to be repaired more than once. The other
+# three were
 # a line continuation between a dollar and its name, a redirection whose target was
 # separated from its operator by one, and a file descriptor written before a
 # here-document operator. The eighth, the false report, was an empty locale-quoted
@@ -21206,9 +21218,12 @@ fi
 # open. The thirteenth round refused such a statement instead of reading one, and
 # called refusing fail closed both ways; the thirteenth review disproved that, because
 # a doubled parenthesis holding one was then read as two of its own, which opened a
-# body bash does not open and hid a real call. The arms of a case statement are now
-# counted in both readers alike, one count for each depth of parentheses, and the
-# statement itself is found by two rules: the word must stand where the shell reads a
+# body bash does not open and hid a real call. The arms of a case statement are counted
+# in both readers alike from this round on, one count for each depth of parentheses. The
+# fifteenth round wrote that sentence while the reader that reports a call kept one
+# count for the whole text, and so read the arm of a statement written inside a subshell
+# as the end of that subshell, which hid every call after it. The statement itself is
+# found by two rules: the word must stand where the shell reads a
 # command name, and it must be written with no quote mark in it. A word holds that place
 # by existing, whatever it was spelled with, which is where the fourteenth round was
 # wrong: it asked instead whether the word had left any text to read. Measured over a
@@ -21219,10 +21234,15 @@ fi
 # brace, and where its own name is split by a line continuation. Quoting the name itself
 # stops it: "case", 'case', \case and a substitution that prints case are each a command
 # bash cannot find, because what an expansion produces is never read for a keyword
-# again. Two of the words that may precede one carry more than themselves: time takes
-# -p and --, at most one of each and in that order, and any other word after it is the
-# command name instead; and coproc takes one name, which may be quoted or reached
-# through an expansion, and only where a compound command follows it.
+# again. Two of the words that may precede one carry more than themselves. time takes
+# -p and --, and of every list of up to three words drawn from nine spellings, eight
+# hundred and twenty of them, exactly four are accepted: none, -p, --, and -p then --.
+# So each option word is read at most once, nothing is read as an option after --, and
+# any other word there is the command name instead. coproc takes at most one
+# name, which may be quoted or reached through an expansion, and takes none at all when
+# the next word is one of case, if, while, until, for or select written plainly: that
+# word opens the compound command itself, so the word after it belongs to that command's
+# own grammar and may be esac.
 #
 # The eighth round said it would be the last to add to what this scan understands, and
 # the thirteenth, fourteenth and fifteenth rounds have each broken that, because reading
@@ -21251,7 +21271,10 @@ fi
 # counted among the words a case statement may follow. The fourth was older than that
 # round: the parenthesis that ends one pattern closes nothing at any depth, and one
 # count of arms kept for the whole text answered a statement nested inside a subshell
-# wrongly. All four are repaired here, together with one fault no review had found, that
+# wrongly. The fifteenth round wrote that all four were repaired; three were. The fourth
+# was repaired in the reader of a command run in place alone; the reader that reports a
+# call kept its one count, so the fifteenth review found the same miss again. It is
+# repaired in both readers now. That round did fix one fault no review had found, that
 # the single name coproc takes is an ordinary word bash expands, so a quoted name there
 # still leaves a real case statement after it.
 #
@@ -21265,9 +21288,37 @@ fi
 # is stricter than that one. What was not measured is written here rather than assumed:
 # no pipeline, no shell option moved from its default, no interactive shell, one version
 # of bash, neither of the two arm terminators that fall through to the next pattern, and
-# no subscript of an indexed array, whose text bash reads as arithmetic instead. The
-# word time written after coproc is not the reserved word, which was measured; which
-# other words may stand there was not.
+# no subscript of an indexed array, whose text bash reads as arithmetic instead. Which
+# words may stand where that one name goes was measured for this round, over forty-two
+# of them: a plainly written case, if, while, until, for, select, brace, parenthesis,
+# doubled parenthesis or doubled bracket opens the compound command and takes no name; a
+# plainly written exclamation mark, function, do, or coproc itself, is a syntax
+# error there; and every other word is the one name if such an opener follows it, and
+# the command name itself if none does. The word time is not the reserved word there.
+# What is still not read there is a name followed by an ordinary command rather than a
+# compound one, because seeing that needs a look past the name this reader does not
+# take.
+#
+# The fifteenth review supplied five findings, and four were that round's own
+# regressions. The two option words of time were given one state between them, so a line
+# repeating one of them was read as a case statement, which hid the call in its arm, and
+# a line writing them in the other order was read as one too, which invented a call the
+# file does not hold. The one name that is taken after a word was read as any word, so a
+# plainly written case there became the name and its esac ended a statement that had
+# never begun. A doubled parenthesis written with a line continuation between its two
+# halves was sent to the reader of a command run in place, which then reported valid
+# shell as text that does not end. And the ANSI-C quote the shared opener had just
+# learned to name was named by no call site, so the same spelling failed in two more
+# readers. The fifth finding was older than that round: the reader that reports a call
+# still kept one count of case arms for the whole text. All five are repaired here.
+#
+# Each of the review's eight inputs was run against bash and against both readers before
+# any of this was written, and every one behaved as the review said it did. The repaired
+# reader was then run beside the one it replaces over one thousand four hundred and
+# fourteen fixtures kept on this machine. They answer differently on fourteen: the eight
+# named above, and six more that the older reader could not finish reading at all, which
+# hold no call and are now answered as none. On each of the fourteen the newer answer is
+# the one bash gives. Nothing else moved.
 #
 # The shell around the scan requires exactly one pattern line and one count line,
 # because the two reads below pick their answers out of whatever was printed and would
@@ -21532,6 +21583,10 @@ def ansi_quote(src, k):
 # as a keyword where it is an argument costs an arm count this file never uses.
 PRECEDE = frozenset(('!', 'then', 'else', 'elif', 'do', 'if', 'while', 'until',
 	'time', '{', 'coproc'))
+# The words that begin a compound command where coproc takes its one name, measured
+# on bash 5.2: each of these opens the command itself and no name is taken, so
+# coproc case esac in *) ... is a case statement whose subject word is esac.
+COPROC_OPENERS = frozenset(('case', 'if', 'while', 'until', 'for', 'select'))
 DIGITS = frozenset('0123456789')
 # The five characters a backslash escapes inside double quotes, and nowhere else.
 DQ_ESCAPED = frozenset(('$', '`', '"', '\\', '\n'))
@@ -21545,12 +21600,26 @@ def leadword(prev, word, bare):
 	there would be wrong, because each only has that role after the word
 	before it.
 
-	Measured on bash 5.2: time takes -p and -- before its pipeline and both
-	keep the place a command name is read, so time -p case x in x) ... is a
-	case statement, and so are time -- case ... and time -p -- case ..., while
-	time -q case ... is a syntax error. coproc takes at most one name of its
-	own: coproc case ... and coproc CP case ... are both case statements, and
-	coproc CP OT case ... is a syntax error.
+	Measured on bash 5.2 over every list of up to three words drawn from nine
+	spellings, 820 of them: time accepts four lists and no others, the empty
+	one, -p, --, and -p then --. So each option word is read at most once and
+	none follows --, and time -p -p case x in x) ... is not a case statement at
+	all: the second -p is the command name and case is its argument. A version
+	that kept one state for both option words read that line as a statement,
+	which hid the call in its arm, and read time -- -p case ... as one as well,
+	which invented a call the file does not hold.
+
+	coproc takes at most one name, and COPROC_OPENERS names the words that take
+	it away: measured, coproc case esac in *) :;; esac creates the default name
+	and not one called case, so the leading case opened the statement and esac
+	is its subject word. A version that read the one name as any word read that
+	case as the name and its esac as the end of a statement, which left the arm
+	bracket closing the text the statement was written in. The name itself may
+	be quoted or expanded, because it is an ordinary word bash expands rather
+	than a word bash reads: measured, coproc 'CQ' case ... and
+	coproc $(printf CS) case ... are both case statements. The word time is not
+	read as the reserved word there either: measured, coproc time case ...
+	creates a name called time.
 
 	A word with a quote mark in it is not one of these words: measured,
 	"case", 'case', \\case and ca"se" are each a command name, and so is
@@ -21559,14 +21628,20 @@ def leadword(prev, word, bare):
 	coproc 'CQ' case ... and coproc $(printf CS) case ... are both case
 	statements, so that name is read before the test below.
 	"""
-	if prev == 'coproc':
+	if prev == 'coproc' and not (bare and word in COPROC_OPENERS):
+		# The one name. Anything else here opens the compound command itself,
+		# and is weighed below as though coproc were not written at all.
 		return True, ''
 	if not bare:
 		return False, ''
 	if word in PRECEDE:
 		return True, word
-	if prev == 'time' and word in ('-p', '--'):
-		return True, 'time'
+	if prev == 'time' and word == '-p':
+		return True, 'time-p'
+	if prev in ('time', 'time-p') and word == '--':
+		# Nothing is read as an option after this one, so the state ends here
+		# and the word after it is weighed as an ordinary command name.
+		return True, ''
 	return False, ''
 
 
@@ -21630,8 +21705,18 @@ def lex(src, base=1, faults=None):
 	was one scanner hid that, and three of the fourteenth round's regressions were
 	differences between these readers and walk(), not spelling: two state rules
 	walk() holds and cmdsub() did not, and one opener expansion() reads and the
-	smaller readers did not. What they share is named once and used by all of
-	them: PRECEDE, leadword() and opener().
+	smaller readers did not.
+
+	What is shared is worth naming exactly, because the fifteenth round said the
+	readers share one rule for what a dollar opens and a repair to it reaches them
+	all, and that is not so. PRECEDE is read wherever a command name is weighed.
+	leadword() is called from two readers, cmdsub() and walk(). opener() is called
+	from four, braceskip(), cmdsub(), the subscript reader inside expansion() and
+	arithshape() -- and from neither walk() nor expansion(), each of which reads a
+	dollar with code of its own because each has more to do with one than step
+	over it. So three of the four faults the fifteenth review found in a dollar had
+	to be repaired in more than one place, and a reader added later must be checked
+	against all six sites rather than against the shared names alone.
 
 	Each word carries the text grep receives, with the quoting removed and each
 	value this scan cannot know standing as one UNKNOWN character; whether the
@@ -21676,6 +21761,11 @@ def lex(src, base=1, faults=None):
 	def opener(k):
 		"""What the dollar at src[k] opens, and the index of that opener.
 
+		The four smaller readers ask this one question, so the answer is written
+		once: '{' for an expansion, '(' for a command run in place, an apostrophe
+		for a quote whose escapes bash resolves, and empty where the dollar opens
+		none of them.
+
 		Measured: a backslash and newline between the dollar and its opener are
 		removed before anything is parsed, so $ \\ newline { is one expansion and
 		$ \\ newline ( is one command run in place; two continuations in a row are
@@ -21685,12 +21775,27 @@ def lex(src, base=1, faults=None):
 		the inner closing brace of such an expansion for the outer one, which hid
 		one call and invented another.
 
-		Returns ('', -1) where the dollar opens neither.
+		The doubled parenthesis of arithmetic is not a command run in place, and
+		the continuation is removed before that is decided as well: measured,
+		$ ( \\ newline ( 1 + 1 ) ) is two, and $ ( \\ newline ( printf 5 ) ) fails
+		in the arithmetic reader rather than running printf. So both parentheses
+		are looked for past any continuation, and arithmetic answers empty here.
+		Its parentheses are balanced, so a reader that counts them only to find
+		its own closing character is right without reading the body. The
+		fifteenth round sent this spelling to the reader for a command run in
+		place, which then reported valid shell as a text that does not end.
+
+		Returns ('', -1) where the dollar opens none of them.
 		"""
 		p, _fold = unfold(k + 1)
 		c = src[p:p + 1]
-		if c == '(' or c == '{':
+		if c == '{' or c == "'":
 			return c, p
+		if c == '(':
+			q, _f2 = unfold(p + 1)
+			if src[q:q + 1] == '(':
+				return '', -1
+			return '(', p
 		return '', -1
 
 	def braceskip(k, at=None):
@@ -21755,6 +21860,18 @@ def lex(src, base=1, faults=None):
 				if kind == '{':
 					e = braceskip(j, at2)
 					if e < 0:
+						return -1
+					j = e
+					continue
+				if kind == "'" and not mark:
+					# An ANSI-C quote. Its escapes decide where it ends, so a
+					# reader that looks for the next apostrophe stops inside
+					# one: $'\\'' holds an apostrophe and does not end there,
+					# and $'\\c'' ends one character later still. Inside any
+					# quote already open the dollar has no such meaning, which
+					# is why this asks for none.
+					e, _b, _nl, shut = ansi_quote(src, at2)
+					if not shut:
 						return -1
 					j = e
 					continue
@@ -21909,6 +22026,20 @@ def lex(src, base=1, faults=None):
 					fresh = False
 					bare = False
 					continue
+				if kind == "'" and not mark:
+					# An ANSI-C quote. Its escapes decide where it ends, so a
+					# reader that looks for the next apostrophe stops inside
+					# one: $'\\'' holds an apostrophe and does not end there,
+					# and $'\\c'' ends one character later still. Inside any
+					# quote already open the dollar has no such meaning, which
+					# is why this asks for none.
+					e, _b, _nl, shut = ansi_quote(src, at2)
+					if not shut:
+						return -1
+					j = e
+					fresh = False
+					bare = False
+					continue
 			if not mark:
 				if c in '"\'':
 					mark = c
@@ -22041,6 +22172,18 @@ def lex(src, base=1, faults=None):
 					if kind == '{':
 						e = braceskip(k, at2)
 						if e < 0:
+							return -1
+						k = e
+						continue
+					if kind == "'" and not mark:
+						# An ANSI-C quote. Its escapes decide where it ends, so a
+						# reader that looks for the next apostrophe stops inside
+						# one: $'\\'' holds an apostrophe and does not end there,
+						# and $'\\c'' ends one character later still. Inside any
+						# quote already open the dollar has no such meaning, which
+						# is why this asks for none.
+						e, _b, _nl, shut = ansi_quote(src, at2)
+						if not shut:
 							return -1
 						k = e
 						continue
@@ -22197,7 +22340,11 @@ def lex(src, base=1, faults=None):
 							' closed' % line)
 					line += nl
 					continue
-				if nxt == '(' and src[q + 1:q + 2] != '(':
+				if nxt == '(' and src[unfold(q + 1)[0]:][:1] != '(':
+					# The second parenthesis is looked for past a continuation as
+					# well: measured, $ ( \\ newline ( printf 5 ) ) is arithmetic
+					# and not a command run in place, because the backslash and
+					# newline are removed before that is decided.
 					j = walk(q + 1, ')')
 					continue
 				if nxt and nxt in BRACKET:
@@ -22244,7 +22391,11 @@ def lex(src, base=1, faults=None):
 		pending = []
 		depth = 0
 		arith = None
-		arms = 0
+		# One count of open case arms for each depth of parentheses, as cmdsub()
+		# has kept since the fourteenth round. One count for the whole text read
+		# the arm of a statement written inside a subshell as the end of that
+		# subshell, and every call after it went unread.
+		arms = [0]
 		q = ''
 		qline = line
 		i = start
@@ -22280,7 +22431,7 @@ def lex(src, base=1, faults=None):
 			whitespace read the target of grep < \\ newline /dev/stdin "$V" as an
 			operand of grep, and then took the pattern after it for a file.
 			"""
-			nonlocal text, exp, started, drop, dropword, arms, bare
+			nonlocal text, exp, started, drop, dropword, bare
 			if started:
 				if not drop and not dropword:
 					words.append((text, bool(exp), wline, bare))
@@ -22308,10 +22459,15 @@ def lex(src, base=1, faults=None):
 						# first, and a version that asked only for the first word
 						# read the arm bracket of if :; then case x in x) ... as the
 						# end of the substitution the whole statement was written in.
-						if bare and text == 'case':
-							arms += 1
-						elif bare and text == 'esac' and arms:
-							arms -= 1
+						# Arithmetic holds no statement, so neither word is one there:
+						# measured, $ ( ( case ) ) reads a variable of that name, and
+						# counting an arm for it left the closing parentheses of the
+						# expansion read as arm brackets.
+						if bare and text == 'case' and not inarith():
+							arms[-1] += 1
+						elif (bare and text == 'esac' and arms[-1]
+						      and not inarith()):
+							arms[-1] -= 1
 				drop = False
 			dropword = False
 			bare = True
@@ -22403,6 +22559,23 @@ def lex(src, base=1, faults=None):
 								' run in place that does not end, so'
 								' whether it is arithmetic was not'
 								' decided' % line)
+							return False
+						j = e
+						continue
+					if kind == "'" and not mark:
+						# An ANSI-C quote. Its escapes decide where it ends, so a
+						# reader that looks for the next apostrophe stops inside
+						# one: $'\\'' holds an apostrophe and does not end there,
+						# and $'\\c'' ends one character later still. Inside any
+						# quote already open the dollar has no such meaning, which
+						# is why this asks for none.
+						e, _b, _nl, shut = ansi_quote(src, at2)
+						if not shut:
+							faults.append('the doubled parenthesis'
+								' written on line %d holds a quote'
+								' that does not end, so whether it'
+								' is arithmetic was not decided'
+								% line)
 							return False
 						j = e
 						continue
@@ -22533,7 +22706,10 @@ def lex(src, base=1, faults=None):
 				line += fold
 				openquote('"')
 				return p + 1
-			if nxt == '(' and src[p + 1:p + 2] != '(':
+			if nxt == '(' and src[unfold(p + 1)[0]:][:1] != '(':
+				# Arithmetic is left to the parenthesis counting below, and the
+				# second parenthesis is looked for past a continuation: measured,
+				# $ ( \\ newline ( 1 + 1 ) ) is arithmetic.
 				touch()
 				line += fold
 				j = walk(p + 1, ')')
@@ -22864,7 +23040,7 @@ def lex(src, base=1, faults=None):
 							continue
 					drop = True
 					continue
-			if c == ')' and arms and depth == 0:
+			if c == ')' and arms[-1]:
 				# A case arm may end here, unless the word in hand is the esac that
 				# ends the whole statement. That word is ended first so that it is
 				# counted: a version that asked how many arms were open before
@@ -22872,7 +23048,7 @@ def lex(src, base=1, faults=None):
 				# as one more arm closer, lost its place in the text after the
 				# substitution, and reported a correct call as a defect.
 				endword()
-				if arms:
+				if arms[-1]:
 					# Reading an arm bracket as the end of a command substitution
 					# ended that substitution at the first arm, and every call
 					# written after the arm was read as text inside a word.
@@ -22889,12 +23065,15 @@ def lex(src, base=1, faults=None):
 					if src[p:p + 1] == '(' and arithshape(p):
 						arith = depth
 				depth += 1
+				arms.append(0)
 				i += 1
 				continue
 			if c == ')':
 				endcmd()
 				if depth:
 					depth -= 1
+					if len(arms) > 1:
+						arms.pop()
 				if arith is not None and depth <= arith:
 					arith = None
 				i += 1
