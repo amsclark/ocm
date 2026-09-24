@@ -20851,7 +20851,8 @@ else
 	fi
 fi
 
-# 104. A grep whose pattern comes from a variable has to be handed it with -e.
+# 104. A grep whose pattern comes from a variable has to be marked as a pattern
+# and not left as a bare operand.
 #
 # Section 15 looks for the stack's real database password in a response body.
 # DB_PASSWORD=-i is a valid password, and with the pattern given as a bare
@@ -20875,16 +20876,35 @@ fi
 # Fixing 47 calls does not stop a 48th being written, and three earlier rounds
 # in this area learnt that naming the places one at a time does not close a
 # class. So this check is the part that makes a new one visible: it reads this
-# file and reports a grep whose first operand is an expansion unless the call
-# hands it over with -e or --regexp.
+# file and reports a grep whose first operand is an expansion unless the call has
+# already settled that the word is a pattern: -e or --regexp or an unambiguous
+# abbreviation of it, -f or --file, which supplies the patterns from a file and
+# leaves no pattern operand to mistake, or -- , which ends option parsing so that a
+# dash-leading value after it is a pattern and not an option. All 47 of the calls
+# this pass fixed were given -e.
 #
-# It reads the file as shell rather than as text, so the shapes below are decided
-# by the shell's own rules and not by patterns that resemble them. That is not a
-# proof that the shape cannot return: what the scan does not understand it can still
-# get wrong, and a check is worth only what it can see, so this one has been reviewed
-# five times for ways to pass while the shape is present. Each review found more than
-# the last, and every miss went the same way -- a call the check did not understand
-# came out safe. The limits are listed below rather than left to be discovered.
+# It reads the file as shell rather than as text, so the shapes below are decided by
+# shell syntax and not by patterns that resemble it. What reads that syntax is a
+# partial lexer of it and not bash, and the gap between the two is where every miss
+# found so far has come from: a construct the lexer read wrongly came out safe, which
+# is the one direction a check must not fail in.
+#
+# So it fails closed. At the end of the file, no quote, group, expansion, backtick or
+# here-document the lexer opened may still be open. If one is, the lexer lost its
+# place somewhere above and everything after that point is unread, so it says so and
+# exits non-zero rather than reporting a clean file, and this section fails on that
+# exit. The invariant is applied to the file and not to a here-document body, because
+# a body need not be shell at all -- this suite writes python programs and
+# configuration files in them -- while the file itself is a script bash runs, so
+# anything left open at its end means the lexer and bash have disagreed. Three of the
+# ten misses the sixth review supplied were caught by this alone, before the fault
+# behind any of them was found.
+#
+# That turns the dominant fault from a silent pass into a failure. It is still not a
+# proof that the shape cannot return, and a check is worth only what it can see, so
+# this one has been reviewed six times for ways to pass while the shape is present.
+# Each review found more than the last. The limits are listed below rather than left
+# to be discovered.
 #
 # Each shape below was confirmed by running the check's own program against a planted
 # call, and each of the option shapes was confirmed against grep itself, by showing
@@ -20962,9 +20982,12 @@ fi
 # accepted because after -- a dash-leading value is a pattern and not an option, so
 # the defect this section is about cannot arise there; an option outside the table
 # written after the verdict has already been settled, since the words are read left
-# to right and reading stops at the pattern; and a shell that has no python3, in
-# which case this section prints a skip and asserts nothing at all. The CI job that
-# runs this suite installs python dependencies, so it has python3.
+# to right and reading stops at the pattern; shell source written as a quoted
+# argument to bash -c or eval, which the scan reads as one ordinary word and does not
+# look inside, so a call planted there is neither reported nor counted; and a shell
+# that has no python3, in which case this section prints a skip and asserts nothing
+# at all. The CI job that runs this suite installs python dependencies, so it has
+# python3.
 #
 # What the check does not claim is that it knows where a pattern's value came from. An
 # expansion in pattern position is reported whatever assigned it, including a variable
@@ -21001,22 +21024,45 @@ fi
 # full value. Only the scan can find a call; the floor can only refuse to read a
 # collapse as clean.
 #
-# The fifth review found those eight, and seven of them had one cause: a second,
-# smaller scanner beside the first, used only to find where a group ended. It read
-# the search text of a parameter replacement as brackets, a hash at the start of a
-# substitution as ordinary text, a here-document's data as quote syntax, and it
-# stepped over a substitution nested in an expansion without reading the calls in it.
-# Each of those hid every call after it. There is one scanner now, and the group
-# forms that hold no command text are the only thing beside it. The rest were a line
-# continuation between a dollar and its name, a redirection whose target was
-# separated from its operator by one, a file descriptor written before a
-# here-document operator, and an empty locale-quoted word, which was a correct call
-# reported as a defect. Two the review carried over from earlier rounds are closed
-# as well: an option written as an ANSI-C escape is resolved to the option grep
-# receives, and a process substitution written as a redirection target no longer ends
-# the command.
+# The fifth review supplied eight cases. Seven were calls the scan failed to report;
+# the eighth went the other way, a correct call reported as a defect. Four of the
+# seven had one cause: a second, smaller scanner beside the first, used only to find
+# where a group ended. It read the search text of a parameter replacement as
+# brackets, a hash at the start of a substitution as ordinary text, and a
+# here-document's data as quote syntax, each of which hid every call after it; and it
+# stepped over a substitution nested in an expansion, which hid the calls inside that
+# substitution rather than the ones after it. There is one scanner now, and the group
+# forms that hold no command text are the only thing beside it. The other three were
+# a line continuation between a dollar and its name, a redirection whose target was
+# separated from its operator by one, and a file descriptor written before a
+# here-document operator. The eighth, the false report, was an empty locale-quoted
+# word. Two cases the review carried over from earlier rounds are closed as well: an
+# option written as an ANSI-C escape is resolved to the option grep receives, and a
+# process substitution written as a redirection target no longer ends the command.
+#
+# The sixth review supplied ten more misses in seven shapes, all of them the same
+# kind of thing -- syntax the lexer read differently from bash -- which is what the
+# invariant above was written for. The seven: a redirection operator the lexer did
+# not know, so >|, &> and &>> were read as the end of the command and the pattern
+# after them was never reached, which covers the operator written across a line
+# continuation and a file descriptor written in front of it as well; a case arm's
+# closing parenthesis read as the end of a command substitution around it; a
+# backslash inside single quotes in a parameter default read as an escape, where
+# single quotes have no escape processing at all; a backtick substitution lexed
+# without first removing the one layer of escapes the shell removes from it, which
+# depends on whether the backticks are themselves inside double quotes; text glued
+# onto a process substitution with no space, which belongs to that redirection target
+# and is not an operand; an ANSI-C quoted word holding an encoded NUL, where bash
+# truncates the quoted segment there and discards the rest of it; and three further
+# here-document delimiter spellings -- $'EOF', an empty delimiter, and a delimiter
+# split by a line continuation. Every one of them was measured against bash first,
+# because a lexer written from what the syntax looks like is how this check got here.
+# Fixing the single-quote case surfaced a second real fault through the invariant: in
+# a parameter expansion inside double quotes a single quote is a literal character,
+# and the lexer had been opening a quote scope for it. Before the invariant that one
+# passed by luck, on a stack left open at end of file that nothing looked at.
 echo
-echo "104. every grep pattern that comes from a variable is passed with -e"
+echo "104. every grep pattern that comes from a variable is marked as a pattern"
 
 if ! command -v python3 >/dev/null 2>&1; then
 	printf '  skip the grep pattern check (needs python3)\n'
@@ -21112,7 +21158,8 @@ def is_grep(text):
 
 
 def skip_backtick(src, i):
-	"""The index just past the backtick substitution at src[i], and its newlines.
+	"""The index past the backtick substitution at src[i], its newlines, and
+	whether it was closed.
 
 	This form is a whole command substitution, so a word beginning with one begins
 	with a value this scan cannot know. An earlier version marked only a leading
@@ -21129,11 +21176,41 @@ def skip_backtick(src, i):
 			i += 2
 			continue
 		if c == '`':
-			return i + 1, nl
+			return i + 1, nl, True
 		if c == '\n':
 			nl += 1
 		i += 1
-	return n, nl
+	return n, nl, False
+
+
+def backtick_body(body, dquote):
+	"""The text bash runs inside a backtick substitution, once.
+
+	This older form is not simply quoted text. The shell removes one layer of
+	escapes from it before the text is read as a command, so the body written in
+	the file is not the body that runs. A version that lexed the written text read
+	the backslash of \\"$V\\" as escaping a character rather than as a removed
+	escape, the word then began with a quote rather than with an expansion, and
+	the call inside the substitution was read as safe.
+
+	A removed escape is one before a dollar, a backtick or another backslash, and
+	before a double quote as well when the substitution itself sits inside double
+	quotes. No newline is removed, so a line inside the body keeps its number.
+	"""
+	out = ''
+	i = 0
+	n = len(body)
+	while i < n:
+		c = body[i]
+		if c == '\\' and i + 1 < n:
+			nxt = body[i + 1]
+			if nxt in '$`\\' or (dquote and nxt == '"'):
+				out += nxt
+				i += 2
+				continue
+		out += c
+		i += 1
+	return out
 
 
 def ansi_quote(src, k):
@@ -21142,6 +21219,11 @@ def ansi_quote(src, k):
 	Nothing expands inside this form, so its body is literal text, but the escapes
 	bash resolves here are resolved rather than stepped over: an escape can produce
 	a dash, and then the word is an option and not the pattern.
+
+	An escape can also produce a null character, which the shell cannot carry in a
+	word: it keeps what comes before and drops the rest of this quoted run. A
+	version that kept the null and the text after it read gr$'ep\\0x' as a command
+	whose name was not grep, and the call was not examined at all.
 	"""
 	n = len(src)
 	out = ''
@@ -21201,15 +21283,15 @@ def ansi_quote(src, k):
 			j += 2
 			continue
 		if c == "'":
-			return j + 1, out, nl
+			return j + 1, out.split('\0')[0], nl, True
 		if c == '\n':
 			nl += 1
 		out += c
 		j += 1
-	return n, out, nl
+	return n, out.split('\0')[0], nl, False
 
 
-def lex(src, base=1):
+def lex(src, base=1, faults=None):
 	"""Every command in the source as a list of words, each word with its own line.
 
 	One pass, left to right. Three questions decide what this section reports --
@@ -21230,10 +21312,28 @@ def lex(src, base=1):
 	Each word carries the text grep receives, with the quoting removed and each
 	value this scan cannot know standing as one UNKNOWN character; whether the
 	word's value begins with such a value; and the line the word starts on.
+
+	Five of the six reviews before this one found the same kind of miss: a form the
+	scanner read the wrong way left a quote, a group or a here-document open, the
+	text after it was read as part of that open thing, and the calls in it were
+	never examined. Nothing in the result showed it. So the caller can hand in a
+	list for faults, and at the end of the text every quote, group and expansion
+	this scanner opened has to be closed again. The file it reads is a shell script
+	the shell runs, so anything still open is this scanner disagreeing with the
+	shell, whatever the cause, and the caller reports that instead of a verdict.
+
+	A here-document body is different: it is not shell text unless the here-document
+	writes a script, and this suite writes python programs and configuration files
+	in them too. Those are read as shell because a body that does hold a script
+	holds calls worth examining, and the words that come out of the others are
+	counted but mean nothing. An apostrophe in a python program is not a fault in
+	this scanner, so a body is read with a fault list of its own that is dropped.
 	"""
 	cmds = []
 	line = base
 	n = len(src)
+	if faults is None:
+		faults = []
 
 	def unfold(k):
 		"""Index past the line continuations at src[k], and the newlines crossed.
@@ -21264,6 +21364,7 @@ def lex(src, base=1):
 		took the rest of the file with it. Inside arithmetic a bracket does group.
 		"""
 		nonlocal line
+		opened = line
 		if src[p] == '{':
 			stack = ['}']
 			nest = False
@@ -21278,6 +21379,18 @@ def lex(src, base=1):
 			j = p + 2
 		while j < n and stack:
 			c = src[j]
+			if stack[-1] == "'":
+				# A single quote is read first because nothing at all is special
+				# inside one. Reading the backslash first gave it a meaning it does
+				# not have here: in ${X:-'\\'} it took the closing quote with it,
+				# the quote then ran to the next one in the file, and every call
+				# between them went unread.
+				if c == "'":
+					stack.pop()
+				elif c == '\n':
+					line += 1
+				j += 1
+				continue
 			if c == '\\' and j + 1 < n:
 				if src[j + 1] == '\n':
 					line += 1
@@ -21287,13 +21400,13 @@ def lex(src, base=1):
 				line += 1
 				j += 1
 				continue
-			if stack[-1] == "'":
-				if c == "'":
-					stack.pop()
-				j += 1
-				continue
 			if c == "'":
-				stack.append("'")
+				# Inside double quotes a single quote is one more character of the
+				# string. Reading it as a quote of its own left ${V:-"\'"} with a
+				# quote this scanner never closed, and it then read the rest of the
+				# file as that string. The end-of-text check above found this one.
+				if stack[-1] != '"':
+					stack.append("'")
 				j += 1
 				continue
 			if c == '"':
@@ -21304,10 +21417,13 @@ def lex(src, base=1):
 				j += 1
 				continue
 			if c == '`':
-				end, nl = skip_backtick(src, j)
+				end, nl, shut = skip_backtick(src, j)
+				if not shut:
+					faults.append('a backtick substitution opened on line %d was not'
+						' closed' % line)
 				body = src[j + 1:end - 1] if end > j + 1 else ''
 				if body:
-					cmds.extend(lex(body + '\n', line))
+					cmds.extend(lex(backtick_body(body, stack[-1] == '"') + '\n', line))
 				line += nl
 				j = end
 				continue
@@ -21336,6 +21452,8 @@ def lex(src, base=1):
 				j += 1
 				continue
 			j += 1
+		if stack:
+			faults.append('an expansion opened on line %d was not closed' % opened)
 		return j
 
 	def walk(start, closer):
@@ -21348,15 +21466,19 @@ def lex(src, base=1):
 		this same code rather than by a second scanner that got them wrong.
 		"""
 		nonlocal line
+		opened = line
 		words = []
 		text = ''
 		exp = None
 		started = False
 		wline = 0
 		drop = False
+		dropword = False
 		pending = []
 		depth = 0
+		arms = 0
 		q = ''
+		qline = line
 		i = start
 
 		def touch():
@@ -21381,11 +21503,20 @@ def lex(src, base=1):
 			whitespace read the target of grep < \\ newline /dev/stdin "$V" as an
 			operand of grep, and then took the pattern after it for a file.
 			"""
-			nonlocal text, exp, started, drop
+			nonlocal text, exp, started, drop, dropword, arms
 			if started:
-				if not drop:
+				if not drop and not dropword:
 					words.append((text, bool(exp), wline))
+					if len(words) == 1:
+						# case and esac are read here because only a word in command
+						# position is either of them, and a case arm's closing
+						# parenthesis is not the end of anything this scanner opened.
+						if text == 'case':
+							arms += 1
+						elif text == 'esac' and arms:
+							arms -= 1
 				drop = False
+			dropword = False
 			text = ''
 			exp = None
 			started = False
@@ -21396,6 +21527,17 @@ def lex(src, base=1):
 			if words:
 				cmds.append(words)
 				words = []
+
+		def openquote(mark):
+			"""Begin a quoted run, remembering where it began.
+
+			The line is kept so that a run left open at the end of the text can be
+			named in the fault the caller reports.
+			"""
+			nonlocal q, qline
+			touch()
+			q = mark
+			qline = line
 
 		def heredocs(k):
 			"""Step over every pending here-document body, and lex each one.
@@ -21412,6 +21554,7 @@ def lex(src, base=1):
 			nonlocal pending, line
 			for delim, strip in pending:
 				first = line
+				shut = False
 				body = []
 				while k < n:
 					stop = src.find('\n', k)
@@ -21421,8 +21564,12 @@ def lex(src, base=1):
 					k = stop + 1 if stop < n else n
 					line += 1
 					if (one.lstrip('\t') if strip else one) == delim:
+						shut = True
 						break
 					body.append(one)
+				if not shut:
+					faults.append('the here-document body that begins on line %d does'
+						' not end with its delimiter' % first)
 				if body:
 					cmds.extend(lex('\n'.join(body) + '\n', first))
 			pending = []
@@ -21436,7 +21583,10 @@ def lex(src, base=1):
 			if nxt == "'" and not q:
 				touch()
 				line += fold
-				j, body, nl = ansi_quote(src, p)
+				j, body, nl, shut = ansi_quote(src, p)
+				if not shut:
+					faults.append('an ANSI-C quote opened on line %d was not closed'
+						% line)
 				for ch in body:
 					put(ch, False)
 				line += nl
@@ -21449,9 +21599,8 @@ def lex(src, base=1):
 				# a later one did not mark the word as started, and then an empty
 				# $"" vanished and the file operand after it was read as the
 				# pattern.
-				touch()
 				line += fold
-				q = '"'
+				openquote('"')
 				return p + 1
 			if nxt == '(' and src[p + 1:p + 2] != '(':
 				touch()
@@ -21507,11 +21656,14 @@ def lex(src, base=1):
 					i += 2
 					continue
 				if c == '`':
-					end, nl = skip_backtick(src, i)
+					end, nl, shut = skip_backtick(src, i)
+					if not shut:
+						faults.append('a backtick substitution opened on line %d was'
+							' not closed' % line)
 					body = src[i + 1:end - 1] if end > i + 1 else ''
 					put(UNKNOWN, True)
 					if body:
-						cmds.extend(lex(body + '\n', line))
+						cmds.extend(lex(backtick_body(body, True) + '\n', line))
 					line += nl
 					i = end
 					continue
@@ -21533,21 +21685,22 @@ def lex(src, base=1):
 				i += 2
 				continue
 			if c == "'":
-				touch()
-				q = "'"
+				openquote("'")
 				i += 1
 				continue
 			if c == '"':
-				touch()
-				q = '"'
+				openquote('"')
 				i += 1
 				continue
 			if c == '`':
-				end, nl = skip_backtick(src, i)
+				end, nl, shut = skip_backtick(src, i)
+				if not shut:
+					faults.append('a backtick substitution opened on line %d was not'
+						' closed' % line)
 				body = src[i + 1:end - 1] if end > i + 1 else ''
 				put(UNKNOWN, True)
 				if body:
-					cmds.extend(lex(body + '\n', line))
+					cmds.extend(lex(backtick_body(body, False) + '\n', line))
 				line += nl
 				i = end
 				continue
@@ -21603,27 +21756,51 @@ def lex(src, base=1):
 					j += 1
 				while j < n and src[j] in ' \t':
 					j += 1
+				# The delimiter is this word with its quoting removed, and the
+				# shell expands nothing in it. Three spellings of it were read
+				# wrongly, and each one left the body to be read as commands: the
+				# dollar of an ANSI-C quoted delimiter was kept as part of the
+				# name, a delimiter continued across a line kept the newline, and
+				# an empty delimiter written as two quote marks was treated as no
+				# delimiter at all, which is what tells a body from a script here.
 				delim = ''
+				quoted = False
 				while j < n and src[j] not in ' \t\n;|&<>()':
 					if src[j] == '\\' and j + 1 < n:
+						if src[j + 1] == '\n':
+							line += 1
+							j += 2
+							continue
 						delim += src[j + 1]
 						j += 2
 						continue
+					if src[j] == '$' and src[j + 1:j + 2] == "'":
+						quoted = True
+						j, body, nl, _shut = ansi_quote(src, j + 1)
+						delim += body
+						line += nl
+						continue
+					if src[j] == '$' and src[j + 1:j + 2] == '"':
+						j += 1
+						continue
 					if src[j] in '"\'':
+						quoted = True
 						mark = src[j]
 						j += 1
 						while j < n and src[j] != mark:
+							if src[j] == '\n':
+								line += 1
 							delim += src[j]
 							j += 1
 						j += 1
 						continue
 					delim += src[j]
 					j += 1
-				if delim:
+				if delim or quoted:
 					pending.append((delim, strip))
 				i = j
 				continue
-			if c in '<>':
+			if c in '<>' or (c == '&' and src[i + 1:i + 2] == '>'):
 				# A redirection. Its target is not an operand grep reads, and a
 				# digits-only word already in hand is the file descriptor. The
 				# target is then read as an ordinary word and dropped, so a
@@ -21637,8 +21814,28 @@ def lex(src, base=1):
 					started = False
 				else:
 					endword()
-				while i < n and src[i] in '<>&':
-					i += 1
+				# The whole operator is read before anything else, because two
+				# of its spellings hold a character that ends a command elsewhere.
+				# A version that stopped at those read grep -q >| /dev/null "$V" as
+				# a pipeline and grep -q &>/dev/null "$V" as two commands, and in
+				# both the pattern was left in another command where nothing
+				# examined it.
+				op = ''
+				while i < n:
+					p, fold = unfold(i)
+					if p != i:
+						line += fold
+						i = p
+						continue
+					if src[i] in '<>&':
+						op += src[i]
+						i += 1
+						continue
+					if src[i] == '|' and op.endswith('>'):
+						op += src[i]
+						i += 1
+						continue
+					break
 				while i < n:
 					p, fold = unfold(i)
 					if p != i:
@@ -21655,8 +21852,17 @@ def lex(src, base=1):
 					# version let its bracket end the command and never attached
 					# the pattern written after it to the call.
 					i = walk(i + 2, ')')
+					touch()
+					dropword = True
 					continue
 				drop = True
+				continue
+			if c == ')' and arms and depth == 0:
+				# A case arm ends here. Reading it as the end of a command
+				# substitution ended that substitution at the first arm, and every
+				# call written after the arm was read as text inside a word.
+				endcmd()
+				i += 1
 				continue
 			if closer and c == closer and depth == 0:
 				endcmd()
@@ -21678,6 +21884,14 @@ def lex(src, base=1):
 				continue
 			put(c, False)
 			i += 1
+		if q:
+			faults.append('a %s quote opened on line %d was not closed'
+				% ('single' if q == "'" else 'double', qline))
+		if closer:
+			faults.append('a group opened on line %d was not closed' % opened)
+		if depth:
+			faults.append('a parenthesis opened in the text from line %d was not'
+				' closed' % opened)
 		endcmd()
 		return n
 
@@ -21756,8 +21970,9 @@ def verdict(words):
 hits = []
 unknown = []
 words = 0
+faults = []
 with open(sys.argv[1], encoding='utf-8') as fh:
-	for cmd in lex(fh.read()):
+	for cmd in lex(fh.read(), 1, faults):
 		for k in range(len(cmd)):
 			if not is_grep(cmd[k][0]):
 				continue
@@ -21775,6 +21990,16 @@ with open(sys.argv[1], encoding='utf-8') as fh:
 				hits.append(cmd[k][2])
 			elif got == 'unknown':
 				unknown.append(cmd[k][2])
+if faults:
+	# Reading the file wrongly is not a clean result. Every review of this check
+	# has found at least one form it read wrongly, and the miss was invisible
+	# each time because the scan carried on and reported nothing. So the one
+	# thing the scanner can always tell about itself is asserted: a shell script
+	# the shell runs leaves nothing open at its end, and if this scanner has
+	# something open then it is not reading the file the way the shell does.
+	sys.stdout.write('error: this scan did not finish reading the file as a shell'
+		' would, so what it did not report means nothing: %s\n' % '; '.join(faults))
+	sys.exit(1)
 out = 'pattern: %d unguarded' % len(hits)
 if hits:
 	out += ' at line ' + ','.join(str(n) for n in hits)
@@ -21808,8 +22033,13 @@ GPPY
 			??????????*) gp_num=0 ;;
 			*) gp_num=1 ;;
 		esac
+		# A non-zero exit is a failure with a result behind it and not an absence of
+		# one: the scan exits non-zero when it finds it cannot trust its own read of
+		# the file, and it prints what it found on the way. So the message says
+		# failed and carries that output. An earlier version said the check did not
+		# run, which read as though nothing had been looked at.
 		if [ "$gp_rc" != 0 ]; then
-			bad "the grep pattern check did not run (exit ${gp_rc}): $(printf '%s' "$gp_out" | tr '\n' ' ')"
+			bad "the grep pattern check failed (exit ${gp_rc}): $(printf '%s' "$gp_out" | tr '\n' ' ')"
 		elif [ "$gp_num" != 1 ]; then
 			bad "the grep pattern check did not report a usable count of the grep words it examined, so a clean result settles nothing: $(printf '%s' "$gp_out" | tr '\n' ' ')"
 		elif [ "$gp_words" -lt 600 ]; then
@@ -21822,7 +22052,7 @@ GPPY
 			# version of this branch read like a clean result.
 			bad "the grep pattern check examined only ${gp_words} words naming grep of the several hundred this file holds, so nothing it reports settles anything (want 600 or more): $(printf '%s' "$gp_out" | tr '\n' ' ')"
 		elif [ "$gp_found" = '0 unguarded' ]; then
-			ok "no grep call this scan reads takes a variable as its pattern without -e, over ${gp_words} words naming grep examined"
+			ok "no grep call this scan reads takes a variable as its pattern without marking it as one, over ${gp_words} words naming grep examined"
 		else
 			bad "$(printf '%s' "$gp_out" | tr '\n' ' ')"
 		fi
