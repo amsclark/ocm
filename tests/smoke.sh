@@ -21140,9 +21140,12 @@ fi
 # six for \U7FFFFFFF, and one unknown character now stands for each.
 #
 # A doubled parenthesis no longer suppresses a here-document, and which of two things
-# it is is decided rather than guessed for every shape whose text this scan can read.
-# Where that text cannot be read, the doubled parenthesis is read as two of its own,
-# which is the reading that opens a real body. ((1 << 1)) is arithmetic, ((printf o);
+# it is is read from the text rather than guessed. Where that text cannot be read,
+# nothing is decided and the whole scan says so; the thirteenth round answered two
+# parentheses of their own there, which is a reading and not the absence of one, so it
+# opened a body bash does not open and hid a real call below it. A scan that ends with
+# no error is also not proof that it read a shape correctly: three of the four findings
+# of the thirteenth review ended clean. ((1 << 1)) is arithmetic, ((printf o);
 # (printf k)) is two subshells and runs, ((printf ok)) is an arithmetic error, and
 # bash -n accepts all three. Measured over forty-nine inputs: bash reads the text
 # once, left to right, with its quoting tracked and with no redirection read while it
@@ -21197,23 +21200,34 @@ fi
 # although whether an apostrophe inside is a quote mark does turn on that operator.
 # And the parenthesis that ends one pattern of a case statement closes nothing, so
 # reading it as a close ended the scan early and suppressed a here-document bash does
-# open: a case statement written inside a command run in place is now refused rather
-# than guessed at. Refusing is fail closed both ways, because a subscript holding one
-# says the file cannot be read and a doubled parenthesis holding one is read as two of
-# its own.
+# open. The thirteenth round refused such a statement instead of reading one, and
+# called refusing fail closed both ways; the thirteenth review disproved that, because
+# a doubled parenthesis holding one was then read as two of its own, which opened a
+# body bash does not open and hid a real call. The arms of a case statement are now
+# counted inside a command run in place the way the scan of the file around it counts
+# them, by the same two rules: only a word the shell reads in command position is the
+# statement, and only a word written with no quote mark in it. Measured: the statement
+# is read after then, else, elif, do, if, while, until, an exclamation mark, time and
+# an opening brace, and where its own name is split by a line continuation; it is an
+# argument after any other word, including an assignment written before the command,
+# where bash answers that case is not a command it can find.
 #
-# The eighth round said it would be the last to add to what this scan understands, and
-# the thirteenth breaks that: a comment and a ${...} are both text it did not read
-# before, and a case statement is text it now refuses where it used to guess. Nine
-# rounds in, the largest group of findings in each of the last four was the previous
-# round's own fixes, so further capability keeps buying further ways to be wrong, and
-# each of the three changes here was measured against bash over named inputs before it
-# was written rather than reasoned about. What they are measured on is what is claimed
-# for them: the eleven inputs the twelfth review named, forty-eight more written for
-# this round, and the fixtures of the rounds before it. Several findings are left open
-# on purpose and are listed with the other limits above, including the one this round
-# adds: a case statement written inside a subscript now answers that the file cannot
-# be read, which would hide a real call in that one shape. The shell around the scan
+# The eighth round said it would be the last to add to what this scan understands, the
+# thirteenth broke that, and the fourteenth breaks it again, because reading a case
+# statement is more than refusing one. Two of the four findings of the thirteenth
+# review were that round's own regressions: one counted a plain brace inside ${...} as
+# a nesting level, which ended a subscript at a bracket in the next command and so both
+# hid a call and invented one, and one turned text it could not read into a shape it
+# claimed to know, which opened a body bash does not open. The other two were older
+# misses in the text that round had just changed: a line continuation cleared the place
+# a comment begins, and the word case was weighed wherever it stood rather than where
+# the shell reads a command name. All four are repaired here. So further capability
+# keeps buying further ways to be wrong, and each of the four changes here was measured
+# against bash over named inputs before it was written rather than reasoned about. What
+# they are measured on is what is claimed for them: the five inputs the thirteenth
+# review named, twenty-eight more written for this round, and the fixtures of the
+# rounds before it. Several findings are left open on purpose and are listed with the
+# other limits above. The shell around the scan
 # requires exactly one pattern line and one count line, because the two reads below
 # pick their answers out of whatever was printed and would answer a clean result and a
 # clean result followed by anything else the same way.
@@ -21590,11 +21604,19 @@ def lex(src, base=1, faults=None):
 		a quote mark does. The twelfth round read none of these, and a
 		bracket written in one then ended a subscript early, ended it
 		late, or left the wrong operator to read the word after it.
+
+		The first brace outside a quote ends it. A brace written there
+		on its own is one more character of the text and opens nothing
+		to match, which is the rule expansion() reads as well: ${b:-{}
+		is a whole expansion whose default value is a brace. The
+		thirteenth round counted one as a nesting level, stepped over
+		the closing brace, and so ended a subscript at a bracket in the
+		next command: that both hid a call and invented one.
+
 		Returns -1 where the text never ends.
 		"""
-		deep = 0
 		mark = ''
-		j = k + 1
+		j = k + 2
 		while j < n:
 			c = src[j]
 			if mark == "'":
@@ -21626,12 +21648,8 @@ def lex(src, base=1, faults=None):
 					mark = c
 					j += 1
 					continue
-				if c == '{':
-					deep += 1
-				elif c == '}':
-					deep -= 1
-					if not deep:
-						return j + 1
+				if c == '}':
+					return j + 1
 			j += 1
 		return -1
 
@@ -21652,16 +21670,21 @@ def lex(src, base=1, faults=None):
 		begins a word starts a comment to the newline: the twelfth
 		round read the backtick in a comment there as one that
 		opens a command, then closed it at a backtick in a later
-		comment, and the call between them went unread. And a case
-		statement is refused outright rather than guessed at, because
-		the bracket that ends one of its patterns closes nothing and
-		reading it as a close ended the scan early.
+		comment, and the call between them went unread. And the
+		parenthesis that ends a case arm closes nothing, so the arms
+		of a case statement are counted here the way walk() counts
+		them, with the same two rules: only a word the shell reads in
+		command position is the statement, and only a word written
+		with no quote mark in it. The thirteenth round refused the word
+		outright instead, which read a case statement as text that
+		cannot be read at all, and it tested the word wherever it
+		stood, so case after then went unrefused and the arm bracket
+		ended this text early.
 
-		Returns -1 where the text never ends, and where a case
-		statement is written inside. The two callers answer -1 without
-		guessing: a subscript says it cannot be read, and a doubled
-		bracket is read as two brackets of their own, which is what
-		the shell does with the one input measured here.
+		Returns -1 where the text never ends. Its four callers answer
+		-1 without guessing: a subscript and a doubled bracket each
+		say the text cannot be read, and this function and
+		braceskip() hand the answer back to them.
 		"""
 		if src[k] == '`':
 			j = k + 1
@@ -21677,13 +21700,21 @@ def lex(src, base=1, faults=None):
 			return -1
 		deep = 0
 		mark = ''
+		arms = 0
 		# Whether a word has begun here, which is what decides a
-		# comment, and whether this is the place a command name is
-		# written, which is what decides the word case. Blank space
-		# begins a word without beginning a command, so that the
-		# argument in printf case is not read as the statement.
+		# comment; whether the shell reads a command name here, which
+		# is what decides the words case and esac; the word in hand;
+		# and whether it was written with no quote mark in it. Blank
+		# space begins a word without keeping command position, so the
+		# argument in printf case is not the statement, and neither
+		# are "case", 'case', \case and ca"se", while the position is
+		# kept after then and the other words PRECEDE names. A word is
+		# read to its end before it is weighed, so ca\<newline>se is
+		# the statement as well.
 		fresh = True
-		head = True
+		cmdpos = True
+		word = ''
+		bare = True
 		j = k + 1
 		while j < n:
 			c = src[j]
@@ -21693,8 +21724,19 @@ def lex(src, base=1, faults=None):
 				j += 1
 				continue
 			if c == '\\' and j + 1 < n:
+				if src[j + 1] == '\n':
+					# A line continuation is removed before the text is
+					# read, so it adds no character to the word and
+					# leaves the place a word begins where it was. The
+					# thirteenth round cleared that place here, and a
+					# comment written after a continued word then went
+					# unread: its backtick opened a scope that hid a
+					# real call.
+					j += 2
+					continue
 				fresh = False
-				head = False
+				bare = False
+				word += src[j + 1]
 				j += 2
 				continue
 			if mark and c == mark:
@@ -21707,16 +21749,13 @@ def lex(src, base=1, faults=None):
 					return -1
 				j = stop
 				continue
-			if (not mark and head and src[j:j + 4] == 'case'
-					and src[j + 4:j + 5] in ' \t\n'):
-				return -1
 			if c == '`' or (c == '$' and src[j + 1:j + 2] == '('):
 				e = cmdsub(j)
 				if e < 0:
 					return -1
 				j = e
 				fresh = False
-				head = False
+				bare = False
 				continue
 			if c == '$' and src[j + 1:j + 2] == '{':
 				e = braceskip(j)
@@ -21724,45 +21763,49 @@ def lex(src, base=1, faults=None):
 					return -1
 				j = e
 				fresh = False
-				head = False
+				bare = False
 				continue
 			if not mark:
 				if c in '"\'':
 					mark = c
 					fresh = False
-					head = False
+					bare = False
 					j += 1
 					continue
-				if c == '(':
-					deep += 1
+				if c in '()\n;&| \t<>':
+					# The word in hand ends here, so it is weighed here.
+					if cmdpos and bare and word == 'case':
+						arms += 1
+					elif cmdpos and bare and word == 'esac' and arms:
+						arms -= 1
+					if c == ')' and arms and deep == 1:
+						# The parenthesis that ends a case arm. It
+						# closes nothing, and the eleventh round read
+						# one as the end of this text and lost every
+						# call written after the first arm.
+						cmdpos = True
+					elif c == '(':
+						deep += 1
+						cmdpos = True
+					elif c == ')':
+						deep -= 1
+						if not deep:
+							return j + 1
+						cmdpos = True
+					elif c in ' \t':
+						if word:
+							cmdpos = cmdpos and bare and word in PRECEDE
+					elif c in '<>':
+						cmdpos = False
+					else:
+						cmdpos = True
+					word = ''
+					bare = True
 					fresh = True
-					head = True
-					j += 1
-					continue
-				if c == ')':
-					deep -= 1
-					if not deep:
-						return j + 1
-					fresh = True
-					head = True
-					j += 1
-					continue
-				if c in ' \t':
-					fresh = True
-					j += 1
-					continue
-				if c in '\n;&|':
-					fresh = True
-					head = True
-					j += 1
-					continue
-				if c in '<>':
-					fresh = True
-					head = False
 					j += 1
 					continue
 			fresh = False
-			head = False
+			word += c
 			j += 1
 		return -1
 
@@ -22138,6 +22181,13 @@ def lex(src, base=1, faults=None):
 			# read as one of its own. A bracket inside ${...} is text of
 			# that expansion: ((: <<EOF ${b:-)} ); (:)) opens a real body,
 			# exactly as the same line with a plain word there does.
+			#
+			# Where the text inside cannot be read, nothing is decided
+			# and the whole scan says so. The thirteenth round answered
+			# two brackets of their own there, which is a reading, not
+			# an absence of one: it opened a body the shell does not
+			# open, took a later line as the delimiter, and read the
+			# apostrophes of the data as quotes around a real call.
 			deep = 2
 			mark = ''
 			j = k + 1
@@ -22158,12 +22208,20 @@ def lex(src, base=1, faults=None):
 				if c == '`' or (c == '$' and src[j + 1:j + 2] == '('):
 					e = cmdsub(j)
 					if e < 0:
+						faults.append('the doubled parenthesis written'
+							' on line %d holds a command run in place'
+							' that does not end, so whether it is'
+							' arithmetic was not decided' % line)
 						return False
 					j = e
 					continue
 				if c == '$' and src[j + 1:j + 2] == '{':
 					e = braceskip(j)
 					if e < 0:
+						faults.append('the doubled parenthesis written'
+							' on line %d holds an expansion that does'
+							' not end, so whether it is arithmetic was'
+							' not decided' % line)
 						return False
 					j = e
 					continue
