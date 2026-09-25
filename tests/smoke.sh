@@ -21295,11 +21295,16 @@ fi
 # this one, because the sixteenth round's answer was too broad. Written plainly, ten
 # forms open the compound command and take no name: case, if, while, until, for,
 # select, a brace, a parenthesis, a doubled parenthesis and a doubled bracket. Fifteen
-# are a syntax error there, and the sixteenth round named only four of them: the
-# exclamation mark, coproc itself, do, done, elif, else, esac, fi, function, in, then,
-# a closing brace, a doubled closing bracket, a doubled closing parenthesis and a
-# closing parenthesis. Every other plainly written word is the one name if an opener of
-# the first group follows it, and the command name itself if none does. The word time is
+# plainly written words are a syntax error there, and the sixteenth round named only
+# four of them: the exclamation mark, coproc itself, do, done, elif, else, esac, fi,
+# function, in, then, a closing brace, a doubled closing bracket, a doubled closing
+# parenthesis and a closing parenthesis. Fifteen counts the words measured and not
+# every text refused in that place: a control operator there is refused as well,
+# measured for a semicolon, an ampersand, either pipe, the two logical operators, the
+# three arm terminators, a pipe with an ampersand and a clobbering redirection. A
+# here-document operator is the one of those that parses, with only a warning that its
+# body is missing. Every other plainly written word is the one name if an opener of the
+# first group follows it, and the command name itself if none does. The word time is
 # not the reserved word there. Quoting changes the answer for the second group: coproc
 # fi with a brace group after it is refused, and coproc "fi" with the same group after
 # it is accepted and names the coprocess fi, so one quote mark makes a reserved word an
@@ -21331,12 +21336,13 @@ fi
 #
 # Four of those five are repaired and stayed repaired. The fifth, the doubled
 # parenthesis written with a continuation between its halves, was only half repaired:
-# the sixteenth round named the form correctly and then began reading two characters
-# past the first parenthesis, which is the backslash, so the second parenthesis was
-# counted twice and valid shell was reported as a text that does not end. The
-# seventeenth round reads it from the right character. Where that fault is raised
-# inside the body of a here-document it is discarded with the rest of that scan, so
-# what it cost was a call read as none and nothing printed.
+# the sixteenth round named the form correctly and then began reading from the
+# character two past the first parenthesis, which is the newline of that continuation
+# and not the backslash one past it, so the second parenthesis was counted twice and
+# valid shell was reported as a text that does not end. The seventeenth round reads it
+# from the right character. Where that fault is raised inside the body of a
+# here-document it is discarded with the rest of that scan, so what it cost was a call
+# read as none and nothing printed.
 #
 # The sixteenth review supplied five findings of its own. One is the half repair above.
 # One is older than both rounds: the reader of an ANSI-C quote resolved the control
@@ -21345,12 +21351,19 @@ fi
 # in two passes that do not agree, and this round reads it in two as well: the end is
 # found by one rule only, a backslash takes the one character after it, and the escapes
 # are resolved afterwards over the text between the marks. The same measurement, over
-# eighty-seven characters, corrected the value the control escape produces: it is the
-# upper case of the one character after it with every bit above the low five dropped,
-# and a question mark is the single exception. Turning the bit at hex 40 instead, which
-# every round up to the sixteenth did, gives a printable character where bash gives a
-# null; a null ends the word, so gr$'ep\c f' calls grep and was read as a call of
-# something else, and its pattern went unexamined. The other three findings
+# eighty-seven characters, corrected the value the control escape produces, and the
+# eighteenth round corrected it again: the escape works over bytes and not characters.
+# It takes the first byte of whatever follows, drops every bit above the low five, and
+# keeps the remaining bytes of that character as text. A question mark is answered with
+# the byte at hex 7f, and a backslash written twice is one backslash and takes both.
+# The bytes hex 01 and hex 7f are answered with hex 01 and are not consumed at all,
+# because bash marks those two inside a word and the mark is what the escape resolves.
+# No case is folded, because dropping the bits above the low five already drops the one
+# that carries case: both spellings of a letter give the same byte, measured. Turning
+# the bit at hex 40 instead, which every round up to the sixteenth did, gives a
+# printable byte where bash gives a null. The null ends the quoted value and not the
+# word that holds it: gr$'ep\c f' is the word grep and calls grep, while gr$'ep\c f'X
+# is the word grepX and calls nothing at all. The other three findings
 # were wrong statements in comments rather than faults in the scan: a list of the words
 # a coproc refuses that named four of fifteen, a count of the faults the fifteenth
 # review found in a dollar and a claim about what the opener already did, and the two
@@ -21365,6 +21378,37 @@ fi
 # named above, and six more that the older reader could not finish reading at all, which
 # hold no call and are now answered as none. On each of the fourteen the newer answer is
 # the one bash gives. Nothing else moved.
+#
+# The seventeenth review supplied four findings, and the two that are faults were
+# reproduced here before anything was changed. One is the fallback of a dollar and two
+# parentheses: that round read the form as arithmetic whenever anything at all stood
+# between the parentheses, and bash needs nothing there. The rule the bare doubled
+# parenthesis already followed is the measured one, so this round lifts it out of the
+# reader that reports a call, and the three other places that meet the form ask it now.
+# The other is the control escape above: the value is taken over a byte and not a
+# character, and two raw bytes are answered without being consumed at all. The third
+# finding was that this branch carries three changed files rather than one, which is
+# the fifteenth round's work for the check that needs html5lib rather than new work
+# here. The last three were wrong statements in comments, and are corrected above and
+# in the scan below.
+#
+# This round adds two limits, both in the safe direction. A call written inside an
+# arithmetic body is counted, because the reader that reports a call reads such a body
+# as a command: bash evaluates $(((grep x)); :) as arithmetic and runs nothing, so the
+# count can be one more than the calls made. And where a comment stands in the place the
+# deciding parenthesis would take, the comment eats the parenthesis that would have
+# closed the command substitution, bash answers a bad substitution and runs nothing, and
+# this scan refuses the file rather than printing a count for it. A count that is too
+# high, or no count at all, cannot hide a call; a count that is too low can.
+#
+# The repaired reader was run beside the one it replaces over four thousand three
+# hundred and ten fixtures kept on this machine. They answer differently on one hundred
+# and sixteen of them. On eleven bash refuses the text, so there is no count to match.
+# On ninety-seven the newer count is exactly the number of calls bash makes, and on
+# seven it is one more, every one of the seven the arithmetic body named above. Three
+# of those ninety-seven are files the older reader could not finish reading at all.
+# The last is the comment above, which the older reader answered as no call and
+# this one refuses. Nothing else moved.
 #
 # The shell around the scan requires exactly one pattern line and one count line,
 # because the two reads below pick their answers out of whatever was printed and would
@@ -21606,28 +21650,63 @@ def ansi_value(body):
 			i = p
 			continue
 		if nxt == 'c':
-			# Control-X. Measured over eighty-seven characters: the value is the
-			# upper case of the one character after the c with every bit above
-			# the low five dropped, and a question mark is the single exception,
-			# at hex 7f. Where that escape is the last of the body nothing is
-			# resolved and its two characters stand as themselves. Where the one
-			# character after it is a backslash and another backslash follows
-			# that, both are taken; a lone backslash there is taken as the
-			# character itself, and whatever follows it stands as text, which is
-			# why the body backslash apostrophe gives two bytes and not one.
+			# Control-X, over BYTES. Measured: the value is the first byte of
+			# what follows the c with every bit above the low five dropped, and
+			# a question mark is the single exception, at hex 7f. The bytes of
+			# that character after its first are text and stand as themselves.
+			# Where the escape is the last of the body nothing is resolved and
+			# its two characters stand as themselves. Where the one character
+			# after it is a backslash and another backslash follows that, both
+			# are taken; a lone backslash there is taken as the character
+			# itself, and whatever follows it stands as text, which is why the
+			# body backslash apostrophe gives two bytes and not one.
+			#
+			# Two bytes answer differently. Measured in the arguments a real
+			# process receives: the escape written before a byte of hex 01 or
+			# hex 7f gives hex 01 and consumes none of it, so that byte stands
+			# as itself after the value. Bash marks those two bytes inside a
+			# word as text rather than syntax, and the escape resolves the mark
+			# it added rather than the byte. Nothing else turns on which byte
+			# follows.
 			#
 			# The sixteenth round turned the bit at hex 40 instead of dropping
 			# the high bits. The two agree for a letter and for a question mark,
 			# and not below hex 40: a space and a backtick each make a null
-			# there, and a null ends the word, so the length of a word holding
-			# one was wrong.
+			# there. The seventeenth round dropped the high bits, and asked
+			# Python for the upper case of a CHARACTER, which is a different
+			# question from the one bash answers over a byte. It returns two
+			# characters for the sharp s, which raised a fault and lost the
+			# whole scan of the file holding it, and it folds a dotless i to an
+			# ASCII I, which gives hex 09 where bash gives hex 04. The first
+			# byte of a character written outside ASCII is hex c2 to hex f4, and
+			# of those only hex e0 leaves nothing, so the one shape that cost a
+			# call was a grep whose name is split by a control escape written
+			# before a character whose first byte is hex e0: bash ends the
+			# quoted part there and calls grep. Asking for the upper case of a
+			# byte would have been sound, and is not done because dropping the
+			# high bits already drops the bit that holds the case: a and A both
+			# give hex 01, measured.
 			if i + 2 >= m:
 				out += '\\c'
 				i = m
 				continue
 			x = body[i + 2]
 			step = 4 if x == '\\' and body[i + 3:i + 4] == '\\' else 3
-			out += '\x7f' if x == '?' else chr(ord(x.upper()) & 0x1f)
+			xb = x.encode('utf-8', 'surrogateescape')
+			b0 = xb[0]
+			if b0 == 0x01 or b0 == 0x7f:
+				# The escape resolves the mark and takes no byte of the text.
+				out += '\x01'
+				i += 2
+				continue
+			out += '\x7f' if b0 == 0x3f else chr(b0 & 0x1f)
+			# The bytes of a character past its first are text to bash, so they
+			# are kept. They are written one to a character here, which is the
+			# only way a reader holding characters can hold a byte that is not
+			# one, and it is enough: what the count needs from them is that they
+			# are there and are not part of a name.
+			if len(xb) > 1:
+				out += xb[1:].decode('latin-1')
 			i += step
 			continue
 		out += nxt
@@ -21878,15 +21957,18 @@ def lex(src, base=1, faults=None):
 		the inner closing brace of such an expansion for the outer one, which hid
 		one call and invented another.
 
-		The doubled parenthesis of arithmetic is not a command run in place, and
-		the continuation is removed before that is decided as well: measured,
+		The doubled parenthesis is not always arithmetic, and the continuation
+		is removed before that is decided as well: measured,
 		$ ( \\ newline ( 1 + 1 ) ) is two, and $ ( \\ newline ( printf 5 ) ) fails
 		in the arithmetic reader rather than running printf. So both parentheses
-		are looked for past any continuation, and arithmetic answers empty here.
-		Its parentheses are balanced, so a reader that counts them only to find
-		its own closing character is right without reading the body. The
-		fifteenth round sent this spelling to the reader for a command run in
-		place, which then reported valid shell as a text that does not end.
+		are looked for past any continuation, and arithshape() is asked which of
+		the two readings this is. Arithmetic answers empty here: its parentheses
+		are balanced, so a reader that counts them only to find its own closing
+		character is right without reading the body. The fifteenth round sent
+		this spelling to the reader for a command run in place, which then
+		reported valid shell as a text that does not end; the seventeenth
+		answered empty for every one of them, and the bodies of those that hold
+		a command run in place went unread.
 
 		Returns ('', -1) where the dollar opens none of them.
 		"""
@@ -21896,7 +21978,7 @@ def lex(src, base=1, faults=None):
 			return c, p
 		if c == '(':
 			q, _f2 = unfold(p + 1)
-			if src[q:q + 1] == '(':
+			if src[q:q + 1] == '(' and arithshape(q):
 				return '', -1
 			return '(', p
 		return '', -1
@@ -22211,6 +22293,149 @@ def lex(src, base=1, faults=None):
 			j += 1
 		return -1
 
+	def arithshape(k):
+		# Whether the doubled bracket whose second bracket is at src[k] is
+		# arithmetic rather than two brackets of their own. Both forms ask
+		# here, the bracket that stands as a command and the one a dollar
+		# opens, because measurement says one rule answers for both. The
+		# seventeenth round read every dollar and two brackets as
+		# arithmetic and stepped over the body, so a call written in one
+		# was never examined. Five shapes of it run a real grep: the plain
+		# one, with a continuation between the two brackets, with the
+		# second bracket closed early, with the call written after the
+		# first bracket closes, and twice over with two brackets of their
+		# own. This function stood inside walk() and answered for one form
+		# alone; it is written out here so that opener(), expansion() and
+		# the reader of a word can each ask it.
+		#
+		# Measured over forty-nine inputs: the shell reads the text once, left to right,
+		# with its quoting tracked and with no redirection read while it
+		# does, counting brackets from two, and it decides at the first
+		# bracket that takes the count back to one, by whether the next
+		# character is the bracket that takes it to zero. Nothing written
+		# later moves that answer. So ((1 shifted by 1)) is arithmetic and
+		# opens no body, ((printf o); (printf k)) is two brackets and runs
+		# what is in them, a doubled bracket whose first half opens a body
+		# opens a real one, and ((printf ok)) is an arithmetic error; bash
+		# -n accepts all four. The eighth round read every doubled bracket
+		# as arithmetic, which lost those bodies; the tenth asked instead
+		# whether any line below held the delimiter, and a line of another
+		# body then answered for it and hid a call. The eleventh counted
+		# the brackets of a command run in place, and so answered wrongly
+		# in both directions: a bracket written inside quotes there was
+		# read as one of its own. A bracket inside ${...} is text of
+		# that expansion: ((: <<EOF ${b:-)} ); (:)) opens a real body,
+		# exactly as the same line with a plain word there does.
+		#
+		# Where the text inside cannot be read, nothing is decided
+		# and the whole scan says so. The thirteenth round answered
+		# two brackets of their own there, which is a reading, not
+		# an absence of one: it opened a body the shell does not
+		# open, took a later line as the delimiter, and read the
+		# apostrophes of the data as quotes around a real call.
+		#
+		# Three shapes of the dollar form are neither reading: a
+		# hash, an expansion and a here-document operator written
+		# before the deciding bracket each make a file bash refuses
+		# outright, so nothing in them runs and no answer here can
+		# be wrong about a call. A hash is not read as a comment
+		# here and an expansion is read as a unit, which are the
+		# answers that send the body to be examined, and that is
+		# the side to be wrong on.
+		deep = 2
+		mark = ''
+		j = k + 1
+		while j < n:
+			c = src[j]
+			if mark == "'":
+				if c == "'":
+					mark = ''
+				j += 1
+				continue
+			if c == '\\' and j + 1 < n:
+				j += 2
+				continue
+			if mark and c == mark:
+				mark = ''
+				j += 1
+				continue
+			if c == '`':
+				e = cmdsub(j)
+				if e < 0:
+					faults.append('the doubled parenthesis written'
+						' on line %d holds a command run in place'
+						' that does not end, so whether it is'
+						' arithmetic was not decided' % line)
+					return False
+				j = e
+				continue
+			if c == '$':
+				kind, at2 = opener(j)
+				if kind == '(':
+					e = cmdsub(j, at2)
+					if e < 0:
+						faults.append('the doubled parenthesis'
+							' written on line %d holds a command'
+							' run in place that does not end, so'
+							' whether it is arithmetic was not'
+							' decided' % line)
+						return False
+					j = e
+					continue
+				if kind == "'" and not mark:
+					# An ANSI-C quote. Its escapes decide where it ends, so a
+					# reader that looks for the next apostrophe stops inside
+					# one: $'\\'' holds an apostrophe and does not end there,
+					# and $'\\c'' ends at the second apostrophe, which leaves the
+					# third to open a quote that never closes, so bash refuses the
+					# whole file. Inside any
+					# quote already open the dollar has no such meaning, which
+					# is why this asks for none.
+					e, _b, _nl, shut = ansi_quote(src, at2)
+					if not shut:
+						faults.append('the doubled parenthesis'
+							' written on line %d holds a quote'
+							' that does not end, so whether it'
+							' is arithmetic was not decided'
+							% line)
+						return False
+					j = e
+					continue
+				if kind == '{':
+					e = braceskip(j, at2)
+					if e < 0:
+						faults.append('the doubled parenthesis'
+							' written on line %d holds an'
+							' expansion that does not end, so'
+							' whether it is arithmetic was not'
+							' decided' % line)
+						return False
+					j = e
+					continue
+			if not mark:
+				if c in '"\'':
+					mark = c
+					j += 1
+					continue
+				if c == '(':
+					deep += 1
+				elif c == ')':
+					deep -= 1
+					if deep == 1:
+						# The character that decides is
+						# read past a continuation: a
+						# backslash and a newline written
+						# between this parenthesis and the
+						# next are removed before it is
+						# read. Measured in both forms, and
+						# nothing runs in either.
+						q, _f = unfold(j + 1)
+						return src[q:q + 1] == ')'
+					if deep < 1:
+						return False
+			j += 1
+		return False
+
 	def expansion(p, dquote=False):
 		"""The index past the expansion whose bracket is at src[p].
 
@@ -22379,15 +22604,22 @@ def lex(src, base=1, faults=None):
 		else:
 			stack = [')', ')']
 			nest = True
+			# Arithmetic, and by this point nothing else: the caller has asked
+			# arithshape() which of the two readings the form takes, and the one
+			# that runs a command in place is read by walk() instead. Counting
+			# the two parentheses is right for this one, whose body holds no
+			# call.
+			#
 			# The second parenthesis is looked for past a continuation, because a
 			# backslash and a newline written between the two are removed before
-			# the shell decides this is arithmetic. The sixteenth round decided
-			# that correctly and then began reading two characters past the first
-			# parenthesis, which is the backslash: the second parenthesis was
-			# then counted a second time, the count never came back to nothing,
-			# and valid shell was reported as a text that does not end. Where the
-			# fault is raised inside the body of a here-document it is discarded
-			# with the rest of that scan, so the miss is silent.
+			# the shell decides. The sixteenth round decided that correctly and
+			# then began reading from the character two past the first
+			# parenthesis, which is the newline of that continuation and not the
+			# backslash one past it: the second parenthesis was then counted a
+			# second time, the count never came back to nothing, and valid shell
+			# was reported as a text that does not end. Where the fault is
+			# raised inside the body of a here-document it is discarded with the
+			# rest of that scan, so the miss is silent.
 			q, fold = unfold(p + 1)
 			line += fold
 			j = q + 1
@@ -22460,11 +22692,15 @@ def lex(src, base=1, faults=None):
 							' closed' % line)
 					line += nl
 					continue
-				if nxt == '(' and src[unfold(q + 1)[0]:][:1] != '(':
+				if nxt == '(' and not (src[unfold(q + 1)[0]:][:1] == '('
+						       and arithshape(unfold(q + 1)[0])):
 					# The second parenthesis is looked for past a continuation as
 					# well: measured, $ ( \\ newline ( printf 5 ) ) is arithmetic
 					# and not a command run in place, because the backslash and
-					# newline are removed before that is decided.
+					# newline are removed before that is decided. Finding it does
+					# not settle the reading, so arithshape() is asked as well:
+					# the seventeenth round stopped at that parenthesis and
+					# stepped over the body of every one of them.
 					j = walk(q + 1, ')')
 					continue
 				if nxt and nxt in BRACKET:
@@ -22614,120 +22850,6 @@ def lex(src, base=1, faults=None):
 			q = mark
 			qline = line
 
-		def arithshape(k):
-			# Whether the doubled bracket whose second bracket is at src[k] is
-			# arithmetic rather than two brackets of their own. Measured over
-			# forty-nine inputs: the shell reads the text once, left to right,
-			# with its quoting tracked and with no redirection read while it
-			# does, counting brackets from two, and it decides at the first
-			# bracket that takes the count back to one, by whether the next
-			# character is the bracket that takes it to zero. Nothing written
-			# later moves that answer. So ((1 shifted by 1)) is arithmetic and
-			# opens no body, ((printf o); (printf k)) is two brackets and runs
-			# what is in them, a doubled bracket whose first half opens a body
-			# opens a real one, and ((printf ok)) is an arithmetic error; bash
-			# -n accepts all four. The eighth round read every doubled bracket
-			# as arithmetic, which lost those bodies; the tenth asked instead
-			# whether any line below held the delimiter, and a line of another
-			# body then answered for it and hid a call. The eleventh counted
-			# the brackets of a command run in place, and so answered wrongly
-			# in both directions: a bracket written inside quotes there was
-			# read as one of its own. A bracket inside ${...} is text of
-			# that expansion: ((: <<EOF ${b:-)} ); (:)) opens a real body,
-			# exactly as the same line with a plain word there does.
-			#
-			# Where the text inside cannot be read, nothing is decided
-			# and the whole scan says so. The thirteenth round answered
-			# two brackets of their own there, which is a reading, not
-			# an absence of one: it opened a body the shell does not
-			# open, took a later line as the delimiter, and read the
-			# apostrophes of the data as quotes around a real call.
-			deep = 2
-			mark = ''
-			j = k + 1
-			while j < n:
-				c = src[j]
-				if mark == "'":
-					if c == "'":
-						mark = ''
-					j += 1
-					continue
-				if c == '\\' and j + 1 < n:
-					j += 2
-					continue
-				if mark and c == mark:
-					mark = ''
-					j += 1
-					continue
-				if c == '`':
-					e = cmdsub(j)
-					if e < 0:
-						faults.append('the doubled parenthesis written'
-							' on line %d holds a command run in place'
-							' that does not end, so whether it is'
-							' arithmetic was not decided' % line)
-						return False
-					j = e
-					continue
-				if c == '$':
-					kind, at2 = opener(j)
-					if kind == '(':
-						e = cmdsub(j, at2)
-						if e < 0:
-							faults.append('the doubled parenthesis'
-								' written on line %d holds a command'
-								' run in place that does not end, so'
-								' whether it is arithmetic was not'
-								' decided' % line)
-							return False
-						j = e
-						continue
-					if kind == "'" and not mark:
-						# An ANSI-C quote. Its escapes decide where it ends, so a
-						# reader that looks for the next apostrophe stops inside
-						# one: $'\\'' holds an apostrophe and does not end there,
-						# and $'\\c'' ends at the second apostrophe, which leaves the
-						# third to open a quote that never closes, so bash refuses the
-						# whole file. Inside any
-						# quote already open the dollar has no such meaning, which
-						# is why this asks for none.
-						e, _b, _nl, shut = ansi_quote(src, at2)
-						if not shut:
-							faults.append('the doubled parenthesis'
-								' written on line %d holds a quote'
-								' that does not end, so whether it'
-								' is arithmetic was not decided'
-								% line)
-							return False
-						j = e
-						continue
-					if kind == '{':
-						e = braceskip(j, at2)
-						if e < 0:
-							faults.append('the doubled parenthesis'
-								' written on line %d holds an'
-								' expansion that does not end, so'
-								' whether it is arithmetic was not'
-								' decided' % line)
-							return False
-						j = e
-						continue
-				if not mark:
-					if c in '"\'':
-						mark = c
-						j += 1
-						continue
-					if c == '(':
-						deep += 1
-					elif c == ')':
-						deep -= 1
-						if deep == 1:
-							return src[j + 1:j + 2] == ')'
-						if deep < 1:
-							return False
-				j += 1
-			return False
-
 		def inarith():
 			# Whether this text is inside a doubled bracket the shell is
 			# reading as arithmetic. The one thing not done there is opening a
@@ -22828,10 +22950,15 @@ def lex(src, base=1, faults=None):
 				line += fold
 				openquote('"')
 				return p + 1
-			if nxt == '(' and src[unfold(p + 1)[0]:][:1] != '(':
+			if nxt == '(' and not (src[unfold(p + 1)[0]:][:1] == '('
+					       and arithshape(unfold(p + 1)[0])):
 				# Arithmetic is left to the parenthesis counting below, and the
 				# second parenthesis is looked for past a continuation: measured,
-				# $ ( \\ newline ( 1 + 1 ) ) is arithmetic.
+				# $ ( \\ newline ( 1 + 1 ) ) is arithmetic. Which of the two this
+				# is takes a scan of the whole form, so arithshape() answers it;
+				# the seventeenth round took the second parenthesis for the
+				# answer, and the call in the shape that is a command run in
+				# place went unread.
 				touch()
 				line += fold
 				j = walk(p + 1, ')')
