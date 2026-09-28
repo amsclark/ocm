@@ -338,39 +338,39 @@ class pikaDocument extends plBase
 	*/
 	public function uploadDoc($file_array = null, $description = null, $parent_folder = null, $doc_type = null, $case_id = null)
 	{
-		/*	Only read a temporary file accepted by PHP's HTTP upload handler.
-			The client file name is document metadata, never a source path.
+		/*	The path is rebuilt from PHP's upload directory and the bare file
+			name, and must equal the one PHP gave. The client file name is
+			document metadata, never a source path.
 		*/
+		$upload_path = '';
+		
+		if (isset($file_array['tmp_name']) && is_string($file_array['tmp_name']))
+		{
+			$upload_dir = (string) ini_get('upload_tmp_dir');
+			
+			if ('' === $upload_dir)
+			{
+				$upload_dir = sys_get_temp_dir();
+			}
+			
+			$upload_dir = rtrim($upload_dir, '/');
+			$upload_path = $upload_dir . '/' . basename((string) $file_array['tmp_name']);
+		}
+		
 		if (isset($file_array['tmp_name']) && isset($file_array['name']) 
 		&& is_string($file_array['tmp_name']) && is_string($file_array['name'])
 		&& isset($file_array['error']) && $file_array['error'] === UPLOAD_ERR_OK
-		&& is_uploaded_file($file_array['tmp_name'])
+		&& $upload_path === $file_array['tmp_name']
+		&& is_uploaded_file($upload_path)
 		&& (!$parent_folder || $this->isFolder($parent_folder))
 		&& !is_null($doc_type)) 
 		{
 			global $auth_row;
-
-			/*	The file is moved to a name the server chose before it is read.
-				Every later read uses that name, never the upload's tmp_name.
-			*/
-			$staged = tempnam(sys_get_temp_dir(), 'ocmup');
-
-			if (false === $staged
-			|| !move_uploaded_file($file_array['tmp_name'], $staged))
-			{
-				if (false !== $staged)
-				{
-					@unlink($staged);
-				}
-
-				return true;
-			}
-
-			$content = file_get_contents($staged);
-
+			
+			$content = file_get_contents($upload_path);
+			
 			if (false === $content)
 			{
-				@unlink($staged);
 				return true;
 			}
 			
@@ -406,7 +406,7 @@ class pikaDocument extends plBase
 			
 			if (function_exists('mime_content_type'))
 			{
-				$detected_type = strtolower((string) @mime_content_type($staged));
+				$detected_type = strtolower((string) @mime_content_type($upload_path));
 			}
 			
 			if ($declared_type && in_array($declared_type,$allowed_mime_types,true))
@@ -430,7 +430,7 @@ class pikaDocument extends plBase
 			$this->created = date('Y-m-d');
 			
 			$extension = strrchr($this->doc_name, '.');
-			$safe_full_path = escapeshellarg($staged);
+			$safe_full_path = escapeshellarg($upload_path);
 			switch ($extension)
 			{
 				//case '.pdf':
@@ -451,7 +451,6 @@ class pikaDocument extends plBase
 			
 				break;
 			}
-			@unlink($staged);
 			$this->doc_text = $contents_text;
 			$this->save();
 		
