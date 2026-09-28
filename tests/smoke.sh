@@ -15753,6 +15753,15 @@ if [ "${#MD_TOK}" -ne 64 ]; then
 	printf '  skip the mac download response check (no csrf token on the page)\n'
 else
 	MD_HDR="$BODY.mac76l"
+	# A table the installation added itself, so 76m can see that the list
+	# is read from the database and not from a fixed set of stock names.
+	# The list is fixed once the script is built, so the table is dropped
+	# straight after the request.
+	SM76_CUSTOM=zz_smoke76_custom
+	if [ "$HAVE_DB" = 1 ]; then
+		adb "DROP TABLE IF EXISTS ${SM76_CUSTOM}" >/dev/null
+		adb "CREATE TABLE ${SM76_CUSTOM} (id INT)" >/dev/null
+	fi
 	curl -s --max-time 30 -b "$COOKIES" -D "$MD_HDR" -o "$BODY" \
 		-X POST \
 		--data-urlencode "_csrf=${MD_TOK}" \
@@ -15760,6 +15769,9 @@ else
 		--data-urlencode 'home_path=/Users/zzsmoke' \
 		--data-urlencode 'password=zzsmokepw' \
 		"$OCM_URL/system-mac_download.php" >/dev/null
+	if [ "$HAVE_DB" = 1 ]; then
+		adb "DROP TABLE IF EXISTS ${SM76_CUSTOM}" >/dev/null
+	fi
 
 	if ! grep -qF '$url' "$BODY"
 	then
@@ -15796,17 +15808,32 @@ else
 	elif printf ',%s,' "$sm76_list" | grep -qF ',doc_storage,'
 	then
 		bad "the generated script's table list includes doc_storage"
+	elif [ "$HAVE_DB" = 1 ] && ! printf ',%s,' "$sm76_list" | grep -qF ",${SM76_CUSTOM},"
+	then
+		bad "the generated script's table list leaves out a table this installation added"
 	else
 		ok "the generated script lists this installation's tables, less doc_storage"
 	fi
 
+	if [ "$HAVE_COMPOSE" != 1 ]; then
+		printf '  skip running the generated script (no compose stack to run it in)\n'
+	else
 	mac_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
 	SM76_DIR="/tmp/zz_csv76_$$"
 	SM76_PORT=18976
 	mac_dex mkdir -p "$SM76_DIR/out" "$SM76_DIR/srv/services"
-	printf '%s\n' '<?php echo json_encode(array("cases", "zz_not_listed", "doc_storage", "../zz_up"));' \
+	# The custom table's name goes in only when it is on the list, so the
+	# expected file set below is the same with and without a database.
+	sm76_offer='"cases", "zz_not_listed", "doc_storage", "../zz_up"'
+	sm76_want='cases.csv'
+	if printf ',%s,' "$sm76_list" | grep -qF ",${SM76_CUSTOM},"; then
+		sm76_offer="${sm76_offer}, \"${SM76_CUSTOM}\""
+		sm76_want="cases.csv ${SM76_CUSTOM}.csv"
+	fi
+	printf '<?php echo json_encode(array(%s));\n' "$sm76_offer" \
 		| mac_dex sh -c "cat > '$SM76_DIR/srv/services/table_listing.php'"
-	printf '%s\n' '<?php echo "id\n1\n";' \
+	# Each table gets its own body, so a file with the wrong or no data fails.
+	printf '%s\n' '<?php echo "id,name\n1,", preg_replace("/[^a-z0-9_]/", "", (string) ($_GET["action"] ?? "")), "\n";' \
 		| mac_dex sh -c "cat > '$SM76_DIR/srv/services/csv.php'"
 	awk -v u="\$url = 'http://127.0.0.1:${SM76_PORT}';" \
 		-v s="\$save_folder_path = '${SM76_DIR}/out';" \
@@ -15819,12 +15846,18 @@ else
 	mac_dex php -r 'for ($i = 0; $i < 20; $i++) { if (@fsockopen("127.0.0.1", '"$SM76_PORT"')) exit(0); usleep(250000); } exit(1);'
 	SM76_OUT="$(mac_dex php "$SM76_DIR/run.php" 2>&1)"
 	SM76_FILES="$(mac_dex sh -c "ls -A '$SM76_DIR/out' | tr '\n' ' '; ls -A '$SM76_DIR' | tr '\n' ' '")"
+	# Every written file must hold exactly the body served for its table.
+	SM76_BYTES="$(mac_dex sh -c "cd '$SM76_DIR/out' && for f in *.csv; do \
+		t=\${f%.csv}; printf 'id,name\n1,%s\n' \"\$t\" | cmp -s - \"\$f\" || echo \"\$f\"; done")"
 	mac_dex sh -c "kill \$(cat '$SM76_DIR/pid')" >/dev/null 2>&1
 	mac_dex rm -rf -- "$SM76_DIR"
 
-	if [ "$SM76_FILES" != "cases.csv out pid run.php srv " ]
+	if [ "$SM76_FILES" != "${sm76_want} out pid run.php srv " ]
 	then
 		bad "the generated script wrote files it should not have (${SM76_FILES}) (${SM76_OUT:0:200})"
+	elif [ -n "$SM76_BYTES" ]
+	then
+		bad "the generated script saved the wrong data in ${SM76_BYTES}"
 	elif [ "$(printf '%s\n' "$SM76_OUT" | grep -cF 'outside the export list')" -ne 2 ]
 	then
 		bad "the generated script did not skip both names outside its list (${SM76_OUT:0:200})"
@@ -15832,7 +15865,8 @@ else
 	then
 		bad "the generated script did not skip the traversal name (${SM76_OUT:0:200})"
 	else
-		ok "the generated script exported only the listed table the server offered"
+		ok "the generated script exported only the listed tables the server offered (${sm76_want})"
+	fi
 	fi
 	rm -f -- "$MD_HDR"
 fi
