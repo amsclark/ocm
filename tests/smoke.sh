@@ -4212,15 +4212,55 @@ echo "22. force_https refuses to serve the page over plain HTTP"
 #
 # The redirect target also came from $_SERVER['SERVER_NAME'], which Apache
 # fills from the request's Host header, and it was built as "https://" . that,
-# so redirects now require a configured canonical_url.
+# so redirects now require a configured canonical_url. The path comes from the
+# base_url setting and a page name from the server's own listing; anything else
+# goes to the application root. The checks compare the whole Location.
 if [ "$HAVE_DB" = 1 ]; then
 	FH_HDR="${BODY}.hdr"
 
+	# The section sets canonical_url itself, so save the row to put it back.
+	# HEX() keeps the value byte for byte through the shell. FH_CANON_HAD is
+	# 0 or 1 when the read worked; anything else leaves the row alone.
+	FH_CANON_HAD="$(adb "SELECT COUNT(*) FROM settings WHERE label='canonical_url'")"
+	FH_CANON_HEX="$(adb "SELECT HEX(value) FROM settings WHERE label='canonical_url'")"
+
 	restore_https() {
 		adb "UPDATE settings SET value='0' WHERE label='force_https'" >/dev/null
+		case "$FH_CANON_HAD" in
+			0) adb "DELETE FROM settings WHERE label='canonical_url'" >/dev/null ;;
+			1) adb "REPLACE INTO settings (label, value) VALUES ('canonical_url', UNHEX('${FH_CANON_HEX}'))" >/dev/null ;;
+		esac
 		rm -f -- "$FH_HDR"
 	}
 	trap 'base_cleanup; restore_https' EXIT
+
+	# $1 the URL, then any extra curl arguments. Leaves the status code in
+	# FH_CODE, curl's exit status in FH_RC and the Location value, without
+	# its "Location: " name, in FH_LOC. The body goes to $BODY.
+	fh_get() {
+		local url="$1"
+		shift
+		rm -f -- "$FH_HDR"
+		: > "$BODY"
+		FH_CODE="$(curl -s -D "$FH_HDR" -o "$BODY" -w '%{http_code}' --max-time 30 \
+			"$@" "$url")"
+		FH_RC=$?
+		FH_LOC="$(grep -i '^location:' "$FH_HDR" 2>/dev/null | tr -d '\r' | head -1 \
+			| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+	}
+
+	# $1 what the request was, $2 the exact Location it must get.
+	fh_expect() {
+		if [ "$FH_RC" != 0 ]; then
+			bad "force_https, $1: curl failed (exit ${FH_RC}, HTTP ${FH_CODE})"
+		elif [ "$FH_CODE" != 302 ]; then
+			bad "force_https, $1: not redirected (${FH_CODE})"
+		elif [ "$FH_LOC" = "$2" ]; then
+			ok "force_https, $1: redirects to exactly $2"
+		else
+			bad "force_https, $1: redirects to '${FH_LOC}', not '$2'"
+		fi
+	}
 
 	# The session cookie must NOT be marked Secure on a plain-HTTP request.
 	# php.ini deliberately leaves session.cookie_secure unset, because a
@@ -4246,48 +4286,94 @@ if [ "$HAVE_DB" = 1 ]; then
 		*)              bad "the session cookie is not SameSite=Lax (rebuild the image?)" ;;
 	esac
 
-	adb "UPDATE settings SET value='1' WHERE label='force_https'" >/dev/null
-	FH_CODE="$(curl -s -D "$FH_HDR" -o "$BODY" -w '%{http_code}' --max-time 30 "${OCM_URL}/")"
-	FH_LOC="$(grep -i '^location:' "$FH_HDR" | tr -d '\r')"
+	case "$FH_CANON_HAD" in
+		0|1) FH_CANON_READ=1 ;;
+		*)   FH_CANON_READ=0
+		     bad "could not read the canonical_url row, so force_https was not tested" ;;
+	esac
 
-	FH_CANONICAL="$(adb "SELECT value FROM settings WHERE label='canonical_url'")"
-	if [ -z "$FH_CANONICAL" ]; then
-		if [ "$FH_CODE" = 403 ] && [ -z "$FH_LOC" ] \
+	if [ "$FH_CANON_READ" = 1 ]; then
+		adb "UPDATE settings SET value='1' WHERE label='force_https'" >/dev/null
+
+		# Without canonical_url there is no host the redirect may use.
+		adb "DELETE FROM settings WHERE label='canonical_url'" >/dev/null
+		fh_get "${OCM_URL}/"
+		if [ "$FH_RC" = 0 ] && [ "$FH_CODE" = 403 ] && [ -z "$FH_LOC" ] \
 			&& grep -qi '^content-type: text/plain' "$FH_HDR" \
-			&& grep -qF 'canonical_url' "$BODY"; then
+			&& grep -qF -e 'canonical_url' "$BODY"; then
 			ok "force_https refuses plain HTTP and asks for canonical_url when unset"
 		else
-			bad "force_https without canonical_url did not return plain-text 403 (${FH_CODE})"
-		fi
-	else
-		if [ "$FH_CODE" = '302' ]; then
-			ok "a plain-HTTP request is redirected when force_https is on"
-		else
-			bad "a plain-HTTP request is not redirected when force_https is on (${FH_CODE})"
+			bad "force_https without canonical_url did not return plain-text 403 (${FH_CODE}, curl exit ${FH_RC})"
 		fi
 
-		# The redirect must use HTTPS to avoid redirecting to this HTTP page.
-		case "$FH_LOC" in
-			*https://*) ok "the force_https redirect targets https" ;;
-			*)          bad "the force_https redirect does not target https (${FH_LOC})" ;;
-		esac
+		# Stored with an http scheme and a trailing slash, as an admin may type
+		# it: the redirect must still be https and must not double the slash.
+		FH_CANON_HOST='ocm-canonical.smoke.invalid'
+		FH_ORIGIN="https://${FH_CANON_HOST}"
+		adb "INSERT INTO settings (label, value) VALUES ('canonical_url', 'http://${FH_CANON_HOST}/')" >/dev/null
+		# The path base_url gives this deployment, taken from OCM_URL so the
+		# check does not have to know it: "http://host:port/cms" -> "/cms".
+		FH_PREFIX="$(printf '%s' "$OCM_URL" \
+			| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]*##' -e 's#/*$##')"
+		# The Host header curl sends by default:
+		# "http://host:port/cms" -> "host:port".
+		FH_REQ_HOST="$(printf '%s' "$OCM_URL" \
+			| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*$##')"
+		FH_FORGED='forged-host.smoke.invalid'
 
-		if [ "$(wc -c < "$BODY")" -eq 0 ]; then
-			ok "the redirect serves no page body over plain HTTP"
+		if [ "$(adb "SELECT value FROM settings WHERE label='canonical_url'")" \
+			!= "http://${FH_CANON_HOST}/" ]; then
+			bad "could not set canonical_url for the force_https redirect checks"
 		else
-			bad "the redirect still serves a page body over plain HTTP ($(wc -c < "$BODY") bytes)"
+			fh_get "${OCM_URL}/"
+			fh_expect "the application root" "${FH_ORIGIN}${FH_PREFIX}/"
+			if [ "$FH_RC" = 0 ] && [ "$(wc -c < "$BODY")" -eq 0 ]; then
+				ok "the redirect serves no page body over plain HTTP"
+			else
+				bad "the redirect still serves a page body over plain HTTP ($(wc -c < "$BODY") bytes)"
+			fi
+			if printf '%s' "$FH_LOC" | grep -qF -e "$FH_REQ_HOST"; then
+				bad "the force_https redirect names the request's host (${FH_LOC})"
+			else
+				ok "the force_https redirect does not name the request's host"
+			fi
+
+			# (a) A real page keeps its name and its rebuilt query.
+			fh_get "${OCM_URL}/case.php?case_id=5"
+			fh_expect "a real page with a query" \
+				"${FH_ORIGIN}${FH_PREFIX}/case.php?case_id=5"
+
+			# (b) A path that is not a page goes to the root. nope.php
+			# would get a 404 from Apache before PHP runs, so the hostile
+			# part goes in PATH_INFO after a real page. PHP sees it in
+			# REQUEST_URI.
+			fh_get "${OCM_URL}/index.php//evil.example/x"
+			fh_expect "a hostile path" "${FH_ORIGIN}${FH_PREFIX}/"
+			if printf '%s' "$FH_LOC" | grep -qF -e 'evil.example'; then
+				bad "the force_https redirect carries the hostile path (${FH_LOC})"
+			fi
+
+			# A forged Host header must not reach the Location.
+			fh_get "${OCM_URL}/case.php?case_id=5" -H "Host: ${FH_FORGED}"
+			fh_expect "a forged Host header" \
+				"${FH_ORIGIN}${FH_PREFIX}/case.php?case_id=5"
+			if printf '%s' "$FH_LOC" | grep -qF -e "$FH_FORGED"; then
+				bad "the force_https redirect names the forged Host (${FH_LOC})"
+			else
+				ok "the force_https redirect does not name the forged Host"
+			fi
 		fi
 	fi
 
 	# Positive control: with the setting back off the page must still render,
 	# or the checks above only prove the site is down.
 	restore_https
-	FH_OFF="$(curl -s -o "$BODY" -w '%{http_code}' --max-time 30 "${OCM_URL}/")"
+	fh_get "${OCM_URL}/"
 
-	if [ "$FH_OFF" = '200' ] && [ "$(wc -c < "$BODY")" -gt 500 ]; then
+	if [ "$FH_RC" = 0 ] && [ "$FH_CODE" = '200' ] && [ "$(wc -c < "$BODY")" -gt 500 ]; then
 		ok "the login page still renders with force_https off"
 	else
-		bad "the login page no longer renders with force_https off (${FH_OFF})"
+		bad "the login page no longer renders with force_https off (${FH_CODE}, curl exit ${FH_RC})"
 	fi
 
 	trap base_cleanup EXIT
