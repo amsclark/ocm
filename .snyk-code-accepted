@@ -57,9 +57,6 @@ php/OR | cms/pika-danio.php | 1 | The redirect target is pl_canonical_origin("ht
 php/FileInclusion | cms/pm.php | 2 | pm.php decodes the path, strips traversal, refuses the request if any remains, then holds every segment to [a-zA-Z0-9._-], so no segment can carry a separator or a null byte. The extension directory must appear in the parsed extensions setting (in_array, strict) and the target must end in .php.
 php/PT | cms/ops/update_extensions.php | 1 | The POST field name is held to preg_match(#^(/[A-Za-z0-9._-]+)+$#), then each / segment is rejected if it is . or .., before any path is built from it. Traversal, a bare separator, a null byte and the : that separates entries are all refused.
 php/PT | cms/ops/upload_document.php | 1 | This call hands the upload array to pikaDocument::uploadDoc(), which derives the stored filename itself rather than taking the client-supplied name as a path. The name here never reaches a filesystem path unchecked.
-php/Sqli | cms/ops/vcal.php | 1 | pikaCms::fetchCaseList() escapes every filter value with DB::escapeString() on the way in, and the case_id branch additionally interpolates "(int) $filter[case_id]". A cast to int cannot carry SQL.
-php/XSS | cms/app/lib/pl.php | 2 | Both sites are the reauthentication form. The action comes from pl_reauth_self_action(), which htmlspecialchars SCRIPT_NAME plus QUERY_STRING; owner, scope and error are escaped into $safe_* before use; and carried POST fields go through pl_csrf_carry_hidden_inputs(), which escapes both name and value with ENT_QUOTES|ENT_HTML5 and drops names containing "password". No request value reaches this markup unescaped.
-php/XSS | cms/pika_cms.php | 1 | The flagged echo is $esc($title) . " : " . $esc($message) . " <br> " . $d -- both interpolated values go through the escaper held in $esc, and $d was escaped field by field above it.
 
 # --- Not a finding ---
 
