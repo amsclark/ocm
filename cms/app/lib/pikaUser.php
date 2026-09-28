@@ -27,7 +27,9 @@ class pikaUser extends plBase
 		written since. On the replay floor that means an older value returning,
 		which is the one direction it must never move in.
 	*/
-	protected $never_write_columns = array('totp_secret','totp_enabled','totp_last_used');
+	protected $never_write_columns = array(
+		'totp_secret','totp_enabled','totp_last_used'
+	);
 	
 	public function __construct($user_id = null)
 	{

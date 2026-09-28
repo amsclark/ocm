@@ -27268,8 +27268,9 @@ fi
 if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	# The same fixture pattern as section 105: a name carrying the process id
 	# and a random number, matched together with the id in every statement
-	# that reads or changes the row, apart from the MAX and the INSERT that
-	# have nothing to match on yet.
+	# this section writes, apart from the MAX and the INSERT that have nothing
+	# to match on yet. The model's own load and save go by the id alone; the
+	# id is checked to belong to this run's name before the model is used.
 	sm110_user="zzmfacol_${$}_${RANDOM}"
 	sm110_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	case "$sm110_uid" in
@@ -27333,20 +27334,57 @@ print "SAVED";' "$sm110_uid" "$sm110_user" 2>/dev/null)"
 
 		adb "DELETE FROM users WHERE user_id = ${sm110_uid}
 			AND username = '${sm110_user}'" >/dev/null 2>&1
+		sm110_left="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm110_uid} AND username = '${sm110_user}'")"
+		if [ "$sm110_left" != 0 ]; then
+			bad "the MFA column fixture user ${sm110_user} was not deleted"
+		fi
 	fi
-fi
 
-# The same exclusion has to hold on the INSERT the model builds for a new user,
-# or a posted MFA value could reach the table on account creation. That half is
-# read from the source, because creating an account through the model needs
-# the whole of the admin form around it.
-if grep -qF 'dataBuildFieldList($data,$this->never_write_columns)' \
-	cms/app/lib/plBase.php \
-	&& grep -qF "array('totp_secret','totp_enabled','totp_last_used')" \
-	cms/app/lib/pikaUser.php; then
-	ok "the model's INSERT leaves out the three MFA columns as its UPDATE does"
-else
-	bad "the model's INSERT no longer leaves out the three MFA columns"
+	# The same exclusion has to hold on the INSERT the model builds for a new
+	# user, or a posted MFA value could reach the table on account creation.
+	# The model creates this one itself, so the id is only known afterwards;
+	# the three MFA columns default to NULL, so NULL is what an INSERT that
+	# left them out stores.
+	sm110_new="zzmfains_${$}_${RANDOM}"
+	sm110_nid="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+require_once("app/lib/pikaUser.php");
+$u = new pikaUser();
+$u->username = $argv[1];
+$u->password = "x";
+$u->first_name = "inserted";
+$u->totp_secret = "zzposted";
+$u->totp_enabled = 1;
+$u->totp_last_used = 300;
+$u->save();
+print (int) $u->user_id;' "$sm110_new" 2>/dev/null)"
+	case "$sm110_nid" in
+		''|0|*[!0-9]*) sm110_nid='' ;;
+	esac
+	if [ -z "$sm110_nid" ]; then
+		bad "creating a user through the model returned no id, so its INSERT was not checked"
+	else
+		sm110_nrow="$(adb "SELECT CONCAT_WS('|', first_name,
+			IFNULL(totp_enabled, 'null'), IFNULL(totp_secret, 'null'),
+			IFNULL(totp_last_used, 'null')) FROM users
+			WHERE user_id = ${sm110_nid} AND username = '${sm110_new}'")"
+		if [ "$sm110_nrow" = 'inserted|null|null|null' ]; then
+			ok "creating a user through the model leaves out the three MFA columns"
+		else
+			bad "creating a user through the model: expected 'inserted|null|null|null', found '$sm110_nrow'"
+		fi
+		adb "DELETE FROM users WHERE user_id = ${sm110_nid}
+			AND username = '${sm110_new}'" >/dev/null 2>&1
+		sm110_left="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm110_nid} AND username = '${sm110_new}'")"
+		if [ "$sm110_left" != 0 ]; then
+			bad "the model-created fixture user ${sm110_new} was not deleted"
+		fi
+	fi
 fi
 
 echo
