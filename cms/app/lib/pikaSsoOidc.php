@@ -42,6 +42,10 @@
 
 require_once(dirname(__FILE__) . '/DB.php');
 
+/*	Stored users.auth_method values, shared by SSO checks and account forms. */
+const PL_AUTH_METHOD_PASSWORD = 'password';
+const PL_AUTH_METHOD_SSO = 'sso';
+
 
 if (!class_exists('plSsoTokenException'))
 {
@@ -1137,7 +1141,7 @@ if (!function_exists('pl_sso_user_is_sso'))
 			if ($result && DBResult::numRows($result) == 1)
 			{
 				$row = DBResult::fetchRow($result);
-				$cache[$user_id] = ('sso' === (string) $row['auth_method']);
+				$cache[$user_id] = (PL_AUTH_METHOD_SSO === (string) $row['auth_method']);
 			}
 		}
 		

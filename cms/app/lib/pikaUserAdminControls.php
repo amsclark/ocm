@@ -125,18 +125,19 @@ if (!function_exists('pl_sso_admin_control'))
 			return '';
 		}
 	
-		$method = isset($values['auth_method']) ? (string) $values['auth_method'] : 'password';
+		$method = isset($values['auth_method'])
+			? (string) $values['auth_method'] : PL_AUTH_METHOD_PASSWORD;
 	
-		if ('sso' !== $method)
+		if (PL_AUTH_METHOD_SSO !== $method)
 		{
-			$method = 'password';
+			$method = PL_AUTH_METHOD_PASSWORD;
 		}
 	
 		$subject = isset($values['sso_subject']) ? (string) $values['sso_subject'] : '';
 	
 		$options = array(
-			'password' => 'Password (and MFA, if set up)',
-			'sso'      => 'Single sign-on'
+			PL_AUTH_METHOD_PASSWORD => 'Password (and MFA, if set up)',
+			PL_AUTH_METHOD_SSO      => 'Single sign-on'
 		);
 	
 		$html = 'Sign-in Method:<br/>'
@@ -155,14 +156,14 @@ if (!function_exists('pl_sso_admin_control'))
 				. '<input type="text" name="sso_subject" id="sso_subject" size="48" value="'
 				. pl_html_escape($subject) . '"/><br/>';
 	
-		if ('sso' === $method && 0 === strlen($subject))
+		if (PL_AUTH_METHOD_SSO === $method && 0 === strlen($subject))
 		{
 			$status = 'Single sign-on is selected but no subject is stored. This account '
 				. 'cannot sign in until the subject is filled in, or until it binds itself '
 				. 'through the identity provider if automatic binding by email is on.';
 		}
 	
-		elseif ('sso' === $method)
+		elseif (PL_AUTH_METHOD_SSO === $method)
 		{
 			$status = 'This account signs in at the identity provider. The password form '
 				. 'refuses it.';
