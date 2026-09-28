@@ -21163,14 +21163,15 @@ fi
 # no error is also not proof that it read a shape correctly: three of the four findings
 # of the thirteenth review ended clean. ((1 << 1)) is arithmetic, ((printf o);
 # (printf k)) is two subshells and runs, ((printf ok)) is an arithmetic error, and
-# bash -n accepts all three. Measured over forty-nine inputs: bash reads the text
-# once, left to right, with its quoting tracked and with no redirection read while it
-# does, counting parentheses from two, and it decides at the first parenthesis that
-# takes the count back to one, by whether the next character is the one that takes it
-# to zero. Nothing written later moves that answer. So ((1 << 1)) opens no body, and
-# ((cat <<EOF); (:)) opens a real one. The text inside a command run in place is read
-# on its own while that count is kept, because a parenthesis written inside quotes
-# there is one more character of a word and closes nothing.
+# bash -n accepts all three. For the measured forms without a hash before the decision,
+# bash reads the text once, left to right, with its quoting tracked and with no
+# redirection read while it does, counting parentheses from two. At the first
+# parenthesis that takes the count back to one, it decides by whether the next
+# character takes it to zero. Nothing written later moves that answer. So ((1 << 1))
+# opens no body, and ((cat <<EOF); (:)) opens a real one. The text inside a command run
+# in place is read on its own while that count is kept. A parenthesis inside quotes
+# there is one more character of a word and closes nothing. A hash can change that
+# reading, so the scan refuses an unquoted, unescaped hash before the decision.
 #
 # The tenth review supplied four findings, and three of them were the ninth round's
 # own fixes. Two came from one root: that round had asked instead whether any line
@@ -21394,12 +21395,14 @@ fi
 #
 # This round adds two limits, both in the safe direction. A call written inside an
 # arithmetic body is counted, because the reader that reports a call reads such a body
-# as a command: bash evaluates $(((grep x)); :) as arithmetic and runs nothing, so the
-# count can be one more than the calls made. And where a comment stands in the place the
-# deciding parenthesis would take, the comment eats the parenthesis that would have
-# closed the command substitution, bash answers a bad substitution and runs nothing, and
-# this scan refuses the file rather than printing a count for it. A count that is too
-# high, or no count at all, cannot hide a call; a count that is too low can.
+# as a command: $(((grep x)); :) is a command substitution holding the arithmetic
+# command ((grep x)) and the command :. Bash reports an arithmetic error, then runs :,
+# but runs no grep, so the count can be one more than the calls made. A comment can
+# change how bash reads the doubled parenthesis. The quoted form in the eighteenth
+# review runs grep; the same form without the outer quotes gives a bad substitution.
+# This scan refuses an unquoted, unescaped hash before it decides between the two
+# readings. A count that is too high, or no count at all, cannot hide a call; a count
+# that is too low can.
 #
 # The repaired reader was run beside the one it replaces over four thousand three
 # hundred and ten fixtures kept on this machine. They answer differently on one hundred
@@ -21860,7 +21863,7 @@ def fdname(word):
 		and all(ch in NAME for ch in name))
 
 
-def lex(src, base=1, faults=None):
+def lex(src, base=1, faults=None, arithfaults=None):
 	"""Every command in the source as a list of words, each word with its own line.
 
 	One pass, left to right. Three questions decide what this section reports --
@@ -21919,12 +21922,17 @@ def lex(src, base=1, faults=None):
 	holds calls worth examining, and the words that come out of the others are
 	counted but mean nothing. An apostrophe in a python program is not a fault in
 	this scanner, so a body is read with a fault list of its own that is dropped.
+	A hash before a doubled-parenthesis decision is different: a body can hold a
+	shell script whose calls that decision would hide. Its refusal list is shared
+	with the outer scan, so dropping syntax faults cannot drop that refusal too.
 	"""
 	cmds = []
 	line = base
 	n = len(src)
 	if faults is None:
 		faults = []
+	if arithfaults is None:
+		arithfaults = faults
 
 	def unfold(k):
 		"""Index past the line continuations at src[k], and the newlines crossed.
@@ -22297,7 +22305,8 @@ def lex(src, base=1, faults=None):
 		# Whether the doubled bracket whose second bracket is at src[k] is
 		# arithmetic rather than two brackets of their own. Both forms ask
 		# here, the bracket that stands as a command and the one a dollar
-		# opens, because measurement says one rule answers for both. The
+		# opens. Their parenthesis decisions agree in the measured forms
+		# without a hash; a hash before that decision is refused below. The
 		# seventeenth round read every dollar and two brackets as
 		# arithmetic and stepped over the body, so a call written in one
 		# was never examined. Five shapes of it run a real grep: the plain
@@ -22308,7 +22317,8 @@ def lex(src, base=1, faults=None):
 		# alone; it is written out here so that opener(), expansion() and
 		# the reader of a word can each ask it.
 		#
-		# Measured over forty-nine inputs: the shell reads the text once, left to right,
+		# For the measured forms without a hash before the decision,
+		# the shell reads the text once, left to right,
 		# with its quoting tracked and with no redirection read while it
 		# does, counting brackets from two, and it decides at the first
 		# bracket that takes the count back to one, by whether the next
@@ -22334,14 +22344,18 @@ def lex(src, base=1, faults=None):
 		# open, took a later line as the delimiter, and read the
 		# apostrophes of the data as quotes around a real call.
 		#
-		# Three shapes of the dollar form are neither reading: a
-		# hash, an expansion and a here-document operator written
-		# before the deciding bracket each make a file bash refuses
-		# outright, so nothing in them runs and no answer here can
-		# be wrong about a call. A hash is not read as a comment
-		# here and an expansion is read as a unit, which are the
-		# answers that send the body to be examined, and that is
-		# the side to be wrong on.
+		# Bash refuses these exact forms: v=$((grep x # )); :),
+		# v=$((grep x ${z:-)}); :), and v=$((grep x <<EOF)); :)
+		# followed by a newline, body, a newline, EOF and a newline.
+		# It accepts v=$((grep x ${z:-}) ; :). A comment ending at a
+		# newline before ) ; :) is valid too, as is a here-document
+		# whose delimiter ends before ) ; :). Each can run grep.
+		# A hash can change which parentheses bash counts: the quoted
+		# form in the eighteenth review runs grep, while the same form
+		# without the outer quotes gives a bad substitution. This reader
+		# refuses an unquoted, unescaped hash before the decision rather
+		# than risk skipping a call. That also refuses valid arithmetic
+		# such as $((16#ff)); the count must not be lower than bash's.
 		deep = 2
 		mark = ''
 		j = k + 1
@@ -22413,6 +22427,11 @@ def lex(src, base=1, faults=None):
 					j = e
 					continue
 			if not mark:
+				if c == '#':
+					arithfaults.append('the doubled parenthesis written'
+						' on line %d holds a hash before its reading'
+						' is decided, so the scan refuses the file' % line)
+					return False
 				if c in '"\'':
 					mark = c
 					j += 1
@@ -22607,8 +22626,9 @@ def lex(src, base=1, faults=None):
 			# Arithmetic, and by this point nothing else: the caller has asked
 			# arithshape() which of the two readings the form takes, and the one
 			# that runs a command in place is read by walk() instead. Counting
-			# the two parentheses is right for this one, whose body holds no
-			# call.
+			# the two parentheses is right for this one. Command substitutions
+			# inside it still run and must be scanned: $(( $(grep x) + 1 ))
+			# runs grep once.
 			#
 			# The second parenthesis is looked for past a continuation, because a
 			# backslash and a newline written between the two are removed before
@@ -22670,7 +22690,7 @@ def lex(src, base=1, faults=None):
 				body = src[j + 1:end - 1] if end > j + 1 else ''
 				if body:
 					cmds.extend(lex(backtick_body(body, indq()) + '\n',
-						line, faults))
+						line, faults, arithfaults))
 				line += nl
 				j = end
 				continue
@@ -22856,7 +22876,7 @@ def lex(src, base=1, faults=None):
 			# here-document: a left shift is valid arithmetic, and reading its
 			# operator as one left a body open to the end of the file and
 			# failed the whole scan on a valid line. The text itself is still
-			# read as commands, because arithmetic holds no call to miss.
+			# read as commands, including substitutions that can run a call.
 			return arith is not None and depth > arith
 
 		def heredocs(k):
@@ -22918,7 +22938,8 @@ def lex(src, base=1, faults=None):
 					faults.append('the here-document body that begins on line %d does'
 						' not end with its delimiter' % first)
 				if body:
-					cmds.extend(lex('\n'.join(body) + '\n', first))
+					cmds.extend(lex('\n'.join(body) + '\n', first,
+						arithfaults=arithfaults))
 			pending = []
 			return k
 
@@ -23020,7 +23041,7 @@ def lex(src, base=1, faults=None):
 					put(UNKNOWN, True)
 					if body:
 						cmds.extend(lex(backtick_body(body, True) + '\n', line,
-							faults))
+							faults, arithfaults))
 					line += nl
 					i = end
 					continue
@@ -23058,7 +23079,8 @@ def lex(src, base=1, faults=None):
 				body = src[i + 1:end - 1] if end > i + 1 else ''
 				put(UNKNOWN, True)
 				if body:
-					cmds.extend(lex(backtick_body(body, False) + '\n', line, faults))
+					cmds.extend(lex(backtick_body(body, False) + '\n', line,
+						faults, arithfaults))
 				line += nl
 				i = end
 				continue
