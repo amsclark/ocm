@@ -20,6 +20,14 @@ class pikaUser extends plBase
 	// AMW - save() compares "password" to this to determine if the password
 	// has changed.
 	private $current_password = null;
+	/*	The three MFA columns belong to the authentication code, which writes
+		them directly. This class loads them with the rest of the row, so saving
+		a user for any other reason -- an office change, a renamed account --
+		wrote whatever value was loaded back over whatever authentication had
+		written since. On the replay floor that means an older value returning,
+		which is the one direction it must never move in.
+	*/
+	protected $never_write_columns = array('totp_secret','totp_enabled','totp_last_used');
 	
 	public function __construct($user_id = null)
 	{

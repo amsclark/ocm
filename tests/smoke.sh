@@ -27252,6 +27252,103 @@ else
 	bad "only ${sm109_gate} of the 4 parts of the template format gate are still written"
 fi
 
+# 110. pikaUser loads the whole users row and plBase::save() writes back every
+# column it loaded. The three MFA columns are written by the authentication code
+# with their own statements, so a user saved for any other reason - an office
+# change, a renamed account - wrote the loaded value back over whatever
+# authentication had written since. On totp_last_used that moves the replay
+# floor down, which reopens every code between the two windows; on totp_enabled
+# and totp_secret it undoes an administrator's reset or an enrollment.
+#
+# The check does in one process what two requests would do: it loads the user,
+# changes the three columns with a statement of its own the way sign-in and
+# enrollment do, then changes one ordinary column through the model and saves.
+# The ordinary column is what shows the save really ran, so an unchanged MFA
+# column cannot be read as a save that never happened.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	# The same fixture pattern as section 105: a name carrying the process id
+	# and a random number, matched together with the id in every statement
+	# that reads or changes the row, apart from the MAX and the INSERT that
+	# have nothing to match on yet.
+	sm110_user="zzmfacol_${$}_${RANDOM}"
+	sm110_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	case "$sm110_uid" in
+		''|*[!0-9]*) sm110_uid='' ;;
+	esac
+	if [ -z "$sm110_uid" ]; then
+		bad "could not read a free user id, so the MFA columns were not checked"
+	else
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id,
+			first_name, totp_enabled, totp_secret, totp_last_used)
+			VALUES (${sm110_uid}, '${sm110_user}', '', 0, 'NOGROUP',
+			'before', 1, 'zzloaded', 100)" >/dev/null 2>&1
+		sm110_seeded="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm110_uid} AND username = '${sm110_user}'")"
+
+		if [ "$sm110_seeded" != 1 ]; then
+			bad "the MFA column fixture user was not created, so the save was not checked"
+		else
+			# The statement in the middle stands for sign-in and enrollment,
+			# which write these columns directly. It matches on the name as
+			# well, as every other statement here does.
+			sm110_out="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+require_once("app/lib/pikaUser.php");
+$u = new pikaUser((int) $argv[1]);
+DB::preparedQuery("UPDATE users SET totp_last_used = 200, totp_enabled = 0,"
+	. " totp_secret = ? WHERE user_id = ? AND username = ? LIMIT 1",
+	array("", (int) $argv[1], $argv[2]));
+$u->first_name = "after";
+$u->save();
+print "SAVED";' "$sm110_uid" "$sm110_user" 2>/dev/null)"
+			sm110_row="$(adb "SELECT CONCAT_WS('|', first_name,
+				IFNULL(totp_enabled, 'null'), IFNULL(totp_secret, 'null'),
+				IFNULL(totp_last_used, 'null')) FROM users
+				WHERE user_id = ${sm110_uid}
+				AND username = '${sm110_user}'")"
+			case "$sm110_out" in
+			*SAVED*)
+				case "$sm110_row" in
+				after\|*)
+					ok "saving a user through the model wrote the ordinary column it changed"
+					;;
+				*)
+					bad "saving a user through the model did not write first_name (row '$sm110_row'), so the MFA columns prove nothing"
+					;;
+				esac
+				if [ "$sm110_row" = 'after|0||200' ]; then
+					ok "saving a user leaves the MFA columns as authentication last wrote them"
+				else
+					bad "saving a user wrote loaded MFA values back: expected 'after|0||200', found '$sm110_row'"
+				fi
+				;;
+			*)
+				bad "the user save did not run, so the MFA columns were not checked"
+				;;
+			esac
+		fi
+
+		adb "DELETE FROM users WHERE user_id = ${sm110_uid}
+			AND username = '${sm110_user}'" >/dev/null 2>&1
+	fi
+fi
+
+# The same exclusion has to hold on the INSERT the model builds for a new user,
+# or a posted MFA value could reach the table on account creation. That half is
+# read from the source, because creating an account through the model needs
+# the whole of the admin form around it.
+if grep -qF 'dataBuildFieldList($data,$this->never_write_columns)' \
+	cms/app/lib/plBase.php \
+	&& grep -qF "array('totp_secret','totp_enabled','totp_last_used')" \
+	cms/app/lib/pikaUser.php; then
+	ok "the model's INSERT leaves out the three MFA columns as its UPDATE does"
+else
+	bad "the model's INSERT no longer leaves out the three MFA columns"
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
