@@ -2039,23 +2039,27 @@ if (!function_exists('pl_csrf_check')) {
 }
 
 /**
- * Recursively emit hidden <input> elements reproducing a possibly nested
- * POST value, so an in-flight save can be replayed verbatim. Array
- * fields matter here: a flat scalar carry would silently drop exactly
- * the data we are trying not to lose.
+ * Recursively flatten a possibly nested POST value into a flat list of
+ * array(name, value) string pairs, so an in-flight save can be replayed
+ * verbatim as hidden fields. Array fields matter here: a flat scalar
+ * carry would silently drop exactly the data we are trying not to lose.
+ * This returns data only; each caller escapes the pairs where it writes
+ * the <input> markup.
  */
-if (!function_exists('pl_csrf_carry_hidden_inputs')) {
-	function pl_csrf_carry_hidden_inputs($name, $value)
+if (!function_exists('pl_csrf_carry_fields')) {
+	function pl_csrf_carry_fields($name, $value)
 	{
 		if (is_array($value)) {
-			$out = '';
+			$out = array();
 			foreach ($value as $k => $v) {
-				$out .= pl_csrf_carry_hidden_inputs($name . '[' . $k . ']', $v);
+				foreach (pl_csrf_carry_fields($name . '[' . $k . ']', $v) as $pair) {
+					$out[] = $pair;
+				}
 			}
 			return $out;
 		}
 		if (!is_scalar($value)) {
-			return '';
+			return array();
 		}
 		// Never echo a password back as a hidden field. The endpoints read
 		// these with pl_grab_post, so the user simply retypes it if a flow
@@ -2064,11 +2068,9 @@ if (!function_exists('pl_csrf_carry_hidden_inputs')) {
 		if (strpos($lname, 'password') !== false
 				|| strpos($lname, 'newpass') !== false
 				|| strpos($lname, 'oldpass') !== false) {
-			return '';
+			return array();
 		}
-		$safe_n = htmlspecialchars((string)$name,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
-		$safe_v = htmlspecialchars((string)$value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-		return '<input type="hidden" name="' . $safe_n . '" value="' . $safe_v . '">' . "\n";
+		return array(array((string)$name, (string)$value));
 	}
 }
 
@@ -2092,15 +2094,6 @@ if (!function_exists('pl_csrf_render_recovery_form')) {
 		$safe_base  = htmlspecialchars((string)$base,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
 		$safe_owner = htmlspecialchars((string)$owner, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
-		// Re-post to the exact path executing now. SCRIPT_NAME already
-		// carries base_url and any subdirectory (e.g. /ops/), which a
-		// basename()-based action would drop. Keep the query string for
-		// handlers that read it.
-		$path = isset($_SERVER['SCRIPT_NAME']) ? (string)$_SERVER['SCRIPT_NAME'] : '';
-		$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string)$_SERVER['QUERY_STRING']) > 0)
-			? '?' . (string)$_SERVER['QUERY_STRING'] : '';
-		$action = htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
 		// Carry the in-flight POST body, nested arrays included. Skip our
 		// own markers and _csrf; a fresh token is emitted below.
 		$carry = '';
@@ -2110,7 +2103,13 @@ if (!function_exists('pl_csrf_render_recovery_form')) {
 				if (!is_scalar($name) || in_array($name, $skip, true)) {
 					continue;
 				}
-				$carry .= pl_csrf_carry_hidden_inputs((string)$name, $value);
+				foreach (pl_csrf_carry_fields((string)$name, $value) as $pair) {
+					$carry .= '<input type="hidden" name="'
+						. htmlspecialchars((string)$pair[0], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+						. '" value="'
+						. htmlspecialchars((string)$pair[1], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+						. '">' . "\n";
+				}
 			}
 		}
 
@@ -2128,7 +2127,8 @@ if (!function_exists('pl_csrf_render_recovery_form')) {
 		   . 'left open for a while, or was reached with the browser&rsquo;s Back '
 		   . 'button. Your information was <strong>not</strong> lost. Click '
 		   . '&ldquo;Save again&rdquo; to finish saving it.</p>';
-		echo '<form method="POST" action="' . $action . '">'
+		/*	Omitting action posts to the document URL, including its query string. */
+		echo '<form method="POST">'
 		   . pl_csrf_hidden_input()
 		   . '<input type="hidden" name="_csrf_recovery" value="1">'
 		   . $carry
@@ -5001,22 +5001,6 @@ function pl_reauth_return_path()
 }
 
 /**
- * @return string
- * @desc The URL the challenge form posts back to: the exact path that
- * is executing now. SCRIPT_NAME already carries base_url and any
- * subdirectory, which a basename()-based action would drop. The query
- * string is kept for handlers that read it.
- */
-function pl_reauth_self_action()
-{
-	$path = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
-	$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string) $_SERVER['QUERY_STRING']) > 0)
-		? '?' . (string) $_SERVER['QUERY_STRING'] : '';
-	
-	return htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-}
-
-/**
  * @return void
  * @param string $action_scope the scope being challenged
  * @param string $error_msg text to show above the button, or ''
@@ -5092,7 +5076,7 @@ function pl_reauth_render_sso_form($action_scope, $error_msg = '')
  * @desc Render the password re-auth challenge and exit. The in-flight
  * POST body is carried forward as hidden fields, nested arrays
  * included, so the user does not retype the change they were making.
- * Password fields are dropped by pl_csrf_carry_hidden_inputs() rather
+ * Password fields are dropped by pl_csrf_carry_fields() rather
  * than echoed back into the markup.
  */
 function pl_reauth_render_form($action_scope, $error_msg = '')
@@ -5101,7 +5085,6 @@ function pl_reauth_render_form($action_scope, $error_msg = '')
 	$safe_owner = htmlspecialchars((string) pl_settings_get('owner_name'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 	$safe_scope = htmlspecialchars((string) $action_scope, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 	$safe_error = htmlspecialchars((string) $error_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-	$action     = pl_reauth_self_action();
 	
 	/*	Carry the caller's POST body. Our own challenge fields go, and
 		_csrf goes because a fresh token is emitted below.
@@ -5118,7 +5101,14 @@ function pl_reauth_render_form($action_scope, $error_msg = '')
 				continue;
 			}
 			
-			$carry .= pl_csrf_carry_hidden_inputs((string) $name, $value);
+			foreach (pl_csrf_carry_fields((string) $name, $value) as $pair)
+			{
+				$carry .= '<input type="hidden" name="'
+					. htmlspecialchars((string) $pair[0], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+					. '" value="'
+					. htmlspecialchars((string) $pair[1], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+					. '">' . "\n";
+			}
 		}
 	}
 	
@@ -5147,7 +5137,8 @@ function pl_reauth_render_form($action_scope, $error_msg = '')
 	   . 'password again before this change takes effect. If your account uses an '
 	   . 'authenticator app, enter the current 6-digit code as well.</p>';
 	echo $err_block;
-	echo '<form method="POST" action="' . $action . '" autocomplete="off">'
+	/*	Omitting action posts to the document URL, including its query string. */
+	echo '<form method="POST" autocomplete="off">'
 	   . pl_csrf_hidden_input()
 	   . '<input type="hidden" name="_reauth_scope" value="' . $safe_scope . '">'
 	   . $carry

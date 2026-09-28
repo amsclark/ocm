@@ -43,7 +43,7 @@ else
 	
 	if (!array_key_exists($a['act_type'], $plMenus['act_type']))
 	{
-		pika_error_notice('Invalid act_type', "'{$a['act_type']}' is not a valid act_type.");
+		pika_error_notice('Invalid act_type', 'The activity type is not valid.');
 		exit();
 	}
 }
@@ -173,7 +173,18 @@ function vc_duration($start_time, $hours) {
 	
 	if ($a['case_id'])
 	{
-		$result = $pk->fetchCaseList(array('case_id' => $a['case_id']), $dummy);
+		$result = DB::preparedQuery(
+			"SELECT cases.client_id,
+				contacts.last_name AS 'contacts.last_name',
+				contacts.first_name AS 'contacts.first_name',
+				contacts.middle_name AS 'contacts.middle_name',
+				contacts.extra_name AS 'contacts.extra_name'
+			FROM cases
+			LEFT JOIN contacts ON cases.client_id=contacts.contact_id
+			LEFT JOIN users ON cases.user_id=users.user_id
+			WHERE cases.case_id = ? LIMIT 1",
+			array($a['case_id'])
+		);
 		$case_row = DBResult::fetchRow($result);
 	}
 	

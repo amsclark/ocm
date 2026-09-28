@@ -817,6 +817,26 @@ else
 	bad "a stale token gave neither recovery nor refusal ($(wc -c < "$BODY") bytes)"
 fi
 
+# 7d2. The recovery form carries the in-flight fields back as hidden inputs.
+# A field name and value holding markup must come back escaped, a nested
+# array key too, and a password field must not come back at all.
+curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+	--data-urlencode "action=smoke-carry" --data-urlencode "_csrf=${bogus}" \
+	--data-urlencode 'smk"><b>x=val"><i>y' \
+	--data-urlencode 'arr[k"><u>]=nested"><s>' \
+	--data-urlencode 'newpassword=smoke-carry-secret' "$MAINT" >/dev/null
+cr_rc=$?
+cr_name='name="smk&quot;&gt;&lt;b&gt;x" value="val&quot;&gt;&lt;i&gt;y"'
+cr_nest='name="arr[k&quot;&gt;&lt;u&gt;]" value="nested&quot;&gt;&lt;s&gt;"'
+if [ "$cr_rc" -eq 0 ] && grep -q 'Confirm your save' "$BODY" \
+	&& grep -qF -e "$cr_name" "$BODY" && grep -qF -e "$cr_nest" "$BODY" \
+	&& ! grep -qF -e '<b>x' "$BODY" && ! grep -qF -e '<s>' "$BODY" \
+	&& ! grep -qF -e 'smoke-carry-secret' "$BODY"; then
+	ok "the recovery form escapes carried fields and drops the password"
+else
+	bad "the recovery form did not escape carried fields or kept a password (curl $cr_rc)"
+fi
+
 # 7e. The real token is accepted.
 if [ "${#CSRF_TOKEN}" -eq 64 ]; then
 	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
