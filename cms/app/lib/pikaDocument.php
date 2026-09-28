@@ -340,21 +340,31 @@ class pikaDocument extends plBase
 	{
 		/*	The path is rebuilt from PHP's upload directory and the bare file
 			name, and must equal the one PHP gave. The client file name is
-			document metadata, never a source path.
+			document metadata, never a source path. PHP falls back to the
+			system temp directory when upload_tmp_dir cannot be written, so
+			both directories are tried.
 		*/
 		$upload_path = '';
-		
+
 		if (isset($file_array['tmp_name']) && is_string($file_array['tmp_name']))
 		{
-			$upload_dir = (string) ini_get('upload_tmp_dir');
-			
-			if ('' === $upload_dir)
+			$upload_dirs = array((string) ini_get('upload_tmp_dir'), sys_get_temp_dir());
+
+			foreach ($upload_dirs as $upload_dir)
 			{
-				$upload_dir = sys_get_temp_dir();
+				if ('' === $upload_dir)
+				{
+					continue;
+				}
+
+				$candidate = rtrim($upload_dir, '/') . '/' . basename((string) $file_array['tmp_name']);
+
+				if ($candidate === $file_array['tmp_name'])
+				{
+					$upload_path = $candidate;
+					break;
+				}
 			}
-			
-			$upload_dir = rtrim($upload_dir, '/');
-			$upload_path = $upload_dir . '/' . basename((string) $file_array['tmp_name']);
 		}
 		
 		if (isset($file_array['tmp_name']) && isset($file_array['name']) 
