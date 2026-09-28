@@ -27683,51 +27683,51 @@ else
 fi
 
 echo
-# 115. Return pages must be real top-level PHP scripts. Canceling an activity
+# 116. Return pages must be real top-level PHP scripts. Canceling an activity
 # exercises the redirect without creating an activity or needing a case fixture.
-echo "115. dataops redirects only to existing application pages"
+echo "116. dataops redirects only to existing application pages"
 if [ "$HAVE_DB" = 1 ]; then
-	sm115_jar="$(smoke_temp)"
-	sm115_headers="$(smoke_temp)"
-	sm115_base="$(printf '%s' "$OCM_URL" \
+	sm116_jar="$(smoke_temp)"
+	sm116_headers="$(smoke_temp)"
+	sm116_base="$(printf '%s' "$OCM_URL" \
 		| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]*##' -e 's#/*$##')"
-	curl -sL --max-time 30 -c "$sm115_jar" -b "$sm115_jar" -o "$BODY" \
+	curl -sL --max-time 30 -c "$sm116_jar" -b "$sm116_jar" -o "$BODY" \
 		--data-urlencode "login_user=${OCM_USER}" \
 		--data-urlencode "login_pass=${OCM_PASSWORD}" -d 'auth_id=1' "$OCM_URL/"
 
 	# $1 input, $2 expected page and query, or empty for the site root.
-	sm115_redirect()
+	sm116_redirect()
 	{
-		sm115_token="$(curl -sL --max-time 30 -c "$sm115_jar" -b "$sm115_jar" \
+		sm116_token="$(curl -sL --max-time 30 -c "$sm116_jar" -b "$sm116_jar" \
 			"$OCM_URL/password.php" | grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
 			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
-		if [ "${#sm115_token}" -ne 64 ]; then
-			bad "section 115 could not get a logged-in CSRF token"
+		if [ "${#sm116_token}" -ne 64 ]; then
+			bad "section 116 could not get a logged-in CSRF token"
 			return
 		fi
-		sm115_code="$(curl -s --max-time 30 -c "$sm115_jar" -b "$sm115_jar" \
-			-D "$sm115_headers" -o "$BODY" -w '%{http_code}' \
-			-d 'action=add_activity&cancel=1' --data-urlencode "_csrf=${sm115_token}" \
+		sm116_code="$(curl -s --max-time 30 -c "$sm116_jar" -b "$sm116_jar" \
+			-D "$sm116_headers" -o "$BODY" -w '%{http_code}' \
+			-d 'action=add_activity&cancel=1' --data-urlencode "_csrf=${sm116_token}" \
 			--data-urlencode "act_url=$1" "$OCM_URL/dataops.php")"
-		sm115_count="$(grep -ci '^location:' "$sm115_headers")"
-		sm115_location="$(grep -i '^location:' "$sm115_headers" | tr -d '\r' \
+		sm116_count="$(grep -ci '^location:' "$sm116_headers")"
+		sm116_location="$(grep -i '^location:' "$sm116_headers" | tr -d '\r' \
 			| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
-		if [ "$sm115_code" = 302 ] && [ "$sm115_count" = 1 ] \
-			&& [ "$sm115_location" = "${sm115_base}/$2" ]; then
+		if [ "$sm116_code" = 302 ] && [ "$sm116_count" = 1 ] \
+			&& [ "$sm116_location" = "${sm116_base}/$2" ]; then
 			ok "dataops returns the expected application page for $1"
 		else
-			bad "dataops returned ${sm115_code} ${sm115_location} for $1"
+			bad "dataops returned ${sm116_code} ${sm116_location} for $1"
 		fi
 	}
 
-	sm115_redirect 'zz-smoke-nonexistent-page.php' ''
-	sm115_redirect 'app/cal_day.php' ''
-	sm115_redirect 'cal_day.php' 'cal_day.php'
-	sm115_redirect 'case.php?case_id=1&screen=act' 'case.php?case_id=1&screen=act'
-	sm115_redirect 'case.php?search=a%20b%26c%3Dd&filters%5B%5D=x%2Fy' \
+	sm116_redirect 'zz-smoke-nonexistent-page.php' ''
+	sm116_redirect 'app/cal_day.php' ''
+	sm116_redirect 'cal_day.php' 'cal_day.php'
+	sm116_redirect 'case.php?case_id=1&screen=act' 'case.php?case_id=1&screen=act'
+	sm116_redirect 'case.php?search=a%20b%26c%3Dd&filters%5B%5D=x%2Fy' \
 		'case.php?search=a+b%26c%3Dd&filters%5B0%5D=x%2Fy'
 else
-	printf '  skip section 115 (needs a running docker compose stack)\n'
+	printf '  skip section 116 (needs a running docker compose stack)\n'
 fi
 
 echo "smoke: $pass passed, $fail failed"
