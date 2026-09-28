@@ -4377,14 +4377,27 @@ if [ "$HAVE_DB" = 1 ]; then
 			fh_get "${OCM_URL}/?q=one"
 			fh_expect "the root with a query" "${FH_ORIGIN}${FH_PREFIX}/?q=one"
 
-			# (e) A deep path that is not in the listing goes to the root with
-			# no query. Apache denies app/ before PHP runs, so the path goes in
-			# PATH_INFO after a real page, as in (b).
+			# (e) A deep path can reach PHP only as PATH_INFO after a real
+			# page: Apache denies app/ before PHP runs. It stays PATH_INFO of
+			# that page, so the redirect never names app/lib as a page.
 			fh_get "${OCM_URL}/index.php/app/lib/pl.php?q=one"
-			fh_expect "a path that is not listed" "${FH_ORIGIN}${FH_PREFIX}/"
-			if printf '%s' "$FH_LOC" | grep -qF -e 'app/lib'; then
-				bad "the force_https redirect carries an unlisted path (${FH_LOC})"
+			fh_expect "a path after a listed page" \
+				"${FH_ORIGIN}${FH_PREFIX}/index.php/app/lib/pl.php?q=one"
+			if printf '%s' "$FH_LOC" | grep -qF -e "${FH_PREFIX}/app/lib"; then
+				bad "the force_https redirect names an unlisted page (${FH_LOC})"
 			fi
+
+			# (g) The app links to pages with PATH_INFO: "case_list.php/" and
+			# "pm.php/reports/<ext>/". The redirect keeps it. A dot segment
+			# goes to the root.
+			fh_get "${OCM_URL}/case_list.php/"
+			fh_expect "a page with a trailing slash" \
+				"${FH_ORIGIN}${FH_PREFIX}/case_list.php/"
+			fh_get "${OCM_URL}/case_list.php/12/?a=1"
+			fh_expect "a page with PATH_INFO and a query" \
+				"${FH_ORIGIN}${FH_PREFIX}/case_list.php/12/?a=1"
+			fh_get "${OCM_URL}/index.php/a/%2E%2E/b"
+			fh_expect "a dot segment in PATH_INFO" "${FH_ORIGIN}${FH_PREFIX}/"
 
 			# (f) A directory URL keeps its path and query. The Reports link
 			# is reports/, and Apache serves the directory's index.php.

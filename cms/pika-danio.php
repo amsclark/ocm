@@ -930,6 +930,11 @@ function pika_init()
 			request that is not redirected does not pay for it. A directory
 			that holds an index.php is listed too, as "dir/", and a request for
 			"dir" or "dir/" keeps that directory, as the Reports link needs.
+
+			A listed page can have more path after it, as "intakes.php/12/" and
+			"case_list.php/" do. That part is rebuilt one segment at a time, each
+			segment decoded and then encoded again. A ".", a ".." or an empty
+			segment that is not the last one sends the request to the root.
 		*/
 		$force_https_prefix = rtrim((string) parse_url(
 			(string) pl_settings_get('base_url'), PHP_URL_PATH), '/');
@@ -984,13 +989,37 @@ function pika_init()
 			}
 		}
 
+		$page_info = '';
+		$split = (null === $page) ? false : strpos($page, '.php/');
+		if (false !== $split && !isset($pages[$page])
+			&& isset($pages[substr($page, 0, $split + 4)]))
+		{
+			$segments = explode('/', substr($page, $split + 5));
+			$last = count($segments) - 1;
+			foreach ($segments as $i => $segment)
+			{
+				$segment = rawurldecode($segment);
+				if ('.' === $segment || '..' === $segment
+					|| ('' === $segment && $i < $last))
+				{
+					$page = null;
+					break;
+				}
+				$page_info .= '/' . rawurlencode($segment);
+			}
+			if (null !== $page)
+			{
+				$page = substr($page, 0, $split + 4);
+			}
+		}
+
 		if (null !== $page && ('' === $page || isset($pages[$page])))
 		{
 			$params = array();
 			parse_str(isset($uri['query']) ? $uri['query'] : '', $params);
 			$query = http_build_query($params);
 			$force_https_path = $force_https_prefix . '/'
-				. ('' === $page ? '' : $pages[$page])
+				. ('' === $page ? '' : $pages[$page]) . $page_info
 				. ('' !== $query ? '?' . $query : '');
 		}
 
