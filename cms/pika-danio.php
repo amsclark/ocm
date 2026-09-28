@@ -916,31 +916,42 @@ function pika_init()
 
 		$force_https_origin = 'https://' . preg_replace(
 			'#^[A-Za-z][A-Za-z0-9+.-]*://#', '', rtrim($force_https_origin, '/'));
-		$force_https_path = '/';
+		/*	The redirect path must name a page from the server's own listing.
+			The request only selects a page and its query is rebuilt; anything
+			else goes to the application root. The directory comes from the
+			configured base_url, not from the request.
+		*/
+		$force_https_prefix = rtrim((string) parse_url(
+			(string) pl_settings_get('base_url'), PHP_URL_PATH), '/');
+		$force_https_path = $force_https_prefix . '/';
 		$uri = parse_url(isset($_SERVER['REQUEST_URI'])
 			? (string) $_SERVER['REQUEST_URI'] : '/');
 
-		if (false !== $uri && !isset($uri['scheme']) && !isset($uri['host'])
-			&& isset($uri['path']) && '/' === substr($uri['path'], 0, 1))
+		$pages = array();
+		foreach (glob(__DIR__ . '/*.php') ?: array() as $file)
 		{
-			/*	Remove one origin slash. A fixed final name lets the validator
-				check directory URLs without removing repeated slashes.
-			*/
-			$trailing_slash = '/' === substr($uri['path'], -1);
-			$relative_path = substr($uri['path'], 1)
-				. ($trailing_slash ? 'root' : '');
-			$validated = pl_safe_redirect_path($relative_path
-				. (isset($uri['query']) ? '?' . $uri['query'] : ''));
-
-			if ('' !== $validated)
+			if (is_file($file))
 			{
-				$validated_parts = parse_url($validated);
-				$force_https_path = '/' . ($trailing_slash
-					? substr($validated_parts['path'], 0, -strlen('root'))
-					: $validated_parts['path']);
-				$force_https_path .= isset($validated_parts['query'])
-					? '?' . $validated_parts['query'] : '';
+				$script = basename($file);
+				$pages[$script] = $script;
 			}
+		}
+
+		$page = '';
+		if (false !== $uri && isset($uri['path'])
+			&& $force_https_prefix . '/' === substr($uri['path'], 0,
+				strlen($force_https_prefix) + 1))
+		{
+			$page = substr($uri['path'], strlen($force_https_prefix) + 1);
+		}
+
+		if ('' !== $page && isset($pages[$page]))
+		{
+			$params = array();
+			parse_str(isset($uri['query']) ? $uri['query'] : '', $params);
+			$query = http_build_query($params);
+			$force_https_path = $force_https_prefix . '/' . $pages[$page]
+				. ('' !== $query ? '?' . $query : '');
 		}
 
 		header('Location: ' . $force_https_origin . $force_https_path);
