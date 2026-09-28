@@ -19712,16 +19712,14 @@ fi
 # is why both fixes belong to one change.
 #
 # These checks are behavioural, not textual. They post to the handler and then
-# ask the database what it did. Everything the section reads is its own: it seeds
-# its own source case, one conflict row on that case to prove the handler copies
-# what it should, and one conflict row on a case id no request names to catch it
-# copying what it should not.
+# ask the database what it did. It seeds a source case and its conflict row,
+# plus a conflict on a case id no request names, to detect an unwanted copy.
 #
-# Nothing here deletes a row until the section has proved it owns one. The
-# vacancy query must find the fixture ids free and both marker offices unused,
-# and the seeding must then report every row it asked for. Only then is TH_OWNED
-# set, and only then may cleanup run a DELETE. A collision, a query that cannot
-# answer, or an exit part way through leaves the database alone.
+# Cleanup requires a successful vacancy query returning zero. Each successful
+# insert adds its id to the owned rows, including partial fixture creation.
+# The source has a random tag in elig_notes which the handler copies to its output.
+# That tag identifies output even when a request sends no redirect.
+# Office codes alone never establish ownership of a case.
 echo
 echo "96. the holding-pen handler answers a quoted case id without breaking out of its query"
 
@@ -19730,9 +19728,8 @@ if ! command -v adb >/dev/null 2>&1; then
 elif ! adb "SELECT 1" >/dev/null 2>&1; then
 	bad "section 96 cannot reach the database, so it cannot tell what the handler wrote"
 else
-	# Two office codes nothing else uses. office is char(3), and the handler
-	# copies the posted trans_office into the office column of every case it
-	# creates, so this marks the handler's output as this section's property.
+	# Refuse occupied fixture offices. A concurrent case using either office
+	# is not ours unless it also carries this run's random tag in elig_notes.
 	TH_SRC_OFFICE='Z95'
 	TH_NEW_OFFICE='Z96'
 	# The source case the requests name, a case id they never name, and two
@@ -19745,7 +19742,10 @@ else
 	TH_ROW_OTHER='9777777'
 	TH_HEAD="$(smoke_temp)"
 	TH_OWNED=0
-	TH_OWNED_IDS='0'
+	TH_SOURCE_OWNED=0
+	TH_CONFLICT_IDS='NULL'
+	TH_RUN="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+	TH_OWNED_IDS='NULL'
 	TH_CLEAN_ERR=''
 	TH_SEEN=''
 
@@ -19754,36 +19754,37 @@ else
 	cleanup_th() {
 		rm -f -- "$TH_HEAD"
 
-		# The gate. Until the vacancy query has passed and the fixture is in
-		# place, this section owns nothing, and a DELETE here would take
-		# somebody else's rows. An exit part way through arrives here too.
+		# A failed vacancy query cannot authorize any database cleanup.
 		if [ "$TH_OWNED" != 1 ]; then
 			return 0
 		fi
-
-		# Read the ids before the case rows go, so the checks below can still
-		# name the children. Deleting those by a subquery on cases would lose
-		# them the moment the parent delete ran first, and this schema has no
-		# foreign key to stop that order.
-		#
-		# By the marker office rather than the ids the handler reported: a
-		# request that dies after its insert sends no Location header, and
-		# the case it made would otherwise outlive the section.
-		TH_OWNED_IDS="$(adb "SELECT GROUP_CONCAT(case_id) FROM cases
-			WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}')")"
-		case "$TH_OWNED_IDS" in
-			'' | NULL) TH_OWNED_IDS='0' ;;
-		esac
-
-		adb "DELETE FROM conflict
-			WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER})" \
+		
+		# Keep the ids before removing parents. The run tag is copied from
+		# our source, so a missing redirect does not hide an output case.
+		if [ "$TH_SOURCE_OWNED" = 1 ]; then
+			if TH_FOUND="$(adb "SELECT case_id FROM cases
+				WHERE elig_notes = 'smoke96:${TH_RUN}'
+				AND office = '${TH_NEW_OFFICE}'")"; then
+				TH_FOUND="$(printf '%s' "$TH_FOUND" | tr '\n' ',')"
+				if [[ "$TH_FOUND" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+					TH_OWNED_IDS="${TH_OWNED_IDS},${TH_FOUND}"
+				elif [ -n "$TH_FOUND" ]; then
+					TH_CLEAN_ERR="${TH_CLEAN_ERR} output-ids"
+					return 1
+				fi
+			else
+				TH_CLEAN_ERR="${TH_CLEAN_ERR} output-query"
+				return 1
+			fi
+		fi
+		
+		adb "DELETE FROM conflict WHERE conflict_id IN (${TH_CONFLICT_IDS})" \
 			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} seeded-conflict"
 		adb "DELETE FROM conflict WHERE case_id IN (${TH_OWNED_IDS})" \
 			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} conflict"
 		adb "DELETE FROM activities WHERE case_id IN (${TH_OWNED_IDS})" \
 			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} activities"
-		adb "DELETE FROM cases
-			WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}')" \
+		adb "DELETE FROM cases WHERE case_id IN (${TH_OWNED_IDS})" \
 			>/dev/null 2>&1 || TH_CLEAN_ERR="${TH_CLEAN_ERR} cases"
 	}
 	trap 'base_cleanup; cleanup_th' EXIT
@@ -19813,8 +19814,8 @@ else
 	}
 
 	# What each request must have produced: a case this section did not seed
-	# and no earlier request reported, carrying the marker office, with the
-	# source case's own conflict row copied onto it.
+	# and no earlier request reported, carrying this run's tag and
+	# output office, with the source case's own conflict row copied onto it.
 	#
 	# The copy is the positive control. Without it a zero in the injection
 	# check below could mean the handler copies nothing at all, and a redirect
@@ -19843,17 +19844,18 @@ else
 				;;
 		esac
 		TH_SEEN="${TH_SEEN} ${th_new}"
-		th_office="$(adb "SELECT office FROM cases WHERE case_id = ${th_new}")"
-		if [ "$th_office" != "$TH_NEW_OFFICE" ]; then
+		if ! th_office="$(adb "SELECT office FROM cases WHERE case_id = ${th_new}
+			AND elig_notes = 'smoke96:${TH_RUN}'")" \
+			|| [ "$th_office" != "$TH_NEW_OFFICE" ]; then
 			bad "$1 named case ${th_new}, which is not a case this run created (office '${th_office}')"
 			return 1
 		fi
-		th_mine="$(adb "SELECT COUNT(*) FROM conflict
+		if ! th_mine="$(adb "SELECT COUNT(*) FROM conflict
 			WHERE case_id = ${th_new}
 			  AND contact_id = ${TH_CONTACT_MINE}
 			  AND relation_code = (SELECT relation_code FROM conflict
-			                       WHERE conflict_id = ${TH_ROW_MINE})")"
-		if [ -z "$th_mine" ] || [ "$th_mine" -lt 1 ]; then
+			                       WHERE conflict_id = ${TH_ROW_MINE})")" \
+			|| [ "$th_mine" != 1 ]; then
 			bad "$1 did not copy the source case's conflict row onto new case ${th_new} (count '${th_mine}'), so the injection check below would prove nothing"
 			return 1
 		fi
@@ -19863,36 +19865,47 @@ else
 	# Refuse to seed over anything that is already there: these ids are chosen
 	# to be free, and if they are not, this section does not own them and must
 	# neither write them nor delete them.
-	TH_TAKEN="$(adb "SELECT
+	TH_TAKEN=''
+	TH_VACANT=0
+	TH_SEEDED=0
+	if [[ "$TH_RUN" =~ ^[0-9a-f]{32}$ ]] && TH_TAKEN="$(adb "SELECT
 		(SELECT COUNT(*) FROM cases WHERE case_id IN (${TH_CASE}, ${TH_OTHER}))
 		+ (SELECT COUNT(*) FROM conflict
-		   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER}))
-		+ (SELECT COUNT(*) FROM cases
-		   WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}'))")"
-
-	if [ "$TH_TAKEN" = 0 ]; then
-		adb "INSERT INTO cases (case_id, office, status, user_id, client_id)
-			VALUES (${TH_CASE}, '${TH_SRC_OFFICE}', '1', 1, 0)" >/dev/null 2>&1
-		adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
-			VALUES (${TH_ROW_MINE}, ${TH_CONTACT_MINE}, ${TH_CASE}, 'A')" >/dev/null 2>&1
-		adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
-			VALUES (${TH_ROW_OTHER}, ${TH_CONTACT_OTHER}, ${TH_OTHER}, 'A')" >/dev/null 2>&1
-		TH_SEEDED="$(adb "SELECT
-			(SELECT COUNT(*) FROM cases WHERE case_id = ${TH_CASE})
-			+ (SELECT COUNT(*) FROM conflict
-			   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER}))")"
-		if [ "$TH_SEEDED" = 3 ]; then
-			# Three rows this section wrote, on ids nothing else was using.
-			# From here its cleanup has something of its own to remove.
+		   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER})
+		   OR case_id = ${TH_CASE})
+		+ (SELECT COUNT(*) FROM activities WHERE case_id = ${TH_CASE})
+		+ (SELECT COUNT(*) FROM cases WHERE elig_notes = 'smoke96:${TH_RUN}'
+		   OR office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}'))")" \
+		&& [ "$TH_TAKEN" = 0 ]; then
+		TH_VACANT=1
+		if adb "INSERT INTO cases
+			(case_id, office, status, user_id, client_id, elig_notes)
+			VALUES (${TH_CASE}, '${TH_SRC_OFFICE}', '1', 1, 0, 'smoke96:${TH_RUN}')" \
+			>/dev/null 2>&1; then
 			TH_OWNED=1
+			TH_SOURCE_OWNED=1
+			TH_OWNED_IDS="$TH_CASE"
+			TH_SEEDED=$((TH_SEEDED + 1))
 		fi
-	else
-		TH_SEEDED='not attempted'
+		if adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
+			VALUES (${TH_ROW_MINE}, ${TH_CONTACT_MINE}, ${TH_CASE}, 'A')" \
+			>/dev/null 2>&1; then
+			TH_OWNED=1
+			TH_CONFLICT_IDS="${TH_CONFLICT_IDS},${TH_ROW_MINE}"
+			TH_SEEDED=$((TH_SEEDED + 1))
+		fi
+		if adb "INSERT INTO conflict (conflict_id, contact_id, case_id, relation_code)
+			VALUES (${TH_ROW_OTHER}, ${TH_CONTACT_OTHER}, ${TH_OTHER}, 'A')" \
+			>/dev/null 2>&1; then
+			TH_OWNED=1
+			TH_CONFLICT_IDS="${TH_CONFLICT_IDS},${TH_ROW_OTHER}"
+			TH_SEEDED=$((TH_SEEDED + 1))
+		fi
 	fi
 
 	if [ "${#TH_TOKEN}" -ne 64 ]; then
 		bad "no CSRF token for the holding-pen POST - section 96 is untested"
-	elif [ -z "$TH_TAKEN" ]; then
+	elif [ "$TH_VACANT" != 1 ] && { [ -z "$TH_TAKEN" ] || [ "$TH_TAKEN" = 0 ]; }; then
 		bad "section 96 could not ask whether its fixture ids are free, so it wrote nothing and will delete nothing"
 	elif [ "$TH_TAKEN" != 0 ]; then
 		bad "section 96's fixture ids are already in use (${TH_TAKEN} rows), so it will not seed over them or delete them"
@@ -19925,9 +19938,9 @@ else
 		elif th_made_new_case "the always-true holding-pen request" \
 			"the always-true holding-pen request answered 500 - section 96's injection check is untested"
 		then
-			TH_LEAKED="$(adb "SELECT COUNT(*) FROM conflict
-				WHERE case_id = ${th_new} AND contact_id = ${TH_CONTACT_OTHER}")"
-			if [ -z "$TH_LEAKED" ]; then
+			if ! TH_LEAKED="$(adb "SELECT COUNT(*) FROM conflict
+				WHERE case_id = ${th_new} AND contact_id = ${TH_CONTACT_OTHER}")" \
+				|| [ -z "$TH_LEAKED" ]; then
 				bad "section 96 could not count the copied conflict rows, so its result is not proof"
 			elif [ "$TH_LEAKED" != 0 ]; then
 				bad "SQL INJECTION IN THE HOLDING-PEN HANDLER: an always-true case id copied case ${TH_OTHER}'s conflict row onto new case ${th_new}"
@@ -19941,23 +19954,22 @@ else
 
 	# The handler writes on every call, so a section that leaves its cases
 	# behind changes what a later one counts. Only its own rows are counted
-	# here: the marker offices, the two conflict ids it seeded, and the
-	# children of the cases it owned.
+	# here: successful fixture inserts, cases with this run's tag,
+	# and children of the retained case ids.
 	if [ "$TH_OWNED" != 1 ]; then
 		printf '  section 96 wrote nothing, so it removed nothing\n'
 	elif [ -n "$TH_CLEAN_ERR" ]; then
 		bad "section 96 could not remove its own rows (failed:${TH_CLEAN_ERR}), so a later count would read them"
 	else
-		TH_LEFT="$(adb "SELECT
+		if TH_LEFT="$(adb "SELECT
 			(SELECT COUNT(*) FROM cases
-			 WHERE office IN ('${TH_SRC_OFFICE}', '${TH_NEW_OFFICE}'))
+			 WHERE case_id IN (${TH_OWNED_IDS}))
 			+ (SELECT COUNT(*) FROM conflict
-			   WHERE conflict_id IN (${TH_ROW_MINE}, ${TH_ROW_OTHER}))
+			   WHERE conflict_id IN (${TH_CONFLICT_IDS}))
 			+ (SELECT COUNT(*) FROM conflict WHERE case_id IN (${TH_OWNED_IDS}))
 			+ (SELECT COUNT(*) FROM activities
-			   WHERE case_id IN (${TH_OWNED_IDS}))")"
-
-		if [ "$TH_LEFT" = 0 ]; then
+			   WHERE case_id IN (${TH_OWNED_IDS}))")" \
+			&& [ "$TH_LEFT" = 0 ]; then
 			ok "section 96 leaves none of its own cases, conflicts or activities behind"
 		else
 			bad "section 96 left ${TH_LEFT} of its own rows in the database, so a later count would read them"
@@ -20008,7 +20020,7 @@ else
 		bad "AN EMPTY add_group POST 500s: the INSERT builder emits a statement with no SET list"
 	elif [ "$EI_CODE" != 200 ]; then
 		bad "the empty add_group POST answered ${EI_CODE}, so it never reached the INSERT builder"
-	elif ! grep -q 'No values were supplied for the new record' "$BODY"; then
+	elif ! grep -qF 'No values were supplied for the new record.' "$BODY"; then
 		bad "the empty add_group POST answered 200 without the builder's refusal, so section 97 does not know which answer it got"
 	elif [ "$EI_AFTER" != "$EI_BEFORE" ]; then
 		bad "an empty add_group POST wrote a groups row (${EI_BEFORE} -> ${EI_AFTER})"
@@ -20033,8 +20045,8 @@ fi
 # lets through must return what the integer it casts to returns: -1 the rows of
 # 0, 1.5 the rows of 1, and 1e2 the rows of 100.
 #
-# Ownership works as in section 96: nothing is deleted until the vacancy query
-# has passed and the seeding has reported every row.
+# The fixture check below requires unused contact and alias ids before seeding.
+# Cleanup is enabled after all three aliases have been counted.
 echo
 echo "98. the address book casts an offset MariaDB cannot use in a LIMIT"
 
@@ -20116,10 +20128,13 @@ else
 			"$OCM_URL/addressbook.php?dmodeb=1&last_name=${AB_LETTER}&offset=$1")"
 		ab_curl=$?
 		ab_count="$(grep -c '<tr class="row' "$BODY")"
+		ab_ids="$(grep -oE 'contact\.php\?contact_id=[0-9]+' "$BODY" \
+			| cut -d= -f2 | paste -sd, -)"
 		[ "$ab_curl" = 0 ]
 	}
 
-	# $1 the offset, $2 how many of the three seeded rows it must return.
+	# $1 the offset, $2 the row count, $3 the ordered contact ids.
+	# A matching count alone would accept a different set of contacts.
 	ab_check() {
 		if ! ab_rows "$1" "$COOKIES"; then
 			bad "the address book request for offset=$1 failed outright (curl exit ${ab_curl})"
@@ -20135,6 +20150,8 @@ else
 			bad "the address book answered 200 on offset=$1 without its results heading, so the contact query did not run"
 		elif [ "$ab_count" != "$2" ]; then
 			bad "the address book returned ${ab_count} of its three seeded rows on offset=$1, not ${2}"
+		elif [ "$ab_ids" != "$3" ]; then
+			bad "the address book returned contact ids '${ab_ids}' on offset=$1, expected '$3'"
 		else
 			ok "the address book answers offset=$1 with the ${2} rows that offset selects (status ${ab_code})"
 		fi
@@ -20150,13 +20167,13 @@ else
 		bad "section 98 could not seed its three contacts (count '${AB_SEEDED}'), so it has nothing to count"
 	else
 		# The reference values first, from offsets MariaDB has always taken.
-		ab_check 0 3
-		ab_check 1 2
-		ab_check 100 0
+		ab_check 0 3 "${AB_ID1},${AB_ID2},${AB_ID3}"
+		ab_check 1 2 "${AB_ID2},${AB_ID3}"
+		ab_check 100 0 ""
 		# Then the three the is_numeric() test lets through.
-		ab_check -1 3
-		ab_check 1.5 2
-		ab_check 1e2 0
+		ab_check -1 3 "${AB_ID1},${AB_ID2},${AB_ID3}"
+		ab_check 1.5 2 "${AB_ID2},${AB_ID3}"
+		ab_check 1e2 0 ""
 
 		# The count comes from the paging preference, which accepts a digit
 		# string. "00" is truthy in PHP, so it survives the fallback that
