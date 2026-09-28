@@ -52,7 +52,6 @@ php/InsecureHash | cms/dataops.php | 1 | The same current-password check as pass
 
 # --- Sanitisers the taint analysis does not recognise ---
 
-php/FileInclusion | cms/pm.php | 2 | pm.php decodes the path, strips traversal, refuses the request if any remains, then holds every segment to [a-zA-Z0-9._-], so no segment can carry a separator or a null byte. The extension directory must appear in the parsed extensions setting (in_array, strict) and the target must end in .php.
 
 # --- Not a finding ---
 

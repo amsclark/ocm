@@ -27759,6 +27759,233 @@ print (int) $u->user_id;' "$sm110_new" 2>/dev/null)"
 fi
 
 echo
+# 112. pm.php must resolve an enabled extension target inside its directory.
+# A sibling directory shares the extension name prefix, so its symlink also
+# checks that containment includes the directory separator. Each refusal is
+# paired with a working PHP file and checked cleanup; every row fails on the
+# old loader. CLI supplies PHP_SELF directly so no HTTP client or server can
+# remove the dot segment before pm.php reads it.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	sm112_ext="zzpmpath_${$}_${RANDOM}"
+	sm112_saved="$(adb "SELECT CONCAT(COUNT(*), ':', COALESCE(MAX(HEX(value)), ''))
+		FROM settings WHERE label = 'extensions'")"
+	sm112_owned=0
+	sm112_parent=0
+	sm112_changed=0
+	sm112_clean=0
+	
+	sm112_fixture() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+$root = pl_custom_directory() . "/extensions";
+$base = $root . "/" . $argv[1];
+$outside = $base . "-outside";
+$files = array($base . "/link.php", $base . "/ab.php", $outside . "/outside.php");
+if ($argv[2] === "create")
+{
+	if (file_exists($base) || is_link($base)
+		|| file_exists($outside) || is_link($outside))
+	{
+		exit(1);
+	}
+	
+	$made = array();
+	$parent_owned = 0;
+	try
+	{
+		if (!is_dir($root))
+		{
+			if (!mkdir($root, 0755))
+			{
+				throw new Exception("Cannot create extensions directory");
+			}
+			$made[] = $root;
+			$parent_owned = 1;
+		}
+		foreach (array($base, $outside) as $directory)
+		{
+			if (!mkdir($directory, 0755))
+			{
+				throw new Exception("Cannot create fixture directory");
+			}
+			$made[] = $directory;
+		}
+		foreach (array($files[1] => "SM112-LEGIT", $files[2] => "SM112-OUTSIDE")
+			as $file => $marker)
+		{
+			$made[] = $file;
+			if (file_put_contents($file, "<?php echo \"" . $marker . "\";") === false)
+			{
+				throw new Exception("Cannot write fixture file");
+			}
+		}
+		if (!symlink($files[2], $files[0]))
+		{
+			throw new Exception("Cannot create fixture symlink");
+		}
+		print "SM112-SEEDED:" . $parent_owned;
+	}
+	catch (Throwable $error)
+	{
+		foreach (array_reverse($made) as $path)
+		{
+			if (is_dir($path))
+			{
+				rmdir($path);
+			}
+			else if (file_exists($path))
+			{
+				unlink($path);
+			}
+		}
+		exit(1);
+	}
+}
+else
+{
+	foreach ($files as $file)
+	{
+		if (is_link($file) || file_exists($file))
+		{
+			unlink($file);
+		}
+	}
+	foreach (array($base, $outside) as $directory)
+	{
+		if (is_dir($directory))
+		{
+			rmdir($directory);
+		}
+	}
+	if ($argv[3] === "1" && is_dir($root))
+	{
+		rmdir($root);
+	}
+	clearstatcache();
+	if (($argv[3] !== "1" || (!file_exists($root) && !is_link($root)))
+		&& !file_exists($base) && !is_link($base)
+		&& !file_exists($outside) && !is_link($outside))
+	{
+		print "SM112-CLEAN";
+	}
+}' "$sm112_ext" "$1" "$sm112_parent" </dev/null 2>/dev/null
+	}
+	
+	sm112_cleanup() {
+		local files_clean=1 setting_clean=1
+		if [ "$sm112_owned" = 1 ]; then
+			if [ "$(sm112_fixture cleanup)" = 'SM112-CLEAN' ]; then
+				sm112_owned=0
+			else
+				files_clean=0
+			fi
+		fi
+		if [ "$sm112_changed" = 1 ]; then
+			if [ "${sm112_saved%%:*}" = 1 ]; then
+				adb "UPDATE settings SET value = UNHEX('${sm112_saved#*:}')
+					WHERE label = 'extensions'" >/dev/null
+			else
+				adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
+			fi
+			if [ "$(adb "SELECT CONCAT(COUNT(*), ':', COALESCE(MAX(HEX(value)), ''))
+				FROM settings WHERE label = 'extensions'")" = "$sm112_saved" ]; then
+				sm112_changed=0
+			else
+				setting_clean=0
+			fi
+		fi
+		sm112_clean=$((files_clean * setting_clean))
+	}
+	trap 'sm112_cleanup; base_cleanup' EXIT
+	
+	# Enable detailed errors only for each CLI request to see the refusal.
+	sm112_request() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+define("PL_DEBUG", true);
+$_SERVER["SCRIPT_NAME"] = "/cms/pm.php";
+$_SERVER["PHP_SELF"] = $_SERVER["SCRIPT_NAME"] . $argv[1];
+$_GET = $_POST = $_COOKIE = $_REQUEST = array();
+require("pm.php");' "$1" </dev/null 2>/dev/null
+	}
+	
+	if [[ ! "$sm112_saved" =~ ^[01]:[0-9A-F]*$ ]]; then
+		bad "pm path fixture could not save the extensions setting"
+	elif ! sm112_seed="$(sm112_fixture create)" \
+		|| [[ ! "$sm112_seed" =~ ^SM112-SEEDED:[01]$ ]]; then
+		bad "pm path fixture could not create its files"
+	else
+		sm112_owned=1
+		sm112_parent="${sm112_seed##*:}"
+		sm112_changed=1
+		adb "INSERT INTO settings (label, value) VALUES ('extensions', '/${sm112_ext}')
+			ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null
+		sm112_results=()
+		sm112_labels=()
+		for sm112_branch in plain reports; do
+			sm112_prefix="/${sm112_ext}"
+			if [ "$sm112_branch" = reports ]; then
+				sm112_prefix="/reports/${sm112_ext}"
+			fi
+			sm112_legit="$(sm112_request "${sm112_prefix}/ab.php")"
+			for sm112_probe in symlink dot embedded; do
+				sm112_error='Path traversal detected.'
+				case "$sm112_probe" in
+					symlink)
+						sm112_path="${sm112_prefix}/link.php"
+						sm112_error='Extension target must be a .php file inside its extension directory.'
+						if [ "$sm112_branch" = reports ]; then
+							sm112_error='Report target must be a .php file inside its extension directory.'
+						fi
+						sm112_label='outside symlink'
+						;;
+					dot)
+						sm112_path="${sm112_prefix}/ab.php/."
+						if [ "$sm112_branch" = reports ]; then
+							sm112_path="${sm112_prefix}/./ab.php"
+						fi
+						sm112_label='dot segment'
+						;;
+					embedded)
+						sm112_path="${sm112_prefix}/a..b.php"
+						sm112_label='a..b.php'
+						;;
+				esac
+				sm112_out="$(sm112_request "$sm112_path")"
+				sm112_result=0
+				if [[ "$sm112_legit" == *SM112-LEGIT* ]] \
+					&& [[ "$sm112_legit" != *SM112-OUTSIDE* ]] \
+					&& [[ "$sm112_out" == *"$sm112_error"* ]] \
+					&& [[ "$sm112_out" != *SM112-LEGIT* ]] \
+					&& [[ "$sm112_out" != *SM112-OUTSIDE* ]]; then
+					sm112_result=1
+				fi
+				sm112_results+=("$sm112_result")
+				sm112_labels+=("pm ${sm112_branch}: legit PHP runs; ${sm112_label} refused; fixture cleaned")
+			done
+		done
+		sm112_cleanup
+		for sm112_index in "${!sm112_results[@]}"; do
+			if [ "${sm112_results[$sm112_index]}" = 1 ] && [ "$sm112_clean" = 1 ]; then
+				ok "${sm112_labels[$sm112_index]}"
+			else
+				bad "${sm112_labels[$sm112_index]}"
+			fi
+		done
+	fi
+	sm112_cleanup
+	if [ "$sm112_clean" != 1 ]; then
+		bad "pm path fixture files or extensions setting were not restored"
+	else
+		trap base_cleanup EXIT
+	fi
+fi
+
+echo
 # 113. The activity form accepts only an existing PHP page from the Referer.
 # Each check includes a query-string Referer as its positive control.
 if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
@@ -28016,6 +28243,229 @@ else
 fi
 
 echo
+# 115. Extension includes use files listed inside an enabled extension. Run the
+# real dispatcher with a small bootstrap so these checks need no database or stack.
+if ! command -v docker >/dev/null 2>&1 \
+	|| ! docker image inspect php:8.2-cli >/dev/null 2>&1; then
+	printf '  skip section 115 (needs the local php:8.2-cli Docker image)\n'
+elif ! sm115_dir="$(smoke_tempdir "$REPO_DIR/.smoke-pm-XXXXXX")"; then
+	bad "section 115 could not create its fixture directory"
+else
+	if docker run --rm -i --network none --user "$(id -u):$(id -g)" \
+		-v "$REPO_DIR:/app" -w /app -e "PM_FIXTURE=/app/${sm115_dir##*/}" \
+		--entrypoint php php:8.2-cli <<'PHP'
+<?php
+$fixture = getenv('PM_FIXTURE');
+$checks = 0;
+function sm115_request($path, $expected, $get = array(), $cookie = array())
+{
+	$process = proc_open(array(PHP_BINARY, $GLOBALS['fixture'] . '/request.php',
+		$path, json_encode($get), json_encode($cookie)),
+		array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+		$pipes, $GLOBALS['fixture']);
+	fclose($pipes[0]);
+	$result = stream_get_contents($pipes[1]);
+	$stderr = stream_get_contents($pipes[2]);
+	fclose($pipes[1]);
+	fclose($pipes[2]);
+	$status = proc_close($process);
+	$decoded = json_decode($result, true);
+	if ($status !== 0 || !is_array($decoded) || count($decoded) !== 3 || $stderr !== '')
+	{
+		throw new RuntimeException($path . ': request process failed: ' . $result . $stderr);
+	}
+	list($output, $error, $enabled_calls) = $decoded;
+	$loaded = strpos($expected, 'LOADED:') === 0;
+	if (($loaded && ($output !== $expected || $error !== ''))
+		|| (!$loaded && ($output !== '' || $error !== $expected))
+		|| ($expected === 'CASE_DENIED' && $enabled_calls !== 0))
+	{
+		throw new RuntimeException($path . ': expected ' . $expected
+			. ', output=' . var_export($output, true) . ', error=' . $error);
+	}
+	$GLOBALS['checks']++;
+}
+try
+{
+	mkdir($fixture . '/app/lib', 0700, true);
+	mkdir($fixture . '/custom/extensions/billing/sub', 0700, true);
+	mkdir($fixture . '/custom/extensions/billing/.nested', 0700, true);
+	mkdir($fixture . '/custom/extensions/disabled', 0700, true);
+	mkdir($fixture . '/outside', 0700);
+	file_put_contents($fixture . '/pika-danio.php', <<<'STUB'
+<?php
+$enabled_calls = 0;
+function pika_init()
+{
+}
+function pika_exit($body)
+{
+}
+function pl_custom_directory()
+{
+	return $GLOBALS['fixture'] . '/custom';
+}
+function pl_enabled_extensions()
+{
+	$GLOBALS['enabled_calls']++;
+	return array('billing');
+}
+function pl_settings_get($key)
+{
+	return '/cms';
+}
+function pl_case_not_viewable($base)
+{
+	throw new RuntimeException('CASE_DENIED');
+}
+function pika_authorize($action, $row)
+{
+	return $row['case_id'] === 42;
+}
+class DB
+{
+	public static function query($sql)
+	{
+		preg_match('/case_id = ([0-9]+)/', $sql, $match);
+		return array('case_id' => (int) $match[1]);
+	}
+}
+class DBResult
+{
+	public static function numRows($row)
+	{
+		return $row['case_id'] === 404 ? 0 : 1;
+	}
+	public static function fetchRow($row)
+	{
+		return $row;
+	}
+}
+STUB
+	);
+	file_put_contents($fixture . '/request.php', <<<'REQUEST'
+<?php
+$GLOBALS['fixture'] = __DIR__;
+set_include_path(__DIR__);
+set_error_handler(function ($number, $message)
+{
+	throw new ErrorException($message, 0, $number);
+});
+$_SERVER['SCRIPT_NAME'] = '/cms/pm.php';
+$_SERVER['PHP_SELF'] = '/cms/pm.php/' . $argv[1];
+$_GET = json_decode($argv[2], true);
+$_POST = array();
+$_COOKIE = json_decode($argv[3], true);
+$_REQUEST = array_merge($_GET, $_COOKIE);
+$GLOBALS['enabled_calls'] = 0;
+$error = '';
+ob_start();
+try
+{
+	require '/app/cms/pm.php';
+}
+catch (Throwable $exception)
+{
+	$error = $exception->getMessage();
+}
+$output = ob_get_clean();
+echo json_encode(array($output, $error, $GLOBALS['enabled_calls']));
+REQUEST
+	);
+	$extension = $fixture . '/custom/extensions/billing';
+	foreach (array('direct.php', '.hidden.php', 'a.b.php', 'sub/report.php',
+		'.nested/report.php') as $relative)
+	{
+		file_put_contents($extension . '/' . $relative,
+			"<?php echo 'LOADED:billing/" . $relative . "';");
+	}
+	file_put_contents($extension . '/text.txt', "<?php echo 'LOADED:billing/text.txt';");
+	file_put_contents($fixture . '/outside/report.php',
+		"<?php echo 'LOADED:outside/report.php';");
+	file_put_contents($fixture . '/custom/extensions/disabled/direct.php',
+		"<?php echo 'LOADED:disabled/direct.php';");
+	symlink('direct.php', $extension . '/alias.php');
+	symlink('direct.php', $extension . '/alias.txt');
+	symlink('text.txt', $extension . '/text.php');
+	symlink('sub', $extension . '/linked');
+	symlink($fixture . '/outside/report.php', $extension . '/escape.php');
+	symlink($fixture . '/outside', $extension . '/escape');
+
+	foreach (array('', 'reports/') as $prefix)
+	{
+		$refused = $prefix === ''
+			? 'Extension target must be a .php file inside its extension directory.'
+			: 'Report target must be a .php file inside its extension directory.';
+		$loaded = array(
+			'direct.php' => 'LOADED:billing/direct.php',
+			'.hidden.php' => 'LOADED:billing/.hidden.php',
+			'a.b.php' => 'LOADED:billing/a.b.php',
+			'alias.php' => 'LOADED:billing/direct.php',
+		);
+		foreach ($loaded as $file => $expected)
+		{
+			sm115_request($prefix . 'billing/' . $file, $expected);
+		}
+		foreach (array('missing.php', 'text.txt', 'alias.txt', 'text.php',
+			'escape.php', 'sub') as $file)
+		{
+			sm115_request($prefix . 'billing/' . $file, $refused);
+		}
+		$disabled = $prefix === ''
+			? "Extension 'disabled':'direct.php' is either not enabled or not installed."
+			: "Extension 'disabled' is either not enabled or not installed.";
+		sm115_request($prefix . 'disabled/direct.php', $disabled);
+		sm115_request($prefix . 'billing/../direct.php', 'Path traversal detected.');
+		sm115_request($prefix . 'billing/%2e%2e/direct.php', 'Path traversal detected.');
+		sm115_request($prefix . 'billing/direct.php', 'LOADED:billing/direct.php',
+			array('case_id' => '042'));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED', array('case_id' => 99));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED', array('case_id' => 404));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED',
+			array('case_id' => 42), array('case_id' => 99));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED',
+			array('case_id' => array(42)));
+	}
+	$reports_loaded = array(
+		'sub/report.php' => 'LOADED:billing/sub/report.php',
+		'.nested/report.php' => 'LOADED:billing/.nested/report.php',
+		'linked/report.php' => 'LOADED:billing/sub/report.php',
+	);
+	foreach ($reports_loaded as $file => $expected)
+	{
+		sm115_request('reports/billing/' . $file, $expected);
+	}
+	sm115_request('reports/billing/escape/report.php',
+		'Report target must be a .php file inside its extension directory.');
+	printf("pm extension fixtures: %d passed\n", $checks);
+}
+finally
+{
+	chdir('/app');
+	$children = new RecursiveIteratorIterator(
+		new RecursiveDirectoryIterator($fixture, FilesystemIterator::SKIP_DOTS),
+		RecursiveIteratorIterator::CHILD_FIRST);
+	foreach ($children as $child)
+	{
+		if ($child->isDir() && !$child->isLink())
+		{
+			rmdir($child->getPathname());
+		}
+		else
+		{
+			unlink($child->getPathname());
+		}
+	}
+	rmdir($fixture);
+}
+PHP
+	then
+		ok "pm extension filesystem allowlist and case-access fixtures"
+	else
+		bad "pm extension filesystem allowlist or case-access fixtures failed"
+	fi
+fi
+
 # 116. Return pages must be real top-level PHP scripts. Canceling an activity
 # exercises the redirect without creating an activity or needing a case fixture.
 echo "116. dataops redirects only to existing application pages"
