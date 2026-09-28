@@ -8,9 +8,9 @@ pika_init();
 /*	Every POST to this handler must carry the per-session CSRF token.
 	See pl_csrf_check() in cms/app/lib/pl.php for the framework.
 	
-	js/save_report.js sends the report parameters as a raw text/xml request
-	body rather than as a form encoding, so PHP populates no $_POST at all
-	and there is no _csrf field for pl_csrf_check() to read. The token
+	js/save_report.js sends the report parameters as an application/json
+	request body rather than as a form encoding, so PHP populates no $_POST
+	at all and there is no _csrf field for pl_csrf_check() to read. The token
 	arrives in an X-CSRF-Token header instead; copy it across before the
 	check, which is the same shape the framework expects.
 */
@@ -63,34 +63,227 @@ if (!pika_authorize('system',array()))
 require_once('pikaDocument.php');
 require_once('pikaMisc.php');
 
-/*	Initialised before the branch. It was read by loadXML() below whether
-	or not the POST branch had assigned it, which is an undefined-variable
-	warning on PHP 8 for every non-POST request.
+/*	The browser used to send the stored document itself, built by string
+	concatenation with no escaping, and this handler parsed it. A setting
+	holding < or & broke the save, and the server parsed markup chosen by the
+	client. Now the browser sends the form fields as JSON, and the stored
+	document is built here with the DOM, so nothing the client sends is ever
+	parsed as XML.
+
+	pl_upload_report_fields() returns the decoded fields, or null when the
+	body is not exactly the shape js/save_report.js getReportParams() sends.
+	Each element type carries exactly the keys that script writes for it, and
+	that load_report() reads back.
+*/
+function pl_upload_report_fields($postText)
+{
+	$max_elements = 2000;
+	$max_options = 2000;
+	$max_all_options = 20000;
+	$element_keys = array(
+		'hidden' => array('name', 'type', 'value'),
+		'text' => array('name', 'type', 'value'),
+		'textarea' => array('name', 'type', 'value'),
+		'checkbox' => array('name', 'type', 'checked'),
+		'radio' => array('name', 'type', 'value', 'checked'),
+		'select-one' => array('name', 'type', 'options'),
+		'select-multiple' => array('name', 'type', 'options'),
+	);
+	$option_keys = array('selected', 'text', 'value');
+
+	/*	A string the stored document cannot hold: XML 1.0 has no way to
+		write most control characters, even as a character reference.
+	*/
+	$bad_chars = '/[\x{0}-\x{8}\x{B}\x{C}\x{E}-\x{1F}\x{FFFE}\x{FFFF}]/u';
+
+	if (!is_string($postText) || strlen($postText) < 1)
+	{
+		return null;
+	}
+
+	$data = json_decode($postText, true, 8);
+
+	if (!is_array($data) || count($data) != 2
+		|| !array_key_exists('form', $data) || !array_key_exists('elements', $data)
+		|| !is_string($data['form']) || preg_match($bad_chars, $data['form'])
+		|| !is_array($data['elements'])
+		|| $data['elements'] !== array_values($data['elements'])
+		|| count($data['elements']) > $max_elements)
+	{
+		return null;
+	}
+
+	$all_options = 0;
+
+	foreach ($data['elements'] as $element)
+	{
+		if (!is_array($element) || !isset($element['type']) || !is_string($element['type'])
+			|| !isset($element_keys[$element['type']]))
+		{
+			return null;
+		}
+
+		$keys = array_keys($element);
+		$want = $element_keys[$element['type']];
+		sort($keys);
+		sort($want);
+
+		if ($keys !== $want || !is_string($element['name'])
+			|| preg_match($bad_chars, $element['name']))
+		{
+			return null;
+		}
+
+		if (array_key_exists('value', $element)
+			&& (!is_string($element['value']) || preg_match($bad_chars, $element['value'])))
+		{
+			return null;
+		}
+
+		if (array_key_exists('checked', $element) && !is_bool($element['checked']))
+		{
+			return null;
+		}
+
+		if (!array_key_exists('options', $element))
+		{
+			continue;
+		}
+
+		$options = $element['options'];
+
+		if (!is_array($options) || $options !== array_values($options)
+			|| count($options) > $max_options)
+		{
+			return null;
+		}
+
+		$all_options += count($options);
+
+		if ($all_options > $max_all_options)
+		{
+			return null;
+		}
+
+		foreach ($options as $option)
+		{
+			if (!is_array($option))
+			{
+				return null;
+			}
+
+			$keys = array_keys($option);
+			sort($keys);
+
+			if ($keys !== $option_keys
+				|| !is_string($option['value']) || preg_match($bad_chars, $option['value'])
+				|| !is_string($option['text']) || preg_match($bad_chars, $option['text'])
+				|| !is_bool($option['selected']))
+			{
+				return null;
+			}
+		}
+	}
+
+	return $data;
+}
+
+/*	Build the document the browser used to send, element for element:
+
+	<form name="..."><element><name/><type/><value/><checked/><options>
+	<option><value/><text/><selected/></option></options></element></form>
+
+	Each element holds only the children its type carries. Booleans are the
+	strings true and false, as JavaScript wrote them. An empty string gets no
+	text node, so it is stored as an empty element, the same as before;
+	load_report() checks hasChildNodes() for that case.
+*/
+function pl_upload_report_xml($fields)
+{
+	$xml_doc = new DOMDocument('1.0', 'UTF-8');
+	$form = $xml_doc->createElement('form');
+	$form->setAttribute('name', $fields['form']);
+	$xml_doc->appendChild($form);
+
+	$add = function ($parent, $tag, $text) use ($xml_doc)
+	{
+		$node = $xml_doc->createElement($tag);
+
+		if (is_bool($text))
+		{
+			$text = $text ? 'true' : 'false';
+		}
+
+		if (strlen($text) > 0)
+		{
+			$node->appendChild($xml_doc->createTextNode($text));
+		}
+
+		$parent->appendChild($node);
+		return $node;
+	};
+
+	foreach ($fields['elements'] as $element)
+	{
+		$node = $xml_doc->createElement('element');
+		$form->appendChild($node);
+		$add($node, 'name', $element['name']);
+		$add($node, 'type', $element['type']);
+
+		if (array_key_exists('value', $element))
+		{
+			$add($node, 'value', $element['value']);
+		}
+
+		if (array_key_exists('checked', $element))
+		{
+			$add($node, 'checked', $element['checked']);
+		}
+
+		if (array_key_exists('options', $element))
+		{
+			$options = $add($node, 'options', '');
+
+			foreach ($element['options'] as $option)
+			{
+				$option_node = $add($options, 'option', '');
+				$add($option_node, 'value', $option['value']);
+				$add($option_node, 'text', $option['text']);
+				$add($option_node, 'selected', $option['selected']);
+			}
+		}
+	}
+
+	return $xml_doc;
+}
+
+/*	Initialised before the branch, so a non-POST request reads an empty body
+	rather than an undefined variable.
 */
 $postText = '';
 
-if ( $_SERVER['REQUEST_METHOD'] === 'POST' ){ 
-        $postText = file_get_contents('php://input'); 
+if ($_SERVER['REQUEST_METHOD'] === 'POST')
+{
+	$postText = file_get_contents('php://input');
 }
+
 $report_name = pl_grab_get('report_name');
 $doc_name = pl_grab_get('doc_name');
 $report_list = pikaMisc::reportList();
-$xml_doc = new DOMDocument();
 
 if (!$report_name)
 {
 	pl_upload_report_reply(400, 'The report was not saved: the request did not say which report it belongs to.');
 }
 
-/*	LIBXML_NONET so the parser cannot be talked into fetching a DTD or an
-	entity over the network by the document it is reading. Entity
-	substitution is already off -- LIBXML_NOENT is not passed -- so this
-	closes the remaining half of XXE rather than opening anything.
-*/
-if (!$postText || !@$xml_doc->loadXML($postText, LIBXML_NONET))
+$fields = pl_upload_report_fields($postText);
+
+if (null === $fields)
 {
 	pl_upload_report_reply(400, 'The report was not saved: the settings did not arrive in a readable form.');
 }
+
+$xml_doc = pl_upload_report_xml($fields);
 
 //print_r($report_list);
 $contents = $xml_doc->saveXML();

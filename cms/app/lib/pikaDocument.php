@@ -338,12 +338,59 @@ class pikaDocument extends plBase
 	*/
 	public function uploadDoc($file_array = null, $description = null, $parent_folder = null, $doc_type = null, $case_id = null)
 	{
+		/*	The path is rebuilt from PHP's upload directory and the bare file
+			name, and must equal the one PHP gave. The client file name is
+			document metadata, never a source path. PHP falls back to the
+			system temp directory when upload_tmp_dir cannot be written, so
+			both directories are tried. PHP also resolves a symlinked or
+			relative directory before it names the file, so each directory is
+			tried as written and as realpath() gives it.
+		*/
+		$upload_path = '';
+
+		if (isset($file_array['tmp_name']) && is_string($file_array['tmp_name']))
+		{
+			$upload_dirs = array();
+
+			foreach (array((string) ini_get('upload_tmp_dir'), sys_get_temp_dir()) as $upload_dir)
+			{
+				$upload_dirs[] = $upload_dir;
+				$upload_dirs[] = ('' === $upload_dir) ? '' : (string) realpath($upload_dir);
+			}
+
+			foreach ($upload_dirs as $upload_dir)
+			{
+				if ('' === $upload_dir)
+				{
+					continue;
+				}
+
+				$candidate = rtrim($upload_dir, '/') . '/' . basename((string) $file_array['tmp_name']);
+
+				if ($candidate === $file_array['tmp_name'])
+				{
+					$upload_path = $candidate;
+					break;
+				}
+			}
+		}
+		
 		if (isset($file_array['tmp_name']) && isset($file_array['name']) 
-		&& file_exists($file_array['tmp_name']) && (!$parent_folder || $this->isFolder($parent_folder))
+		&& is_string($file_array['tmp_name']) && is_string($file_array['name'])
+		&& isset($file_array['error']) && $file_array['error'] === UPLOAD_ERR_OK
+		&& $upload_path === $file_array['tmp_name']
+		&& is_uploaded_file($upload_path)
+		&& (!$parent_folder || $this->isFolder($parent_folder))
 		&& !is_null($doc_type)) 
 		{
 			global $auth_row;
-			$content = file_get_contents($file_array['tmp_name']);
+			
+			$content = file_get_contents($upload_path);
+			
+			if (false === $content)
+			{
+				return true;
+			}
 			
 			$this->doc_data = addslashes(gzcompress($content,9));
 			//$this->doc_data = addslashes($content);
@@ -375,9 +422,9 @@ class pikaDocument extends plBase
 			$declared_type = isset($file_array['type']) ? strtolower(trim((string) $file_array['type'])) : '';
 			$detected_type = '';
 			
-			if (function_exists('mime_content_type') && !empty($file_array['tmp_name']))
+			if (function_exists('mime_content_type'))
 			{
-				$detected_type = strtolower((string) @mime_content_type($file_array['tmp_name']));
+				$detected_type = strtolower((string) @mime_content_type($upload_path));
 			}
 			
 			if ($declared_type && in_array($declared_type,$allowed_mime_types,true))
@@ -401,7 +448,7 @@ class pikaDocument extends plBase
 			$this->created = date('Y-m-d');
 			
 			$extension = strrchr($this->doc_name, '.');
-			$safe_full_path = escapeshellarg($file_array['tmp_name']);
+			$safe_full_path = escapeshellarg($upload_path);
 			switch ($extension)
 			{
 				//case '.pdf':

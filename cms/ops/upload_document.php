@@ -152,6 +152,20 @@ elseif ($doc_type === 'R')
 	{
 		$deny_upload('missing_report_name');
 	}
+	/*	Use the same installed report names offered by the report permission
+		list. Both folder creation and the redirect use the listed value.
+	*/
+	require_once('pikaMisc.php');
+	$report_names = array();
+	foreach (pikaMisc::reportList() as $installed_report => $title)
+	{
+		$report_names[$installed_report] = $installed_report;
+	}
+	if (!isset($report_names[$report_name]))
+	{
+		$deny_upload('unknown_report');
+	}
+	$report_name = $report_names[$report_name];
 	if (!pika_report_authorize($report_name))
 	{
 		$deny_upload('report_authorize');
