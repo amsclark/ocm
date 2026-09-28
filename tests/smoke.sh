@@ -27943,8 +27943,9 @@ function sm115_request($path, $expected, $get = array(), $cookie = array())
 		throw new RuntimeException($path . ': request process failed: ' . $result . $stderr);
 	}
 	list($output, $error, $enabled_calls) = $decoded;
-	if (($expected === 'LOADED' && ($output !== 'LOADED' || $error !== ''))
-		|| ($expected !== 'LOADED' && ($output !== '' || $error !== $expected))
+	$loaded = strpos($expected, 'LOADED:') === 0;
+	if (($loaded && ($output !== $expected || $error !== ''))
+		|| (!$loaded && ($output !== '' || $error !== $expected))
 		|| ($expected === 'CASE_DENIED' && $enabled_calls !== 0))
 	{
 		throw new RuntimeException($path . ': expected ' . $expected
@@ -28043,12 +28044,14 @@ REQUEST
 	foreach (array('direct.php', '.hidden.php', 'a.b.php', 'sub/report.php',
 		'.nested/report.php') as $relative)
 	{
-		file_put_contents($extension . '/' . $relative, "<?php echo 'LOADED';");
+		file_put_contents($extension . '/' . $relative,
+			"<?php echo 'LOADED:billing/" . $relative . "';");
 	}
-	file_put_contents($extension . '/text.txt', "<?php echo 'LOADED';");
-	file_put_contents($fixture . '/outside/report.php', "<?php echo 'LOADED';");
+	file_put_contents($extension . '/text.txt', "<?php echo 'LOADED:billing/text.txt';");
+	file_put_contents($fixture . '/outside/report.php',
+		"<?php echo 'LOADED:outside/report.php';");
 	file_put_contents($fixture . '/custom/extensions/disabled/direct.php',
-		"<?php echo 'LOADED';");
+		"<?php echo 'LOADED:disabled/direct.php';");
 	symlink('direct.php', $extension . '/alias.php');
 	symlink('direct.php', $extension . '/alias.txt');
 	symlink('text.txt', $extension . '/text.php');
@@ -28061,9 +28064,15 @@ REQUEST
 		$refused = $prefix === ''
 			? 'Extension target must be a .php file inside its extension directory.'
 			: 'Report target must be a .php file inside its extension directory.';
-		foreach (array('direct.php', '.hidden.php', 'a.b.php', 'alias.php') as $file)
+		$loaded = array(
+			'direct.php' => 'LOADED:billing/direct.php',
+			'.hidden.php' => 'LOADED:billing/.hidden.php',
+			'a.b.php' => 'LOADED:billing/a.b.php',
+			'alias.php' => 'LOADED:billing/direct.php',
+		);
+		foreach ($loaded as $file => $expected)
 		{
-			sm115_request($prefix . 'billing/' . $file, 'LOADED');
+			sm115_request($prefix . 'billing/' . $file, $expected);
 		}
 		foreach (array('missing.php', 'text.txt', 'alias.txt', 'text.php',
 			'escape.php', 'sub') as $file)
@@ -28076,7 +28085,8 @@ REQUEST
 		sm115_request($prefix . 'disabled/direct.php', $disabled);
 		sm115_request($prefix . 'billing/../direct.php', 'Path traversal detected.');
 		sm115_request($prefix . 'billing/%2e%2e/direct.php', 'Path traversal detected.');
-		sm115_request($prefix . 'billing/direct.php', 'LOADED', array('case_id' => '042'));
+		sm115_request($prefix . 'billing/direct.php', 'LOADED:billing/direct.php',
+			array('case_id' => '042'));
 		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED', array('case_id' => 99));
 		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED', array('case_id' => 404));
 		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED',
@@ -28084,9 +28094,14 @@ REQUEST
 		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED',
 			array('case_id' => array(42)));
 	}
-	foreach (array('sub/report.php', '.nested/report.php', 'linked/report.php') as $file)
+	$reports_loaded = array(
+		'sub/report.php' => 'LOADED:billing/sub/report.php',
+		'.nested/report.php' => 'LOADED:billing/.nested/report.php',
+		'linked/report.php' => 'LOADED:billing/sub/report.php',
+	);
+	foreach ($reports_loaded as $file => $expected)
 	{
-		sm115_request('reports/billing/' . $file, 'LOADED');
+		sm115_request('reports/billing/' . $file, $expected);
 	}
 	sm115_request('reports/billing/escape/report.php',
 		'Report target must be a .php file inside its extension directory.');
