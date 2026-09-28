@@ -2,8 +2,8 @@ function reload (name) {
 	fileList(name,0,'edit_select','R','parent_folder','form_id','','%%[report_name]%%'); 
 }
 
-// Per-session CSRF token for the save_report POST. The request body is raw
-// XML, not a form encoding, so ops/upload_report.php cannot find a _csrf field
+// Per-session CSRF token for the save_report POST. The request body is JSON,
+// not a form encoding, so ops/upload_report.php cannot find a _csrf field
 // in $_POST; it reads this header instead. The token comes from the hidden
 // input the docgen form on the report page carries -- see the %%[csrf_field]%%
 // tag in reports/*/form.html -- with a fall back to any other _csrf input on
@@ -43,7 +43,7 @@ function save_report(form_container,save_as) {
 	}
 	
 	var url="%%[base_url]%%/ops/upload_report.php?report_name=%%[report_name]%%&doc_name=" + doc_name;
-	var xml=getReportParams(form_container,report_name,save_as);
+	var params=getReportParams(form_container);
 	
 	xhr.onreadystatechange=function() {
 		if (xhr.readyState!=4 && xhr.readyState!="complete") { return; }
@@ -78,9 +78,9 @@ function save_report(form_container,save_as) {
 	}
 	
 	xhr.open("POST", url, true)
-	xhr.setRequestHeader("Content-type", "text/xml")
+	xhr.setRequestHeader("Content-type", "application/json")
 	xhr.setRequestHeader("X-CSRF-Token", srCsrfToken());
-	xhr.send(xml);
+	xhr.send(JSON.stringify(params));
 }
 
 function load_report(form_container,doc_id) {
@@ -115,69 +115,59 @@ function load_report(form_container,doc_id) {
 }
 
 
+/*	The form's settings as plain data. ops/upload_report.php builds the
+	stored XML document from this on the server, so no value here needs
+	escaping: this function used to build that document by string
+	concatenation, and a setting holding < or & broke the save.
+
+	Each element carries exactly the keys the server expects for its type.
+*/
 function getReportParams(form_container) {
-	
+
 	var elem = document.getElementById(form_container).elements;
-	
-	
-	//alert(report_name);
-	var str = '<' + '?xml' + ' version="1.0"' +  ' encoding="UTF-8"?>';
-	
-	
-	str += '<form name="' + form_container + '">';
-	//str += '<form name="' + form_container + '" report_name="' + report_name + '" report_file_name="' + report_file_name + '">';
-	//alert(str);
+	var params = {form: form_container, elements: []};
+
 	for(var i = 0;i<elem.length;i++) {
 		if((elem[i].type == 'hidden' && elem[i].value != 0) || elem[i].type == 'text' || elem[i].type == 'textarea') {
-			str += '<element>';
-			str += '<name>' + elem[i].name + '</name>';
-			str += '<type>' + elem[i].type + '</type>';
-			str += '<value>' + elem[i].value + '</value>';
-			str += '</element>';
+			params.elements.push({
+				name: elem[i].name,
+				type: elem[i].type,
+				value: elem[i].value
+			});
 		}
 		if(elem[i].type == 'checkbox' && elem[i].checked) {
-			str += '<element>';
-			str += '<name>' + elem[i].name + '</name>';
-			str += '<type>' + elem[i].type + '</type>';
-			str += '<checked>' + elem[i].checked + '</checked>';
-			str += '</element>';
+			params.elements.push({
+				name: elem[i].name,
+				type: elem[i].type,
+				checked: elem[i].checked
+			});
 		}
 		if(elem[i].type == 'radio') {
-			str += '<element>';
-			str += '<name>' + elem[i].name + '</name>';
-			str += '<type>' + elem[i].type + '</type>';
-			str += '<value>' + elem[i].value + '</value>';
-			str += '<checked>' + elem[i].checked + '</checked>';
-			str += '</element>';
+			params.elements.push({
+				name: elem[i].name,
+				type: elem[i].type,
+				value: elem[i].value,
+				checked: elem[i].checked
+			});
 		}
 		if(elem[i].type == 'select-one' || elem[i].type == 'select-multiple') {
-			str += '<element>';
-			str += '<name>' + elem[i].name + '</name>';
-			str += '<type>' + elem[i].type + '</type>';
-			str += '<options>';
+			var options = [];
 			for(var j = 0;j<elem[i].options.length;j++) {
-				str += '<option>';
-				var value = elem[i].options[j].value;
-				if(value == '<') {value = '&lt;';}
-				if(value == '>') {value = '&gt;';}
-				var text = elem[i].options[j].text;
-				if(text == '<') {text = '&lt;';}
-				if(text == '>') {text = '&gt;';}
-				str += '<value>' + value + '</value>';
-				str += '<text>' + text + '</text>';
-				str += '<selected>' + elem[i].options[j].selected + '</selected>';
-				str += '</option>';
+				options.push({
+					value: elem[i].options[j].value,
+					text: elem[i].options[j].text,
+					selected: elem[i].options[j].selected
+				});
 			}
-			str += '</options>';
-			str += '</element>';
+			params.elements.push({
+				name: elem[i].name,
+				type: elem[i].type,
+				options: options
+			});
 		}
-		
 	}
-	str += '</form>';
-	//output_container = document.getElementById('test');
-	//output_container.value = str;
-	//alert(str);
-	return str; 
+
+	return params;
 }
 
 function loadReportParams(form_container) {

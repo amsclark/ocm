@@ -110,7 +110,7 @@ class pikaAuthSso
 			not yet decided to migrate it, and until they do the password is
 			still the credential that account is checked against.
 		*/
-		if ('sso' !== (string) $row['auth_method'])
+		if (PL_AUTH_METHOD_SSO !== (string) $row['auth_method'])
 		{
 			return $this->refuse('auth_method_not_sso', $row['user_id'], array(
 				'username' => $row['username']
@@ -263,13 +263,13 @@ class pikaAuthSso
 			asks for the password they no longer have.
 		*/
 		DB::preparedQuery(
-			"UPDATE users SET auth_method = 'sso', sso_subject = ?, password = '',
+			"UPDATE users SET auth_method = ?, sso_subject = ?, password = '',
 				password_expire = 0
 				WHERE user_id = ? AND (sso_subject IS NULL OR LENGTH(sso_subject) = 0) LIMIT 1",
-			array($sub, $row['user_id'])
+			array(PL_AUTH_METHOD_SSO, $sub, $row['user_id'])
 		);
 		
-		$row['auth_method'] = 'sso';
+		$row['auth_method'] = PL_AUTH_METHOD_SSO;
 		
 		pl_audit('sso.autobind', 'user', $row['user_id'], array(
 			'provider'    => $this->config['provider'],

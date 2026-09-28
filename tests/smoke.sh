@@ -817,6 +817,26 @@ else
 	bad "a stale token gave neither recovery nor refusal ($(wc -c < "$BODY") bytes)"
 fi
 
+# 7d2. The recovery form carries the in-flight fields back as hidden inputs.
+# A field name and value holding markup must come back escaped, a nested
+# array key too, and a password field must not come back at all.
+curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
+	--data-urlencode "action=smoke-carry" --data-urlencode "_csrf=${bogus}" \
+	--data-urlencode 'smk"><b>x=val"><i>y' \
+	--data-urlencode 'arr[k"><u>]=nested"><s>' \
+	--data-urlencode 'newpassword=smoke-carry-secret' "$MAINT" >/dev/null
+cr_rc=$?
+cr_name='name="smk&quot;&gt;&lt;b&gt;x" value="val&quot;&gt;&lt;i&gt;y"'
+cr_nest='name="arr[k&quot;&gt;&lt;u&gt;]" value="nested&quot;&gt;&lt;s&gt;"'
+if [ "$cr_rc" -eq 0 ] && grep -q 'Confirm your save' "$BODY" \
+	&& grep -qF -e "$cr_name" "$BODY" && grep -qF -e "$cr_nest" "$BODY" \
+	&& ! grep -qF -e '<b>x' "$BODY" && ! grep -qF -e '<s>' "$BODY" \
+	&& ! grep -qF -e 'smoke-carry-secret' "$BODY"; then
+	ok "the recovery form escapes carried fields and drops the password"
+else
+	bad "the recovery form did not escape carried fields or kept a password (curl $cr_rc)"
+fi
+
 # 7e. The real token is accepted.
 if [ "${#CSRF_TOKEN}" -eq 64 ]; then
 	code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -w '%{http_code}' \
@@ -6911,8 +6931,8 @@ if [ "$HAVE_DB" = 1 ]; then
 			# document every user of the site then runs.
 			AZTOK="$(az_token "$AZJAR")"
 			curl -s --max-time 30 -b "$AZJAR" -o "$BODY" -X POST \
-				-H 'Content-Type: text/xml' -H "X-CSRF-Token: ${AZTOK}" \
-				--data-binary '<?xml version="1.0"?><form name="zzaz"></form>' \
+				-H 'Content-Type: application/json' -H "X-CSRF-Token: ${AZTOK}" \
+				--data-binary '{"form":"zzaz","elements":[]}' \
 				"$OCM_URL/ops/upload_report.php?report_name=ZZAZREPORT&doc_name=ZZAZreport.xml" >/dev/null
 			if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZAZREPORT'")" = 0 ]; then
 				ok "a report definition is refused to a user without system rights"
@@ -6976,18 +6996,18 @@ if [ "$HAVE_DB" = 1 ]; then
 			bad "the admin cannot write the zip code table - the gate is too tight"
 		fi
 
-		# The save_report flow sends its parameters as a raw text/xml body, so
+		# The save_report flow sends its parameters as a JSON body, so
 		# there is no _csrf field in $_POST and the token has to travel in an
 		# X-CSRF-Token header. Without the header handling in
 		# ops/upload_report.php this POST is refused by pl_csrf_check() and
 		# saving a report is broken for everybody, admin included.
 		ADMTOK="$(az_token "$COOKIES")"
 		curl -s --max-time 30 -b "$COOKIES" -o "$BODY" -X POST \
-			-H 'Content-Type: text/xml' -H "X-CSRF-Token: ${ADMTOK}" \
-			--data-binary '<?xml version="1.0"?><form name="zzaz"></form>' \
+			-H 'Content-Type: application/json' -H "X-CSRF-Token: ${ADMTOK}" \
+			--data-binary '{"form":"zzaz","elements":[]}' \
 			"$OCM_URL/ops/upload_report.php?report_name=ZZAZREPORT&doc_name=ZZAZreport.xml" >/dev/null
 		if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZAZREPORT'")" = 1 ]; then
-			ok "the admin still saves a report definition over a raw XML body"
+			ok "the admin still saves a report definition over a JSON body"
 		else
 			bad "the admin cannot save a report definition - the CSRF header path is broken"
 		fi
@@ -15002,21 +15022,22 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 			| head -1 | sed -e 's/.*value="//' -e 's/"$//'
 	}
 
-	# Post the way js/save_report.js does: a raw text/xml body and the token
-	# in a header, because there is no form encoding for it to travel in.
+	# Post the way js/save_report.js does: a JSON body and the token in a
+	# header, because there is no form encoding for it to travel in. The
+	# function's exit status is curl's.
 	sr_save() {
-		local jar="$1" query="$2" xml="$3" tok
+		local jar="$1" query="$2" body="$3" tok
 		tok="$(sr_token "$jar")"
 		curl -s --max-time 30 -b "$jar" -o "$BODY" -w '%{http_code}' -X POST \
-			-H 'Content-Type: text/xml' -H "X-CSRF-Token: ${tok}" \
-			--data-binary "$xml" "$OCM_URL/ops/upload_report.php?${query}"
+			-H 'Content-Type: application/json' -H "X-CSRF-Token: ${tok}" \
+			--data-binary "$body" "$OCM_URL/ops/upload_report.php?${query}"
 	}
 
-	SR_XML='<?xml version="1.0"?><form name="zzsr"></form>'
+	SR_JSON='{"form":"zzsr","elements":[]}'
 
 	# 72a. The one path that stores a document says so, in the exact word the
 	# browser waits for before it reloads the list.
-	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR1&doc_name=ZZSR1.xml' "$SR_XML")"
+	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR1&doc_name=ZZSR1.xml' "$SR_JSON")"
 	if [ "$SR_CODE" = 200 ] && [ "$(tr -d ' \r\n' < "$BODY")" = 'OK' ]; then
 		ok "a stored report definition is answered with OK"
 	else
@@ -15028,9 +15049,9 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		bad "the handler said OK and stored nothing"
 	fi
 
-	# 72b. A body that is not XML. This is what an interrupted or truncated
+	# 72b. A body that is not JSON. This is what an interrupted or truncated
 	# request looks like, and it used to be indistinguishable from a save.
-	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR2&doc_name=ZZSR2.xml' 'this is not xml')"
+	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR2&doc_name=ZZSR2.xml' 'this is not json')"
 	if [ "$SR_CODE" = 400 ]; then
 		ok "settings that did not arrive readably are refused with a status"
 	else
@@ -15048,7 +15069,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 	fi
 
 	# 72c. No report to attach it to.
-	SR_CODE="$(sr_save "$COOKIES" 'doc_name=ZZSR3.xml' "$SR_XML")"
+	SR_CODE="$(sr_save "$COOKIES" 'doc_name=ZZSR3.xml' "$SR_JSON")"
 	if [ "$SR_CODE" = 400 ] && grep -q 'which report' "$BODY"; then
 		ok "a request that names no report is refused and says so"
 	else
@@ -15070,7 +15091,7 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		-X POST -d "login_user=${SR_USER}&login_pass=${SR_PASS}&auth_id=1" \
 		"$OCM_URL/" >/dev/null
 
-	SR_CODE="$(sr_save "$SR_JAR" 'report_name=ZZSR4&doc_name=ZZSR4.xml' "$SR_XML")"
+	SR_CODE="$(sr_save "$SR_JAR" 'report_name=ZZSR4&doc_name=ZZSR4.xml' "$SR_JSON")"
 	if [ "$SR_CODE" = 403 ]; then
 		ok "a user without system rights is refused with a status, not a blank 200"
 	else
@@ -15088,6 +15109,61 @@ if [ "$HAVE_DB" = 1 ] && [ "$HAVE_COMPOSE" = 1 ]; then
 		ok "save_report.js reloads the list only when the save is confirmed"
 	else
 		bad "save_report.js reloads the saved report list without reading the answer"
+	fi
+
+	# 72f. A setting holding markup characters. The browser used to paste
+	# values into the XML document by hand, so < or & broke the save. The
+	# server now builds the document, and the value must come back from the
+	# stored document as the same text, escaped as a text node.
+	SR_VALUE="<b>&amp;\"'"
+	SR_BODY_JSON="$(printf '{"form":"zzsr","elements":[{"name":"zzsr_field","type":"text","value":%s}]}' \
+		"$(printf '%s' "$SR_VALUE" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$/"/')")"
+	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR5&doc_name=ZZSR5.xml' "$SR_BODY_JSON")"
+	SR_RC=$?
+	if [ "$SR_RC" = 0 ] && [ "$SR_CODE" = 200 ] && [ "$(tr -d ' \r\n' < "$BODY")" = 'OK' ]; then
+		ok "a setting holding < & \" ' is saved"
+	else
+		bad "a setting holding markup characters answered $SR_CODE, curl exit $SR_RC [$(head -c 60 "$BODY")]"
+	fi
+
+	SR_DOC="$(adb "SELECT doc_id FROM doc_storage WHERE report_name = 'ZZSR5' ORDER BY doc_id DESC LIMIT 1")"
+	: > "$BODY"
+	curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+		"$OCM_URL/documents.php?action=download&doc_id=${SR_DOC}" >/dev/null
+	SR_RC=$?
+	SR_WANT="<value>&lt;b&gt;&amp;amp;\"'</value>"
+	if [ "$SR_RC" = 0 ] && [ -n "$SR_DOC" ] && grep -qF -e "$SR_WANT" "$BODY"; then
+		ok "the stored document holds the setting escaped as text"
+	else
+		bad "the stored document does not hold the escaped setting (doc ${SR_DOC:-none}, curl exit $SR_RC)"
+	fi
+
+	SR_READ="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+		$d = new DOMDocument();
+		$d->loadXML(stream_get_contents(STDIN));
+		$v = $d->getElementsByTagName("value")->item(0);
+		echo ($v && $v->childNodes->length == 1 && $v->firstChild->nodeType == XML_TEXT_NODE)
+			? $v->firstChild->nodeValue : "NO TEXT NODE";' < "$BODY" 2>/dev/null)"
+	if [ "$SR_READ" = "$SR_VALUE" ]; then
+		ok "the stored setting reads back as the exact text that was saved"
+	else
+		bad "the stored setting reads back as [$SR_READ], not [$SR_VALUE]"
+	fi
+
+	# 72g. The handler no longer parses XML at all. A body with an external
+	# entity is refused as unreadable, and nothing is stored.
+	SR_CODE="$(sr_save "$COOKIES" 'report_name=ZZSR6&doc_name=ZZSR6.xml' \
+		'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]><form/>')"
+	SR_RC=$?
+	if [ "$SR_RC" = 0 ] && [ "$SR_CODE" = 400 ]; then
+		ok "an XML body with an external entity is refused with 400"
+	else
+		bad "an XML body with an external entity answered $SR_CODE, curl exit $SR_RC"
+	fi
+	if [ "$(adb "SELECT COUNT(*) FROM doc_storage WHERE report_name = 'ZZSR6'")" = 0 ]; then
+		ok "an XML body stores nothing"
+	else
+		bad "an XML body stored a report definition"
 	fi
 
 	cleanup_sr
@@ -15829,24 +15905,22 @@ else
 	bad "csv download script: $sm76_peer peer checks, $sm76_host host checks, wanted 2 and 2"
 fi
 
-# 76i. Static. ops/upload_report.php parses a report definition posted as a
-# raw request body. LIBXML_NONET stops the parser being talked into
-# fetching a DTD or an entity over the network by the document it is
-# reading. LIBXML_NOENT would switch entity substitution back on, which is
-# the other half of the same problem, so its absence is asserted too.
-if grep -qF 'loadXML($postText, LIBXML_NONET)' cms/ops/upload_report.php; then
-	ok "the report parser is told not to go out to the network"
+# 76i. Static. ops/upload_report.php takes the report settings as JSON and
+# builds the stored XML document itself with the DOM. It must not parse any
+# XML the client sends, because a parser reading a client document is an
+# XXE sink however it is configured. The grep looks for call syntax rather
+# than the bare names, so a comment that names what is gone does not match.
+if grep -qE 'loadXML[[:space:]]*\(|simplexml_load_[a-z]+[[:space:]]*\(|XMLReader[[:space:]]*(::|\()|new[[:space:]]+XMLReader' \
+	cms/ops/upload_report.php; then
+	bad "the report handler parses XML from the request again"
 else
-	bad "the report parser no longer passes LIBXML_NONET"
+	ok "the report handler parses no XML"
 fi
 
-# Read off the call rather than the file: the comment above it names
-# LIBXML_NOENT to explain why it is absent, and a whole-file grep matches
-# that sentence.
-if grep -F 'loadXML(' cms/ops/upload_report.php | grep -qF 'LIBXML_NOENT'; then
-	bad "the report parser substitutes entities again"
+if grep -qF 'json_decode($postText, true, 8)' cms/ops/upload_report.php; then
+	ok "the report handler decodes the settings as JSON"
 else
-	ok "the report parser leaves entity substitution off"
+	bad "the report handler no longer decodes the settings as JSON"
 fi
 
 # 76j. Static. The same generated download script reads a list of table
