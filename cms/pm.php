@@ -24,24 +24,11 @@ pika_init();
 $package_str = str_replace($_SERVER['SCRIPT_NAME'], "", $_SERVER['PHP_SELF']); 
 // Now '/project/form.php'
 
-/*	Decode before stripping, then refuse anything that still holds '..'.
-
-	The single str_replace() this file used to rely on runs once, so a
-	sequence written to survive it - '...//' collapses to '..//' - walked
-	through. Strip, then check: if a traversal sequence is still there after
-	the strip, the request was built to defeat the strip and there is nothing
-	to salvage. The urldecode() is for a SAPI that hands PHP_SELF over
-	without decoding it; where PHP_SELF is already decoded, decoding again is
-	harmless because every path segment is then held to the character set
-	below.
+/*	Decode before checking each path segment. Refuse invalid names instead
+	of changing them, so 'a..b.php' cannot select 'ab.php'. The urldecode()
+	also covers a SAPI that leaves PHP_SELF encoded.
 */
 $package_str = urldecode($package_str);
-$package_str = str_replace('..', '', $package_str);
-
-if (strpos($package_str, '..') !== false)
-{
-	trigger_error("Path traversal detected.");
-}
 
 $uri = explode('/', $package_str);
 
@@ -51,6 +38,11 @@ $uri = explode('/', $package_str);
 */
 foreach ($uri as $uri_segment)
 {
+	if ('.' === $uri_segment || strpos($uri_segment, '..') !== false)
+	{
+		trigger_error("Path traversal detected.");
+	}
+	
 	if ('' !== $uri_segment && preg_match('/[^a-zA-Z0-9._\-]/', $uri_segment))
 	{
 		trigger_error("Invalid path component.");
@@ -212,12 +204,9 @@ if (sizeof($uri) == 3)
 	var_dump($uri);
 }
 */
-/*	The three require() calls in this file build their target out of the
-	request path. The only filter above is a str_replace('..',''), which a
-	path like '.../...//' walks straight through. Two rules close that:
-	the extension directory must appear in the 'extensions' setting, and
-	the included file must end in .php. That is CWE-98 (PHP file
-	inclusion) on all three call sites.
+/*	Both require() calls use a resolved path inside an enabled extension.
+	The target must be a regular .php file. Checking the resolved path also
+	refuses a symlink that points outside that extension directory.
 */
 else if ($uri[1] == 'reports')
 {
@@ -240,29 +229,33 @@ else if ($uri[1] == 'reports')
 		
 		if (sizeof($uri) == 4)
 		{
-			$x = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3];
+			$target = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3];
 		}
 		
 		else
 		{
-			$x = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3] . '/' . $uri[4];
+			$target = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3] . '/' . $uri[4];
 		}
 		
-		// Only a .php file may be included, whatever the path segments say.
-		if (substr($x, -4) !== '.php')
+		$real = realpath($target);
+		$base = realpath(pl_custom_directory() . '/extensions/' . $ext_name);
+		
+		if (false === $real || false === $base || !is_file($real)
+			|| substr($real, -4) !== '.php'
+			|| strpos($real, $base . DIRECTORY_SEPARATOR) !== 0)
 		{
-			trigger_error("Report target must be a .php file.");
+			trigger_error("Report target must be a .php file inside its extension directory.");
 		}
 		
 		chdir('app/lib');
-		require($x);
+		require($real);
 	}
 }
 
 else 
 {
 	array_shift($uri);
-	$filepath = array_shift($uri);
+	$ext_name = array_shift($uri);
 	$filename = array_shift($uri);
 	
 	/*	Match the extension name against the 'extensions' setting exactly.
@@ -281,18 +274,23 @@ else
 	*/
 	$enabled_extensions = pl_enabled_extensions();
 	
-	if (!in_array($filepath, $enabled_extensions, true))
+	if (!in_array($ext_name, $enabled_extensions, true))
 	{
-		trigger_error("Extension '{$filepath}':'{$filename}' is either not enabled or not installed.");
+		trigger_error("Extension '{$ext_name}':'{$filename}' is either not enabled or not installed.");
 	}
 	
-	// Only a .php file may be included, whatever the path segments say.
-	if (substr($filename, -4) !== '.php')
+	$target = pl_custom_directory() . "/extensions/{$ext_name}/{$filename}";
+	$real = realpath($target);
+	$base = realpath(pl_custom_directory() . '/extensions/' . $ext_name);
+	
+	if (false === $real || false === $base || !is_file($real)
+		|| substr($real, -4) !== '.php'
+		|| strpos($real, $base . DIRECTORY_SEPARATOR) !== 0)
 	{
-		trigger_error("Extension target must be a .php file.");
+		trigger_error("Extension target must be a .php file inside its extension directory.");
 	}
 	
-	require(pl_custom_directory() . "/extensions/{$filepath}/{$filename}");
+	require($real);
 }
 
 /*	pika_exit() takes the page body to print. Called with no argument it

@@ -27410,5 +27410,231 @@ print (int) $u->user_id;' "$sm110_new" 2>/dev/null)"
 fi
 
 echo
+# 112. pm.php must resolve an enabled extension target inside its directory.
+# A sibling directory shares the extension name prefix, so its symlink also
+# checks that containment includes the directory separator. Each refusal is
+# paired with a working PHP file and checked cleanup; every row fails on the
+# old loader. CLI supplies PHP_SELF directly so no HTTP client or server can
+# remove the dot segment before pm.php reads it.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	sm112_ext="zzpmpath_${$}_${RANDOM}"
+	sm112_saved="$(adb "SELECT CONCAT(COUNT(*), ':', COALESCE(MAX(HEX(value)), ''))
+		FROM settings WHERE label = 'extensions'")"
+	sm112_owned=0
+	sm112_parent=0
+	sm112_changed=0
+	sm112_clean=0
+	
+	sm112_fixture() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+$root = pl_custom_directory() . "/extensions";
+$base = $root . "/" . $argv[1];
+$outside = $base . "-outside";
+$files = array($base . "/link.php", $base . "/ab.php", $outside . "/outside.php");
+if ($argv[2] === "create")
+{
+	if (file_exists($base) || is_link($base)
+		|| file_exists($outside) || is_link($outside))
+	{
+		exit(1);
+	}
+	
+	$made = array();
+	$parent_owned = 0;
+	try
+	{
+		if (!is_dir($root))
+		{
+			if (!mkdir($root, 0755))
+			{
+				throw new Exception("Cannot create extensions directory");
+			}
+			$made[] = $root;
+			$parent_owned = 1;
+		}
+		foreach (array($base, $outside) as $directory)
+		{
+			if (!mkdir($directory, 0755))
+			{
+				throw new Exception("Cannot create fixture directory");
+			}
+			$made[] = $directory;
+		}
+		foreach (array($files[1] => "SM112-LEGIT", $files[2] => "SM112-OUTSIDE")
+			as $file => $marker)
+		{
+			$made[] = $file;
+			if (file_put_contents($file, "<?php echo \"" . $marker . "\";") === false)
+			{
+				throw new Exception("Cannot write fixture file");
+			}
+		}
+		if (!symlink($files[2], $files[0]))
+		{
+			throw new Exception("Cannot create fixture symlink");
+		}
+		print "SM112-SEEDED:" . $parent_owned;
+	}
+	catch (Throwable $error)
+	{
+		foreach (array_reverse($made) as $path)
+		{
+			if (is_dir($path))
+			{
+				rmdir($path);
+			}
+			else if (file_exists($path))
+			{
+				unlink($path);
+			}
+		}
+		exit(1);
+	}
+}
+else
+{
+	foreach ($files as $file)
+	{
+		if (is_link($file) || file_exists($file))
+		{
+			unlink($file);
+		}
+	}
+	foreach (array($base, $outside) as $directory)
+	{
+		if (is_dir($directory))
+		{
+			rmdir($directory);
+		}
+	}
+	if ($argv[3] === "1" && is_dir($root))
+	{
+		rmdir($root);
+	}
+	clearstatcache();
+	if (($argv[3] !== "1" || (!file_exists($root) && !is_link($root)))
+		&& !file_exists($base) && !is_link($base)
+		&& !file_exists($outside) && !is_link($outside))
+	{
+		print "SM112-CLEAN";
+	}
+}' "$sm112_ext" "$1" "$sm112_parent" </dev/null 2>/dev/null
+	}
+	
+	sm112_cleanup() {
+		local files_clean=1 setting_clean=1
+		if [ "$sm112_owned" = 1 ]; then
+			if [ "$(sm112_fixture cleanup)" = 'SM112-CLEAN' ]; then
+				sm112_owned=0
+			else
+				files_clean=0
+			fi
+		fi
+		if [ "$sm112_changed" = 1 ]; then
+			if [ "${sm112_saved%%:*}" = 1 ]; then
+				adb "UPDATE settings SET value = UNHEX('${sm112_saved#*:}')
+					WHERE label = 'extensions'" >/dev/null
+			else
+				adb "DELETE FROM settings WHERE label = 'extensions'" >/dev/null
+			fi
+			if [ "$(adb "SELECT CONCAT(COUNT(*), ':', COALESCE(MAX(HEX(value)), ''))
+				FROM settings WHERE label = 'extensions'")" = "$sm112_saved" ]; then
+				sm112_changed=0
+			else
+				setting_clean=0
+			fi
+		fi
+		sm112_clean=$((files_clean * setting_clean))
+	}
+	trap 'sm112_cleanup; base_cleanup' EXIT
+	
+	# Enable detailed errors only for each CLI request to see the refusal.
+	sm112_request() {
+		docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+define("PL_DEBUG", true);
+$_SERVER["SCRIPT_NAME"] = "/cms/pm.php";
+$_SERVER["PHP_SELF"] = $_SERVER["SCRIPT_NAME"] . $argv[1];
+$_GET = $_POST = $_COOKIE = $_REQUEST = array();
+require("pm.php");' "$1" </dev/null 2>/dev/null
+	}
+	
+	if [[ ! "$sm112_saved" =~ ^[01]:[0-9A-F]*$ ]]; then
+		bad "pm path fixture could not save the extensions setting"
+	elif ! sm112_seed="$(sm112_fixture create)" \
+		|| [[ ! "$sm112_seed" =~ ^SM112-SEEDED:[01]$ ]]; then
+		bad "pm path fixture could not create its files"
+	else
+		sm112_owned=1
+		sm112_parent="${sm112_seed##*:}"
+		sm112_changed=1
+		adb "INSERT INTO settings (label, value) VALUES ('extensions', '/${sm112_ext}')
+			ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null
+		sm112_results=()
+		sm112_labels=()
+		for sm112_branch in plain reports; do
+			sm112_prefix="/${sm112_ext}"
+			if [ "$sm112_branch" = reports ]; then
+				sm112_prefix="/reports/${sm112_ext}"
+			fi
+			sm112_legit="$(sm112_request "${sm112_prefix}/ab.php")"
+			for sm112_probe in symlink dot embedded; do
+				sm112_error='Path traversal detected.'
+				case "$sm112_probe" in
+					symlink)
+						sm112_path="${sm112_prefix}/link.php"
+						sm112_error='Extension target must be a .php file inside its extension directory.'
+						if [ "$sm112_branch" = reports ]; then
+							sm112_error='Report target must be a .php file inside its extension directory.'
+						fi
+						sm112_label='outside symlink'
+						;;
+					dot)
+						sm112_path="${sm112_prefix}/ab.php/."
+						if [ "$sm112_branch" = reports ]; then
+							sm112_path="${sm112_prefix}/./ab.php"
+						fi
+						sm112_label='dot segment'
+						;;
+					embedded)
+						sm112_path="${sm112_prefix}/a..b.php"
+						sm112_label='a..b.php'
+						;;
+				esac
+				sm112_out="$(sm112_request "$sm112_path")"
+				sm112_result=0
+				if [[ "$sm112_legit" == *SM112-LEGIT* ]] \
+					&& [[ "$sm112_legit" != *SM112-OUTSIDE* ]] \
+					&& [[ "$sm112_out" == *"$sm112_error"* ]] \
+					&& [[ "$sm112_out" != *SM112-LEGIT* ]] \
+					&& [[ "$sm112_out" != *SM112-OUTSIDE* ]]; then
+					sm112_result=1
+				fi
+				sm112_results+=("$sm112_result")
+				sm112_labels+=("pm ${sm112_branch}: legit PHP runs; ${sm112_label} refused; fixture cleaned")
+			done
+		done
+		sm112_cleanup
+		for sm112_index in "${!sm112_results[@]}"; do
+			if [ "${sm112_results[$sm112_index]}" = 1 ] && [ "$sm112_clean" = 1 ]; then
+				ok "${sm112_labels[$sm112_index]}"
+			else
+				bad "${sm112_labels[$sm112_index]}"
+			fi
+		done
+	fi
+	sm112_cleanup
+	if [ "$sm112_clean" != 1 ]; then
+		bad "pm path fixture files or extensions setting were not restored"
+	else
+		trap base_cleanup EXIT
+	fi
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
