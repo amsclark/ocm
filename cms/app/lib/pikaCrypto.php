@@ -628,38 +628,25 @@ if (!function_exists('pl_totp_mark_used'))
 	 * of those three the bound could have refused at most the one equal to
 	 * it.
 	 *
-	 * What does reach the dropped bound is the old secret itself coming back,
-	 * which the stale save below can do, and a login that read the secret
+	 * What does reach the dropped bound is a login that read the secret
 	 * before the reset ran. Such a login is handed the secret it already read
 	 * and re-reads only the bound, so it checks an old code against a cleared
 	 * bound, and can then record a bound for a secret the row no longer
-	 * holds. Both need the reset to land inside a narrow interval, and the
+	 * holds. It needs the reset to land inside a narrow interval, and the
 	 * verifier still offers only three windows, so the code has to be one the
 	 * account could use around the same moment.
 	 *
-	 * Two paths below write the column themselves rather than through this
-	 * function, so the guard reaches neither.
+	 * The user model does not write this column, the secret or the enabled
+	 * flag: pikaUser names all three in $never_write_columns, and plBase
+	 * leaves them out of every INSERT and UPDATE it builds, so a save meant
+	 * for another field cannot put back what an earlier load read.
 	 *
-	 * The user model builds its UPDATE from every column it loaded except the
-	 * primary key, which it matches on instead, so a save meant for one field
-	 * writes the untouched fields back as well. What it writes for them is
-	 * what the load read, put through the conversion any value gets on its
-	 * way into SQL: an empty value, and a non-numeric one in a number column,
-	 * both become NULL. If another write raised the bound in between, that
-	 * save lowers it again. The same statement carries the secret and the
-	 * enabled flag from the same stale read, so it can also restore a secret
-	 * a reset had already emptied. A save happens only where something was
-	 * assigned to the object, whether or not the assignment changed the
-	 * value, and the assigned field is written as assigned. The fields nobody
-	 * assigned to are the ones that go back stale, though an assigned one is
-	 * stale too if another writer changed it after the load.
-	 *
-	 * Enrolment writes the column directly and matches on the user alone. If
+	 * Enrolment writes the column itself rather than through this function,
+	 * so the guard does not reach it, and it matches on the user alone. If
 	 * two enrolments both pass the check before either writes, and both
 	 * settle on the same secret, the lower of their two windows can land
-	 * second. The two paths need different fixes: the first is in what the
-	 * model writes, the second in narrowing enrolment's own WHERE clause and
-	 * then checking whether that narrowed write changed a row, which the
+	 * second. The fix for that is to narrow enrolment's own WHERE clause and
+	 * then check whether that narrowed write changed a row, which the
 	 * handler does not do before it reports the secret stored.
 	 *
 	 * Best effort. A failure here must not fail a login that has otherwise
