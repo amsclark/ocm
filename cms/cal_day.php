@@ -270,11 +270,14 @@ while ($row = DBResult::fetchRow($result))
 		$a[] = $z;
 		
 		// Description
-		$row['summary'] . '<br/>';
+		/*	Escaped like the summary in the other three loops. The cell is
+			written as markup, so an unescaped summary was rendered as HTML.
+		*/
+		$z = pl_clean_html($row['summary']);
 		if(isset($plMenus['category'][$row['category']])) {
-			$row['summary'] .=  substr($plMenus['category'][$row['category']], 0, 10);
+			$z .=  substr($plMenus['category'][$row['category']], 0, 10);
 		}
-		$a[] = $row['summary'];
+		$a[] = $z;
 		// case information
 		$case_cell = '';
 		
