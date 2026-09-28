@@ -67,37 +67,22 @@ $menu_staff = pikaMisc::fetchStaffArray();
 $menu_pba = pikaMisc::fetchPbAttorneyArray();
 
 
-// Attempt to determine act_url if not already provided
-if (strlen((string) $act_url) < 1) {
+/*	Use an existing PHP page from the Referer when act_url is not provided.
+*/
+if (strlen((string) $act_url) < 1)
+{
 	$act_url = 'cal_day.php';
 	
-	if (isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER']) {
-		$http_referer = $_SERVER['HTTP_REFERER'];
-		$qs_position = strpos($http_referer,'?');
-		if($qs_position) { // Need to remove QS
-			$http_referer = substr($http_referer,0,$qs_position);
+	if (isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER'])
+	{
+		$referer_path = parse_url($_SERVER['HTTP_REFERER'], PHP_URL_PATH);
+		$act_url_temp = basename((string) $referer_path);
+		
+		if (preg_match('/^[A-Za-z0-9_-]+\.php$/D', $act_url_temp)
+			&& is_file($base_directory . '/' . $act_url_temp))
+		{
+			$act_url = $act_url_temp;
 		}
-		if(strpos($http_referer,'/')) { // Linux
-			$act_url_array = explode('/',$http_referer);
-			$act_url_temp = array_pop($act_url_array);
-			
-			if(file_exists($base_directory . '/' . $act_url_temp)) {
-				// Match found
-				$act_url = $act_url_temp;
-			}
-		} elseif (strpos($http_referer,"\\")) { // Windows
-			$act_url_array = explode("\\",$http_referer);
-			$act_url_temp = array_pop($act_url_array);
-			
-			if(file_exists($base_directory . "\\" . $act_url_temp)) {
-				// Match found
-				$act_url = $act_url_temp;
-			}
-		}
-	}
-	
-	if (strlen($act_url) < 1) {  // If act_url is still blank default to calendar
-		$act_url = 'cal_day.php';
 	}
 }
 
