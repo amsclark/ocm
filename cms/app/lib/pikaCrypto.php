@@ -628,13 +628,13 @@ if (!function_exists('pl_totp_mark_used'))
 	 * of those three the bound could have refused at most the one equal to
 	 * it.
 	 *
-	 * What does reach the dropped bound is a login that read the secret
-	 * before the reset ran. Such a login is handed the secret it already read
-	 * and re-reads only the bound, so it checks an old code against a cleared
-	 * bound, and can then record a bound for a secret the row no longer
-	 * holds. It needs the reset to land inside a narrow interval, and the
-	 * verifier still offers only three windows, so the code has to be one the
-	 * account could use around the same moment.
+	 * What could reach the dropped bound is a login that read the secret
+	 * before the reset ran. It is handed the secret it already read and
+	 * re-reads only the bound, so it checks an old code against a cleared
+	 * bound. The write below is what stops it: it matches on the secret the
+	 * caller checked the code against, and on MFA still being on, so a
+	 * reset, a new enrolment or an administrator's "off" that lands in
+	 * between leaves the row unchanged, and the caller refuses the sign-in.
 	 *
 	 * The user model does not write this column, the secret or the enabled
 	 * flag: pikaUser names all three in $never_write_columns, and plBase
@@ -649,36 +649,48 @@ if (!function_exists('pl_totp_mark_used'))
 	 * then check whether that narrowed write changed a row, which the
 	 * handler does not do before it reports the secret stored.
 	 *
-	 * Best effort. A failure here must not fail a login that has otherwise
-	 * succeeded; it only means the same code stays usable for the rest of
-	 * its window.
+	 * The function says whether it wrote, and a caller grants nothing unless
+	 * it did. A window it did not record is one another sign-in has already
+	 * spent, or one checked against a secret the row no longer holds, or
+	 * one for an account whose MFA has been turned off since the read. A
+	 * failed query leaves the same doubt, so it is answered the same way.
+	 * The user can sign in again with the next code.
 	 *
 	 * @param int $user_id
 	 * @param int $window Index returned by pl_totp_verify_once().
-	 * @return void
+	 * @param string $stored_secret The totp_secret value, as stored, that
+	 *	the code was checked against.
+	 * @return bool True only when this call recorded the window.
 	 */
-	function pl_totp_mark_used($user_id, $window)
+	function pl_totp_mark_used($user_id, $window, $stored_secret)
 	{
 		$user_id = (int) $user_id;
 		$window = (int) $window;
+		$stored_secret = (string) $stored_secret;
 		
-		if ($user_id <= 0 || $window <= 0)
+		if ($user_id <= 0 || $window <= 0 || '' === $stored_secret)
 		{
-			return;
+			return false;
 		}
 		
+		/*	totp_enabled <> 0 is the rule the two callers apply before they
+			ask for a code at all; NULL fails it, as it fails there.
+		*/
 		try
 		{
 			DB::preparedQuery(
 				'UPDATE users SET totp_last_used = ? WHERE user_id = ? '
+					. 'AND totp_enabled <> 0 AND totp_secret = ? '
 					. 'AND (totp_last_used IS NULL OR totp_last_used < ?) LIMIT 1',
-				array($window, $user_id, $window)
+				array($window, $user_id, $stored_secret, $window)
 			);
+			
+			return 1 === (int) DB::affectedRows();
 		}
 		
 		catch (Throwable $e)
 		{
-			// See the docblock: a failure here is not a failed login.
+			return false;
 		}
 	}
 }

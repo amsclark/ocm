@@ -5311,6 +5311,19 @@ function pl_reauth_required($action_scope)
 			}
 			
 			$ok = ($pw_ok && $totp_ok);
+			
+			/*	The window is recorded before the grant and the grant
+				depends on it, as on the login path: pl_totp_mark_used()
+				writes only while the row still has MFA on and still holds
+				the secret read above, and only for a window newer than the
+				one stored, so a code another request has just spent, or
+				one checked against a secret reset since the read, grants
+				nothing.
+			*/
+			if ($ok && null !== $totp_window && false !== $totp_window)
+			{
+				$ok = pl_totp_mark_used($user_id, $totp_window, (string) $user['totp_secret']);
+			}
 		}
 	}
 	
@@ -5325,11 +5338,6 @@ function pl_reauth_required($action_scope)
 	}
 	
 	pl_auth_rate_limit_reset_all($rl_keys);
-	
-	if (!is_null($totp_window) && false !== $totp_window)
-	{
-		pl_totp_mark_used($user_id, $totp_window);
-	}
 	
 	$window = (int) PL_REAUTH_WINDOW_SECONDS;
 	

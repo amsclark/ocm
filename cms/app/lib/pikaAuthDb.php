@@ -214,12 +214,21 @@ class pikaAuthDb
 					Burning it here would let somebody holding only the
 					authenticator -- with no password -- walk the user's
 					codes and lock them out of their own account.
+					
+					A code is asked for only while the account's MFA flag is
+					on and a secret is stored, the rule the step-up check in
+					pl.php already applied. An administrator who sets MFA to
+					"off" writes the flag alone and leaves the secret, so that
+					turning it back on resumes the enrolled authenticator.
+					Asking by the secret alone ignored that "off": the account
+					form said the account signed in with a password only,
+					and login went on asking for a code.
 				*/
 				require_once(dirname(__FILE__) . '/pikaCrypto.php');
 				$stored_secret = isset($row['totp_secret']) ? (string) $row['totp_secret'] : '';
 				$totp_window = null;
 				
-				if (strlen($stored_secret) > 0)
+				if (!empty($row['totp_enabled']) && strlen($stored_secret) > 0)
 				{
 					$secret = pl_totp_decrypt($stored_secret);
 					
@@ -240,28 +249,6 @@ class pikaAuthDb
 					$totp_ok = true;
 				}
 				
-				// one user record matched the username and password
-				if (password_verify((string) $credential, (string) $row['password']) && $totp_ok)
-				{  // Identity & Credential match existing records - allow login
-					$this->is_authorized = true;
-					$this->auth_row = $row;
-					
-					if (password_needs_rehash($row['password'], PASSWORD_DEFAULT)) 
-					{
-						require_once('pikaUser.php');
-						$u = new pikaUser($row['user_id']);
-						$u->setValue('password', password_hash($credential, PASSWORD_DEFAULT));
-						$u->save();
-    				}
-					
-					if (null !== $totp_window)
-					{
-						pl_totp_mark_used($row['user_id'],$totp_window);
-					}
-					
-					pl_audit('login.success', 'user', $row['user_id'], null, $row['user_id'], $row['username']);
-				}
-				
 				/*	hash_equals(), not ==. PHP compares two strings that
 					both look like numbers as numbers, and an MD5 hex digest
 					beginning "0e" followed by digits looks like scientific
@@ -274,7 +261,51 @@ class pikaAuthDb
 					hash_equals() is also constant time, so the comparison
 					no longer leaks the stored digest one byte at a time.
 				*/
-				else if (hash_equals((string) $row['password'], md5((string) $credential)) && $totp_ok)
+				$password_bcrypt_ok = password_verify((string) $credential, (string) $row['password']);
+				$password_md5_ok = !$password_bcrypt_ok
+					&& hash_equals((string) $row['password'], md5((string) $credential));
+				
+				/*	The code's window is recorded after the password has
+					matched and before the session is granted, and the grant
+					depends on it. pl_totp_mark_used() writes the window only
+					while the row still has MFA on, still holds the secret the
+					code was checked against, and holds no window at or above
+					this one, and it says whether it wrote. So a code another
+					sign-in has just spent is refused, and so is a code
+					checked against a secret an administrator reset while
+					this sign-in was in progress: the secret was read before
+					the reset, but the write is judged against the row as it
+					is now.
+				*/
+				$totp_unrecorded = false;
+				
+				if (($password_bcrypt_ok || $password_md5_ok) && $totp_ok && null !== $totp_window)
+				{
+					if (!pl_totp_mark_used($row['user_id'],$totp_window,$stored_secret))
+					{
+						$totp_ok = false;
+						$totp_unrecorded = true;
+					}
+				}
+				
+				// one user record matched the username and password
+				if ($password_bcrypt_ok && $totp_ok)
+				{  // Identity & Credential match existing records - allow login
+					$this->is_authorized = true;
+					$this->auth_row = $row;
+					
+					if (password_needs_rehash($row['password'], PASSWORD_DEFAULT)) 
+					{
+						require_once('pikaUser.php');
+						$u = new pikaUser($row['user_id']);
+						$u->setValue('password', password_hash($credential, PASSWORD_DEFAULT));
+						$u->save();
+    				}
+					
+					pl_audit('login.success', 'user', $row['user_id'], null, $row['user_id'], $row['username']);
+				}
+				
+				else if ($password_md5_ok && $totp_ok)
 				{
 					$this->is_authorized = true;
 					$this->auth_row = $row;
@@ -287,11 +318,6 @@ class pikaAuthDb
 					$u->setValue('password', password_hash($credential, PASSWORD_DEFAULT));
 					$u->save();
 					
-					if (null !== $totp_window)
-					{
-						pl_totp_mark_used($row['user_id'],$totp_window);
-					}
-					
 					pl_audit('login.success', 'user', $row['user_id'], array('note' => 'legacy_md5_upgraded'), $row['user_id'], $row['username']);
 				}
 				
@@ -301,12 +327,16 @@ class pikaAuthDb
 						caller is told nothing more than that the attempt was
 						refused.
 					*/
-					$password_ok = password_verify((string) $credential, (string) $row['password'])
-						|| hash_equals((string) $row['password'], md5((string) $credential));
+					$password_ok = $password_bcrypt_ok || $password_md5_ok;
 					
 					if (!$password_ok)
 					{
 						pl_audit('login.failure', 'user', $row['user_id'], array('reason' => 'bad_password'), $row['user_id'], $row['username']);
+					}
+					
+					elseif ($totp_unrecorded)
+					{
+						pl_audit('login.failure', 'user', $row['user_id'], array('reason' => 'totp_not_recorded'), $row['user_id'], $row['username']);
 					}
 					
 					elseif (!$totp_ok)

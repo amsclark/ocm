@@ -23556,11 +23556,11 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	# Every statement below that reads or changes the fixture row matches on
 	# the name as well as the id. Three do not, and cannot: the id comes from
 	# a MAX over the whole table, the INSERT that creates the row has nothing
-	# to match on yet, and the function under test takes a user id, so the id
-	# is all its own UPDATE has to pick a row with, and the three calls
-	# cannot narrow it. That UPDATE does carry one further predicate, on the
-	# bound it is about to write, but that is the guard under test rather
-	# than a check on whose row this is. "Cannot" describes how this fixture
+	# to match on yet, and the function under test picks its row by the user
+	# id and the stored secret, neither of which is this run's name, so the
+	# three calls cannot narrow it. That UPDATE also carries predicates on the
+	# MFA flag and on the bound it is about to write, but those are guards
+	# under test rather than a check on whose row this is. "Cannot" describes how this fixture
 	# is built, not a limit of SQL.
 	sm105_user="zzfloor_${$}_${RANDOM}"
 	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
@@ -23572,7 +23572,10 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	else
 		# group_id is NOT NULL with a default of NOGROUP, so the fixture needs
 		# no group row. The account is never signed in: every call below runs
-		# the function directly, so the password and the secret stay empty.
+		# the function directly, so the password stays empty. The secret is a
+		# placeholder no code is ever checked against. The function writes only
+		# while the row has MFA on and holds the secret it is handed, so the
+		# fixture turns MFA on and every call hands it the same placeholder.
 		#
 		# The count matches on the name as well as the id, because the id came
 		# from MAX(user_id) + 1 and another insert can take it first. It is
@@ -23586,9 +23589,10 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 		# a different name, and it then reports the fixture as missing instead
 		# of working on a row it did not create. A random number can repeat,
 		# so a colliding pair is a smaller chance rather than none.
-		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
-			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP')" \
-			>/dev/null 2>&1
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id,
+			totp_enabled, totp_secret)
+			VALUES (${sm105_uid}, '${sm105_user}', '', 0, 'NOGROUP',
+			1, 'zzfloorsecret')" >/dev/null 2>&1
 		sm105_seeded="$(adb "SELECT COUNT(*) FROM users
 			WHERE user_id = ${sm105_uid} AND username = '${sm105_user}'")"
 
@@ -23609,7 +23613,7 @@ define("PL_DISABLE_SECURITY", true);
 chdir("/var/www/html/cms");
 require_once("pika-danio.php");
 pika_init();
-pl_totp_mark_used((int) $argv[1], (int) $argv[2]);
+pl_totp_mark_used((int) $argv[1], (int) $argv[2], "zzfloorsecret");
 print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
 		}
 
@@ -27385,6 +27389,164 @@ print (int) $u->user_id;' "$sm110_new" 2>/dev/null)"
 			bad "the model-created fixture user ${sm110_new} was not deleted"
 		fi
 	fi
+fi
+
+# 111. Two rules decide the second factor at sign-in.
+#
+# Login asks for a code only while the account's MFA flag is on and a secret
+# is stored. An administrator's "off" writes the flag alone and keeps the
+# secret; login used to ask by the secret alone, so "off" did nothing there
+# while the account form said the account signed in with a password only.
+#
+# The code's window is recorded before the session is granted, and the grant
+# depends on it. pl_totp_mark_used() writes only while the row still has MFA
+# on, still holds the secret the code was checked against, and holds no window
+# at or above this one, and it says whether it wrote. Before, it wrote on the
+# user id and the bound alone and said nothing, so a sign-in that had read the
+# secret before an administrator's reset still signed in, and two sign-ins
+# that spent the same code both did.
+#
+# The login half runs pikaAuthDb::authenticate() itself, in one CLI process,
+# against a fixture account. A race cannot be made to happen on demand, so the
+# recording half calls the function the way the losing side of each race
+# would reach it.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	# The same fixture pattern as section 105: a name carrying the process id
+	# and a random number, matched together with the id in every statement
+	# that reads or changes the row, apart from the MAX and the INSERT that
+	# have nothing to match on yet, and the calls to pl_totp_mark_used(),
+	# which pick their row by id and secret.
+	sm111_user="zzmfaclaim_${$}_${RANDOM}"
+	sm111_pw="zzpw_${RANDOM}_${RANDOM}_${RANDOM}"
+	sm111_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+	case "$sm111_uid" in
+		''|*[!0-9]*) sm111_uid='' ;;
+	esac
+	if [ -z "$sm111_uid" ]; then
+		bad "could not read a free user id, so the MFA sign-in rules were not checked"
+	else
+		# The password and the secret are set by the probe, which hashes the
+		# one and stores the other in cleartext base32; pl_totp_decrypt()
+		# returns a cleartext value unchanged.
+		adb "INSERT INTO users (user_id, username, password, enabled, group_id)
+			VALUES (${sm111_uid}, '${sm111_user}', 'x', '1', 'NOGROUP')" \
+			>/dev/null 2>&1
+		sm111_seeded="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm111_uid} AND username = '${sm111_user}'")"
+
+		if [ "$sm111_seeded" != 1 ]; then
+			bad "the MFA sign-in fixture user was not created, so nothing was checked"
+		else
+			# Each step prints one KEY=value line. A step that did not run
+			# prints nothing, and the checks below read a missing key as a
+			# failure rather than as a pass.
+			sm111_out="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r '
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+require_once("app/lib/pikaAuthDb.php");
+require_once("app/lib/pikaCrypto.php");
+$uid = (int) $argv[1];
+$name = $argv[2];
+$pw = $argv[3];
+$b32 = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+$set = function ($sql, $params) use ($uid, $name) {
+	$params[] = $uid;
+	$params[] = $name;
+	DB::preparedQuery("UPDATE users SET " . $sql
+		. " WHERE user_id = ? AND username = ? LIMIT 1", $params);
+};
+$floor = function () use ($uid, $name) {
+	$r = DBResult::fetchRow(DB::preparedQuery("SELECT IFNULL(totp_last_used, \"null\") AS f"
+		. " FROM users WHERE user_id = ? AND username = ?", array($uid, $name)));
+	return (string) $r["f"];
+};
+$login = function ($code) use ($name, $pw) {
+	$a = new pikaAuthDb("users", "username", "password");
+	return $a->authenticate($name, $pw, $code) ? 1 : 0;
+};
+$mark = function ($w, $secret) use ($uid) {
+	return var_export(pl_totp_mark_used($uid, $w, $secret), true);
+};
+$set("password = ?, totp_enabled = 0, totp_secret = ?, totp_last_used = NULL",
+	array(password_hash($pw, PASSWORD_DEFAULT), $b32));
+print "OFF_PASSWORD_ONLY=" . $login("") . "\n";
+$set("totp_enabled = 1", array());
+print "ON_PASSWORD_ONLY=" . $login("") . "\n";
+$w = (int) floor(time() / 30);
+$code = pl_totp_code_at(pl_totp_base32_decode($b32), $w);
+print "ON_WITH_CODE=" . $login($code) . "\n";
+print "FLOOR_AFTER_LOGIN=" . $floor() . "|" . $w . "\n";
+$set("totp_last_used = NULL", array());
+print "FIRST_RECORD=" . $mark($w, $b32) . "\n";
+print "SECOND_RECORD=" . $mark($w, $b32) . "\n";
+$set("totp_last_used = NULL", array());
+print "OTHER_SECRET=" . $mark($w, "KRSXG5CTMVRXEZLUKRSXG5CTMVRXEZLU") . "|" . $floor() . "\n";
+$set("totp_enabled = 0", array());
+print "FLAG_OFF=" . $mark($w, $b32) . "|" . $floor() . "\n";
+' "$sm111_uid" "$sm111_user" "$sm111_pw" 2>/dev/null)"
+
+			sm111_val() {
+				printf '%s\n' "$sm111_out" | sed -n "s/^$1=//p"
+			}
+
+			if [ "$(sm111_val OFF_PASSWORD_ONLY)" = 1 ]; then
+				ok "with MFA off, an account that still holds a secret signs in with its password"
+			else
+				bad "with MFA off, an account holding a secret was refused its password-only sign-in (got '$(sm111_val OFF_PASSWORD_ONLY)')"
+			fi
+
+			if [ "$(sm111_val ON_PASSWORD_ONLY)" = 0 ]; then
+				ok "with MFA on, the password alone is refused"
+			else
+				bad "with MFA on, the password alone was not refused (got '$(sm111_val ON_PASSWORD_ONLY)')"
+			fi
+
+			# The window must be the one the code was made for, so a pass here
+			# is the claim writing rather than an older value left in place.
+			sm111_fl="$(sm111_val FLOOR_AFTER_LOGIN)"
+			if [ "$(sm111_val ON_WITH_CODE)" = 1 ] \
+				&& [ -n "$sm111_fl" ] && [ "${sm111_fl%%|*}" = "${sm111_fl#*|}" ]; then
+				ok "with MFA on, the password and a current code sign in and record the code's window"
+			else
+				bad "with MFA on, the password and a current code did not sign in and record the window (signed in '$(sm111_val ON_WITH_CODE)', floor|window '$sm111_fl')"
+			fi
+
+			if [ "$(sm111_val FIRST_RECORD)" = true ] \
+				&& [ "$(sm111_val SECOND_RECORD)" = false ]; then
+				ok "a window is recorded once and a second record of it is refused"
+			else
+				bad "recording one window twice gave '$(sm111_val FIRST_RECORD)' then '$(sm111_val SECOND_RECORD)', expected true then false"
+			fi
+
+			if [ "$(sm111_val OTHER_SECRET)" = 'false|null' ]; then
+				ok "a window checked against a secret the row no longer holds is not recorded"
+			else
+				bad "a window checked against another secret gave '$(sm111_val OTHER_SECRET)', expected 'false|null'"
+			fi
+
+			if [ "$(sm111_val FLAG_OFF)" = 'false|null' ]; then
+				ok "a window is not recorded once MFA has been turned off"
+			else
+				bad "a window recorded with MFA off gave '$(sm111_val FLAG_OFF)', expected 'false|null'"
+			fi
+		fi
+
+		adb "DELETE FROM users WHERE user_id = ${sm111_uid}
+			AND username = '${sm111_user}'" >/dev/null 2>&1
+	fi
+fi
+
+# Both callers must refuse when the window was not recorded. The login half is
+# read from the source because neither race can be made to happen on demand.
+if grep -qF 'if (!pl_totp_mark_used($row['"'"'user_id'"'"'],$totp_window,$stored_secret))' \
+	cms/app/lib/pikaAuthDb.php \
+	&& grep -qF '$ok = pl_totp_mark_used($user_id, $totp_window, (string) $user['"'"'totp_secret'"'"']);' \
+	cms/app/lib/pl.php; then
+	ok "login and step-up both refuse when the code's window was not recorded"
+else
+	bad "login or step-up no longer refuses when the code's window was not recorded"
 fi
 
 echo
