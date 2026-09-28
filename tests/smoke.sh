@@ -27517,5 +27517,157 @@ else
 	printf '  skip activity Referer checks (needs a running docker compose stack)\n'
 fi
 
+echo
+# 114. Two pages now HTML-escape a stored activity summary before printing
+# it as markup: cal_day.php's pending list, and reports/time/report.php's
+# HTML format. Both used to print the column raw, so a summary carrying a
+# literal < and > - which a straight INSERT can still write, even though
+# the web form filters those characters out - ran as markup for whoever
+# saw the row. The same report's CSV format is exempt on purpose: it hands
+# the summary to fputcsv() as a text field, not as HTML, so it must keep
+# the characters as they are stored.
+if [ "$HAVE_DB" != 1 ]; then
+	printf '  skip section 114 (needs the database)\n'
+else
+	sm114_uid="$(adb "SELECT user_id FROM users WHERE username = '${OCM_USER}'")"
+	case "$sm114_uid" in
+		''|*[!0-9]*) sm114_uid='' ;;
+	esac
+
+	# A date nothing else in this run touches, and far enough out that
+	# cal_day.php's own same-day time filter never applies - that filter
+	# is only added when cal_date is today.
+	sm114_date='2031-08-09'
+	sm114_date_us='08/09/2031'
+
+	# A marker this run owns. $RANDOM alone repeats within a short suite,
+	# so eight draws are joined into what reads as a 32-hex-char id. adb
+	# writes the literal < and > straight into the column, bypassing the
+	# filter the web form applies to the same field.
+	sm114_tag="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
+		$RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)"
+	sm114_marker="smk114${sm114_tag}"
+	sm114_raw='<b id="smk114x">'
+	sm114_summary="${sm114_marker}${sm114_raw}"
+	sm114_esc='&lt;b id='
+
+	sm114_act=''
+	sm114_owned=0
+	sm114_cleanup()
+	{
+		if [ "$sm114_owned" = 1 ]; then
+			adb "DELETE FROM activities WHERE act_id = ${sm114_act}
+				AND summary = '${sm114_summary}'" >/dev/null 2>&1
+		fi
+	}
+	trap 'sm114_cleanup; base_cleanup' EXIT
+
+	sm114_report()
+	{
+		: > "$BODY"
+		sm114_rep_code="$(curl -s --max-time 60 -b "$COOKIES" -o "$BODY" \
+			-w '%{http_code}' -X POST \
+			-d "date_start=${sm114_date_us}&date_end=${sm114_date_us}&report_format=$1" \
+			"$OCM_URL/reports/time/report.php")"
+		sm114_rep_curl=$?
+	}
+
+	if [ -z "$sm114_uid" ]; then
+		bad "section 114 could not find ${OCM_USER}'s user_id, so it seeded nothing"
+	else
+		sm114_act="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+		case "$sm114_act" in
+			''|*[!0-9]*) sm114_act='' ;;
+		esac
+
+		if [ -z "$sm114_act" ]; then
+			bad "section 114 could not pick a free act_id, so it seeded nothing"
+		else
+			sm114_taken="$(adb "SELECT COUNT(*) FROM activities
+				WHERE act_id = ${sm114_act}")"
+			if [ "$sm114_taken" != 0 ]; then
+				bad "section 114's fixture act_id ${sm114_act} is already in use, so it will not seed over it"
+			else
+				adb "INSERT INTO activities
+					(act_id, user_id, act_date, completed, summary)
+					VALUES (${sm114_act}, ${sm114_uid}, '${sm114_date}', 0,
+					'${sm114_summary}')" >/dev/null 2>&1
+				sm114_seeded="$(adb "SELECT COUNT(*) FROM activities
+					WHERE act_id = ${sm114_act} AND summary = '${sm114_summary}'")"
+				if [ "$sm114_seeded" != 1 ]; then
+					bad "section 114 could not seed its fixture activity, so it proves nothing"
+				else
+					sm114_owned=1
+
+					# The calendar's pending list, on the day the fixture is dated.
+					sm114_cal_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+						-w '%{http_code}' \
+						"$OCM_URL/cal_day.php?cal_date=${sm114_date}")"
+					sm114_cal_curl=$?
+
+					if [ "$sm114_cal_curl" -ne 0 ] || [ "$sm114_cal_code" != 200 ] \
+						|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
+						bad "the pending list request failed (curl exit ${sm114_cal_curl}, status ${sm114_cal_code}) - section 114 proves nothing for cal_day.php"
+					elif ! grep -qF "$sm114_marker" "$BODY"; then
+						bad "the pending list does not show the fixture activity, so section 114 proves nothing for cal_day.php"
+					elif grep -qF "$sm114_raw" "$BODY"; then
+						bad "THE PENDING LIST PRINTS THE STORED SUMMARY AS RAW MARKUP"
+					elif grep -qF "$sm114_esc" "$BODY"; then
+						ok "cal_day.php's pending list HTML-escapes the stored summary"
+					else
+						bad "the pending list neither escaped nor rendered the fixture summary - section 114 proves nothing for cal_day.php"
+					fi
+
+					# The time report, HTML format, over the fixture's own day.
+					sm114_report html
+					if [ "$sm114_rep_curl" -ne 0 ] || [ "$sm114_rep_code" != 200 ] \
+						|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
+						bad "the HTML time report request failed (curl exit ${sm114_rep_curl}, status ${sm114_rep_code}) - section 114 proves nothing for report.php"
+					elif ! grep -qF "$sm114_marker" "$BODY"; then
+						bad "the HTML time report does not show the fixture activity, so section 114 proves nothing for report.php"
+					elif grep -qF "$sm114_raw" "$BODY"; then
+						bad "THE HTML TIME REPORT PRINTS THE STORED SUMMARY AS RAW MARKUP"
+					elif grep -qF "$sm114_esc" "$BODY"; then
+						ok "the time report's HTML format HTML-escapes the stored summary"
+					else
+						bad "the HTML time report neither escaped nor rendered the fixture summary - section 114 proves nothing for report.php"
+					fi
+
+					# The same report, CSV format, must keep the summary as text.
+					sm114_report csv
+					if [ "$sm114_rep_curl" -ne 0 ] || [ "$sm114_rep_code" != 200 ] \
+						|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
+						bad "the CSV time report request failed (curl exit ${sm114_rep_curl}, status ${sm114_rep_code}) - section 114 proves nothing for report.php's CSV format"
+					elif ! grep -qF "$sm114_marker" "$BODY"; then
+						bad "the CSV time report does not show the fixture activity, so section 114 proves nothing for report.php's CSV format"
+					elif grep -qF "$sm114_esc" "$BODY"; then
+						bad "THE CSV TIME REPORT HTML-ESCAPES THE STORED SUMMARY"
+					else
+						# fputcsv() doubles the field's own quote character, so
+						# the raw marker is not a byte-for-byte substring here;
+						# the '<' before it is not something fputcsv touches,
+						# and that is what proves the field skipped
+						# pl_clean_html().
+						if grep -qF '<b id=' "$BODY"; then
+							ok "the time report's CSV format keeps the stored summary as text"
+						else
+							bad "the CSV time report neither kept the raw summary nor escaped it - section 114 proves nothing for report.php's CSV format"
+						fi
+					fi
+				fi
+			fi
+		fi
+	fi
+
+	sm114_cleanup
+	if [ "$sm114_owned" = 1 ] && [ -n "$sm114_act" ]; then
+		sm114_left="$(adb "SELECT COUNT(*) FROM activities WHERE act_id = ${sm114_act}")"
+		if [ "$sm114_left" != 0 ]; then
+			bad "section 114's fixture activity ${sm114_act} was not deleted"
+		fi
+	fi
+	trap base_cleanup EXIT
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
