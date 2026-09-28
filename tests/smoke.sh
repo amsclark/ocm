@@ -4393,15 +4393,23 @@ if [ "$HAVE_DB" = 1 ]; then
 
 			# (g) The app links to pages with PATH_INFO: "case_list.php/" and
 			# "pm.php/reports/<ext>/". The redirect keeps it. A dot segment
-			# goes to the root.
+			# must never reach the Location. curl and Apache may resolve it
+			# before PHP runs, so either the resolved path or the root passes.
 			fh_get "${OCM_URL}/case_list.php/"
 			fh_expect "a page with a trailing slash" \
 				"${FH_ORIGIN}${FH_PREFIX}/case_list.php/"
 			fh_get "${OCM_URL}/case_list.php/12/?a=1"
 			fh_expect "a page with PATH_INFO and a query" \
 				"${FH_ORIGIN}${FH_PREFIX}/case_list.php/12/?a=1"
-			fh_get "${OCM_URL}/index.php/a/%2E%2E/b"
-			fh_expect "a dot segment in PATH_INFO" "${FH_ORIGIN}${FH_PREFIX}/"
+			fh_get "${OCM_URL}/index.php/a/%2E%2E/b" --path-as-is
+			if [ "$FH_LOC" = "${FH_ORIGIN}${FH_PREFIX}/index.php/b" ]; then
+				fh_expect "a dot segment in PATH_INFO" "${FH_ORIGIN}${FH_PREFIX}/index.php/b"
+			else
+				fh_expect "a dot segment in PATH_INFO" "${FH_ORIGIN}${FH_PREFIX}/"
+			fi
+			if printf '%s' "$FH_LOC" | grep -qiE -e '/(\.|%2e){1,2}(/|$)'; then
+				bad "the force_https redirect carries a dot segment (${FH_LOC})"
+			fi
 
 			# (h) Apache follows symbolic links in cms/, so a page that is a
 			# link keeps its own name and query.
