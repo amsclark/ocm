@@ -49,7 +49,6 @@ php/InsecureHash | cms/dataops.php | 1 | The same current-password check as pass
 
 # --- A rule scoped to a PHP version this application does not support ---
 
-php/XxePrePHP8 | cms/ops/upload_report.php | 1 | The rule covers PHP versions before 8.0, where libxml loaded external entities by default. This application supports PHP 8 only: the Dockerfile pins php:8.2-apache by digest and CI lints on 8.2. The call also passes LIBXML_NONET, so the parser cannot fetch a DTD or an entity over the network, and LIBXML_NOENT is deliberately not passed, so entity substitution stays off.
 
 # --- Sanitisers the taint analysis does not recognise ---
 
@@ -64,7 +63,6 @@ php/XSS | cms/pika_cms.php | 1 | The flagged echo is $esc($title) . " : " . $esc
 
 # --- Not a finding ---
 
-php/HardcodedPassword | cms/app/lib/pikaUserAdminControls.php | 1 | Not a password. The flagged literal is an $options array mapping the sign-in method values "password" and "sso" to their display labels for a select element. No credential is present.
 php/Ssrf | cms/ops/upload_document.php | 1 | No outbound request is made from this call. uploadDoc() writes the uploaded temporary file into the document store; there is no URL and no fetch anywhere on the path.
 php/TooPermissiveXFrameOptions | cms/app/lib/pl.php | 1 | The header sent is "X-Frame-Options: DENY", which is the strictest value the header has; there is no ALLOW-FROM and no SAMEORIGIN. The CSP on the same responses also sends frame-ancestors none.
 

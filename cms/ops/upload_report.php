@@ -82,12 +82,17 @@ if (!$report_name)
 	pl_upload_report_reply(400, 'The report was not saved: the request did not say which report it belongs to.');
 }
 
-/*	LIBXML_NONET so the parser cannot be talked into fetching a DTD or an
-	entity over the network by the document it is reading. Entity
-	substitution is already off -- LIBXML_NOENT is not passed -- so this
-	closes the remaining half of XXE rather than opening anything.
+/*	The report settings from js/save_report.js do not need a DTD. Refuse
+	DOCTYPE before parsing, then check the DOM for declarations in encodings
+	that the byte search cannot match. Keep network access disabled and do
+	not enable entity substitution or DTD loading.
 */
-if (!$postText || !@$xml_doc->loadXML($postText, LIBXML_NONET))
+if (!$postText || false !== stripos($postText, '<!DOCTYPE'))
+{
+	pl_upload_report_reply(400, 'The report was not saved: the settings did not arrive in a readable form.');
+}
+
+if (!@$xml_doc->loadXML($postText, LIBXML_NONET) || null !== $xml_doc->doctype)
 {
 	pl_upload_report_reply(400, 'The report was not saved: the settings did not arrive in a readable form.');
 }
