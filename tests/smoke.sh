@@ -4286,6 +4286,19 @@ if [ "$HAVE_DB" = 1 ]; then
 		*)              bad "the session cookie is not SameSite=Lax (rebuild the image?)" ;;
 	esac
 
+	# A page in a subdirectory, for check (c) below. With force_https still off
+	# a read-only GET shows that Apache serves it and PHP runs it: anything but
+	# a 403 or a 404 will do, since it sends a signed-out caller to the login.
+	FH_SUBPAGE='reports/megareport/index.php'
+	fh_get "${OCM_URL}/${FH_SUBPAGE}"
+	case "${FH_RC}:${FH_CODE}" in
+		0:403|0:404|0:000) FH_SUB_OK=0
+		     bad "${FH_SUBPAGE} is not served (${FH_CODE}), so check (c) cannot run" ;;
+		0:*) FH_SUB_OK=1 ;;
+		*)   FH_SUB_OK=0
+		     bad "${FH_SUBPAGE}: curl exit ${FH_RC}, so check (c) cannot run" ;;
+	esac
+
 	case "$FH_CANON_HAD" in
 		0|1) FH_CANON_READ=1 ;;
 		*)   FH_CANON_READ=0
@@ -4351,6 +4364,26 @@ if [ "$HAVE_DB" = 1 ]; then
 			fh_expect "a hostile path" "${FH_ORIGIN}${FH_PREFIX}/"
 			if printf '%s' "$FH_LOC" | grep -qF -e 'evil.example'; then
 				bad "the force_https redirect carries the hostile path (${FH_LOC})"
+			fi
+
+			# (c) A real page in a subdirectory keeps its path and query.
+			if [ "$FH_SUB_OK" = 1 ]; then
+				fh_get "${OCM_URL}/${FH_SUBPAGE}?a=1"
+				fh_expect "a page in a subdirectory" \
+					"${FH_ORIGIN}${FH_PREFIX}/${FH_SUBPAGE}?a=1"
+			fi
+
+			# (d) The root keeps its rebuilt query.
+			fh_get "${OCM_URL}/?q=one"
+			fh_expect "the root with a query" "${FH_ORIGIN}${FH_PREFIX}/?q=one"
+
+			# (e) A deep path that is not in the listing goes to the root with
+			# no query. Apache denies app/ before PHP runs, so the path goes in
+			# PATH_INFO after a real page, as in (b).
+			fh_get "${OCM_URL}/index.php/app/lib/pl.php?q=one"
+			fh_expect "a path that is not listed" "${FH_ORIGIN}${FH_PREFIX}/"
+			if printf '%s' "$FH_LOC" | grep -qF -e 'app/lib'; then
+				bad "the force_https redirect carries an unlisted path (${FH_LOC})"
 			fi
 
 			# A forged Host header must not reach the Location.

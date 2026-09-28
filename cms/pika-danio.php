@@ -917,9 +917,17 @@ function pika_init()
 		$force_https_origin = 'https://' . preg_replace(
 			'#^[A-Za-z][A-Za-z0-9+.-]*://#', '', rtrim($force_https_origin, '/'));
 		/*	The redirect path must name a page from the server's own listing.
-			The request only selects a page and its query is rebuilt; anything
-			else goes to the application root. The directory comes from the
-			configured base_url, not from the request.
+			The request only selects a page or the application root, and its
+			query is rebuilt; anything else goes to the root with no query. The
+			directory comes from the configured base_url, not from the request.
+
+			The listing is every .php file under cms/, four levels deep at most,
+			keyed by its path from cms/ with '/' between the parts. It leaves out
+			the trees nobody requests: app/ and uploads/, which Apache denies,
+			vendor/, and modules/ and template_plugins/, which are include
+			fragments. It also leaves out any name that starts with a '.', and
+			it does not follow symbolic links. It is built only here, so a
+			request that is not redirected does not pay for it.
 		*/
 		$force_https_prefix = rtrim((string) parse_url(
 			(string) pl_settings_get('base_url'), PHP_URL_PATH), '/');
@@ -927,30 +935,54 @@ function pika_init()
 		$uri = parse_url(isset($_SERVER['REQUEST_URI'])
 			? (string) $_SERVER['REQUEST_URI'] : '/');
 
-		$pages = array();
-		foreach (glob(__DIR__ . '/*.php') ?: array() as $file)
-		{
-			if (is_file($file))
+		$skip = array('app' => true, 'uploads' => true, 'vendor' => true,
+			'modules' => true, 'template_plugins' => true);
+		$files = new RecursiveIteratorIterator(new RecursiveCallbackFilterIterator(
+			new RecursiveDirectoryIterator(__DIR__, FilesystemIterator::SKIP_DOTS),
+			function ($file, $key, $dir) use ($skip)
 			{
-				$script = basename($file);
-				$pages[$script] = $script;
+				$name = $file->getFilename();
+				if ('.' === substr($name, 0, 1) || $file->isLink())
+				{
+					return false;
+				}
+				if ($file->isDir())
+				{
+					return !('' === $dir->getSubPath() && isset($skip[$name]));
+				}
+				return $file->isFile() && '.php' === substr($name, -4);
+			}));
+		$files->setMaxDepth(3);
+
+		$pages = array();
+		foreach ($files as $file)
+		{
+			$script = str_replace(DIRECTORY_SEPARATOR, '/',
+				substr($file->getPathname(), strlen(__DIR__) + 1));
+			$pages[$script] = $script;
+		}
+
+		$page = null;
+		if (false !== $uri && isset($uri['path']))
+		{
+			if ($force_https_prefix === $uri['path'])
+			{
+				$page = '';
+			}
+			elseif ($force_https_prefix . '/' === substr($uri['path'], 0,
+				strlen($force_https_prefix) + 1))
+			{
+				$page = substr($uri['path'], strlen($force_https_prefix) + 1);
 			}
 		}
 
-		$page = '';
-		if (false !== $uri && isset($uri['path'])
-			&& $force_https_prefix . '/' === substr($uri['path'], 0,
-				strlen($force_https_prefix) + 1))
-		{
-			$page = substr($uri['path'], strlen($force_https_prefix) + 1);
-		}
-
-		if ('' !== $page && isset($pages[$page]))
+		if (null !== $page && ('' === $page || isset($pages[$page])))
 		{
 			$params = array();
 			parse_str(isset($uri['query']) ? $uri['query'] : '', $params);
 			$query = http_build_query($params);
-			$force_https_path = $force_https_prefix . '/' . $pages[$page]
+			$force_https_path = $force_https_prefix . '/'
+				. ('' === $page ? '' : $pages[$page])
 				. ('' !== $query ? '?' . $query : '');
 		}
 
