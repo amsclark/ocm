@@ -12,13 +12,25 @@
 --   ip_address   -- request IP as seen by PHP (may be proxy IP; see pl_audit)
 --   user_agent   -- truncated User-Agent header
 --   action       -- short stable identifier, dotted-lowercase convention:
---                   'login.success', 'login.failure', 'logout',
---                   'user.create', 'user.update', 'user.disable',
---                   'user.group_change', 'user.password_admin_reset',
---                   'password.self_change', 'password.reset_request',
---                   'setting.update', 'activity.delete', 'case.delete',
---                   'contact.delete', 'case.transfer'
---   object_type  -- 'user' | 'case' | 'activity' | 'setting' | 'contact' | NULL
+--                   a subject and what happened to it, as in 'login.success',
+--                   'user.group_change' or 'setting.update'. This comment does not
+--                   list them. It used to, and the list was wrong in both
+--                   directions: two names in it are emitted nowhere and most of the
+--                   names the app does emit were missing. The set is whatever the
+--                   pl_audit() callers pass, so read it from them:
+--                       grep -rn 'pl_audit(' cms
+--                   Two callers in system-users.php pass a variable; the names are
+--                   assigned on the line above each call. No application code reads
+--                   this column by a hard-coded name, so a caller may add one
+--                   without a migration (the smoke tests do query some names).
+--                   Keep a new name to lowercase letters, digits, '.' and '_', at
+--                   most 64 characters: the action filter in system-audit.php
+--                   accepts only those.
+--   object_type  -- optional lowercase label for what object_id names, such as
+--                   'user', 'case', 'activity' or 'setting'. It may be set with a
+--                   NULL object_id. NULL when the event has no target, as a failed
+--                   login with an unknown username does. Same rule as above: the
+--                   callers define the set, not this comment.
 --   object_id    -- stringified primary key of the target object
 --   details      -- JSON: {"old": ..., "new": ..., "reason": ...}
 --
