@@ -5,6 +5,11 @@ if (PHP_SAPI !== 'cli') {
     exit;
 }
 
+if (!defined('STDERR'))
+{
+	define('STDERR', fopen('php://stderr', 'w'));
+}
+
 $cms = getenv('OCM_TEST_CMS_DIR') ?: '/var/www/html/cms';
 set_error_handler(function ($severity, $message, $file, $line) {
     throw new ErrorException($message, 0, $severity, $file, $line);
@@ -65,7 +70,7 @@ function check_backport($label, $test)
         echo "  ok   $label\n";
         $passed++;
     } catch (Throwable $error) {
-        echo "  FAIL $label: " . $error->getMessage() . "\n";
+		fwrite(STDERR, "  FAIL $label: " . $error->getMessage() . "\n");
         $failed++;
     }
 }

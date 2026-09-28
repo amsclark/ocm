@@ -18,9 +18,24 @@ $password = '%%[password]%%';
 $url = '%%[url]%%';
 $save_folder_path = '%%[save_folder_path]%%';
 
+/*	The export list is this installation's own tables, as they were when the
+	script was downloaded, less doc_storage. system-mac_download.php writes it
+	in. Download the script again after adding a table.
+*/
+$allowed_tables = explode(',', '%%[allowed_tables]%%');
+
+$save_folder_path = realpath($save_folder_path);
+if ($save_folder_path === FALSE || !is_dir($save_folder_path))
+{
+	fwrite(STDERR, "The save folder does not exist.\n");
+	exit(1);
+}
+$save_folder_prefix = rtrim($save_folder_path, DIRECTORY_SEPARATOR) .
+	DIRECTORY_SEPARATOR;
+
 $c = curl_init();
 curl_setopt($c, CURLOPT_URL, $url . '/services/table_listing.php');
-echo "Connecting to {$url}\n";
+fwrite(STDOUT, "Connecting to {$url}\n");
 curl_setopt($c, CURLOPT_TIMEOUT, 60);
 curl_setopt($c, CURLOPT_RETURNTRANSFER, 1);
 curl_setopt($c, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
@@ -51,22 +66,47 @@ if (!is_array($result))
 
 foreach ($result as $v)
 {
-	/*	$v is a table name read out of the answer the far end sent, and the
-		path below puts a separator in front of it. A server answering this
-		request could therefore name a table '../../../../etc/cron.d/x' and
-		have this script -- which runs from the operator's cron, as the
-		operator -- write a file of the server's choosing anywhere that user
-		can write. Hold the name to the shape a table name has.
+	/*	Remote names must select an entry from the fixed export list. Only
+		the selected local value reaches the URL, output, or file path.
 	*/
-	if (!preg_match('/^[A-Za-z0-9_]+\z/', (string) $v))
+	if (!is_string($v) || !preg_match('/^[A-Za-z0-9_]+\z/', (string) $v))
 	{
-		echo "Skipped a table name that is not a plain identifier.\n";
+		fwrite(STDOUT, "Skipped a table name that is not a plain identifier.\n");
 		continue;
 	}
-	
-	echo "Table {$v} ";
+	$table_index = array_search($v, $allowed_tables, TRUE);
+	if ($table_index === FALSE)
+	{
+		fwrite(STDOUT, "Skipped a table name outside the export list.\n");
+		continue;
+	}
+	$table = $allowed_tables[$table_index];
+	$file_path = $save_folder_prefix . $table . '.csv';
+
+	/*	An existing link could redirect an otherwise safe file name outside
+		the save folder. Reject links, including links to missing targets.
+	*/
+	if (is_link($file_path) ||
+		strncmp($file_path, $save_folder_prefix, strlen($save_folder_prefix)) !== 0 ||
+		dirname($file_path) !== $save_folder_path)
+	{
+		fwrite(STDERR, "Skipped an unsafe export file path.\n");
+		continue;
+	}
+	if (file_exists($file_path))
+	{
+		$existing_path = realpath($file_path);
+		if ($existing_path === FALSE || !is_file($existing_path) ||
+			dirname($existing_path) !== $save_folder_path)
+		{
+			fwrite(STDERR, "Skipped an unsafe export file path.\n");
+			continue;
+		}
+	}
+
+	fwrite(STDOUT, "Table {$table} ");
 	$c = curl_init();
-	curl_setopt($c, CURLOPT_URL, $url . '/services/csv.php?action=' . $v);
+	curl_setopt($c, CURLOPT_URL, $url . '/services/csv.php?action=' . $table);
 	curl_setopt($c, CURLOPT_TIMEOUT, 60);
 	curl_setopt($c, CURLOPT_RETURNTRANSFER, 1);
 	curl_setopt($c, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
@@ -77,9 +117,12 @@ foreach ($result as $v)
 	$status_code = curl_getinfo($c, CURLINFO_HTTP_CODE);
 	$result=curl_exec($c);
 	curl_close ($c);
-	$file_path = $save_folder_path . '/' . $v . '.csv';
-	file_put_contents($file_path, $result);
-	echo "saved to {$file_path}\n";
+	if (file_put_contents($file_path, $result) === FALSE)
+	{
+		fwrite(STDERR, "Could not save the exported table.\n");
+		continue;
+	}
+	fwrite(STDOUT, "saved to {$file_path}\n");
 }
 
 ?>
