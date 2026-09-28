@@ -57,9 +57,3 @@ php/FileInclusion | cms/pm.php | 2 | pm.php decodes the path, strips traversal, 
 # --- Not a finding ---
 
 php/TooPermissiveXFrameOptions | cms/app/lib/pl.php | 1 | The header sent is "X-Frame-Options: DENY", which is the strictest value the header has; there is no ALLOW-FROM and no SAMEORIGIN. The CSP on the same responses also sends frame-ancestors none.
-
-# --- Command-line scripts, where the output is job output and not a response ---
-
-php/ServerLeak | cms/sms_cron.php | 1 | cms/sms_cron.php is a command-line cron script, not an HTTP endpoint. The flagged echo writes the send failure to the job output; there is no response for it to leak into.
-php/XSS | cms/app/scripts/cms-csv-download.php | 2 | A command-line script that runs from the operator's own cron on their own machine; its echo goes to the job output, not to a browser. The interpolated table name is also held to preg_match("/^[A-Za-z0-9_]+$/") before the loop body runs.
-php/PT | cms/app/scripts/cms-csv-download.php | 1 | $v is held to preg_match(/^[A-Za-z0-9_]+$/) a few lines above and anything else is skipped with a continue. $save_folder_path is a local folder the operator typed; this file is a CLI script run from the operator's cron, not a server endpoint.

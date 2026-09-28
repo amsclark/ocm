@@ -12,16 +12,9 @@ version: v1.25.0
 # SQL injection and file inclusion as real findings. Excluding the
 # directory hides nothing: a scanner fixture that stopped being vulnerable
 # would be a broken fixture.
-# tests/fixtures/ holds the fake services and harnesses the shell test suite
-# runs against: zz_test_hibp.php is a stand-in for the Have I Been Pwned
-# range API, and zz_test_ocm9_backports.php is a test runner that prints the
-# exception from a failed assertion. Snyk Code read the first as an insecure
-# hash and the second as a stack-trace leak. Neither is application code and
-# the Dockerfile copies only cms, cms-custom and errors into the image.
 exclude:
   global:
     - .semgrep/**
-    - tests/fixtures/**
 
 # There is no ignore: block here, and that is deliberate.
 #

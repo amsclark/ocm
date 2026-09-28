@@ -84,6 +84,21 @@ else if (pl_grab_post('script') == 'Download Script')
 				'url' => pl_canonical_origin('https') . pl_settings_get('base_url'),
 				'save_folder_path' => pl_grab_post('home_path', '', 'text') . "/cms",
 				'password' => pl_grab_post('password', '', 'text'));
+	/*	The script exports only the tables named here. The list is taken the
+		way services/table_listing.php takes it, and only plain identifiers
+		are written in, so the value needs no escaping in the PHP string.
+	*/
+	$names = array();
+	$result = DB::query("SHOW TABLES");
+	while ($row = DBResult::fetchArray($result))
+	{
+		if ($row[0] != 'doc_storage' &&
+			preg_match('/^[A-Za-z0-9_]+\z/', (string) $row[0]))
+		{
+			$names[] = $row[0];
+		}
+	}
+	$a['allowed_tables'] = implode(',', $names);
 	header('Content-Type: text/plain; charset=utf-8');
 	header("Content-Disposition: attachment; filename=cms-csv-download.php");
 	echo pl_template('app/scripts/cms-csv-download.php', $a);

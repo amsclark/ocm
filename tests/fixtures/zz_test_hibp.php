@@ -13,11 +13,12 @@
 	
 	State lives in /tmp/zz_test_hibp:
 	
-		passwords   one password per line. Any password listed here is
-		            reported as breached; anything else is reported clean.
 		flags       'fail' to answer 500, so a test can see what the
 		            application does when the service is unreachable.
 	
+	The fixed hashes below represent the two breached passwords in smoke.sh.
+	All other passwords are reported clean.
+
 	Installed into the web root by smoke.sh and deleted again afterwards.
 	It refuses to do anything unless its state directory exists, so a copy
 	left behind by a killed run is inert.
@@ -66,9 +67,10 @@ if (!preg_match('/^[0-9A-F]{5}$/', $prefix))
 	exit;
 }
 
-$passwords = file_exists($STATE_DIR . '/passwords')
-	? preg_split('/\r?\n/', (string) file_get_contents($STATE_DIR . '/passwords'))
-	: array();
+$hashes = array(
+	'550A7EEF87E76C3A44C8BEBE1D5EB012DF0626D6',
+	'FBC2FA511E61CCF4DE64D0932CB8C5565284E38A'
+);
 
 header('Content-Type: text/plain; charset=utf-8');
 header('Cache-Control: no-store');
@@ -79,17 +81,8 @@ header('Cache-Control: no-store');
 */
 echo str_repeat('0', 35) . ":1\n";
 
-foreach ($passwords as $password)
+foreach ($hashes as $hash)
 {
-	$password = rtrim($password, "\r\n");
-	
-	if ('' === $password)
-	{
-		continue;
-	}
-	
-	$hash = strtoupper(sha1($password));
-	
 	if (substr($hash, 0, 5) === $prefix)
 	{
 		echo substr($hash, 5) . ":424242\n";

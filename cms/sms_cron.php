@@ -5,10 +5,12 @@
 /* https://pikasoftware.com       */
 /**********************************/
 
-if (php_sapi_name() != "cli")
+if (PHP_SAPI !== 'cli' && PHP_SAPI !== 'phpdbg')
 {
-  trigger_error('This script can only be run from the command line.');
-  exit();
+	header('HTTP/1.1 403 Forbidden');
+	header('Content-Type: text/plain; charset=utf-8');
+	error_log('Refused HTTP invocation of CLI script: ' . basename(__FILE__));
+	die("This script is command-line only.\n");
 }
 
 /*  This file will normally be called from the cron process.  Change to the
@@ -94,6 +96,7 @@ while ($row = DBResult::fetchRow($result))
   $cal = new pikaActivity($row['act_id']);
   $sms_status = null;
   $sms_error = '';
+	$sms_error_code = null;
   
   // Attempt to send the SMS.
   $client = new Client($AccountSid, $AuthToken);
@@ -135,6 +138,11 @@ while ($row = DBResult::fetchRow($result))
     catch (Exception $e)
     {
       $sms_error = $e->getMessage();
+			if ($e instanceof \Twilio\Exceptions\RestException &&
+				is_int($e->getCode()) && $e->getCode() > 0)
+			{
+				$sms_error_code = $e->getCode();
+			}
       $sms_status = 'failed';
     }
   }
@@ -160,7 +168,10 @@ while ($row = DBResult::fetchRow($result))
   
   else 
   {
-    echo "SMS send failed: $sms_error\n";
+		error_log('SMS send failed: ' . $sms_error);
+		fwrite(STDERR, 'SMS send failed' .
+			($sms_error_code === null ? '' : ' (Twilio error ' . $sms_error_code . ')') .
+			"\n");
     /*
     $cal->sms_send_failure++;
     
@@ -177,4 +188,3 @@ while ($row = DBResult::fetchRow($result))
 }
 
 exit();
-
