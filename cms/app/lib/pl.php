@@ -2092,15 +2092,6 @@ if (!function_exists('pl_csrf_render_recovery_form')) {
 		$safe_base  = htmlspecialchars((string)$base,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
 		$safe_owner = htmlspecialchars((string)$owner, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
-		// Re-post to the exact path executing now. SCRIPT_NAME already
-		// carries base_url and any subdirectory (e.g. /ops/), which a
-		// basename()-based action would drop. Keep the query string for
-		// handlers that read it.
-		$path = isset($_SERVER['SCRIPT_NAME']) ? (string)$_SERVER['SCRIPT_NAME'] : '';
-		$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string)$_SERVER['QUERY_STRING']) > 0)
-			? '?' . (string)$_SERVER['QUERY_STRING'] : '';
-		$action = htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-
 		// Carry the in-flight POST body, nested arrays included. Skip our
 		// own markers and _csrf; a fresh token is emitted below.
 		$carry = '';
@@ -2128,7 +2119,8 @@ if (!function_exists('pl_csrf_render_recovery_form')) {
 		   . 'left open for a while, or was reached with the browser&rsquo;s Back '
 		   . 'button. Your information was <strong>not</strong> lost. Click '
 		   . '&ldquo;Save again&rdquo; to finish saving it.</p>';
-		echo '<form method="POST" action="' . $action . '">'
+		/*	Omitting action posts to the document URL, including its query string. */
+		echo '<form method="POST">'
 		   . pl_csrf_hidden_input()
 		   . '<input type="hidden" name="_csrf_recovery" value="1">'
 		   . $carry
@@ -5001,22 +4993,6 @@ function pl_reauth_return_path()
 }
 
 /**
- * @return string
- * @desc The URL the challenge form posts back to: the exact path that
- * is executing now. SCRIPT_NAME already carries base_url and any
- * subdirectory, which a basename()-based action would drop. The query
- * string is kept for handlers that read it.
- */
-function pl_reauth_self_action()
-{
-	$path = isset($_SERVER['SCRIPT_NAME']) ? (string) $_SERVER['SCRIPT_NAME'] : '';
-	$qs   = (isset($_SERVER['QUERY_STRING']) && strlen((string) $_SERVER['QUERY_STRING']) > 0)
-		? '?' . (string) $_SERVER['QUERY_STRING'] : '';
-	
-	return htmlspecialchars($path . $qs, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-}
-
-/**
  * @return void
  * @param string $action_scope the scope being challenged
  * @param string $error_msg text to show above the button, or ''
@@ -5101,7 +5077,6 @@ function pl_reauth_render_form($action_scope, $error_msg = '')
 	$safe_owner = htmlspecialchars((string) pl_settings_get('owner_name'), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 	$safe_scope = htmlspecialchars((string) $action_scope, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 	$safe_error = htmlspecialchars((string) $error_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-	$action     = pl_reauth_self_action();
 	
 	/*	Carry the caller's POST body. Our own challenge fields go, and
 		_csrf goes because a fresh token is emitted below.
@@ -5147,7 +5122,8 @@ function pl_reauth_render_form($action_scope, $error_msg = '')
 	   . 'password again before this change takes effect. If your account uses an '
 	   . 'authenticator app, enter the current 6-digit code as well.</p>';
 	echo $err_block;
-	echo '<form method="POST" action="' . $action . '" autocomplete="off">'
+	/*	Omitting action posts to the document URL, including its query string. */
+	echo '<form method="POST" autocomplete="off">'
 	   . pl_csrf_hidden_input()
 	   . '<input type="hidden" name="_reauth_scope" value="' . $safe_scope . '">'
 	   . $carry
