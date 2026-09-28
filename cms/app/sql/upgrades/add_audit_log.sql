@@ -15,18 +15,22 @@
 --                   a subject and what happened to it, as in 'login.success',
 --                   'user.group_change' or 'setting.update'. This comment does not
 --                   list them. It used to, and the list was wrong in both
---                   directions: two names in it were never emitted and most of the
+--                   directions: two names in it are emitted nowhere and most of the
 --                   names the app does emit were missing. The set is whatever the
 --                   pl_audit() callers pass, so read it from them:
 --                       grep -rn 'pl_audit(' cms
---                   Nothing reads this column by a hard-coded name, so a caller may
---                   add one without a migration. Keep a new name to lowercase
---                   letters, digits, '.' and '_', at most 64 characters: the filter
---                   in system-audit.php accepts only those.
---   object_type  -- what object_id names, singular and lowercase, usually the table:
---                   'user', 'case', 'activity', 'setting' and others. NULL when the
---                   event has no single target, as a failed login does. Same rule as
---                   above: the callers define the set, not this comment.
+--                   Two callers in system-users.php pass a variable; the names are
+--                   assigned on the line above each call. No application code reads
+--                   this column by a hard-coded name, so a caller may add one
+--                   without a migration (the smoke tests do query some names).
+--                   Keep a new name to lowercase letters, digits, '.' and '_', at
+--                   most 64 characters: the action filter in system-audit.php
+--                   accepts only those.
+--   object_type  -- optional lowercase label for what object_id names, such as
+--                   'user', 'case', 'activity' or 'setting'. It may be set with a
+--                   NULL object_id. NULL when the event has no target, as a failed
+--                   login with an unknown username does. Same rule as above: the
+--                   callers define the set, not this comment.
 --   object_id    -- stringified primary key of the target object
 --   details      -- JSON: {"old": ..., "new": ..., "reason": ...}
 --
