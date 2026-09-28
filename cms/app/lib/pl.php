@@ -2039,23 +2039,27 @@ if (!function_exists('pl_csrf_check')) {
 }
 
 /**
- * Recursively emit hidden <input> elements reproducing a possibly nested
- * POST value, so an in-flight save can be replayed verbatim. Array
- * fields matter here: a flat scalar carry would silently drop exactly
- * the data we are trying not to lose.
+ * Recursively flatten a possibly nested POST value into a flat list of
+ * array(name, value) string pairs, so an in-flight save can be replayed
+ * verbatim as hidden fields. Array fields matter here: a flat scalar
+ * carry would silently drop exactly the data we are trying not to lose.
+ * This returns data only; each caller escapes the pairs where it writes
+ * the <input> markup.
  */
-if (!function_exists('pl_csrf_carry_hidden_inputs')) {
-	function pl_csrf_carry_hidden_inputs($name, $value)
+if (!function_exists('pl_csrf_carry_fields')) {
+	function pl_csrf_carry_fields($name, $value)
 	{
 		if (is_array($value)) {
-			$out = '';
+			$out = array();
 			foreach ($value as $k => $v) {
-				$out .= pl_csrf_carry_hidden_inputs($name . '[' . $k . ']', $v);
+				foreach (pl_csrf_carry_fields($name . '[' . $k . ']', $v) as $pair) {
+					$out[] = $pair;
+				}
 			}
 			return $out;
 		}
 		if (!is_scalar($value)) {
-			return '';
+			return array();
 		}
 		// Never echo a password back as a hidden field. The endpoints read
 		// these with pl_grab_post, so the user simply retypes it if a flow
@@ -2064,11 +2068,9 @@ if (!function_exists('pl_csrf_carry_hidden_inputs')) {
 		if (strpos($lname, 'password') !== false
 				|| strpos($lname, 'newpass') !== false
 				|| strpos($lname, 'oldpass') !== false) {
-			return '';
+			return array();
 		}
-		$safe_n = htmlspecialchars((string)$name,  ENT_QUOTES | ENT_HTML5, 'UTF-8');
-		$safe_v = htmlspecialchars((string)$value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-		return '<input type="hidden" name="' . $safe_n . '" value="' . $safe_v . '">' . "\n";
+		return array(array((string)$name, (string)$value));
 	}
 }
 
@@ -2101,7 +2103,13 @@ if (!function_exists('pl_csrf_render_recovery_form')) {
 				if (!is_scalar($name) || in_array($name, $skip, true)) {
 					continue;
 				}
-				$carry .= pl_csrf_carry_hidden_inputs((string)$name, $value);
+				foreach (pl_csrf_carry_fields((string)$name, $value) as $pair) {
+					$carry .= '<input type="hidden" name="'
+						. htmlspecialchars((string)$pair[0], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+						. '" value="'
+						. htmlspecialchars((string)$pair[1], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+						. '">' . "\n";
+				}
 			}
 		}
 
@@ -5068,7 +5076,7 @@ function pl_reauth_render_sso_form($action_scope, $error_msg = '')
  * @desc Render the password re-auth challenge and exit. The in-flight
  * POST body is carried forward as hidden fields, nested arrays
  * included, so the user does not retype the change they were making.
- * Password fields are dropped by pl_csrf_carry_hidden_inputs() rather
+ * Password fields are dropped by pl_csrf_carry_fields() rather
  * than echoed back into the markup.
  */
 function pl_reauth_render_form($action_scope, $error_msg = '')
@@ -5093,7 +5101,14 @@ function pl_reauth_render_form($action_scope, $error_msg = '')
 				continue;
 			}
 			
-			$carry .= pl_csrf_carry_hidden_inputs((string) $name, $value);
+			foreach (pl_csrf_carry_fields((string) $name, $value) as $pair)
+			{
+				$carry .= '<input type="hidden" name="'
+					. htmlspecialchars((string) $pair[0], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+					. '" value="'
+					. htmlspecialchars((string) $pair[1], ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8')
+					. '">' . "\n";
+			}
 		}
 	}
 	
