@@ -894,37 +894,59 @@ function pika_init()
 	require_once('pikaSettings.php');
 	$plSettings = pikaSettings::getInstance();
 	
-	// AMW - This will redirect the user to https:// if they connect over
-	// http:// to a server that requires a secure connection.
-	//
-	// Three fixes here:
-	//  - $_SERVER['HTTPS'] was read unguarded. It is absent, not empty, on a
-	//    plain-HTTP request, so this emitted an undefined-index notice on the
-	//    one path it exists to handle.
-	//  - The redirect target came from $_SERVER['SERVER_NAME'], which Apache
-	//    fills from the request's Host header unless UseCanonicalName is on.
-	//    An attacker who chose the Host header chose where the browser went
-	//    next. pl_canonical_origin() prefers the configured canonical_url and
-	//    validates the fallback.
-	//  - There was no exit() after the header, so the redirect was sent and
-	//    then the page was built and served anyway over the insecure
-	//    connection that force_https exists to prevent.
+	/*	Require a configured HTTPS destination before serving plain HTTP.
+		The request must not choose the redirect host.
+	*/
 	$https_on = isset($_SERVER['HTTPS'])
 		&& strlen((string) $_SERVER['HTTPS']) > 0
 		&& 'off' !== strtolower((string) $_SERVER['HTTPS']);
-	
+
 	if (true == $plSettings['force_https'] && !$https_on)
 	{
-		$force_https_origin = pl_canonical_origin('https');
-		
-		if ('' !== $force_https_origin)
+		$force_https_origin = trim((string) pl_settings_get('canonical_url'));
+
+		if ('' === $force_https_origin)
 		{
-			header('Location: ' . $force_https_origin
-				. (isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '/'));
+			error_log('force_https requires canonical_url to be set.');
+			http_response_code(403);
+			header('Content-Type: text/plain; charset=UTF-8');
+			echo "Set canonical_url before enabling force_https.\n";
 			exit();
 		}
+
+		$force_https_origin = 'https://' . preg_replace(
+			'#^[A-Za-z][A-Za-z0-9+.-]*://#', '', rtrim($force_https_origin, '/'));
+		$force_https_path = '/';
+		$uri = parse_url(isset($_SERVER['REQUEST_URI'])
+			? (string) $_SERVER['REQUEST_URI'] : '/');
+
+		if (false !== $uri && !isset($uri['scheme']) && !isset($uri['host'])
+			&& isset($uri['path']) && '/' === substr($uri['path'], 0, 1))
+		{
+			/*	Remove one origin slash. A fixed final name lets the validator
+				check directory URLs without removing repeated slashes.
+			*/
+			$trailing_slash = '/' === substr($uri['path'], -1);
+			$relative_path = substr($uri['path'], 1)
+				. ($trailing_slash ? 'root' : '');
+			$validated = pl_safe_redirect_path($relative_path
+				. (isset($uri['query']) ? '?' . $uri['query'] : ''));
+
+			if ('' !== $validated)
+			{
+				$validated_parts = parse_url($validated);
+				$force_https_path = '/' . ($trailing_slash
+					? substr($validated_parts['path'], 0, -strlen('root'))
+					: $validated_parts['path']);
+				$force_https_path .= isset($validated_parts['query'])
+					? '?' . $validated_parts['query'] : '';
+			}
+		}
+
+		header('Location: ' . $force_https_origin . $force_https_path);
+		exit();
 	}
-	
+
 	/*	Send the security response headers, the Content-Security-Policy among
 		them. After the force_https redirect above, which exits, so a redirect
 		does not carry a policy for a page it is not serving; before any

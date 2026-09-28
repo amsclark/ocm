@@ -19,42 +19,41 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST')
 	pl_csrf_check();
 }
 
-/*	Keep a redirect on this site.
-	
-	Several handlers below redirect to a URL the request supplied, so the
-	request chose where a logged-in staff member's browser went next. That is
-	worth having on a legal aid system: the credential-phishing page it sends
-	them to is reached from a real link inside the application they trust.
-	
-	The decision is pl_safe_redirect_path() in app/lib/pl.php, because
-	ops/update_activity.php reads the same field out of the same forms and
-	needed the same answer. It gives back a path that cannot leave this site,
-	or '' for anything it will not vouch for.
-	
-	This wrapper stays because this file emits the value on its own, with no
-	base_url in front of it, so what it returns is resolved against the
-	current page rather than against the site root. A CR or LF, which would
-	split the Location header and let the request add headers of its own, and
-	anything carrying a scheme are both refused outright and come back here as
-	'', and those become the site root.
-	
-	A protocol-relative //host/path no longer becomes the site root, as it did
-	while this function decided for itself: the shared helper strips the
-	leading slashes, so it comes back as host/path and is emitted as a
-	relative URL. That resolves against the directory of this script, so the
-	browser stays on this host either way; it just lands on a path named after
-	the host the request asked for instead of on the front page.
+/*	Redirect only to an existing top-level application page.
+	Use the directory listing's script name and rebuild the query so the
+	request cannot supply the redirect destination directly.
 */
 function safe_redirect_url($url, $base_url)
 {
 	$path = pl_safe_redirect_path($url);
-	
-	if ('' === $path)
+	$parts = parse_url($path);
+
+	if ('' === $path || false === $parts || !isset($parts['path']))
 	{
 		return $base_url . '/';
 	}
-	
-	return $path;
+
+	$pages = array();
+	foreach (glob(__DIR__ . '/*.php') ?: array() as $file)
+	{
+		if (is_file($file))
+		{
+			$script = basename($file);
+			$pages[$script] = $script;
+		}
+	}
+
+	if (!isset($pages[$parts['path']]))
+	{
+		return $base_url . '/';
+	}
+
+	$params = array();
+	parse_str(isset($parts['query']) ? $parts['query'] : '', $params);
+	$query = http_build_query($params);
+
+	return $base_url . '/' . $pages[$parts['path']]
+		. ('' !== $query ? '?' . $query : '');
 }
 
 // VARIABLES
@@ -846,7 +845,7 @@ switch($action)
 	
 	$pk->updateContact($a);
 	
-	header('Location: ' . safe_redirect_url($con_url, $base_url));
+	header('Location: ' . safe_redirect_url($_REQUEST['con_url'] ?? '', $base_url));
 	
 	break;
 	

@@ -4203,7 +4203,7 @@ else
 fi
 
 echo
-echo "22. force_https redirects instead of serving the page over plain HTTP"
+echo "22. force_https refuses to serve the page over plain HTTP"
 
 # cms/pika-danio.php sent the 302 and then built and served the whole page
 # anyway: there was no exit() after the header, so every side effect of the
@@ -4212,7 +4212,7 @@ echo "22. force_https redirects instead of serving the page over plain HTTP"
 #
 # The redirect target also came from $_SERVER['SERVER_NAME'], which Apache
 # fills from the request's Host header, and it was built as "https://" . that,
-# so it now goes through pl_canonical_origin('https') instead.
+# so redirects now require a configured canonical_url.
 if [ "$HAVE_DB" = 1 ]; then
 	FH_HDR="${BODY}.hdr"
 
@@ -4250,23 +4250,33 @@ if [ "$HAVE_DB" = 1 ]; then
 	FH_CODE="$(curl -s -D "$FH_HDR" -o "$BODY" -w '%{http_code}' --max-time 30 "${OCM_URL}/")"
 	FH_LOC="$(grep -i '^location:' "$FH_HDR" | tr -d '\r')"
 
-	if [ "$FH_CODE" = '302' ]; then
-		ok "a plain-HTTP request is redirected when force_https is on"
+	FH_CANONICAL="$(adb "SELECT value FROM settings WHERE label='canonical_url'")"
+	if [ -z "$FH_CANONICAL" ]; then
+		if [ "$FH_CODE" = 403 ] && [ -z "$FH_LOC" ] \
+			&& grep -qi '^content-type: text/plain' "$FH_HDR" \
+			&& grep -qF 'canonical_url' "$BODY"; then
+			ok "force_https refuses plain HTTP and asks for canonical_url when unset"
+		else
+			bad "force_https without canonical_url did not return plain-text 403 (${FH_CODE})"
+		fi
 	else
-		bad "a plain-HTTP request is not redirected when force_https is on (${FH_CODE})"
-	fi
+		if [ "$FH_CODE" = '302' ]; then
+			ok "a plain-HTTP request is redirected when force_https is on"
+		else
+			bad "a plain-HTTP request is not redirected when force_https is on (${FH_CODE})"
+		fi
 
-	# The redirect must go to https, or it points at the page it is already on
-	# and the browser loops.
-	case "$FH_LOC" in
-		*https://*) ok "the force_https redirect targets https" ;;
-		*)          bad "the force_https redirect does not target https (${FH_LOC})" ;;
-	esac
+		# The redirect must use HTTPS to avoid redirecting to this HTTP page.
+		case "$FH_LOC" in
+			*https://*) ok "the force_https redirect targets https" ;;
+			*)          bad "the force_https redirect does not target https (${FH_LOC})" ;;
+		esac
 
-	if [ "$(wc -c < "$BODY")" -eq 0 ]; then
-		ok "the redirect serves no page body over plain HTTP"
-	else
-		bad "the redirect still serves a page body over plain HTTP ($(wc -c < "$BODY") bytes)"
+		if [ "$(wc -c < "$BODY")" -eq 0 ]; then
+			ok "the redirect serves no page body over plain HTTP"
+		else
+			bad "the redirect still serves a page body over plain HTTP ($(wc -c < "$BODY") bytes)"
+		fi
 	fi
 
 	# Positive control: with the setting back off the page must still render,
@@ -4422,19 +4432,10 @@ if [ "$HAVE_DB" = 1 ]; then
 			# that was here only ever posted the first. Both go through
 			# safe_redirect_url(), so both are tested.
 			#
-			# pl_safe_redirect_path() either refuses a request-supplied return
-			# path or hands back a local path. A value that reads as a local
-			# path -- a name, optionally a path below it, optionally a query
-			# string and a fragment, and no ".." in the path part -- is what
-			# comes back. Everything else comes back as '', and this file then
-			# emits "{base_url}/": the site root. Each check below says which
-			# of the two results it wants.
-			#
-			# What comes back is not always byte-for-byte what was sent: the
-			# guard trims the value and drops control characters before it
-			# reads it, so a payload carrying either can come back shorter. No
-			# payload below depends on that, and every one holding a space or a
-			# tab is refused.
+			# pl_safe_redirect_path() validates the relative path. dataops then
+			# requires a top-level PHP page from the application directory and
+			# rebuilds its query. Invalid paths go to "{base_url}/"; valid pages
+			# go to "{base_url}/page.php" with the rebuilt query.
 			#
 			# The guard used to be a list of what to reject, and shapes got out
 			# of it twice. The first was an absolute URL behind one slash: the
@@ -4490,7 +4491,7 @@ if [ "$HAVE_DB" = 1 ]; then
 			# $1 branch field, $2 act_url, $3 expected answer, $4 what to
 			# call the payload. $3 is one of:
 			#   root   the header must be exactly "{base_url}/"
-			#   exact  the header must be exactly the value that was sent
+			#   exact  the header must be "{base_url}/" plus the value sent
 			#
 			# Both kinds name the one value they will accept. An earlier
 			# version had a third kind that passed on anything without a
@@ -4515,10 +4516,8 @@ if [ "$HAVE_DB" = 1 ]; then
 					else
 						bad "dataops.php did not refuse $4 on the $1 branch (${DR_LOC})"
 					fi
-				elif printf '%s' "$DR_LOC" | grep -qE '^[/\\]'; then
-					bad "dataops.php answered ${DR_LOC} for $4 on the $1 branch - the guard returned a value starting with a separator, which it has no shape for"
 				elif [ "$3" = exact ]; then
-					if [ "$DR_LOC" = "$2" ]; then
+					if [ "$DR_LOC" = "${DBASE}/$2" ]; then
 						ok "a real act_url ($4) still reaches the page it names, on the $1 branch"
 					else
 						bad "a real act_url ($4) no longer reaches its page on the $1 branch (${DR_LOC})"
@@ -4608,7 +4607,7 @@ if [ "$HAVE_DB" = 1 ]; then
 				dops_redirect_check "$DR_BRANCH" '../../etc/passwd' \
 					root 'a path walking up out of the application directory'
 				# The positive controls: the two shapes the application itself
-				# puts in this field have to survive the guard byte for byte.
+				# puts in this field must keep their page and query.
 				# activity.php defaults it to cal_day.php and modules/case-act.php
 				# builds the case.php form. Without these every check above
 				# would pass on a handler that refused everything it was sent.
@@ -27681,6 +27680,54 @@ else
 	else
 		trap base_cleanup EXIT
 	fi
+fi
+
+echo
+# 115. Return pages must be real top-level PHP scripts. Canceling an activity
+# exercises the redirect without creating an activity or needing a case fixture.
+echo "115. dataops redirects only to existing application pages"
+if [ "$HAVE_DB" = 1 ]; then
+	sm115_jar="$(smoke_temp)"
+	sm115_headers="$(smoke_temp)"
+	sm115_base="$(printf '%s' "$OCM_URL" \
+		| sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://[^/]*##' -e 's#/*$##')"
+	curl -sL --max-time 30 -c "$sm115_jar" -b "$sm115_jar" -o "$BODY" \
+		--data-urlencode "login_user=${OCM_USER}" \
+		--data-urlencode "login_pass=${OCM_PASSWORD}" -d 'auth_id=1' "$OCM_URL/"
+
+	# $1 input, $2 expected page and query, or empty for the site root.
+	sm115_redirect()
+	{
+		sm115_token="$(curl -sL --max-time 30 -c "$sm115_jar" -b "$sm115_jar" \
+			"$OCM_URL/password.php" | grep -oE 'name="_csrf" value="[0-9a-f]{64}"' \
+			| head -1 | sed -e 's/.*value="//' -e 's/"$//')"
+		if [ "${#sm115_token}" -ne 64 ]; then
+			bad "section 115 could not get a logged-in CSRF token"
+			return
+		fi
+		sm115_code="$(curl -s --max-time 30 -c "$sm115_jar" -b "$sm115_jar" \
+			-D "$sm115_headers" -o "$BODY" -w '%{http_code}' \
+			-d 'action=add_activity&cancel=1' --data-urlencode "_csrf=${sm115_token}" \
+			--data-urlencode "act_url=$1" "$OCM_URL/dataops.php")"
+		sm115_count="$(grep -ci '^location:' "$sm115_headers")"
+		sm115_location="$(grep -i '^location:' "$sm115_headers" | tr -d '\r' \
+			| sed -e 's/^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]: *//')"
+		if [ "$sm115_code" = 302 ] && [ "$sm115_count" = 1 ] \
+			&& [ "$sm115_location" = "${sm115_base}/$2" ]; then
+			ok "dataops returns the expected application page for $1"
+		else
+			bad "dataops returned ${sm115_code} ${sm115_location} for $1"
+		fi
+	}
+
+	sm115_redirect 'zz-smoke-nonexistent-page.php' ''
+	sm115_redirect 'app/cal_day.php' ''
+	sm115_redirect 'cal_day.php' 'cal_day.php'
+	sm115_redirect 'case.php?case_id=1&screen=act' 'case.php?case_id=1&screen=act'
+	sm115_redirect 'case.php?search=a%20b%26c%3Dd&filters%5B%5D=x%2Fy' \
+		'case.php?search=a+b%26c%3Dd&filters%5B0%5D=x%2Fy'
+else
+	printf '  skip section 115 (needs a running docker compose stack)\n'
 fi
 
 echo "smoke: $pass passed, $fail failed"
