@@ -21163,14 +21163,15 @@ fi
 # no error is also not proof that it read a shape correctly: three of the four findings
 # of the thirteenth review ended clean. ((1 << 1)) is arithmetic, ((printf o);
 # (printf k)) is two subshells and runs, ((printf ok)) is an arithmetic error, and
-# bash -n accepts all three. Measured over forty-nine inputs: bash reads the text
-# once, left to right, with its quoting tracked and with no redirection read while it
-# does, counting parentheses from two, and it decides at the first parenthesis that
-# takes the count back to one, by whether the next character is the one that takes it
-# to zero. Nothing written later moves that answer. So ((1 << 1)) opens no body, and
-# ((cat <<EOF); (:)) opens a real one. The text inside a command run in place is read
-# on its own while that count is kept, because a parenthesis written inside quotes
-# there is one more character of a word and closes nothing.
+# bash -n accepts all three. For the measured forms without a hash before the decision,
+# bash reads the text once, left to right, with its quoting tracked and with no
+# redirection read while it does, counting parentheses from two. At the first
+# parenthesis that takes the count back to one, it decides by whether the next
+# character takes it to zero. Nothing written later moves that answer. So ((1 << 1))
+# opens no body, and ((cat <<EOF); (:)) opens a real one. The text inside a command run
+# in place is read on its own while that count is kept. A parenthesis inside quotes
+# there is one more character of a word and closes nothing. A hash can change that
+# reading, so the scan refuses an unquoted, unescaped hash before the decision.
 #
 # The tenth review supplied four findings, and three of them were the ninth round's
 # own fixes. Two came from one root: that round had asked instead whether any line
@@ -21394,12 +21395,14 @@ fi
 #
 # This round adds two limits, both in the safe direction. A call written inside an
 # arithmetic body is counted, because the reader that reports a call reads such a body
-# as a command: bash evaluates $(((grep x)); :) as arithmetic and runs nothing, so the
-# count can be one more than the calls made. And where a comment stands in the place the
-# deciding parenthesis would take, the comment eats the parenthesis that would have
-# closed the command substitution, bash answers a bad substitution and runs nothing, and
-# this scan refuses the file rather than printing a count for it. A count that is too
-# high, or no count at all, cannot hide a call; a count that is too low can.
+# as a command: $(((grep x)); :) is a command substitution holding the arithmetic
+# command ((grep x)) and the command :. Bash reports an arithmetic error, then runs :,
+# but runs no grep, so the count can be one more than the calls made. A comment can
+# change how bash reads the doubled parenthesis. The quoted form in the eighteenth
+# review runs grep; the same form without the outer quotes gives a bad substitution.
+# This scan refuses an unquoted, unescaped hash before it decides between the two
+# readings. A count that is too high, or no count at all, cannot hide a call; a count
+# that is too low can.
 #
 # The repaired reader was run beside the one it replaces over four thousand three
 # hundred and ten fixtures kept on this machine. They answer differently on one hundred
@@ -21860,7 +21863,7 @@ def fdname(word):
 		and all(ch in NAME for ch in name))
 
 
-def lex(src, base=1, faults=None):
+def lex(src, base=1, faults=None, arithfaults=None):
 	"""Every command in the source as a list of words, each word with its own line.
 
 	One pass, left to right. Three questions decide what this section reports --
@@ -21919,12 +21922,17 @@ def lex(src, base=1, faults=None):
 	holds calls worth examining, and the words that come out of the others are
 	counted but mean nothing. An apostrophe in a python program is not a fault in
 	this scanner, so a body is read with a fault list of its own that is dropped.
+	A hash before a doubled-parenthesis decision is different: a body can hold a
+	shell script whose calls that decision would hide. Its refusal list is shared
+	with the outer scan, so dropping syntax faults cannot drop that refusal too.
 	"""
 	cmds = []
 	line = base
 	n = len(src)
 	if faults is None:
 		faults = []
+	if arithfaults is None:
+		arithfaults = faults
 
 	def unfold(k):
 		"""Index past the line continuations at src[k], and the newlines crossed.
@@ -22297,7 +22305,8 @@ def lex(src, base=1, faults=None):
 		# Whether the doubled bracket whose second bracket is at src[k] is
 		# arithmetic rather than two brackets of their own. Both forms ask
 		# here, the bracket that stands as a command and the one a dollar
-		# opens, because measurement says one rule answers for both. The
+		# opens. Their parenthesis decisions agree in the measured forms
+		# without a hash; a hash before that decision is refused below. The
 		# seventeenth round read every dollar and two brackets as
 		# arithmetic and stepped over the body, so a call written in one
 		# was never examined. Five shapes of it run a real grep: the plain
@@ -22308,7 +22317,8 @@ def lex(src, base=1, faults=None):
 		# alone; it is written out here so that opener(), expansion() and
 		# the reader of a word can each ask it.
 		#
-		# Measured over forty-nine inputs: the shell reads the text once, left to right,
+		# For the measured forms without a hash before the decision,
+		# the shell reads the text once, left to right,
 		# with its quoting tracked and with no redirection read while it
 		# does, counting brackets from two, and it decides at the first
 		# bracket that takes the count back to one, by whether the next
@@ -22334,14 +22344,18 @@ def lex(src, base=1, faults=None):
 		# open, took a later line as the delimiter, and read the
 		# apostrophes of the data as quotes around a real call.
 		#
-		# Three shapes of the dollar form are neither reading: a
-		# hash, an expansion and a here-document operator written
-		# before the deciding bracket each make a file bash refuses
-		# outright, so nothing in them runs and no answer here can
-		# be wrong about a call. A hash is not read as a comment
-		# here and an expansion is read as a unit, which are the
-		# answers that send the body to be examined, and that is
-		# the side to be wrong on.
+		# Bash refuses these exact forms: v=$((grep x # )); :),
+		# v=$((grep x ${z:-)}); :), and v=$((grep x <<EOF)); :)
+		# followed by a newline, body, a newline, EOF and a newline.
+		# It accepts v=$((grep x ${z:-}) ; :). A comment ending at a
+		# newline before ) ; :) is valid too, as is a here-document
+		# whose delimiter ends before ) ; :). Each can run grep.
+		# A hash can change which parentheses bash counts: the quoted
+		# form in the eighteenth review runs grep, while the same form
+		# without the outer quotes gives a bad substitution. This reader
+		# refuses an unquoted, unescaped hash before the decision rather
+		# than risk skipping a call. That also refuses valid arithmetic
+		# such as $((16#ff)); the count must not be lower than bash's.
 		deep = 2
 		mark = ''
 		j = k + 1
@@ -22413,6 +22427,11 @@ def lex(src, base=1, faults=None):
 					j = e
 					continue
 			if not mark:
+				if c == '#':
+					arithfaults.append('the doubled parenthesis written'
+						' on line %d holds a hash before its reading'
+						' is decided, so the scan refuses the file' % line)
+					return False
 				if c in '"\'':
 					mark = c
 					j += 1
@@ -22607,8 +22626,9 @@ def lex(src, base=1, faults=None):
 			# Arithmetic, and by this point nothing else: the caller has asked
 			# arithshape() which of the two readings the form takes, and the one
 			# that runs a command in place is read by walk() instead. Counting
-			# the two parentheses is right for this one, whose body holds no
-			# call.
+			# the two parentheses is right for this one. Command substitutions
+			# inside it still run and must be scanned: $(( $(grep x) + 1 ))
+			# runs grep once.
 			#
 			# The second parenthesis is looked for past a continuation, because a
 			# backslash and a newline written between the two are removed before
@@ -22670,7 +22690,7 @@ def lex(src, base=1, faults=None):
 				body = src[j + 1:end - 1] if end > j + 1 else ''
 				if body:
 					cmds.extend(lex(backtick_body(body, indq()) + '\n',
-						line, faults))
+						line, faults, arithfaults))
 				line += nl
 				j = end
 				continue
@@ -22856,7 +22876,7 @@ def lex(src, base=1, faults=None):
 			# here-document: a left shift is valid arithmetic, and reading its
 			# operator as one left a body open to the end of the file and
 			# failed the whole scan on a valid line. The text itself is still
-			# read as commands, because arithmetic holds no call to miss.
+			# read as commands, including substitutions that can run a call.
 			return arith is not None and depth > arith
 
 		def heredocs(k):
@@ -22918,7 +22938,8 @@ def lex(src, base=1, faults=None):
 					faults.append('the here-document body that begins on line %d does'
 						' not end with its delimiter' % first)
 				if body:
-					cmds.extend(lex('\n'.join(body) + '\n', first))
+					cmds.extend(lex('\n'.join(body) + '\n', first,
+						arithfaults=arithfaults))
 			pending = []
 			return k
 
@@ -23020,7 +23041,7 @@ def lex(src, base=1, faults=None):
 					put(UNKNOWN, True)
 					if body:
 						cmds.extend(lex(backtick_body(body, True) + '\n', line,
-							faults))
+							faults, arithfaults))
 					line += nl
 					i = end
 					continue
@@ -23058,7 +23079,8 @@ def lex(src, base=1, faults=None):
 				body = src[i + 1:end - 1] if end > i + 1 else ''
 				put(UNKNOWN, True)
 				if body:
-					cmds.extend(lex(backtick_body(body, False) + '\n', line, faults))
+					cmds.extend(lex(backtick_body(body, False) + '\n', line,
+						faults, arithfaults))
 				line += nl
 				i = end
 				continue
@@ -27665,5 +27687,112 @@ else
 fi
 
 echo
+# 113. The activity form accepts only an existing PHP page from the Referer.
+# Each check includes a query-string Referer as its positive control.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	sm113_user="zzactref_${$}_${RANDOM}"
+	sm113_pass='zz-Actref-Passw0rd'
+	sm113_uid=''
+	sm113_owned=0
+	sm113_jar="$(smoke_temp)"
+	sm113_jar_rc=$?
+	sm113_body="$(smoke_temp)"
+	sm113_body_rc=$?
+	
+	sm113_cleanup()
+	{
+		if [ "$sm113_owned" = 1 ]; then
+			adb "DELETE FROM user_sessions WHERE user_id IN
+				(SELECT user_id FROM users WHERE user_id = ${sm113_uid}
+				AND username = '${sm113_user}')" >/dev/null 2>&1
+			adb "DELETE FROM users WHERE user_id = ${sm113_uid}
+				AND username = '${sm113_user}'" >/dev/null 2>&1
+		fi
+	}
+	trap 'sm113_cleanup; base_cleanup' EXIT
+	
+	sm113_ready=0
+	if [ "$sm113_jar_rc" -eq 0 ] && [ -f "$sm113_jar" ] \
+		&& [ "$sm113_body_rc" -eq 0 ] && [ -f "$sm113_body" ]; then
+		sm113_hash="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' \
+			"$sm113_pass" < /dev/null 2>/dev/null)"
+		sm113_hash_rc=$?
+		sm113_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+		case "$sm113_uid" in
+			''|0|*[!0-9]*) sm113_uid='' ;;
+		esac
+		if [ "$sm113_hash_rc" -eq 0 ] && [ -n "$sm113_hash" ] \
+			&& [ -n "$sm113_uid" ]; then
+			if adb "INSERT INTO users (user_id, username, password, enabled,
+				group_id, password_expire) VALUES (${sm113_uid}, '${sm113_user}',
+				'${sm113_hash}', 1, 'system', 0)" >/dev/null 2>&1; then
+				sm113_owned=1
+				sm113_seeded="$(adb "SELECT COUNT(*) FROM users
+					WHERE user_id = ${sm113_uid} AND username = '${sm113_user}'")"
+				if [ "$sm113_seeded" = 1 ]; then
+					sm113_code="$(curl -sL --max-time 30 -c "$sm113_jar" \
+						-b "$sm113_jar" -o "$sm113_body" -w '%{http_code}' \
+						--data-urlencode "login_user=$sm113_user" \
+						--data-urlencode "login_pass=$sm113_pass" -d 'auth_id=1' \
+						"$OCM_URL/")"
+					sm113_curl_rc=$?
+					grep -q 'login_pass' "$sm113_body"
+					sm113_login_rc=$?
+					if [ "$sm113_curl_rc" -eq 0 ] && [ "$sm113_code" = 200 ] \
+						&& [ "$sm113_login_rc" -eq 1 ] \
+						&& grep -qi 'logout' "$sm113_body"; then
+						sm113_ready=1
+					fi
+				fi
+			fi
+		fi
+	fi
+	
+	sm113_fetch()
+	{
+		: > "$sm113_body"
+		sm113_code="$(curl -s --max-time 30 -b "$sm113_jar" \
+			-e "$OCM_URL/$1" -o "$sm113_body" -w '%{http_code}' \
+			"$OCM_URL/activity.php")"
+		sm113_curl_rc=$?
+		sm113_value="$(sed -n \
+			's/.*name="act_url"[^>]*value="\([^"]*\)".*/\1/p' \
+			"$sm113_body" | sort -u)"
+		[ "$sm113_curl_rc" -eq 0 ] && [ "$sm113_code" = 200 ]
+	}
+	
+	if [ "$sm113_ready" = 1 ]; then
+		for sm113_ref in '..' '.' 'app'; do
+			sm113_fetch "$sm113_ref"
+			sm113_bad_rc=$?
+			sm113_bad_value="$sm113_value"
+			sm113_fetch 'case.php?x=1'
+			sm113_good_rc=$?
+			if [ "$sm113_bad_rc" -eq 0 ] && [ "$sm113_good_rc" -eq 0 ] \
+				&& [ "$sm113_bad_value" = cal_day.php ] \
+				&& [ "$sm113_value" = case.php ]; then
+				ok "activity Referer /${sm113_ref}: cal_day.php; /case.php?x=1: case.php"
+			else
+				bad "activity Referer /${sm113_ref}: '${sm113_bad_value}'; /case.php?x=1: '${sm113_value}' (request exits ${sm113_bad_rc}/${sm113_good_rc})"
+			fi
+		done
+	else
+		bad "activity Referer checks could not create and sign in the fixture user"
+	fi
+	
+	sm113_cleanup
+	if [ "$sm113_owned" = 1 ]; then
+		sm113_left="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm113_uid} AND username = '${sm113_user}'")"
+		if [ "$sm113_left" != 0 ]; then
+			bad "activity Referer fixture user was not deleted"
+		fi
+	fi
+	trap base_cleanup EXIT
+else
+	printf '  skip activity Referer checks (needs a running docker compose stack)\n'
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
