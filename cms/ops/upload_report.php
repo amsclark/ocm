@@ -92,7 +92,24 @@ if (!$postText || false !== stripos($postText, '<!DOCTYPE'))
 	pl_upload_report_reply(400, 'The report was not saved: the settings did not arrive in a readable form.');
 }
 
-if (!@$xml_doc->loadXML($postText, LIBXML_NONET) || null !== $xml_doc->doctype)
+/*	PHP 8 already disables external entities. Older PHP needs the entity
+	loader turned off. The resolver that returns null refuses any external
+	resource on every version. Both are restored after the parse.
+*/
+$old_entity_loader = null;
+if (PHP_VERSION_ID < 80000)
+{
+	$old_entity_loader = libxml_disable_entity_loader(true);
+}
+libxml_set_external_entity_loader(static function () { return null; });
+$parsed = @$xml_doc->loadXML($postText, LIBXML_NONET);
+libxml_set_external_entity_loader(null);
+if (PHP_VERSION_ID < 80000)
+{
+	libxml_disable_entity_loader($old_entity_loader);
+}
+
+if (!$parsed || null !== $xml_doc->doctype)
 {
 	pl_upload_report_reply(400, 'The report was not saved: the settings did not arrive in a readable form.');
 }
