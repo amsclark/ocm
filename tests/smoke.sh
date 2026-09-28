@@ -27534,9 +27534,8 @@ else
 		''|*[!0-9]*) sm114_uid='' ;;
 	esac
 
-	# A date nothing else in this run touches, and far enough out that
-	# cal_day.php's own same-day time filter never applies - that filter
-	# is only added when cal_date is today.
+	# A date no other section uses. The fixture's act_time is NULL, which
+	# the pending query accepts even on the day its same-day filter applies.
 	sm114_date='2031-08-09'
 	sm114_date_us='08/09/2031'
 
@@ -27547,9 +27546,15 @@ else
 	sm114_tag="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
 		$RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)"
 	sm114_marker="smk114${sm114_tag}"
-	sm114_raw='<b id="smk114x">'
-	sm114_summary="${sm114_marker}${sm114_raw}"
-	sm114_esc='&lt;b id='
+	sm114_summary="${sm114_marker}<b id=\"smk114x\">"
+
+	# What each output must hold for this row. Every string starts with the
+	# marker, so text from another row cannot satisfy a check. fputcsv()
+	# doubles the quote characters inside the field.
+	sm114_html_raw="${sm114_summary}"
+	sm114_html_esc="${sm114_marker}&lt;b id=&quot;smk114x&quot;&gt;"
+	sm114_csv_raw="${sm114_marker}<b id=\"\"smk114x\"\">"
+	sm114_csv_esc="${sm114_marker}&lt;b id="
 
 	sm114_act=''
 	sm114_owned=0
@@ -27572,6 +27577,28 @@ else
 		sm114_rep_curl=$?
 	}
 
+	# $1 = page name, $2 = curl exit, $3 = status, $4 = raw form, $5 =
+	# escaped form, $6 = 'escaped' if the page must escape, 'text' if not.
+	sm114_check()
+	{
+		if [ "$2" -ne 0 ] || [ "$3" != 200 ] \
+			|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
+			bad "the $1 request failed (curl exit $2, status $3) - section 114 proves nothing for it"
+		elif ! grep -qF -e "$sm114_marker" "$BODY"; then
+			bad "the $1 does not show the fixture activity, so section 114 proves nothing for it"
+		elif [ "$6" = escaped ] && grep -qF -e "$4" "$BODY"; then
+			bad "THE $1 PRINTS THE STORED SUMMARY AS RAW MARKUP"
+		elif [ "$6" = escaped ] && grep -qF -e "$5" "$BODY"; then
+			ok "the $1 HTML-escapes the stored summary"
+		elif [ "$6" = text ] && grep -qF -e "$5" "$BODY"; then
+			bad "THE $1 HTML-ESCAPES THE STORED SUMMARY"
+		elif [ "$6" = text ] && grep -qF -e "$4" "$BODY"; then
+			ok "the $1 keeps the stored summary as text"
+		else
+			bad "the $1 shows the fixture activity but not its summary in either form - section 114 proves nothing for it"
+		fi
+	}
+
 	if [ -z "$sm114_uid" ]; then
 		bad "section 114 could not find ${OCM_USER}'s user_id, so it seeded nothing"
 	else
@@ -27588,6 +27615,10 @@ else
 			if [ "$sm114_taken" != 0 ]; then
 				bad "section 114's fixture act_id ${sm114_act} is already in use, so it will not seed over it"
 			else
+				# Owned before the INSERT, so a failure after it still
+				# cleans up. The DELETE matches this run's random summary
+				# too, so it cannot remove a row another writer made.
+				sm114_owned=1
 				adb "INSERT INTO activities
 					(act_id, user_id, act_date, completed, summary)
 					VALUES (${sm114_act}, ${sm114_uid}, '${sm114_date}', 0,
@@ -27597,76 +27628,42 @@ else
 				if [ "$sm114_seeded" != 1 ]; then
 					bad "section 114 could not seed its fixture activity, so it proves nothing"
 				else
-					sm114_owned=1
-
 					# The calendar's pending list, on the day the fixture is dated.
+					: > "$BODY"
 					sm114_cal_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
 						-w '%{http_code}' \
 						"$OCM_URL/cal_day.php?cal_date=${sm114_date}")"
 					sm114_cal_curl=$?
-
-					if [ "$sm114_cal_curl" -ne 0 ] || [ "$sm114_cal_code" != 200 ] \
-						|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
-						bad "the pending list request failed (curl exit ${sm114_cal_curl}, status ${sm114_cal_code}) - section 114 proves nothing for cal_day.php"
-					elif ! grep -qF "$sm114_marker" "$BODY"; then
-						bad "the pending list does not show the fixture activity, so section 114 proves nothing for cal_day.php"
-					elif grep -qF "$sm114_raw" "$BODY"; then
-						bad "THE PENDING LIST PRINTS THE STORED SUMMARY AS RAW MARKUP"
-					elif grep -qF "$sm114_esc" "$BODY"; then
-						ok "cal_day.php's pending list HTML-escapes the stored summary"
-					else
-						bad "the pending list neither escaped nor rendered the fixture summary - section 114 proves nothing for cal_day.php"
-					fi
+					sm114_check "pending list" "$sm114_cal_curl" "$sm114_cal_code" \
+						"$sm114_html_raw" "$sm114_html_esc" escaped
 
 					# The time report, HTML format, over the fixture's own day.
 					sm114_report html
-					if [ "$sm114_rep_curl" -ne 0 ] || [ "$sm114_rep_code" != 200 ] \
-						|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
-						bad "the HTML time report request failed (curl exit ${sm114_rep_curl}, status ${sm114_rep_code}) - section 114 proves nothing for report.php"
-					elif ! grep -qF "$sm114_marker" "$BODY"; then
-						bad "the HTML time report does not show the fixture activity, so section 114 proves nothing for report.php"
-					elif grep -qF "$sm114_raw" "$BODY"; then
-						bad "THE HTML TIME REPORT PRINTS THE STORED SUMMARY AS RAW MARKUP"
-					elif grep -qF "$sm114_esc" "$BODY"; then
-						ok "the time report's HTML format HTML-escapes the stored summary"
-					else
-						bad "the HTML time report neither escaped nor rendered the fixture summary - section 114 proves nothing for report.php"
-					fi
+					sm114_check "HTML time report" "$sm114_rep_curl" "$sm114_rep_code" \
+						"$sm114_html_raw" "$sm114_html_esc" escaped
 
 					# The same report, CSV format, must keep the summary as text.
 					sm114_report csv
-					if [ "$sm114_rep_curl" -ne 0 ] || [ "$sm114_rep_code" != 200 ] \
-						|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
-						bad "the CSV time report request failed (curl exit ${sm114_rep_curl}, status ${sm114_rep_code}) - section 114 proves nothing for report.php's CSV format"
-					elif ! grep -qF "$sm114_marker" "$BODY"; then
-						bad "the CSV time report does not show the fixture activity, so section 114 proves nothing for report.php's CSV format"
-					elif grep -qF "$sm114_esc" "$BODY"; then
-						bad "THE CSV TIME REPORT HTML-ESCAPES THE STORED SUMMARY"
-					else
-						# fputcsv() doubles the field's own quote character, so
-						# the raw marker is not a byte-for-byte substring here;
-						# the '<' before it is not something fputcsv touches,
-						# and that is what proves the field skipped
-						# pl_clean_html().
-						if grep -qF '<b id=' "$BODY"; then
-							ok "the time report's CSV format keeps the stored summary as text"
-						else
-							bad "the CSV time report neither kept the raw summary nor escaped it - section 114 proves nothing for report.php's CSV format"
-						fi
-					fi
+					sm114_check "CSV time report" "$sm114_rep_curl" "$sm114_rep_code" \
+						"$sm114_csv_raw" "$sm114_csv_esc" text
 				fi
 			fi
 		fi
 	fi
 
+	# The EXIT trap keeps its row cleanup until the row is confirmed gone.
 	sm114_cleanup
 	if [ "$sm114_owned" = 1 ] && [ -n "$sm114_act" ]; then
-		sm114_left="$(adb "SELECT COUNT(*) FROM activities WHERE act_id = ${sm114_act}")"
-		if [ "$sm114_left" != 0 ]; then
+		sm114_left="$(adb "SELECT COUNT(*) FROM activities
+			WHERE act_id = ${sm114_act} AND summary = '${sm114_summary}'")"
+		if [ "$sm114_left" = 0 ]; then
+			trap base_cleanup EXIT
+		else
 			bad "section 114's fixture activity ${sm114_act} was not deleted"
 		fi
+	else
+		trap base_cleanup EXIT
 	fi
-	trap base_cleanup EXIT
 fi
 
 echo "smoke: $pass passed, $fail failed"
