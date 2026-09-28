@@ -926,7 +926,9 @@ function pika_init()
 			the trees nobody requests: app/ and uploads/, which Apache denies,
 			vendor/, and modules/ and template_plugins/, which are include
 			fragments. It also leaves out any name that starts with a '.', and
-			it does not follow symbolic links. It is built only here, so a
+			it does not go into a directory that is a symbolic link. A .php
+			file that is a symbolic link is listed by its own name, as Apache
+			serves it. It is built only here, so a
 			request that is not redirected does not pay for it. A directory
 			that holds an index.php is listed too, as "dir/", and a request for
 			"dir" or "dir/" keeps that directory, as the Reports link needs.
@@ -949,13 +951,14 @@ function pika_init()
 			function ($file, $key, $dir) use ($skip)
 			{
 				$name = $file->getFilename();
-				if ('.' === substr($name, 0, 1) || $file->isLink())
+				if ('.' === substr($name, 0, 1))
 				{
 					return false;
 				}
 				if ($file->isDir())
 				{
-					return !('' === $dir->getSubPath() && isset($skip[$name]));
+					return !$file->isLink()
+						&& !('' === $dir->getSubPath() && isset($skip[$name]));
 				}
 				return $file->isFile() && '.php' === substr($name, -4);
 			}));
