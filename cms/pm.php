@@ -194,6 +194,71 @@ if ($pm_case_id_unusable || 0 < count($pm_case_values))
 	}
 }
 
+/*	Build include targets from the installed files in an enabled extension.
+	The request only selects a map entry; it never supplies an include path.
+	Scan at most two levels, including dot-prefixed names, and keep resolved
+	files and directories inside the extension's resolved root.
+*/
+function pm_extension_php_paths($enabled_extension, $levels)
+{
+	$allowed_paths = array();
+	$base = realpath(pl_custom_directory() . '/extensions/' . $enabled_extension);
+
+	if (false === $base || !is_dir($base))
+	{
+		return $allowed_paths;
+	}
+
+	$directories = array(array($base, ''));
+
+	for ($level = 0; $level < $levels; $level++)
+	{
+		$next_directories = array();
+
+		foreach ($directories as $directory)
+		{
+			$entries = @scandir($directory[0]);
+
+			if (false === $entries)
+			{
+				continue;
+			}
+
+			foreach ($entries as $entry)
+			{
+				if ('.' === $entry || '..' === $entry)
+				{
+					continue;
+				}
+
+				$real = realpath($directory[0] . DIRECTORY_SEPARATOR . $entry);
+
+				if (false === $real || ($real !== $base
+					&& strpos($real, $base . DIRECTORY_SEPARATOR) !== 0))
+				{
+					continue;
+				}
+
+				$relative = $directory[1] . $entry;
+
+				if (is_file($real) && substr($entry, -4) === '.php'
+					&& substr($real, -4) === '.php')
+				{
+					$allowed_paths[$relative] = $real;
+				}
+				else if ($level + 1 < $levels && is_dir($real))
+				{
+					$next_directories[] = array($real, $relative . '/');
+				}
+			}
+		}
+
+		$directories = $next_directories;
+	}
+
+	return $allowed_paths;
+}
+
 if ($uri[0] != '') 
 {
 	trigger_error("General URL error.");
@@ -213,7 +278,7 @@ else if ($uri[1] == 'reports')
 	/*	pl_enabled_extensions() in app/lib/pl.php is the one parser for this
 		setting, and explains the shape it is stored in. The two branches in
 		this file used to parse it here, each splitting on ',' and comparing
-		against a name with no leading slash, so in_array() below was false
+		against a name with no leading slash, so the enabled-name check failed
 		for every request and no extension could be reached at all.
 	*/
 	$enabled_extensions = pl_enabled_extensions();
@@ -222,33 +287,32 @@ else if ($uri[1] == 'reports')
 	{
 		$ext_name = $uri[2];
 		
-		if (!in_array($ext_name, $enabled_extensions, true))
+		$extension_key = array_search($ext_name, $enabled_extensions, true);
+
+		if (false === $extension_key)
 		{
 			trigger_error("Extension '{$ext_name}' is either not enabled or not installed.");
 		}
 		
 		if (sizeof($uri) == 4)
 		{
-			$target = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3];
+			$relative_path = $uri[3];
 		}
 		
 		else
 		{
-			$target = pl_custom_directory() . "/extensions/" . $ext_name . '/' . $uri[3] . '/' . $uri[4];
+			$relative_path = $uri[3] . '/' . $uri[4];
 		}
 		
-		$real = realpath($target);
-		$base = realpath(pl_custom_directory() . '/extensions/' . $ext_name);
+		$allowed_paths = pm_extension_php_paths($enabled_extensions[$extension_key], 2);
 		
-		if (false === $real || false === $base || !is_file($real)
-			|| substr($real, -4) !== '.php'
-			|| strpos($real, $base . DIRECTORY_SEPARATOR) !== 0)
+		if (!isset($allowed_paths[$relative_path]))
 		{
 			trigger_error("Report target must be a .php file inside its extension directory.");
 		}
 		
 		chdir('app/lib');
-		require($real);
+		require($allowed_paths[$relative_path]);
 	}
 }
 
@@ -269,28 +333,26 @@ else
 	/*	pl_enabled_extensions() in app/lib/pl.php is the one parser for this
 		setting, and explains the shape it is stored in. The two branches in
 		this file used to parse it here, each splitting on ',' and comparing
-		against a name with no leading slash, so in_array() below was false
+		against a name with no leading slash, so the enabled-name check failed
 		for every request and no extension could be reached at all.
 	*/
 	$enabled_extensions = pl_enabled_extensions();
 	
-	if (!in_array($ext_name, $enabled_extensions, true))
+	$extension_key = array_search($ext_name, $enabled_extensions, true);
+
+	if (false === $extension_key)
 	{
 		trigger_error("Extension '{$ext_name}':'{$filename}' is either not enabled or not installed.");
 	}
 	
-	$target = pl_custom_directory() . "/extensions/{$ext_name}/{$filename}";
-	$real = realpath($target);
-	$base = realpath(pl_custom_directory() . '/extensions/' . $ext_name);
+	$allowed_paths = pm_extension_php_paths($enabled_extensions[$extension_key], 1);
 	
-	if (false === $real || false === $base || !is_file($real)
-		|| substr($real, -4) !== '.php'
-		|| strpos($real, $base . DIRECTORY_SEPARATOR) !== 0)
+	if (!isset($allowed_paths[$filename]))
 	{
 		trigger_error("Extension target must be a .php file inside its extension directory.");
 	}
 	
-	require($real);
+	require($allowed_paths[$filename]);
 }
 
 /*	pika_exit() takes the page body to print. Called with no argument it

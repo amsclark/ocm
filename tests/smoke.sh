@@ -27910,5 +27910,214 @@ else
 	fi
 fi
 
+echo
+# 115. Extension includes use files listed inside an enabled extension. Run the
+# real dispatcher with a small bootstrap so these checks need no database or stack.
+if ! command -v docker >/dev/null 2>&1 \
+	|| ! docker image inspect php:8.2-cli >/dev/null 2>&1; then
+	printf '  skip section 115 (needs the local php:8.2-cli Docker image)\n'
+elif ! sm115_dir="$(smoke_tempdir "$REPO_DIR/.smoke-pm-XXXXXX")"; then
+	bad "section 115 could not create its fixture directory"
+else
+	if docker run --rm -i --network none --user "$(id -u):$(id -g)" \
+		-v "$REPO_DIR:/app" -w /app -e "PM_FIXTURE=/app/${sm115_dir##*/}" \
+		--entrypoint php php:8.2-cli <<'PHP'
+<?php
+$fixture = getenv('PM_FIXTURE');
+$checks = 0;
+function sm115_request($path, $expected, $get = array(), $cookie = array())
+{
+	$process = proc_open(array(PHP_BINARY, $GLOBALS['fixture'] . '/request.php',
+		$path, json_encode($get), json_encode($cookie)),
+		array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w')),
+		$pipes, $GLOBALS['fixture']);
+	fclose($pipes[0]);
+	$result = stream_get_contents($pipes[1]);
+	$stderr = stream_get_contents($pipes[2]);
+	fclose($pipes[1]);
+	fclose($pipes[2]);
+	$status = proc_close($process);
+	$decoded = json_decode($result, true);
+	if ($status !== 0 || !is_array($decoded) || count($decoded) !== 3 || $stderr !== '')
+	{
+		throw new RuntimeException($path . ': request process failed: ' . $result . $stderr);
+	}
+	list($output, $error, $enabled_calls) = $decoded;
+	if (($expected === 'LOADED' && ($output !== 'LOADED' || $error !== ''))
+		|| ($expected !== 'LOADED' && ($output !== '' || $error !== $expected))
+		|| ($expected === 'CASE_DENIED' && $enabled_calls !== 0))
+	{
+		throw new RuntimeException($path . ': expected ' . $expected
+			. ', output=' . var_export($output, true) . ', error=' . $error);
+	}
+	$GLOBALS['checks']++;
+}
+try
+{
+	mkdir($fixture . '/app/lib', 0700, true);
+	mkdir($fixture . '/custom/extensions/billing/sub', 0700, true);
+	mkdir($fixture . '/custom/extensions/billing/.nested', 0700, true);
+	mkdir($fixture . '/custom/extensions/disabled', 0700, true);
+	mkdir($fixture . '/outside', 0700);
+	file_put_contents($fixture . '/pika-danio.php', <<<'STUB'
+<?php
+$enabled_calls = 0;
+function pika_init()
+{
+}
+function pika_exit($body)
+{
+}
+function pl_custom_directory()
+{
+	return $GLOBALS['fixture'] . '/custom';
+}
+function pl_enabled_extensions()
+{
+	$GLOBALS['enabled_calls']++;
+	return array('billing');
+}
+function pl_settings_get($key)
+{
+	return '/cms';
+}
+function pl_case_not_viewable($base)
+{
+	throw new RuntimeException('CASE_DENIED');
+}
+function pika_authorize($action, $row)
+{
+	return $row['case_id'] === 42;
+}
+class DB
+{
+	public static function query($sql)
+	{
+		preg_match('/case_id = ([0-9]+)/', $sql, $match);
+		return array('case_id' => (int) $match[1]);
+	}
+}
+class DBResult
+{
+	public static function numRows($row)
+	{
+		return $row['case_id'] === 404 ? 0 : 1;
+	}
+	public static function fetchRow($row)
+	{
+		return $row;
+	}
+}
+STUB
+	);
+	file_put_contents($fixture . '/request.php', <<<'REQUEST'
+<?php
+$GLOBALS['fixture'] = __DIR__;
+set_include_path(__DIR__);
+set_error_handler(function ($number, $message)
+{
+	throw new ErrorException($message, 0, $number);
+});
+$_SERVER['SCRIPT_NAME'] = '/cms/pm.php';
+$_SERVER['PHP_SELF'] = '/cms/pm.php/' . $argv[1];
+$_GET = json_decode($argv[2], true);
+$_POST = array();
+$_COOKIE = json_decode($argv[3], true);
+$_REQUEST = array_merge($_GET, $_COOKIE);
+$GLOBALS['enabled_calls'] = 0;
+$error = '';
+ob_start();
+try
+{
+	require '/app/cms/pm.php';
+}
+catch (Throwable $exception)
+{
+	$error = $exception->getMessage();
+}
+$output = ob_get_clean();
+echo json_encode(array($output, $error, $GLOBALS['enabled_calls']));
+REQUEST
+	);
+	$extension = $fixture . '/custom/extensions/billing';
+	foreach (array('direct.php', '.hidden.php', 'a.b.php', 'sub/report.php',
+		'.nested/report.php') as $relative)
+	{
+		file_put_contents($extension . '/' . $relative, "<?php echo 'LOADED';");
+	}
+	file_put_contents($extension . '/text.txt', "<?php echo 'LOADED';");
+	file_put_contents($fixture . '/outside/report.php', "<?php echo 'LOADED';");
+	file_put_contents($fixture . '/custom/extensions/disabled/direct.php',
+		"<?php echo 'LOADED';");
+	symlink('direct.php', $extension . '/alias.php');
+	symlink('direct.php', $extension . '/alias.txt');
+	symlink('text.txt', $extension . '/text.php');
+	symlink('sub', $extension . '/linked');
+	symlink($fixture . '/outside/report.php', $extension . '/escape.php');
+	symlink($fixture . '/outside', $extension . '/escape');
+
+	foreach (array('', 'reports/') as $prefix)
+	{
+		$refused = $prefix === ''
+			? 'Extension target must be a .php file inside its extension directory.'
+			: 'Report target must be a .php file inside its extension directory.';
+		foreach (array('direct.php', '.hidden.php', 'a.b.php', 'alias.php') as $file)
+		{
+			sm115_request($prefix . 'billing/' . $file, 'LOADED');
+		}
+		foreach (array('missing.php', 'text.txt', 'alias.txt', 'text.php',
+			'escape.php', 'sub') as $file)
+		{
+			sm115_request($prefix . 'billing/' . $file, $refused);
+		}
+		$disabled = $prefix === ''
+			? "Extension 'disabled':'direct.php' is either not enabled or not installed."
+			: "Extension 'disabled' is either not enabled or not installed.";
+		sm115_request($prefix . 'disabled/direct.php', $disabled);
+		sm115_request($prefix . 'billing/../direct.php', 'Path traversal detected.');
+		sm115_request($prefix . 'billing/%2e%2e/direct.php', 'Path traversal detected.');
+		sm115_request($prefix . 'billing/direct.php', 'LOADED', array('case_id' => '042'));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED', array('case_id' => 99));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED', array('case_id' => 404));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED',
+			array('case_id' => 42), array('case_id' => 99));
+		sm115_request($prefix . 'billing/direct.php', 'CASE_DENIED',
+			array('case_id' => array(42)));
+	}
+	foreach (array('sub/report.php', '.nested/report.php', 'linked/report.php') as $file)
+	{
+		sm115_request('reports/billing/' . $file, 'LOADED');
+	}
+	sm115_request('reports/billing/escape/report.php',
+		'Report target must be a .php file inside its extension directory.');
+	printf("pm extension fixtures: %d passed\n", $checks);
+}
+finally
+{
+	chdir('/app');
+	$children = new RecursiveIteratorIterator(
+		new RecursiveDirectoryIterator($fixture, FilesystemIterator::SKIP_DOTS),
+		RecursiveIteratorIterator::CHILD_FIRST);
+	foreach ($children as $child)
+	{
+		if ($child->isDir() && !$child->isLink())
+		{
+			rmdir($child->getPathname());
+		}
+		else
+		{
+			unlink($child->getPathname());
+		}
+	}
+	rmdir($fixture);
+}
+PHP
+	then
+		ok "pm extension filesystem allowlist and case-access fixtures"
+	else
+		bad "pm extension filesystem allowlist or case-access fixtures failed"
+	fi
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
