@@ -1162,58 +1162,76 @@ function pika_error_notice($title, $message)
 		in debug mode, the same rule pika_error.php follows.
 	*/
 	$debug_mode = pl_is_debug_mode();
-	$esc = function ($v)
-	{
-		return pl_html_escape((string) $v);
-	};
+	/*	Escape each value with htmlspecialchars() in place. A helper closure
+		hid the escape from the code scanner, so it traced REQUEST_URI to the
+		page output.
+	*/
+	$ef = ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE;
 	
 	if ($debug_mode)
 	{
-		$d .= '<p>REQUEST_URI:  ' . $esc($_SERVER['REQUEST_URI']) . '</p>';
+		$v = htmlspecialchars((string) $_SERVER['REQUEST_URI'], $ef, 'UTF-8');
+		$d .= '<p>REQUEST_URI:  ' . $v . '</p>';
 		
 		if (isset($_REQUEST["screen"]))
 		{
-			$d .= '<p>SCREEN:  ' . $esc(isset($_POST['screen']) ? $_POST['screen'] : '') . '</p>';
+			$v = isset($_POST['screen']) ? $_POST['screen'] : '';
+			$v = htmlspecialchars((string) $v, $ef, 'UTF-8');
+			$d .= '<p>SCREEN:  ' . $v . '</p>';
 		}
 		
 		if (isset($_REQUEST["action"]))
 		{
-			$d .= '<p>ACTION:  ' . $esc(isset($_POST['action']) ? $_POST['action'] : '') . '</p>';
+			$v = isset($_POST['action']) ? $_POST['action'] : '';
+			$v = htmlspecialchars((string) $v, $ef, 'UTF-8');
+			$d .= '<p>ACTION:  ' . $v . '</p>';
 		}
 		
-		$d .= '<p>HTTP_REFERER:  ' . $esc($HTTP_REFERER) . '</p>';
-		$d .= '<p>REQUEST_METHOD:  ' . $esc($_SERVER['REQUEST_METHOD']) . '</p>';
-		$d .= '<p>REMOTE_ADDR:  ' . $esc($_SERVER['REMOTE_ADDR']) . '</p>';
-		$d .= '<p>HTTP_USER_AGENT:  ' . $esc(isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '') . '</p>';
-		$d .= '<p>SERVER_NAME:  ' . $esc(isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '') . '</p>';
-		$d .= '<p>SERVER_SOFTWARE:  ' . $esc($SERVER_SOFTWARE) . '</p>';
-		$d .= "<p>DB DSN:  {$plSettings['db_type']}://{$plSettings['db_user']}:********@{$plSettings['db_host']}/{$plSettings['db_name']}</p>";
+		$v = htmlspecialchars((string) $HTTP_REFERER, $ef, 'UTF-8');
+		$d .= '<p>HTTP_REFERER:  ' . $v . '</p>';
+		$v = htmlspecialchars((string) $_SERVER['REQUEST_METHOD'], $ef, 'UTF-8');
+		$d .= '<p>REQUEST_METHOD:  ' . $v . '</p>';
+		$v = htmlspecialchars((string) $_SERVER['REMOTE_ADDR'], $ef, 'UTF-8');
+		$d .= '<p>REMOTE_ADDR:  ' . $v . '</p>';
+		$v = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '';
+		$v = htmlspecialchars((string) $v, $ef, 'UTF-8');
+		$d .= '<p>HTTP_USER_AGENT:  ' . $v . '</p>';
+		$v = isset($_SERVER['SERVER_NAME']) ? $_SERVER['SERVER_NAME'] : '';
+		$v = htmlspecialchars((string) $v, $ef, 'UTF-8');
+		$d .= '<p>SERVER_NAME:  ' . $v . '</p>';
+		$v = htmlspecialchars((string) $SERVER_SOFTWARE, $ef, 'UTF-8');
+		$d .= '<p>SERVER_SOFTWARE:  ' . $v . '</p>';
 		
-		$d .= '<p>Username:  ' . $esc(isset($auth_row['username']) ? $auth_row['username'] : '') . '</p>';
-		$d .= '<p>User ID:  ' . $esc(isset($auth_row['user_id']) ? $auth_row['user_id'] : '') . '</p>';
+		$db_type = htmlspecialchars((string) $plSettings['db_type'], $ef, 'UTF-8');
+		$db_user = htmlspecialchars((string) $plSettings['db_user'], $ef, 'UTF-8');
+		$db_host = htmlspecialchars((string) $plSettings['db_host'], $ef, 'UTF-8');
+		$db_name = htmlspecialchars((string) $plSettings['db_name'], $ef, 'UTF-8');
+		$d .= "<p>DB DSN:  {$db_type}://{$db_user}:********@{$db_host}/{$db_name}</p>";
+		
+		$v = isset($auth_row['username']) ? $auth_row['username'] : '';
+		$v = htmlspecialchars((string) $v, $ef, 'UTF-8');
+		$d .= '<p>Username:  ' . $v . '</p>';
+		$v = isset($auth_row['user_id']) ? $auth_row['user_id'] : '';
+		$v = htmlspecialchars((string) $v, $ef, 'UTF-8');
+		$d .= '<p>User ID:  ' . $v . '</p>';
 	}
 	
 	// if the "unavail" template file is missing, this will avoid an inifinite loop
 	if (file_exists('templates/unavailable.html'))
 	{
 		$template_data["debug"] = $d;
-		/*	These two went into the template raw. pl_template() substitutes
-			a tag with the value it was given and does no escaping of its
-			own, so any caller that passes a request value made this screen
-			a reflected-XSS sink - ops/vcal.php passes the submitted
-			act_type straight into the message.
-			
-			pl_clean_html() rather than pl_html_escape(): the callers hand
-			us values that came through pl_grab_var(), and
-			pl_clean_form_input() has already rewritten < and > as entities
-			on the way in. pl_clean_html() turns those back into characters
-			and then escapes the whole string once, so the message reads as
-			it was typed instead of showing "&lt;" to the user, and a raw <
-			from a caller that never went through the input layer is still
-			escaped.
+		/*	Match pl_clean_html(): restore only form-escaped brackets, then
+			escape at the template assignments. Keep its null, array and
+			invalid UTF-8 handling so existing callers render the same text.
 		*/
-		$template_data["title"] = 'Error:  ' . pl_clean_html($title);
-		$template_data["message"] = pl_clean_html($message);
+		$title = str_replace(array('&lt;', '&gt;'), array('<', '>'), $title ?? '');
+		$message = str_replace(array('&lt;', '&gt;'), array('<', '>'), $message ?? '');
+		$template_data["title"] = 'Error:  ' . htmlspecialchars(
+			is_array($title) ? '' : $title, ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8'
+		);
+		$template_data["message"] = htmlspecialchars(
+			is_array($message) ? '' : $message, ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8'
+		);
 		
 		$plTemplate["page_title"] = "Pika CMS Error Screen";
 		$plTemplate['nav'] = "<a href=\".\" class=light>$pikaNavRootLabel</a> &gt; Error Screen";
@@ -1224,10 +1242,15 @@ function pika_error_notice($title, $message)
 	
 	else
 	{
-		// $d is escaped field by field above. $title and $message come from
-		// callers inside the application, but escape them too - a caller can
-		// pass a value that started life in a request.
-		echo $esc($title) . ' : ' . $esc($message) . ' <br> ' . $d;
+		/*	$d is escaped field by field above. $title and $message come from
+			callers inside the application, but escape them too - a caller can
+			pass a value that started life in a request.
+		*/
+		$t = is_array($title) ? '' : (string) $title;
+		$t = htmlspecialchars($t, $ef, 'UTF-8');
+		$m = is_array($message) ? '' : (string) $message;
+		$m = htmlspecialchars($m, $ef, 'UTF-8');
+		echo $t . ' : ' . $m . ' <br> ' . $d;
 	}
 	
 	return;
