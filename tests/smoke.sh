@@ -27636,5 +27636,113 @@ require("pm.php");' "$1" </dev/null 2>/dev/null
 	fi
 fi
 
+echo
+# 113. The activity form accepts only an existing PHP page from the Referer.
+# Each check includes a query-string Referer as its positive control.
+if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
+	sm113_user="zzactref_${$}_${RANDOM}"
+	sm113_pass='zz-Actref-Passw0rd'
+	sm113_uid=''
+	sm113_owned=0
+	sm113_jar="$(smoke_temp)"
+	sm113_jar_rc=$?
+	sm113_body="$(smoke_temp)"
+	sm113_body_rc=$?
+	
+	sm113_cleanup()
+	{
+		if [ "$sm113_owned" = 1 ]; then
+			adb "DELETE FROM user_sessions WHERE user_id IN
+				(SELECT user_id FROM users WHERE user_id = ${sm113_uid}
+				AND username = '${sm113_user}')" >/dev/null 2>&1
+			adb "DELETE FROM users WHERE user_id = ${sm113_uid}
+				AND username = '${sm113_user}'" >/dev/null 2>&1
+		fi
+	}
+	trap 'sm113_cleanup; base_cleanup' EXIT
+	
+	sm113_ready=0
+	if [ "$sm113_jar_rc" -eq 0 ] && [ -f "$sm113_jar" ] \
+		&& [ "$sm113_body_rc" -eq 0 ] && [ -f "$sm113_body" ]; then
+		sm113_hash="$(docker compose "${COMPOSE_ARGS[@]}" exec -T app \
+			php -r 'echo password_hash($argv[1], PASSWORD_DEFAULT);' \
+			"$sm113_pass" < /dev/null 2>/dev/null)"
+		sm113_hash_rc=$?
+		sm113_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
+		case "$sm113_uid" in
+			''|0|*[!0-9]*) sm113_uid='' ;;
+		esac
+		if [ "$sm113_hash_rc" -eq 0 ] && [ -n "$sm113_hash" ] \
+			&& [ -n "$sm113_uid" ]; then
+			if adb "INSERT INTO users (user_id, username, password, enabled,
+				group_id, password_expire) VALUES (${sm113_uid}, '${sm113_user}',
+				'${sm113_hash}', 1, 'system', 0)" >/dev/null 2>&1; then
+				sm113_owned=1
+				sm113_seeded="$(adb "SELECT COUNT(*) FROM users
+					WHERE user_id = ${sm113_uid} AND username = '${sm113_user}'")"
+				if [ "$sm113_seeded" = 1 ]; then
+					sm113_code="$(curl -sL --max-time 30 -c "$sm113_jar" \
+						-b "$sm113_jar" -o "$sm113_body" -w '%{http_code}' \
+						--data-urlencode "login_user=$sm113_user" \
+						--data-urlencode "login_pass=$sm113_pass" -d 'auth_id=1' \
+						"$OCM_URL/")"
+					sm113_curl_rc=$?
+					grep -q 'login_pass' "$sm113_body"
+					sm113_login_rc=$?
+					if [ "$sm113_curl_rc" -eq 0 ] && [ "$sm113_code" = 200 ] \
+						&& [ "$sm113_login_rc" -eq 1 ] \
+						&& grep -qi 'logout' "$sm113_body"; then
+						sm113_ready=1
+					fi
+				fi
+			fi
+		fi
+	fi
+	
+	sm113_fetch()
+	{
+		: > "$sm113_body"
+		sm113_code="$(curl -s --max-time 30 -b "$sm113_jar" \
+			-e "$OCM_URL/$1" -o "$sm113_body" -w '%{http_code}' \
+			"$OCM_URL/activity.php")"
+		sm113_curl_rc=$?
+		sm113_value="$(sed -n \
+			's/.*name="act_url"[^>]*value="\([^"]*\)".*/\1/p' \
+			"$sm113_body" | sort -u)"
+		[ "$sm113_curl_rc" -eq 0 ] && [ "$sm113_code" = 200 ]
+	}
+	
+	if [ "$sm113_ready" = 1 ]; then
+		for sm113_ref in '..' '.' 'app'; do
+			sm113_fetch "$sm113_ref"
+			sm113_bad_rc=$?
+			sm113_bad_value="$sm113_value"
+			sm113_fetch 'case.php?x=1'
+			sm113_good_rc=$?
+			if [ "$sm113_bad_rc" -eq 0 ] && [ "$sm113_good_rc" -eq 0 ] \
+				&& [ "$sm113_bad_value" = cal_day.php ] \
+				&& [ "$sm113_value" = case.php ]; then
+				ok "activity Referer /${sm113_ref}: cal_day.php; /case.php?x=1: case.php"
+			else
+				bad "activity Referer /${sm113_ref}: '${sm113_bad_value}'; /case.php?x=1: '${sm113_value}' (request exits ${sm113_bad_rc}/${sm113_good_rc})"
+			fi
+		done
+	else
+		bad "activity Referer checks could not create and sign in the fixture user"
+	fi
+	
+	sm113_cleanup
+	if [ "$sm113_owned" = 1 ]; then
+		sm113_left="$(adb "SELECT COUNT(*) FROM users
+			WHERE user_id = ${sm113_uid} AND username = '${sm113_user}'")"
+		if [ "$sm113_left" != 0 ]; then
+			bad "activity Referer fixture user was not deleted"
+		fi
+	fi
+	trap base_cleanup EXIT
+else
+	printf '  skip activity Referer checks (needs a running docker compose stack)\n'
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
