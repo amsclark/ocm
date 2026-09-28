@@ -349,7 +349,30 @@ class pikaDocument extends plBase
 		&& !is_null($doc_type)) 
 		{
 			global $auth_row;
-			$content = file_get_contents($file_array['tmp_name']);
+
+			/*	The file is moved to a name the server chose before it is read.
+				Every later read uses that name, never the upload's tmp_name.
+			*/
+			$staged = tempnam(sys_get_temp_dir(), 'ocmup');
+
+			if (false === $staged
+			|| !move_uploaded_file($file_array['tmp_name'], $staged))
+			{
+				if (false !== $staged)
+				{
+					@unlink($staged);
+				}
+
+				return true;
+			}
+
+			$content = file_get_contents($staged);
+
+			if (false === $content)
+			{
+				@unlink($staged);
+				return true;
+			}
 			
 			$this->doc_data = addslashes(gzcompress($content,9));
 			//$this->doc_data = addslashes($content);
@@ -381,9 +404,9 @@ class pikaDocument extends plBase
 			$declared_type = isset($file_array['type']) ? strtolower(trim((string) $file_array['type'])) : '';
 			$detected_type = '';
 			
-			if (function_exists('mime_content_type') && !empty($file_array['tmp_name']))
+			if (function_exists('mime_content_type'))
 			{
-				$detected_type = strtolower((string) @mime_content_type($file_array['tmp_name']));
+				$detected_type = strtolower((string) @mime_content_type($staged));
 			}
 			
 			if ($declared_type && in_array($declared_type,$allowed_mime_types,true))
@@ -407,7 +430,7 @@ class pikaDocument extends plBase
 			$this->created = date('Y-m-d');
 			
 			$extension = strrchr($this->doc_name, '.');
-			$safe_full_path = escapeshellarg($file_array['tmp_name']);
+			$safe_full_path = escapeshellarg($staged);
 			switch ($extension)
 			{
 				//case '.pdf':
@@ -428,6 +451,7 @@ class pikaDocument extends plBase
 			
 				break;
 			}
+			@unlink($staged);
 			$this->doc_text = $contents_text;
 			$this->save();
 		
