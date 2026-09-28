@@ -338,8 +338,14 @@ class pikaDocument extends plBase
 	*/
 	public function uploadDoc($file_array = null, $description = null, $parent_folder = null, $doc_type = null, $case_id = null)
 	{
+		/*	Only read a temporary file accepted by PHP's HTTP upload handler.
+			The client file name is document metadata, never a source path.
+		*/
 		if (isset($file_array['tmp_name']) && isset($file_array['name']) 
-		&& file_exists($file_array['tmp_name']) && (!$parent_folder || $this->isFolder($parent_folder))
+		&& is_string($file_array['tmp_name']) && is_string($file_array['name'])
+		&& isset($file_array['error']) && $file_array['error'] === UPLOAD_ERR_OK
+		&& is_uploaded_file($file_array['tmp_name'])
+		&& (!$parent_folder || $this->isFolder($parent_folder))
 		&& !is_null($doc_type)) 
 		{
 			global $auth_row;

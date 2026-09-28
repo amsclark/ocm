@@ -46,21 +46,37 @@ $i = 0;
 $j = $site_map_urls = $site_map_titles = $home_page_urls = $home_page_titles = "";
 $report_urls = $report_titles = "";
 
+/*	Only installed extension directories can supply file paths. Include nested
+	directories because extension keys can contain more than one /name segment.
+*/
+$extension_paths = array();
+$extensions_root = pl_custom_directory() . '/extensions';
+if (is_dir($extensions_root) && is_readable($extensions_root))
+{
+	$entries = new RecursiveIteratorIterator(
+		new RecursiveDirectoryIterator($extensions_root, FilesystemIterator::SKIP_DOTS),
+		RecursiveIteratorIterator::SELF_FIRST,
+		RecursiveIteratorIterator::CATCH_GET_CHILD
+	);
+	foreach ($entries as $entry)
+	{
+		if ($entry->isDir())
+		{
+			$extension_path = $entry->getPathname();
+			$extension_key = substr($extension_path, strlen($extensions_root));
+			if (file_exists($extension_path . '/manifest.txt')
+				|| file_exists($extension_path . '/title.txt'))
+			{
+				$extension_paths[$extension_key] = $extension_path;
+			}
+		}
+	}
+}
+
 foreach ($_POST as $key => $val)
 {
-	/*	$key is a POST field name, so it is whatever the request chose to
-		send, and everything this loop builds from it is a path or an
-		allowlist entry: pm.php gates a require() on the 'extensions'
-		setting written below.
-		
-		pl_csrf_check() leaves its own fields in $_POST, so '_csrf' and
-		'_csrf_recovery' were about to be recorded as installed extensions.
-		
-		Past that, hold the name to the shape the folder scan in
-		system-extensions.php produces -- one or more '/name' segments of
-		plain characters -- so a name cannot carry a traversal sequence, a
-		path separator, a null byte, or the ':' that separates entries in
-		the setting itself.
+	/*	Keep the existing key format and omit CSRF fields. The directory listing
+		supplies the path; the request only selects an installed extension.
 	*/
 	if ('_csrf' === $key || '_csrf_recovery' === $key)
 	{
@@ -77,10 +93,11 @@ foreach ($_POST as $key => $val)
 		}
 	}
 	
-	if (!$key_ok)
+	if (!$key_ok || !isset($extension_paths[$key]))
 	{
 		continue;
 	}
+	$extension_path = $extension_paths[$key];
 	
 	if ($i == 0)
 	{
@@ -93,7 +110,7 @@ foreach ($_POST as $key => $val)
 	}
 	
 	$i++;
-	$manifest = pl_custom_directory() . "/extensions" . $key . "/manifest.txt";
+	$manifest = $extension_path . '/manifest.txt';
 	
 	if (file_exists($manifest) && is_readable($manifest))
 	{
@@ -123,7 +140,7 @@ foreach ($_POST as $key => $val)
 	else
 	{
 		$report_urls .= "{$key}/index.php:";
-		$report_titles .= trim(file_get_contents(pl_custom_directory() . "/extensions" . $key . "/title.txt")) . ":";
+		$report_titles .= trim(file_get_contents($extension_path . '/title.txt')) . ":";
 	}
 }
 
