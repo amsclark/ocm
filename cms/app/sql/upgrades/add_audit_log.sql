@@ -12,13 +12,19 @@
 --   ip_address   -- request IP as seen by PHP (may be proxy IP; see pl_audit)
 --   user_agent   -- truncated User-Agent header
 --   action       -- short stable identifier, dotted-lowercase convention:
---                   'login.success', 'login.failure', 'logout',
---                   'user.create', 'user.update', 'user.disable',
---                   'user.group_change', 'user.password_admin_reset',
---                   'password.self_change', 'password.reset_request',
---                   'setting.update', 'activity.delete', 'case.delete',
---                   'contact.delete', 'case.transfer'
---   object_type  -- 'user' | 'case' | 'activity' | 'setting' | 'contact' | NULL
+--                   a subject and what happened to it, as in 'login.success',
+--                   'user.group_change' or 'setting.update'. This comment does not
+--                   list them. It used to, and the list was wrong in both
+--                   directions: two names in it were never emitted and most of the
+--                   names the app does emit were missing. The set is whatever the
+--                   pl_audit() callers pass, so read it from them:
+--                       grep -rn 'pl_audit(' cms
+--                   Nothing reads this column by a hard-coded name, so a caller may
+--                   add one without a migration.
+--   object_type  -- what object_id names, singular and lowercase, usually the table:
+--                   'user', 'case', 'activity', 'setting' and others. NULL when the
+--                   event has no single target, as a failed login does. Same rule as
+--                   above: the callers define the set, not this comment.
 --   object_id    -- stringified primary key of the target object
 --   details      -- JSON: {"old": ..., "new": ..., "reason": ...}
 --
