@@ -4224,11 +4224,14 @@ if [ "$HAVE_DB" = 1 ]; then
 	FH_CANON_HAD="$(adb "SELECT COUNT(*) FROM settings WHERE label='canonical_url'")"
 	FH_CANON_HEX="$(adb "SELECT HEX(value) FROM settings WHERE label='canonical_url'")"
 	# A page that is a symbolic link, made in check (h) and removed here.
-	FH_LINK='zz_fh_link.php'
+	FH_LINK="zz_fh_link_$$.php"
+	FH_LINK_MADE=0
 	fh_app() { docker compose "${COMPOSE_ARGS[@]}" exec -T -w /var/www/html/cms app "$@"; }
 
 	restore_https() {
-		fh_app rm -f -- "$FH_LINK" >/dev/null 2>&1
+		if [ "$FH_LINK_MADE" = 1 ]; then
+			fh_app rm -f -- "$FH_LINK" >/dev/null 2>&1 && FH_LINK_MADE=0
+		fi
 		adb "UPDATE settings SET value='0' WHERE label='force_https'" >/dev/null
 		case "$FH_CANON_HAD" in
 			0) adb "DELETE FROM settings WHERE label='canonical_url'" >/dev/null ;;
@@ -4413,11 +4416,14 @@ if [ "$HAVE_DB" = 1 ]; then
 
 			# (h) Apache follows symbolic links in cms/, so a page that is a
 			# link keeps its own name and query.
+			# The name is unique to this run, and ln does not replace a file
+			# that is already there, so only a link made here is removed.
 			if fh_app ln -s case_list.php "$FH_LINK" >/dev/null 2>&1; then
+				FH_LINK_MADE=1
 				fh_get "${OCM_URL}/${FH_LINK}?a=1"
 				fh_expect "a page that is a symbolic link" \
 					"${FH_ORIGIN}${FH_PREFIX}/${FH_LINK}?a=1"
-				fh_app rm -f -- "$FH_LINK" >/dev/null 2>&1
+				fh_app rm -f -- "$FH_LINK" >/dev/null 2>&1 && FH_LINK_MADE=0
 			else
 				bad "could not make a linked page for the force_https check"
 			fi
