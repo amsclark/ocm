@@ -23560,8 +23560,8 @@ if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	# id and the stored secret, neither of which is this run's name, so the
 	# three calls cannot narrow it. That UPDATE also carries predicates on the
 	# MFA flag and on the bound it is about to write, but those are guards
-	# under test rather than a check on whose row this is. "Cannot" describes how this fixture
-	# is built, not a limit of SQL.
+	# under test rather than a check on whose row this is. "Cannot" describes
+	# how this fixture is built, not a limit of SQL.
 	sm105_user="zzfloor_${$}_${RANDOM}"
 	sm105_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
 	case "$sm105_uid" in
@@ -23678,8 +23678,14 @@ print "MARKED";' "$sm105_uid" "$1" 2>/dev/null
 			esac
 		fi
 
-		adb "DELETE FROM users WHERE user_id = ${sm105_uid}
-			AND username = '${sm105_user}'" >/dev/null 2>&1
+		if adb "DELETE FROM users WHERE user_id = ${sm105_uid}
+			AND username = '${sm105_user}'" >/dev/null 2>&1 \
+			&& [ "$(adb "SELECT COUNT(*) FROM users
+				WHERE user_id = ${sm105_uid} AND username = '${sm105_user}'")" = 0 ]; then
+			ok "the replay-bound fixture user was removed"
+		else
+			bad "the replay-bound fixture user ${sm105_user} was left behind"
+		fi
 	fi
 fi
 # 106. cms/services/twilio.php built the body it posts to SparkPost by
@@ -27413,9 +27419,10 @@ fi
 if [ "$HAVE_COMPOSE" = 1 ] && [ "$HAVE_DB" = 1 ]; then
 	# The same fixture pattern as section 105: a name carrying the process id
 	# and a random number, matched together with the id in every statement
-	# that reads or changes the row, apart from the MAX and the INSERT that
-	# have nothing to match on yet, and the calls to pl_totp_mark_used(),
-	# which pick their row by id and secret.
+	# the test itself writes. The exceptions are the MAX and the INSERT, which
+	# have nothing to match on yet, and the application's own lookups: the
+	# login reads the row by name alone, the code check and the step-up read
+	# it by id alone, and pl_totp_mark_used() picks it by id and secret.
 	sm111_user="zzmfaclaim_${$}_${RANDOM}"
 	sm111_pw="zzpw_${RANDOM}_${RANDOM}_${RANDOM}"
 	sm111_uid="$(adb "SELECT COALESCE(MAX(user_id), 0) + 1 FROM users")"
@@ -27531,22 +27538,130 @@ print "FLAG_OFF=" . $mark($w, $b32) . "|" . $floor() . "\n";
 			else
 				bad "a window recorded with MFA off gave '$(sm111_val FLAG_OFF)', expected 'false|null'"
 			fi
+
+			# Both callers must refuse when the window was not recorded. A
+			# race cannot be made to happen on demand, so this probe replaces
+			# pl_totp_mark_used() with a function that returns what the race
+			# would: false for the losing side. pikaCrypto.php defines the
+			# real one only when no function of that name exists yet. Each
+			# caller is run with false and then with true, with the same
+			# password and code, so a refusal comes from the claim's answer
+			# and not from a wrong password or code. The probe also prints
+			# how often the claim was made and whether it named this user,
+			# the code's window and the stored secret.
+			#
+			# The step-up exits after a refusal, so every step-up run is its
+			# own process and prints its result from a shutdown function. It
+			# runs under a session id made for this test and the TEST-NET
+			# address 192.0.2.111, so its grant, its CSRF token and its
+			# failure counters belong to nothing else. The shutdown function
+			# clears the counters; the rows are deleted below.
+			sm111_sid="zzsm111_${$}_${RANDOM}_${RANDOM}"
+			sm111_stub='
+function pl_totp_mark_used($user_id, $window, $stored_secret)
+{
+	$GLOBALS["sm_calls"][] = (int) $user_id . "|" . (int) $window . "|" . $stored_secret;
+	return $GLOBALS["sm_claim"];
+}
+define("PL_DISABLE_SECURITY", true);
+chdir("/var/www/html/cms");
+require_once("pika-danio.php");
+pika_init();
+require_once("app/lib/pikaAuthDb.php");
+require_once("app/lib/pikaCrypto.php");
+$uid = (int) $argv[1];
+$name = $argv[2];
+$pw = $argv[3];
+$mode = $argv[4];
+$GLOBALS["sm_claim"] = ("1" === substr($mode, -1));
+$GLOBALS["sm_calls"] = array();
+$b32 = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
+$w = (int) floor(time() / 30);
+$code = pl_totp_code_at(pl_totp_base32_decode($b32), $w);
+$GLOBALS["sm_want"] = array($uid . "|" . $w . "|" . $b32);
+$report = function ($result) {
+	$calls = $GLOBALS["sm_calls"];
+	print "RESULT=" . $result . "|" . count($calls) . "|"
+		. (($calls === $GLOBALS["sm_want"]) ? "same" : "other") . "\n";
+};
+if ("login" === substr($mode, 0, 5))
+{
+	$a = new pikaAuthDb("users", "username", "password");
+	$report($a->authenticate($name, $pw, $code) ? "granted" : "refused");
+}
+else
+{
+	$_SESSION = array("SID" => $argv[5]);
+	$_SERVER["REQUEST_METHOD"] = "POST";
+	$_SERVER["REMOTE_ADDR"] = "192.0.2.111";
+	$_POST = array("_reauth_scope" => "settings", "_reauth_password" => $pw,
+		"_reauth_totp" => $code);
+	$GLOBALS["auth_row"] = array("user_id" => $uid, "auth_method" => "local");
+	$GLOBALS["sm_done"] = "refused";
+	register_shutdown_function(function () use ($report, $uid) {
+		while (ob_get_level() > 0)
+		{
+			ob_end_clean();
+		}
+		pl_auth_rate_limit_reset_all(pl_auth_rate_limit_keys("reauth:settings:" . $uid));
+		$report($GLOBALS["sm_done"]);
+	});
+	ob_start();
+	$GLOBALS["sm_done"] = pl_reauth_required("settings") ? "granted" : "returned false";
+}
+'
+			sm111_claim() {
+				docker compose "${COMPOSE_ARGS[@]}" exec -T app php -r "$sm111_stub" \
+					"$sm111_uid" "$sm111_user" "$sm111_pw" "$1" "$sm111_sid" 2>/dev/null \
+					| sed -n 's/^RESULT=//p'
+			}
+			sm111_grants() {
+				adb "SELECT COUNT(*) FROM reauth_grants
+					WHERE BINARY session_id = '${sm111_sid}'"
+			}
+			adb "UPDATE users SET totp_enabled = 1, totp_last_used = NULL
+				WHERE user_id = ${sm111_uid} AND username = '${sm111_user}'" >/dev/null 2>&1
+
+			sm111_l0="$(sm111_claim login0)"
+			sm111_l1="$(sm111_claim login1)"
+			if [ "$sm111_l0" = 'refused|1|same' ] && [ "$sm111_l1" = 'granted|1|same' ]; then
+				ok "login refuses a correct password and code when the code's window is not recorded"
+			else
+				bad "login with an unrecorded window gave '$sm111_l0' and with a recorded one '$sm111_l1', expected 'refused|1|same' and 'granted|1|same'"
+			fi
+
+			sm111_s0="$(sm111_claim stepup0)"
+			sm111_g0="$(sm111_grants)"
+			sm111_s1="$(sm111_claim stepup1)"
+			sm111_g1="$(sm111_grants)"
+			if [ "$sm111_s0|$sm111_g0" = 'refused|1|same|0' ] \
+				&& [ "$sm111_s1|$sm111_g1" = 'granted|1|same|1' ]; then
+				ok "step-up refuses a correct password and code when the code's window is not recorded"
+			else
+				bad "step-up with an unrecorded window gave '$sm111_s0' with $sm111_g0 grants and with a recorded one '$sm111_s1' with $sm111_g1 grants, expected 'refused|1|same' with 0 and 'granted|1|same' with 1"
+			fi
+
+			if adb "DELETE FROM reauth_grants WHERE BINARY session_id = '${sm111_sid}'" >/dev/null 2>&1 \
+				&& adb "DELETE FROM csrf_tokens WHERE BINARY session_id = '${sm111_sid}'" >/dev/null 2>&1 \
+				&& [ "$(adb "SELECT (SELECT COUNT(*) FROM reauth_grants
+					WHERE BINARY session_id = '${sm111_sid}')
+					+ (SELECT COUNT(*) FROM csrf_tokens
+					WHERE BINARY session_id = '${sm111_sid}')")" = 0 ]; then
+				ok "the step-up fixture's grant and CSRF token were removed"
+			else
+				bad "the step-up fixture's grant or CSRF token for session ${sm111_sid} was left behind"
+			fi
 		fi
 
-		adb "DELETE FROM users WHERE user_id = ${sm111_uid}
-			AND username = '${sm111_user}'" >/dev/null 2>&1
+		if adb "DELETE FROM users WHERE user_id = ${sm111_uid}
+			AND username = '${sm111_user}'" >/dev/null 2>&1 \
+			&& [ "$(adb "SELECT COUNT(*) FROM users
+				WHERE user_id = ${sm111_uid} AND username = '${sm111_user}'")" = 0 ]; then
+			ok "the MFA sign-in fixture user was removed"
+		else
+			bad "the MFA sign-in fixture user ${sm111_user} was left behind"
+		fi
 	fi
-fi
-
-# Both callers must refuse when the window was not recorded. The login half is
-# read from the source because neither race can be made to happen on demand.
-if grep -qF 'if (!pl_totp_mark_used($row['"'"'user_id'"'"'],$totp_window,$stored_secret))' \
-	cms/app/lib/pikaAuthDb.php \
-	&& grep -qF '$ok = pl_totp_mark_used($user_id, $totp_window, (string) $user['"'"'totp_secret'"'"']);' \
-	cms/app/lib/pl.php; then
-	ok "login and step-up both refuse when the code's window was not recorded"
-else
-	bad "login or step-up no longer refuses when the code's window was not recorded"
 fi
 
 echo

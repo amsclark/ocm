@@ -507,9 +507,10 @@ if (!function_exists('pl_totp_verify_once'))
 		catch (Throwable $e)
 		{
 			/*	The column is missing because the upgrade has not been
-				applied, or the database hiccupped. Carry on with no replay
-				bound: the guard is an addition to the check, not the check
-				itself, and MFA must keep working without it.
+				applied, or the database hiccupped. Check the code with no
+				replay bound here. The sign-in still fails, because
+				pl_totp_mark_used() must then record the window in that
+				same column, and it refuses when it cannot.
 			*/
 			$last_used = null;
 		}
