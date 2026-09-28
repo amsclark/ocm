@@ -342,13 +342,21 @@ class pikaDocument extends plBase
 			name, and must equal the one PHP gave. The client file name is
 			document metadata, never a source path. PHP falls back to the
 			system temp directory when upload_tmp_dir cannot be written, so
-			both directories are tried.
+			both directories are tried. PHP also resolves a symlinked or
+			relative directory before it names the file, so each directory is
+			tried as written and as realpath() gives it.
 		*/
 		$upload_path = '';
 
 		if (isset($file_array['tmp_name']) && is_string($file_array['tmp_name']))
 		{
-			$upload_dirs = array((string) ini_get('upload_tmp_dir'), sys_get_temp_dir());
+			$upload_dirs = array();
+
+			foreach (array((string) ini_get('upload_tmp_dir'), sys_get_temp_dir()) as $upload_dir)
+			{
+				$upload_dirs[] = $upload_dir;
+				$upload_dirs[] = ('' === $upload_dir) ? '' : (string) realpath($upload_dir);
+			}
 
 			foreach ($upload_dirs as $upload_dir)
 			{
