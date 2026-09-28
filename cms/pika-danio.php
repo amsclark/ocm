@@ -927,7 +927,9 @@ function pika_init()
 			vendor/, and modules/ and template_plugins/, which are include
 			fragments. It also leaves out any name that starts with a '.', and
 			it does not follow symbolic links. It is built only here, so a
-			request that is not redirected does not pay for it.
+			request that is not redirected does not pay for it. A directory
+			that holds an index.php is listed too, as "dir/", and a request for
+			"dir" or "dir/" keeps that directory, as the Reports link needs.
 		*/
 		$force_https_prefix = rtrim((string) parse_url(
 			(string) pl_settings_get('base_url'), PHP_URL_PATH), '/');
@@ -960,6 +962,12 @@ function pika_init()
 			$script = str_replace(DIRECTORY_SEPARATOR, '/',
 				substr($file->getPathname(), strlen(__DIR__) + 1));
 			$pages[$script] = $script;
+			if ('/index.php' === substr($script, -10))
+			{
+				$script_dir = substr($script, 0, -9);
+				$pages[$script_dir] = $script_dir;
+				$pages[rtrim($script_dir, '/')] = $script_dir;
+			}
 		}
 
 		$page = null;

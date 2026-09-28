@@ -4386,6 +4386,16 @@ if [ "$HAVE_DB" = 1 ]; then
 				bad "the force_https redirect carries an unlisted path (${FH_LOC})"
 			fi
 
+			# (f) A directory URL keeps its path and query. The Reports link
+			# is reports/, and Apache serves the directory's index.php.
+			fh_get "${OCM_URL}/reports/?a=1"
+			fh_expect "a directory URL" "${FH_ORIGIN}${FH_PREFIX}/reports/?a=1"
+			if [ "$FH_SUB_OK" = 1 ]; then
+				fh_get "${OCM_URL}/reports/megareport/"
+				fh_expect "a subdirectory URL" \
+					"${FH_ORIGIN}${FH_PREFIX}/reports/megareport/"
+			fi
+
 			# A forged Host header must not reach the Location.
 			fh_get "${OCM_URL}/case.php?case_id=5" -H "Host: ${FH_FORGED}"
 			fh_expect "a forged Host header" \
