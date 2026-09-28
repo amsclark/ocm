@@ -9,6 +9,7 @@ class DB
 {
 	protected static $link = null;
 	protected static $mysqli_mode = PIKACMS_MYSQLI_MODE;
+	protected static $prepared_affected_rows = null;
 
 	protected function __construct()
 	{
@@ -67,6 +68,15 @@ class DB
 
 	public static function affectedRows()
 	{
+		/*	After preparedQuery() the connection cannot answer: the statement
+			is freed when preparedQuery() returns, and freeing it resets the
+			connection's count to -1. preparedQuery() keeps the statement's own
+			count for this, and query() clears it.
+		*/
+		if (null !== self::$prepared_affected_rows) {
+			return self::$prepared_affected_rows;
+		}
+
 		if (self::$mysqli_mode) {
 			return mysqli_affected_rows(self::$link);
 		}
@@ -105,6 +115,8 @@ class DB
 
 	public static function query($sql)
 	{
+		self::$prepared_affected_rows = null;
+
 		if (self::$mysqli_mode) {
 			return mysqli_query(self::$link, $sql);
 		}
@@ -119,6 +131,8 @@ class DB
 		if (!self::$mysqli_mode) {
 			throw new Exception("Prepared statements are only supported in MySQLi mode.");
 		}
+
+		self::$prepared_affected_rows = null;
 
 		$stmt = mysqli_prepare(self::$link, $sql);
 		if ($stmt === false) {
@@ -142,6 +156,7 @@ class DB
 			success instead, and leave the real failures to the throws above.
 		*/
 		if (0 === $stmt->field_count) {
+			self::$prepared_affected_rows = (int) $stmt->affected_rows;
 			return true;
 		}
 

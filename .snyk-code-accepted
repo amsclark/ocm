@@ -42,7 +42,7 @@ php/InsecureHash | cms/ops/transfer_case.php | 1 | The v5 transfer receiver reje
 
 # --- Stored md5 digests that have to stay readable until the last row migrates ---
 
-php/InsecureHash | cms/app/lib/pikaAuthDb.php | 2 | Legacy password migration. Rows created before password_hash() hold an md5 digest, so sign-in has to try md5 to let those users in at all. The match is hash_equals(), not ==, and a successful legacy match immediately rewrites the row with password_hash() and audits it as legacy_md5_upgraded, so each account passes through this path once and never again.
+php/InsecureHash | cms/app/lib/pikaAuthDb.php | 1 | Legacy password migration. Rows created before password_hash() hold an md5 digest, so sign-in has to try md5 to let those users in at all. The match is hash_equals(), not ==, and a successful legacy match immediately rewrites the row with password_hash() and audits it as legacy_md5_upgraded, so each account passes through this path once and never again.
 php/InsecureHash | cms/app/lib/pl.php | 1 | Same legacy digest as pikaAuthDb.php, read here during the password-plus-TOTP reauthentication check. password_verify() is tried first and md5 only as the fallback, through hash_equals().
 php/InsecureHash | cms/password.php | 2 | The change-password form has to recognise the current password to accept a change, and for a not-yet-migrated account that means comparing the md5 digest on the row. Both comparisons use hash_equals(); the replacement password is written with password_hash().
 php/InsecureHash | cms/dataops.php | 1 | The same current-password check as password.php, on the form-post path. hash_equals() against the stored digest, password_verify() first.
