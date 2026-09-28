@@ -15780,6 +15780,60 @@ else
 	else
 		bad "the generated mac download script's URL is not https ($(grep -m1 -E '^\$url' "$BODY"))"
 	fi
+
+	# 76m. The generated script exports only the tables it was built with:
+	# this installation's own, less doc_storage. A name the server sends that
+	# is not on that list must not become a file. The script is run in the app
+	# container against a stand-in server that offers one listed table, one
+	# unlisted name, doc_storage and a traversal name.
+	sm76_list="$(awk -F"'" '/^\$allowed_tables = explode/ { print $4 }' "$BODY")"
+	if ! printf '%s' "$sm76_list" | grep -qE '^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$'
+	then
+		bad "the generated script's table list is empty or not plain names (${sm76_list:0:80})"
+	elif ! printf ',%s,' "$sm76_list" | grep -qF ',cases,'
+	then
+		bad "the generated script's table list leaves out the cases table"
+	elif printf ',%s,' "$sm76_list" | grep -qF ',doc_storage,'
+	then
+		bad "the generated script's table list includes doc_storage"
+	else
+		ok "the generated script lists this installation's tables, less doc_storage"
+	fi
+
+	mac_dex() { docker compose "${COMPOSE_ARGS[@]}" exec -T app "$@"; }
+	SM76_DIR="/tmp/zz_csv76_$$"
+	SM76_PORT=18976
+	mac_dex mkdir -p "$SM76_DIR/out" "$SM76_DIR/srv/services"
+	printf '%s\n' '<?php echo json_encode(array("cases", "zz_not_listed", "doc_storage", "../zz_up"));' \
+		| mac_dex sh -c "cat > '$SM76_DIR/srv/services/table_listing.php'"
+	printf '%s\n' '<?php echo "id\n1\n";' \
+		| mac_dex sh -c "cat > '$SM76_DIR/srv/services/csv.php'"
+	awk -v u="\$url = 'http://127.0.0.1:${SM76_PORT}';" \
+		-v s="\$save_folder_path = '${SM76_DIR}/out';" \
+		'/^\$url = \047/ { print u; next }
+		/^\$save_folder_path = \047/ { print s; next }
+		{ print }' "$BODY" \
+		| mac_dex sh -c "cat > '$SM76_DIR/run.php'"
+	mac_dex sh -c "setsid php -S 127.0.0.1:${SM76_PORT} -t '$SM76_DIR/srv' \
+		</dev/null >/dev/null 2>&1 & echo \$! > '$SM76_DIR/pid'"
+	mac_dex php -r 'for ($i = 0; $i < 20; $i++) { if (@fsockopen("127.0.0.1", '"$SM76_PORT"')) exit(0); usleep(250000); } exit(1);'
+	SM76_OUT="$(mac_dex php "$SM76_DIR/run.php" 2>&1)"
+	SM76_FILES="$(mac_dex sh -c "ls -A '$SM76_DIR/out' | tr '\n' ' '; ls -A '$SM76_DIR' | tr '\n' ' '")"
+	mac_dex sh -c "kill \$(cat '$SM76_DIR/pid')" >/dev/null 2>&1
+	mac_dex rm -rf -- "$SM76_DIR"
+
+	if [ "$SM76_FILES" != "cases.csv out pid run.php srv " ]
+	then
+		bad "the generated script wrote files it should not have (${SM76_FILES}) (${SM76_OUT:0:200})"
+	elif [ "$(printf '%s\n' "$SM76_OUT" | grep -cF 'outside the export list')" -ne 2 ]
+	then
+		bad "the generated script did not skip both names outside its list (${SM76_OUT:0:200})"
+	elif ! printf '%s' "$SM76_OUT" | grep -qF 'not a plain identifier'
+	then
+		bad "the generated script did not skip the traversal name (${SM76_OUT:0:200})"
+	else
+		ok "the generated script exported only the listed table the server offered"
+	fi
 	rm -f -- "$MD_HDR"
 fi
 
