@@ -20,7 +20,9 @@
 --                   pl_audit() callers pass, so read it from them:
 --                       grep -rn 'pl_audit(' cms
 --                   Nothing reads this column by a hard-coded name, so a caller may
---                   add one without a migration.
+--                   add one without a migration. Keep a new name to lowercase
+--                   letters, digits, '.' and '_', at most 64 characters: the filter
+--                   in system-audit.php accepts only those.
 --   object_type  -- what object_id names, singular and lowercase, usually the table:
 --                   'user', 'case', 'activity', 'setting' and others. NULL when the
 --                   event has no single target, as a failed login does. Same rule as
