@@ -27534,5 +27534,154 @@ else
 	printf '  skip activity Referer checks (needs a running docker compose stack)\n'
 fi
 
+echo
+# 114. Two pages now HTML-escape a stored activity summary before printing
+# it as markup: cal_day.php's pending list, and reports/time/report.php's
+# HTML format. Both used to print the column raw, so a summary carrying a
+# literal < and > - which a straight INSERT can still write, even though
+# the web form filters those characters out - ran as markup for whoever
+# saw the row. The same report's CSV format is exempt on purpose: it hands
+# the summary to fputcsv() as a text field, not as HTML, so it must keep
+# the characters as they are stored.
+if [ "$HAVE_DB" != 1 ]; then
+	printf '  skip section 114 (needs the database)\n'
+else
+	sm114_uid="$(adb "SELECT user_id FROM users WHERE username = '${OCM_USER}'")"
+	case "$sm114_uid" in
+		''|*[!0-9]*) sm114_uid='' ;;
+	esac
+
+	# A date no other section uses. The fixture's act_time is NULL, which
+	# the pending query accepts even on the day its same-day filter applies.
+	sm114_date='2031-08-09'
+	sm114_date_us='08/09/2031'
+
+	# A marker this run owns. $RANDOM alone repeats within a short suite,
+	# so eight draws are joined into what reads as a 32-hex-char id. adb
+	# writes the literal < and > straight into the column, bypassing the
+	# filter the web form applies to the same field.
+	sm114_tag="$(printf '%04x%04x%04x%04x%04x%04x%04x%04x' \
+		$RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM)"
+	sm114_marker="smk114${sm114_tag}"
+	sm114_summary="${sm114_marker}<b id=\"smk114x\">"
+
+	# What each output must hold for this row. Every string starts with the
+	# marker, so text from another row cannot satisfy a check. fputcsv()
+	# doubles the quote characters inside the field.
+	sm114_html_raw="${sm114_summary}"
+	sm114_html_esc="${sm114_marker}&lt;b id=&quot;smk114x&quot;&gt;"
+	sm114_csv_raw="${sm114_marker}<b id=\"\"smk114x\"\">"
+	sm114_csv_esc="${sm114_marker}&lt;b id="
+
+	sm114_act=''
+	sm114_owned=0
+	sm114_cleanup()
+	{
+		if [ "$sm114_owned" = 1 ]; then
+			adb "DELETE FROM activities WHERE act_id = ${sm114_act}
+				AND summary = '${sm114_summary}'" >/dev/null 2>&1
+		fi
+	}
+	trap 'sm114_cleanup; base_cleanup' EXIT
+
+	sm114_report()
+	{
+		: > "$BODY"
+		sm114_rep_code="$(curl -s --max-time 60 -b "$COOKIES" -o "$BODY" \
+			-w '%{http_code}' -X POST \
+			-d "date_start=${sm114_date_us}&date_end=${sm114_date_us}&report_format=$1" \
+			"$OCM_URL/reports/time/report.php")"
+		sm114_rep_curl=$?
+	}
+
+	# $1 = page name, $2 = curl exit, $3 = status, $4 = raw form, $5 =
+	# escaped form, $6 = 'escaped' if the page must escape, 'text' if not.
+	sm114_check()
+	{
+		if [ "$2" -ne 0 ] || [ "$3" != 200 ] \
+			|| grep -qiE 'Fatal error|Parse error|Uncaught' "$BODY"; then
+			bad "the $1 request failed (curl exit $2, status $3) - section 114 proves nothing for it"
+		elif ! grep -qF -e "$sm114_marker" "$BODY"; then
+			bad "the $1 does not show the fixture activity, so section 114 proves nothing for it"
+		elif [ "$6" = escaped ] && grep -qF -e "$4" "$BODY"; then
+			bad "THE $1 PRINTS THE STORED SUMMARY AS RAW MARKUP"
+		elif [ "$6" = escaped ] && grep -qF -e "$5" "$BODY"; then
+			ok "the $1 HTML-escapes the stored summary"
+		elif [ "$6" = text ] && grep -qF -e "$5" "$BODY"; then
+			bad "THE $1 HTML-ESCAPES THE STORED SUMMARY"
+		elif [ "$6" = text ] && grep -qF -e "$4" "$BODY"; then
+			ok "the $1 keeps the stored summary as text"
+		else
+			bad "the $1 shows the fixture activity but not its summary in either form - section 114 proves nothing for it"
+		fi
+	}
+
+	if [ -z "$sm114_uid" ]; then
+		bad "section 114 could not find ${OCM_USER}'s user_id, so it seeded nothing"
+	else
+		sm114_act="$(adb "SELECT COALESCE(MAX(act_id), 0) + 1 FROM activities")"
+		case "$sm114_act" in
+			''|*[!0-9]*) sm114_act='' ;;
+		esac
+
+		if [ -z "$sm114_act" ]; then
+			bad "section 114 could not pick a free act_id, so it seeded nothing"
+		else
+			sm114_taken="$(adb "SELECT COUNT(*) FROM activities
+				WHERE act_id = ${sm114_act}")"
+			if [ "$sm114_taken" != 0 ]; then
+				bad "section 114's fixture act_id ${sm114_act} is already in use, so it will not seed over it"
+			else
+				# Owned before the INSERT, so a failure after it still
+				# cleans up. The DELETE matches this run's random summary
+				# too, so it cannot remove a row another writer made.
+				sm114_owned=1
+				adb "INSERT INTO activities
+					(act_id, user_id, act_date, completed, summary)
+					VALUES (${sm114_act}, ${sm114_uid}, '${sm114_date}', 0,
+					'${sm114_summary}')" >/dev/null 2>&1
+				sm114_seeded="$(adb "SELECT COUNT(*) FROM activities
+					WHERE act_id = ${sm114_act} AND summary = '${sm114_summary}'")"
+				if [ "$sm114_seeded" != 1 ]; then
+					bad "section 114 could not seed its fixture activity, so it proves nothing"
+				else
+					# The calendar's pending list, on the day the fixture is dated.
+					: > "$BODY"
+					sm114_cal_code="$(curl -s --max-time 30 -b "$COOKIES" -o "$BODY" \
+						-w '%{http_code}' \
+						"$OCM_URL/cal_day.php?cal_date=${sm114_date}")"
+					sm114_cal_curl=$?
+					sm114_check "pending list" "$sm114_cal_curl" "$sm114_cal_code" \
+						"$sm114_html_raw" "$sm114_html_esc" escaped
+
+					# The time report, HTML format, over the fixture's own day.
+					sm114_report html
+					sm114_check "HTML time report" "$sm114_rep_curl" "$sm114_rep_code" \
+						"$sm114_html_raw" "$sm114_html_esc" escaped
+
+					# The same report, CSV format, must keep the summary as text.
+					sm114_report csv
+					sm114_check "CSV time report" "$sm114_rep_curl" "$sm114_rep_code" \
+						"$sm114_csv_raw" "$sm114_csv_esc" text
+				fi
+			fi
+		fi
+	fi
+
+	# The EXIT trap keeps its row cleanup until the row is confirmed gone.
+	sm114_cleanup
+	if [ "$sm114_owned" = 1 ] && [ -n "$sm114_act" ]; then
+		sm114_left="$(adb "SELECT COUNT(*) FROM activities
+			WHERE act_id = ${sm114_act} AND summary = '${sm114_summary}'")"
+		if [ "$sm114_left" = 0 ]; then
+			trap base_cleanup EXIT
+		else
+			bad "section 114's fixture activity ${sm114_act} was not deleted"
+		fi
+	else
+		trap base_cleanup EXIT
+	fi
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

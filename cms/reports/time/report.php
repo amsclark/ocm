@@ -181,7 +181,11 @@ foreach ($act_user as $uid => $act_rows)
 		$r['completed'] = pl_array_lookup($act['completed'],$plMenus['yes_no']);
 		$r['user_id'] = pl_array_lookup($act['user_id'],$staff_array);
 		$r['pba_id'] = pl_array_lookup($act['pba_id'],$pba_array);
-		$r['summary'] = $act['summary'];
+		/*	plHtmlReportTable writes each cell as markup, so the stored summary
+			is escaped for the HTML report. The CSV report takes it as text.
+		*/
+		$r['summary'] = ('csv' == $report_format)
+			? $act['summary'] : pl_clean_html($act['summary']);
 		$r['number'] = $act['number'];
 		$r['office'] = pl_array_lookup($act['office'],$plMenus['office']);
 		$r['funding'] = pl_array_lookup($act['funding'],$plMenus['funding']);
